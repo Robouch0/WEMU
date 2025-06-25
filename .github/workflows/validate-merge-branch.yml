@@ -2,6 +2,7 @@ name: Enforce Merge from Dev to Main Only
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened]
     branches:
       - main
 
