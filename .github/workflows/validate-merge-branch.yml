@@ -13,13 +13,13 @@ jobs:
       contents: read
 
     steps:
+      - name: Log branches as debug info
+        run: |
+          echo "Base branch: ${{ github.base_ref }}"
+          echo "Head branch: ${{ github.head_ref }}"
+
       - name: Fail if source branch is not 'dev'
         if: github.head_ref != 'dev'
         run: |
           echo "❌ Merges to 'main' are only allowed from the 'dev' branch."
           exit 1
-
-      - name: Log branches as debug info
-        run: |
-          echo "Base branch: ${{ github.base_ref }}"
-          echo "Head branch: ${{ github.head_ref }}"
