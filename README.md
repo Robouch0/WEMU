@@ -84,7 +84,7 @@ make -j$(nproc)
 
 ## Game Compatibility
 
-Check our [Compatibility Database](https://github.com/username/wemu/wiki/Compatibility) for the latest game compatibility status.
+Check our [Compatibility Database](https://github.com/Robouch0/WEMU/wiki/Game-Compatibility-Database) for the latest game compatibility status.
 
 **Compatibility Ratings:**
 - 🟢 **Perfect**: Fully playable with no issues
@@ -206,10 +206,9 @@ SOFTWARE.
 
 ## Links
 
-- **Website**: https://wemu.org
+- **Website**: https://wemu.vercel.app
 - **Discord**: https://discord.gg/wemu
-- **Wiki**: https://github.com/username/wemu/wiki
-- **Compatibility Database**: https://github.com/username/wemu/wiki/Compatibility
+- **Compatibility Database**: https://github.com/Robouch0/WEMU/wiki/Game-Compatibility-Database
 
 ---
 
