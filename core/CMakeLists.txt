@@ -1,10 +1,13 @@
-add_executable(wemu_core src/coreDummy.cpp)
-
-target_link_libraries(wemu_core PRIVATE gfx_frontend cpu_frontend)
-
-target_include_directories(wemu_core PRIVATE
-        ${CMAKE_SOURCE_DIR}/libs/cpu_IR/include
-        ${CMAKE_SOURCE_DIR}/libs/gfx_IR/include
+add_library(core STATIC
+        src/coreDummy.cpp
 )
 
-target_compile_features(wemu_core PUBLIC cxx_std_20)
+target_link_libraries(core
+        PUBLIC cpu_frontend gfx_frontend
+)
+
+target_include_directories(core
+        PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+target_compile_features(core PUBLIC cxx_std_20)
