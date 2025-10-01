@@ -14,11 +14,15 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    container: stateoftheartio/qt6:6.3-gcc-aqt
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Install Qt6 and dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qt6-base-dev qt6-tools-dev cmake build-essential
 
       - name: Create build directory
         run: mkdir -p build
