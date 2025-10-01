@@ -14,7 +14,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    container: qtproject/qt:qt6_6.5.0-ubuntu-20.04
+    container: stateoftheartio/qt6:6.3-gcc-aqt
 
     steps:
       - name: Checkout repository
