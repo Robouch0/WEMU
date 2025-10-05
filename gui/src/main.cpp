@@ -1,19 +1,26 @@
-#include <QApplication>
-#include <QMainWindow>
-#include <QPushButton>
-
-#include "cpuInterface.hpp"
+#include <QGuiApplication>
+#include <QQmlApplicationEngine>
+#include <QQmlContext>
+#include "../../core/src/utils/EmulatorState.hpp"
+#include <QDir>
+#include <QDebug>
 
 int main(int argc, char *argv[]) {
-    QApplication app(argc, argv);
+    QGuiApplication app(argc, argv);
 
-    QMainWindow window;
-    window.setWindowTitle("Qt GUI Test");
+    QDir resDir(":/qml");  // resource prefix
+    QStringList files = resDir.entryList(QDir::Files);
+    for (const auto& f : files) {
+        qDebug() << f;
+    }
+    EmulatorState emulator;
 
-    auto button = new QPushButton("Hello, Qt (cutie :)!", &window);
-    window.setCentralWidget(button);
+    QQmlApplicationEngine engine;
+    engine.rootContext()->setContextProperty("emulator", &emulator);
+    engine.load(QUrl(QStringLiteral("qrc:/qml/Main.qml")));
 
-    window.resize(1920, 1080);
-    window.show();
+    if (engine.rootObjects().isEmpty())
+        return -1;
+
     return app.exec();
 }
