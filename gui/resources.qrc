@@ -1,0 +1,5 @@
+<RCC>
+    <qresource prefix="/assets">
+        <file>qml/assets/FrenchGuy.mp4</file>
+    </qresource>
+</RCC>

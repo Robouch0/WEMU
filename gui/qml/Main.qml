@@ -3,22 +3,27 @@ import QtQuick.Controls
 
 ApplicationWindow {
     visible: true
-    width: 400
-    height: 200
-    title: qsTr("Emulator Counter")
+    width: 1200
+    height: 900
+    title: "Emulator"
 
-    Column {
-        anchors.centerIn: parent
-        spacing: 20
+    Loader {
+        id: mainLoader
+        anchors.fill: parent
+        sourceComponent: introComponent
+    }
 
-        Text {
-            text: "Seconds: " + emulatorCounter.seconds
-            font.pixelSize: 30
-        }
-
-        Button {
-            text: "Reset"
-            onClicked: emulatorCounter.reset()
+    Component {
+        id: introComponent
+        Loader {
+            anchors.fill: parent
+            source: "pages/IntroSequence.qml"
+            onLoaded: {
+                item.introFinished.connect(() => {
+                    console.log("Intro finished → loading main menu")
+                    mainLoader.source = "pages/MainMenu.qml"
+                })
+            }
         }
     }
 }

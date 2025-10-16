@@ -3,7 +3,7 @@
 #include <QQmlContext>
 #include <QString>
 
-#include "utils/EmulatorCounter.hpp"
+// #include "utils/EmulatorCounter.hpp"
 
 int main(int argc, char *argv[])
 {
@@ -11,9 +11,9 @@ int main(int argc, char *argv[])
 
     QQmlApplicationEngine engine;
 
-    EmulatorCounter counter;
+    // EmulatorCounter counter;
 
-    engine.rootContext()->setContextProperty("emulatorCounter", &counter);
+    // engine.rootContext()->setContextProperty("emulatorCounter", &counter);
     QObject::connect(
         &engine,
         &QQmlApplicationEngine::objectCreationFailed,
