@@ -1,7 +1,5 @@
 SRC	=	$(addprefix src/,	\
-		main.cpp		\
-		window.cpp		\
-		firstapp.cpp)
+		main.cpp)
 
 CC	=	g++
 

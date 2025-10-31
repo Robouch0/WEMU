@@ -1,0 +1,8 @@
+[
+{
+  "directory": "/home/nicolas/WEMU/build",
+  "command": "/usr/bin/g++ -g -o CMakeFiles/WEMU.dir/src/main.cpp.o -c /home/nicolas/WEMU/src/main.cpp",
+  "file": "/home/nicolas/WEMU/src/main.cpp",
+  "output": "CMakeFiles/WEMU.dir/src/main.cpp.o"
+}
+]

@@ -1,7 +1,7 @@
-#include "firstapp.hpp"
+#include "emulator.hpp"
 
 namespace WEMU {
-    void FirstApp::run() {
+    void Emulator::run() {
         while (!lveWindow.shouldClose()) {
             glfwPollEvents();
         }

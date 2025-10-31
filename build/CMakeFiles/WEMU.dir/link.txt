@@ -1,0 +1,1 @@
+/usr/bin/c++ CMakeFiles/WEMU.dir/src/main.cpp.o -o WEMU 
