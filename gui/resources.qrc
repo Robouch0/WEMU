@@ -1,5 +1,9 @@
 <RCC>
     <qresource prefix="/assets">
         <file>qml/assets/FrenchGuy.mp4</file>
+        <file>qml/Main.qml</file>
+        <file>qml/pages/MainMenu.qml</file>
+        <file>qml/pages/IntroSequence.qml</file>
+        <file>qml/pages/SettingsPage.qml</file>
     </qresource>
 </RCC>

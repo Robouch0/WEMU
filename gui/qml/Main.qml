@@ -2,10 +2,14 @@ import QtQuick
 import QtQuick.Controls
 
 ApplicationWindow {
+    id: rootWindow
     visible: true
     width: 1200
     height: 900
     title: "Emulator"
+
+    Keys.onPressed: InputManager.keyPressed(key, event.text)
+    Keys.onReleased: InputManager.keyReleased(key, event.text)
 
     Loader {
         id: mainLoader

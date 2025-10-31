@@ -5,10 +5,23 @@ Rectangle {
     color: "black"
     anchors.fill: parent
 
-    Text {
+    Column {
         anchors.centerIn: parent
-        text: "Main Menu"
-        color: "green"
-        font.pixelSize: 40
+        spacing: 20
+
+        Text {
+            text: "Main Menu"
+            color: "green"
+            font.pixelSize: 40
+            horizontalAlignment: Text.AlignHCenter
+        }
+
+        Button {
+            text: "Settings"
+            onClicked: {
+                // Navigate to settings page
+                mainLoader.source = "pages/SettingsPage.qml"
+            }
+        }
     }
 }

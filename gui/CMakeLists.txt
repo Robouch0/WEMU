@@ -5,15 +5,23 @@ project(gui VERSION 0.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Quick Multimedia)
+find_package(Qt6 REQUIRED COMPONENTS Quick Multimedia QuickControls2)
 
 qt_standard_project_setup(REQUIRES 6.6.2)
 qt_add_resources(RESOURCES resources.qrc)
 
 qt_add_executable(appgui
     src/main.cpp
+    src/EmulatorWindow.cpp
+    src/EmulatorWindow.hpp
     ../core/src/utils/EmulatorCounter.hpp
+    src/input/IInputDevice.hpp
+    src/input/KeyboardInputDevice.cpp
+    src/input/KeyboardInputDevice.hpp
+    src/input/InputManager.hpp
+    src/input/InputManager.cpp
     ${RESOURCES}
+
 )
 qt_policy(SET QTP0004 NEW)
 
@@ -25,6 +33,7 @@ qt_add_qml_module(appgui
         qml/Main.qml
         qml/pages/IntroSequence.qml
         qml/pages/MainMenu.qml
+        qml/pages/SettingsPage.qml
         qml/assets/FrenchGuy.mp4
         RESOURCES resources.qrc
 )
@@ -51,6 +60,7 @@ target_link_libraries(appgui
         Qt6::Core
         Qt6::Quick
         Qt6::Multimedia
+        Qt6::QuickControls2
 )
 
 include(GNUInstallDirs)

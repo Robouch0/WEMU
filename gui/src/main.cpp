@@ -1,9 +1,8 @@
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
-#include <QString>
-
-// #include "utils/EmulatorCounter.hpp"
+#include "input/InputManager.hpp"
+#include <QDebug>
 
 int main(int argc, char *argv[])
 {
@@ -11,16 +10,15 @@ int main(int argc, char *argv[])
 
     QQmlApplicationEngine engine;
 
-    // EmulatorCounter counter;
+    auto inputManager = new InputManager(&app);
+    engine.rootContext()->setContextProperty("InputManager", inputManager);
 
-    // engine.rootContext()->setContextProperty("emulatorCounter", &counter);
-    QObject::connect(
-        &engine,
-        &QQmlApplicationEngine::objectCreationFailed,
-        &app,
-        []() { QCoreApplication::exit(-1); },
-        Qt::QueuedConnection);
-    engine.loadFromModule("gui", "Main");
+    QObject::connect(&engine, &QQmlApplicationEngine::objectCreationFailed,
+                     &app, []() { QCoreApplication::exit(-1); }, Qt::QueuedConnection);
+
+    engine.load(QUrl("qrc:/assets/qml/Main.qml"));
+
+    qDebug() << "Emulator GUI started with persistent InputManager";
 
     return app.exec();
 }
