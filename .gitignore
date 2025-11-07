@@ -20,6 +20,8 @@
 *.mod
 *.smod
 
+compile_commands.json
+
 # Compiled Static libraries
 *.lai
 *.la
@@ -30,3 +32,6 @@
 *.exe
 *.out
 *.app
+WEMU
+
+.cache
