@@ -32,6 +32,9 @@ compile_commands.json
 *.exe
 *.out
 *.app
+.idea
+cmake-build-debug
+build
 WEMU
 
 .cache
