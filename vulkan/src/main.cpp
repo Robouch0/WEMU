@@ -434,7 +434,6 @@ private:
 		std::vector<VkPhysicalDevice> devices(deviceCount);
 
 		vkEnumeratePhysicalDevices(instance, &deviceCount, devices.data()); // second one to fill the devices vector
-		// can't seem to combine those two calls :/
 
 		if (deviceCount == 0) {
 			throw std::runtime_error("failed to find GPUs with Vulkan support");
