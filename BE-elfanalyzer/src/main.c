@@ -17,6 +17,7 @@
 #include <unistd.h>
 
 #include "my_utils.h"
+#include "my_powerpc.h"
 
 void print_elf32_ehdr(Elf32_Ehdr const *ehdr)
 {
@@ -51,15 +52,17 @@ static void print_instructions_infos(unsigned char const *line)
     for (int i = 31; i >= 0; i--) {
         dprintf(1, "%d", (instruction >> i) & 1);
     }
+    for (size_t i = 0; i < sizeof(DECODE_TABLE) / sizeof(DECODE_TABLE[0]); i++) {
+        if ((instruction & DECODE_TABLE[i].mask) == DECODE_TABLE[i].match) {
+            dprintf(1, "\t%s", DECODE_TABLE[i].name);
+        }
+    }
     uint8_t const opcode = (instruction >> 26) & 0b111111;
     dprintf(1, "\topcode: %hd", opcode);
-    if (opcode == 14 || opcode == 15) {
-        uint8_t const rs = (instruction >> 21) & 0b11111;
-        uint8_t const ra = (instruction >> 16) & 0b11111;
-        uint16_t const imm = (instruction) & 0b1111111111111111;
-        dprintf(1, "\trs: %hd", rs);
-        dprintf(1, "\tra: %hd", ra);
-        dprintf(1, "\timm: %hd", imm);
+    if (opcode == 16) {
+        if ((instruction >> 1 & 0b1) == 0 && (instruction & 0b1) == 0) {
+            dprintf(1, "\tbc %d, %d, %d", instruction >> 21 & 0b11111, instruction >> 16 & 0b11111, instruction >> 2 & 0b11111111111111);
+        }
     }
     dprintf(1, "\n");
 }
