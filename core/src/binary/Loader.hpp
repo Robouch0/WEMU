@@ -10,6 +10,7 @@
 #include "Binary.hpp"
 #include "utils/BeDecoder.hpp"
 #include "Loader.hpp"
+#include <zlib.h>
 
 namespace Core {
 
@@ -28,7 +29,11 @@ namespace Core {
 
         private:
             void loadHeader();
+
             void loadSections();
+            void loadSectionHeader(Section &section);
+            void loadSectionData(Section &section);
+            void loadSectionName();
 
             Binary m_bin;
             Utils::BeDecoder m_beDecoder;
