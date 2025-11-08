@@ -27,3 +27,8 @@ Utils::BeDecoder::BeDecoder(const std::string &filepath)
     m_view = std::string_view(m_Buffer.data(), m_Buffer.size());
     m_offset = 0;
 }
+
+void Utils::BeDecoder::seek(std::size_t pos)
+{
+    m_offset = pos;
+}

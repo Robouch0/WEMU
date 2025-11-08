@@ -12,6 +12,7 @@
 #include <bit>
 #include <fstream>
 #include <iostream>
+#include <cstring>
 
 #include "exception/Exception.hpp"
 
@@ -45,6 +46,15 @@ namespace Utils {
                 m_offset += sizeof(T);
                 return std::byteswap(value);
             }
+
+            template<typename T>
+            void extractSwap(T *buffer, std::size_t count)
+            {
+                std::memcpy(buffer, m_Buffer.data() + m_offset, count);
+                m_offset += count;
+            }
+
+            void seek(std::size_t pos);
 
         private:
             std::vector<char> m_Buffer;
