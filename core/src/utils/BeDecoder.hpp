@@ -48,7 +48,7 @@ namespace Utils {
             }
 
             template<typename T>
-            void extractSwap(T *buffer, std::size_t count)
+            void extract(T *buffer, std::size_t count)
             {
                 std::memcpy(buffer, m_Buffer.data() + m_offset, count);
                 m_offset += count;
