@@ -33,6 +33,7 @@ namespace Core {
             void loadSections();
             void loadSectionHeader(Section &section);
             void loadSectionData(Section &section);
+            void loadAndDecompressSectionData(Section &section);
             void loadSectionName();
 
             Binary m_bin;

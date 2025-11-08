@@ -40,6 +40,21 @@ namespace Utils {
             }
 
             template<typename T>
+            void extract(T *buffer, const std::size_t count)
+            {
+                std::memcpy(buffer, m_buffer.data() + m_offset, count);
+                m_offset += count;
+            }
+
+            template<typename Type>
+            const Type *extract(std::size_t count)
+            {
+                auto ptr = reinterpret_cast<const Type*>(m_buffer.data() + m_offset);
+                m_offset += sizeof(Type) * count;
+                return ptr;
+            }
+
+            template<typename T>
             T extractSwap()
             {
                 T const &value = *reinterpret_cast<T const *>(m_view.data() + m_offset);
@@ -47,17 +62,11 @@ namespace Utils {
                 return std::byteswap(value);
             }
 
-            template<typename T>
-            void extract(T *buffer, std::size_t count)
-            {
-                std::memcpy(buffer, m_Buffer.data() + m_offset, count);
-                m_offset += count;
-            }
 
             void seek(std::size_t pos);
 
         private:
-            std::vector<char> m_Buffer;
+            std::vector<char> m_buffer;
             std::string_view m_view;
             std::size_t m_offset;
     };

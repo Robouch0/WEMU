@@ -54,6 +54,31 @@ void Core::Loader::loadSectionData(Section &section)
     m_beDecoder.extract<>(section.data.data(), section.header.sh_size);
 }
 
+void Core::Loader::loadAndDecompressSectionData(Section &section)
+{
+    auto stream = z_stream{};
+    auto ret = Z_OK;
+    section.data.resize(m_beDecoder.extractSwap<uint32_t>());
+    std::memset(&stream, 0, sizeof(stream));
+    stream.zalloc = Z_NULL;
+    stream.zfree = Z_NULL;
+    stream.opaque = Z_NULL;
+    ret = inflateInit(&stream);
+    if (ret != Z_OK) {
+        section.data.clear();
+    } else {
+        stream.avail_in = section.header.sh_size;
+        stream.next_in = const_cast<unsigned char *>(m_beDecoder.extract<Bytef>(section.header.sh_size));
+        stream.avail_out = static_cast<uInt>(section.data.size());
+        stream.next_out = reinterpret_cast<Bytef *>(section.data.data());
+        ret = inflate(&stream, Z_FINISH);
+        if (ret != Z_OK && ret != Z_STREAM_END) {
+            section.data.clear();
+        }
+        inflateEnd(&stream);
+    }
+}
+
 void Core::Loader::loadSectionName()
 {
     const auto &shstr = m_bin.sections[m_bin.header.e_shstrndx];
@@ -73,33 +98,12 @@ void Core::Loader::loadSections()
         auto &section = m_bin.sections[i];
         m_beDecoder.seek(m_bin.header.e_shoff + i * m_bin.header.e_shentsize);
         loadSectionHeader(section);
-        if (section.header.sh_flags & SHF_DEFLATED) {
-            auto stream = z_stream {};
-            auto ret = Z_OK;
-            m_beDecoder.seek(section.header.sh_offset);
-            section.data.resize(m_beDecoder.extractSwap<uint32_t>());
-
-            std::memset(&stream, 0, sizeof(stream));
-            stream.zalloc = Z_NULL;
-            stream.zfree = Z_NULL;
-            stream.opaque = Z_NULL;
-
-            ret = inflateInit(&stream);
-
-            if (ret != Z_OK) {
-                section.data.clear();
-            } else {
-                stream.avail_in = section.header.sh_size;
-                m_beDecoder.extract(stream.next_in, section.header.sh_size);
-                stream.avail_out = static_cast<uInt>(section.data.size());
-                stream.next_out = reinterpret_cast<Bytef *>(section.data.data());
-
-                ret = inflate(&stream, Z_FINISH);
-                inflateEnd(&stream);
-            }
-        }
         m_beDecoder.seek(section.header.sh_offset);
-        loadSectionData(section);
+        if (section.header.sh_flags & SHF_DEFLATED) {
+            loadAndDecompressSectionData(section);
+        } else {
+            loadSectionData(section);
+        }
     }
     loadSectionName();
 }
