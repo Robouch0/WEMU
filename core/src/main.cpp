@@ -9,6 +9,7 @@
 #include <fstream>
 
 #include "binary/Binary.hpp"
+#include "binary/Loader.hpp"
 #include "utils/BeDecoder.hpp"
 
 void print_elf32_ehdr(const Elf32_Ehdr &ehdr)
@@ -35,48 +36,14 @@ void print_elf32_ehdr(const Elf32_Ehdr &ehdr)
     dprintf(1, "\n");
 }
 
-int main(int ac, char const* const *av)
+int main(const int ac, char const* const *av)
 {
     if (ac != 2) {
         std::cerr << "Invalid arguments." << std::endl;
         return ERROR_VALUE;
     }
+    const Core::Loader loader(av[1]);
 
-    std::ifstream file(av[1], std::ios::binary | std::ios::ate);
-    std::vector<char> buffer;
-
-    if (!file.is_open()) {
-        std::cerr << "File could not open." << std::endl;
-        return ERROR_VALUE;
-    }
-
-    const auto size = file.tellg();
-    file.seekg(0, std::ios::beg);
-    buffer.resize(size);
-
-    if (file.read(buffer.data(), size)) {
-        Core::Binary bin;
-        Utils::BeDecoder be(buffer.data());
-
-        for (unsigned char &i : bin.header.e_ident)
-            i = be.extract<unsigned char>();
-        bin.header.e_type = be.extractSwap<Elf32_Half>();
-        bin.header.e_machine = be.extractSwap<Elf32_Half>();
-        bin.header.e_version = be.extractSwap<Elf32_Word>();
-        bin.header.e_entry = be.extractSwap<Elf32_Addr>();
-        bin.header.e_phoff = be.extractSwap<Elf32_Off>();
-        bin.header.e_shoff = be.extractSwap<Elf32_Off>();
-        bin.header.e_flags = be.extractSwap<Elf32_Word>();
-        bin.header.e_ehsize = be.extractSwap<Elf32_Half>();
-        bin.header.e_phentsize = be.extractSwap<Elf32_Half>();
-        bin.header.e_phnum = be.extractSwap<Elf32_Half>();
-        bin.header.e_shentsize = be.extractSwap<Elf32_Half>();
-        bin.header.e_shnum = be.extractSwap<Elf32_Half>();
-        bin.header.e_shstrndx = be.extractSwap<Elf32_Half>();
-        print_elf32_ehdr(bin.header);
-    } else {
-        std::cerr << "Could not read the file." << std::endl;
-    }
-    file.close();
+    print_elf32_ehdr(loader.getBinary().header);
     return SUCCESS_VALUE;
 }

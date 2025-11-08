@@ -14,9 +14,10 @@ add_executable(core
         src/binary/Binary.hpp
         src/utils/BeDecoder.hpp
         src/exception/Exception.hpp
-        src/binary/BinaryException.hpp
         src/exception/Exception.cpp
         src/binary/Loader.hpp
+        src/binary/Loader.cpp
+        src/utils/BeDecoder.cpp
 )
 
 target_include_directories(core PUBLIC
