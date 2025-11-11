@@ -8,11 +8,11 @@
 #include "Loader.hpp"
 #include "zlib.h"
 
-
 Core::Loader::Loader(const std::string &filepath) : m_bin({}), m_beDecoder(filepath)
 {
     loadHeader();
     loadSections();
+    loadSymbols();
 }
 
 void Core::Loader::loadHeader()
@@ -60,9 +60,9 @@ void Core::Loader::loadAndDecompressSectionData(Section &section)
     auto ret = Z_OK;
     section.data.resize(m_beDecoder.extractSwap<uint32_t>());
     std::memset(&stream, 0, sizeof(stream));
-    stream.zalloc = Z_NULL;
-    stream.zfree = Z_NULL;
-    stream.opaque = Z_NULL;
+    stream.zalloc = nullptr;
+    stream.zfree = nullptr;
+    stream.opaque = nullptr;
     ret = inflateInit(&stream);
     if (ret != Z_OK) {
         section.data.clear();
@@ -81,13 +81,13 @@ void Core::Loader::loadAndDecompressSectionData(Section &section)
 
 void Core::Loader::loadSectionName()
 {
-    const auto &shstr = m_bin.sections[m_bin.header.e_shstrndx];
-    char const *sectionNames = shstr.data.data();
+    const Section &shStr = m_bin.sections[m_bin.header.e_shstrndx];
+    char const *sectionNames = shStr.data.data();
 
-    for (size_t i = 0; i <  m_bin.header.e_shnum; i++) {
+    for (std::size_t i = 0; i < m_bin.header.e_shnum; i++) {
         auto &section = m_bin.sections[i];
         section.name = sectionNames + section.header.sh_name;
-        std::cout << "id : " << i << " valuename : " << section.name << std::endl;
+        // std::cout << "section #" << i << "(" << section.name << ")" << std::endl;
     }
 }
 
@@ -106,4 +106,46 @@ void Core::Loader::loadSections()
         }
     }
     loadSectionName();
+}
+
+void Core::Loader::loadSymbolHeader(const Section &symSection, const std::size_t symAmount)
+{
+    auto symDecoder = Utils::BeDecoder(symSection.data);
+
+    for (std::size_t i = 0; i < symAmount; i++) {
+        auto &symbol = m_bin.symbols[i];
+        symbol.header.st_name = symDecoder.extractSwap<Elf32_Word>();
+        symbol.header.st_value = symDecoder.extractSwap<Elf32_Addr>();
+        symbol.header.st_size = symDecoder.extractSwap<Elf32_Word>();
+        symbol.header.st_info = symDecoder.extractSwap<unsigned char>();
+        symbol.header.st_other = symDecoder.extractSwap<unsigned char>();
+        symbol.header.st_shndx = symDecoder.extractSwap<Elf32_Section>();
+    }
+}
+
+void Core::Loader::loadSymbolName(const Section &symSection)
+{
+    const Section &symStr = m_bin.sections[symSection.header.sh_link];
+    char const *symbolNames = symStr.data.data();
+    const std::size_t symAmount = symSection.header.sh_size / symSection.header.sh_entsize;
+
+    for (std::size_t i = 0; i < symAmount; i++) {
+        auto &symbol = m_bin.symbols[i];
+        if (symbol.header.st_name > 0 && symbol.header.st_name < symStr.data.size()) {
+            symbol.name = symbolNames + symbol.header.st_name;
+            // std::cout << "symbol #" << i << "(" << symbol.name << ")" << std::endl;
+        } else {
+            // std::cout << "symbol #" << i << std::endl;
+        }
+    }
+}
+
+void Core::Loader::loadSymbols()
+{
+    const auto &symSection = m_bin.findSection(".symtab");
+    const std::size_t symAmount = symSection.header.sh_size / symSection.header.sh_entsize;
+
+    m_bin.symbols.resize(symAmount);
+    loadSymbolHeader(symSection, symAmount);
+    loadSymbolName(symSection);
 }

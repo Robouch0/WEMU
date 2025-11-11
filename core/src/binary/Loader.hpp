@@ -36,6 +36,10 @@ namespace Core {
             void loadAndDecompressSectionData(Section &section);
             void loadSectionName();
 
+            void loadSymbols();
+            void loadSymbolHeader(const Section &symSection, std::size_t symAmount);
+            void loadSymbolName(const Section &symSection);
+
             Binary m_bin;
             Utils::BeDecoder m_beDecoder;
     };

@@ -28,6 +28,12 @@ namespace Core {
         std::vector<char> data;
     };
 
+    struct Symbol
+    {
+        std::string name;
+        Elf32_Sym header;
+    };
+
     struct Binary
     {
         Section &findSection(const std::string &name)
@@ -42,5 +48,6 @@ namespace Core {
 
         Elf32_Ehdr header;
         std::vector<Section> sections;
+        std::vector<Symbol> symbols;
     };
 }

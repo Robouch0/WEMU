@@ -5,6 +5,7 @@
 ** main
 */
 
+#include <bitset>
 #include <iostream>
 #include <fstream>
 
@@ -36,6 +37,29 @@ void print_elf32_ehdr(const Elf32_Ehdr &ehdr)
     dprintf(1, "\n");
 }
 
+void print_section_content(Core::Binary &binary)
+{
+    const Core::Section &textSection = binary.findSection(".text");
+    auto instructionDecoder = Utils::BeDecoder(textSection.data);
+
+    std::cout << "Content of section " << textSection.name << std::endl;
+    for (Elf32_Off offset = 0; offset < textSection.header.sh_size; offset += 4) {
+        const auto instruction = instructionDecoder.extractSwap<uint32_t>();
+        std::cout << " "
+            << std::hex << (offset + textSection.header.sh_addr) << std::dec << "\t"
+            << std::bitset<sizeof(uint32_t) * 8>(instruction) << std::endl;
+    }
+}
+
+void print_symbols(Core::Binary &binary)
+{
+    std::cout << "Total of " << binary.symbols.size() << " symbols:" << std::endl;
+    for (const auto &symbol : binary.symbols) {
+        std::cout << symbol.name << " -> " << symbol.header.st_value << std::endl;
+    }
+    std::cout << std::endl;
+}
+
 int main(const int ac, char const* const *av)
 {
     if (ac != 2) {
@@ -44,6 +68,9 @@ int main(const int ac, char const* const *av)
     }
     const Core::Loader loader(av[1]);
 
-    print_elf32_ehdr(loader.getBinary().header);
+    Core::Binary binary = loader.getBinary();
+    print_elf32_ehdr(binary.header);
+    print_symbols(binary);
+    print_section_content(binary);
     return SUCCESS_VALUE;
 }
