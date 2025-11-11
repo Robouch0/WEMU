@@ -1,27 +1,15 @@
 #pragma once
-#include <QObject>
 #include <QString>
 
-struct ButtonState {
-    bool pressed = false;
-};
-
-struct AxisState {
-    double value = 0.0;
-};
-
-class IInputDevice : public QObject {
-    Q_OBJECT
-public:
-        explicit IInputDevice(QObject* parent = nullptr) : QObject(parent) {}
+class IInputDevice {
+    public:
         virtual ~IInputDevice() = default;
 
-        virtual QString deviceName() const = 0;
-        virtual void start() = 0;
-        virtual void stop() = 0;
+        virtual void update() = 0;
 
-        signals:
-            void buttonChanged(int buttonId, ButtonState state);
-            void axisChanged(int axisId, AxisState state);
-            void deviceDisconnected();
+        virtual bool isButtonPressed(const QString &buttonName) const = 0;
+        virtual bool isButtonReleased(const QString &buttonName) const = 0;
+        virtual float getAxisValue(const QString &axisName) const = 0;
+
+        virtual QString name() const = 0;
 };

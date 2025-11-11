@@ -8,9 +8,6 @@ ApplicationWindow {
     height: 900
     title: "Emulator"
 
-    Keys.onPressed: InputManager.keyPressed(key, event.text)
-    Keys.onReleased: InputManager.keyReleased(key, event.text)
-
     Loader {
         id: mainLoader
         anchors.fill: parent

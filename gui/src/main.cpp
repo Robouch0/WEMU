@@ -1,16 +1,20 @@
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
-#include "input/InputManager.hpp"
 #include <QDebug>
+#include "IInputDevice.hpp"
+#include "InputManager.hpp"
+#include "KeyboardInput.hpp"
 
 int main(int argc, char *argv[])
 {
     QGuiApplication app(argc, argv);
-
     QQmlApplicationEngine engine;
 
-    auto inputManager = new InputManager(&app);
+    auto inputManager = new InputManager();
+    auto keyboard = new KeyboardInput();
+    inputManager->addDevice(keyboard);
+
     engine.rootContext()->setContextProperty("InputManager", inputManager);
 
     QObject::connect(&engine, &QQmlApplicationEngine::objectCreationFailed,

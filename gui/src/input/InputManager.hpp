@@ -1,26 +1,32 @@
+// InputManager.hpp
 #pragma once
-#include <QObject>
-#include <QGuiApplication>
-#include "KeyboardInputDevice.hpp"
+#include <QVector>
+#include <QMap>
+#include <QTimer>
+#include "IInputDevice.hpp"
 
-class InputManager : public QObject {
+class InputManager final : public QObject {
     Q_OBJECT
-    Q_PROPERTY(QString keyboardLayout READ keyboardLayout CONSTANT)
 
 public:
-    explicit InputManager(QObject* parent = nullptr);
+        explicit InputManager(QObject *parent = nullptr);
 
-    QString keyboardLayout() const {
-        return QGuiApplication::inputMethod()->locale().name(); // why its always returning US en here ??
-    }
+        void addDevice(IInputDevice *device);
+        void removeDevice(const QString &deviceName);
+        IInputDevice* getDevice(const QString &deviceName) const;
 
-public slots:
-    void onKeyPressed(Qt::Key, const QString &text) { emit keyChanged(text, true); }
-    void onKeyReleased(Qt::Key, const QString &text) { emit keyChanged(text, false); }
+        Q_INVOKABLE bool isButtonPressed(const QString &buttonName) const;
+        Q_INVOKABLE bool isButtonReleased(const QString &buttonName) const;
+        Q_INVOKABLE QStringList connectedDevices() const;
 
-signals:
-    void keyChanged(QString keyText, bool pressed);
+        signals:
+            void inputUpdated();
+        void buttonChanged(QString buttonName, bool pressed, QString deviceName);
 
-private:
-    KeyboardInputDevice* m_keyboard;
+    private slots:
+        void updateAll();
+
+    private:
+        QVector<IInputDevice*> m_devices;
+        QTimer m_updateTimer;
 };
