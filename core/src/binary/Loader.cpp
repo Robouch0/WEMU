@@ -87,7 +87,6 @@ void Core::Loader::loadSectionName()
     for (std::size_t i = 0; i < m_bin.header.e_shnum; i++) {
         auto &section = m_bin.sections[i];
         section.name = sectionNames + section.header.sh_name;
-        // std::cout << "section #" << i << "(" << section.name << ")" << std::endl;
     }
 }
 
@@ -133,9 +132,6 @@ void Core::Loader::loadSymbolName(const Section &symSection)
         auto &symbol = m_bin.symbols[i];
         if (symbol.header.st_name > 0 && symbol.header.st_name < symStr.data.size()) {
             symbol.name = symbolNames + symbol.header.st_name;
-            // std::cout << "symbol #" << i << "(" << symbol.name << ")" << std::endl;
-        } else {
-            // std::cout << "symbol #" << i << std::endl;
         }
     }
 }
