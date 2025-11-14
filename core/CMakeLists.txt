@@ -20,6 +20,7 @@ add_executable(core
         src/binary/Loader.hpp
         src/binary/Loader.cpp
         src/utils/BeDecoder.cpp
+        src/interpreter/interpreter.h
 )
 
 target_include_directories(core PUBLIC
