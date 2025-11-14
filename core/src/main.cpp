@@ -1,5 +1,11 @@
 /*
 ** EPITECH PROJECT, 2025
+** core
+** File description:
+** main
+*/
+/*
+** EPITECH PROJECT, 2025
 ** WemuEmulator
 ** File description:
 ** main
@@ -8,9 +14,12 @@
 #include <bitset>
 #include <iostream>
 #include <fstream>
+#include <map>
 
 #include "binary/Binary.hpp"
 #include "binary/Loader.hpp"
+#include "interpreter/Instruction.hpp"
+#include "interpreter/Interpreter.hpp"
 #include "utils/BeDecoder.hpp"
 
 void print_elf32_ehdr(const Elf32_Ehdr &ehdr)
@@ -39,15 +48,20 @@ void print_elf32_ehdr(const Elf32_Ehdr &ehdr)
 
 void print_section_content(Core::Binary &binary)
 {
+    // Core::Interpreter interpreter(binary);
     const Core::Section &textSection = binary.findSection(".text");
     auto instructionDecoder = Utils::BeDecoder(textSection.data);
 
     std::cout << "Content of section " << textSection.name << std::endl;
     for (Elf32_Off offset = 0; offset < textSection.header.sh_size; offset += 4) {
-        const auto instruction = instructionDecoder.extractSwap<uint32_t>();
+        const EncodedInstruction encodedInstruction(instructionDecoder.extractSwap<uint32_t>());
         std::cout << " "
             << std::hex << (offset + textSection.header.sh_addr) << std::dec << "\t"
-            << std::bitset<sizeof(uint32_t) * 8>(instruction) << std::endl;
+            << std::bitset<sizeof(uint32_t) * 8>(encodedInstruction.m_raw) << "\t";
+        // try {
+        //     std::cout << instructionIDToString(interpreter.findInstructionID(encodedInstruction));
+        // } catch (std::exception &) {}
+        std::cout << std::endl;
     }
 }
 
@@ -71,6 +85,8 @@ int main(const int ac, char const* const *av)
     Core::Binary binary = loader.getBinary();
     print_elf32_ehdr(binary.header);
     print_symbols(binary);
-    print_section_content(binary);
+
+    Core::Interpreter interpreter(binary);
+    interpreter.run();
     return SUCCESS_VALUE;
 }

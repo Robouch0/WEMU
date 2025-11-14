@@ -16,9 +16,11 @@
 
 #include "exception/Exception.hpp"
 
-namespace Utils {
+namespace Utils
+{
 
-    class BeDecoderException final : public Core::Exception {
+    class BeDecoderException final : public Core::Exception
+    {
         public:
         explicit BeDecoderException(const std::string &errorMessage) : Core::Exception("BeDecoderException", errorMessage) {}
         ~BeDecoderException() override = default;

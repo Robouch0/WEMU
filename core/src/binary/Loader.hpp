@@ -13,8 +13,10 @@
 
 #define SHF_DEFLATED 0x08000000
 
-namespace Core {
-    class LoaderException final : public Core::Exception {
+namespace Core
+{
+    class LoaderException final : public Core::Exception
+    {
         public:
         explicit LoaderException(const std::string &errorMessage) : Core::Exception("LoaderException", errorMessage) {}
         ~LoaderException() override = default;
