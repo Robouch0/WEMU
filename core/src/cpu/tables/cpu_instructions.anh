@@ -1,0 +1,12 @@
+// Operations
+INSTR(ADD, OPCD(31), XO9(266))
+//INSTR(ADDE, OPCD(31), XO9(138))
+//INSTR(ADDIS, OPCD(15))
+
+// Memory
+//INSTR(STW, OPCD(36))
+//INSTR(STWU, OPCD(37))
+
+// Branching
+//INSTR(B, OPCD(18))
+//INSTR(BC, OPCD(16))

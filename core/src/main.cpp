@@ -1,0 +1,99 @@
+/*
+** EPITECH PROJECT, 2025
+** core
+** File description:
+** main
+*/
+/*
+** EPITECH PROJECT, 2025
+** WemuEmulator
+** File description:
+** main
+*/
+
+#include <bitset>
+#include <iostream>
+#include <fstream>
+#include <map>
+
+#include "binary/Binary.hpp"
+#include "binary/Loader.hpp"
+#include "interpreter/Interpreter.hpp"
+#include "utils/BeDecoder.hpp"
+
+void print_elf32_ehdr(const Elf32_Ehdr &ehdr)
+{
+    dprintf(1, "ELF header:\n");
+    dprintf(1, "e_ident\t\t%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x\n",
+        ehdr.e_ident[0], ehdr.e_ident[1], ehdr.e_ident[2], ehdr.e_ident[3],
+        ehdr.e_ident[4], ehdr.e_ident[5], ehdr.e_ident[6], ehdr.e_ident[7],
+        ehdr.e_ident[8], ehdr.e_ident[9], ehdr.e_ident[10], ehdr.e_ident[11],
+        ehdr.e_ident[12], ehdr.e_ident[13], ehdr.e_ident[14], ehdr.e_ident[15]);
+    dprintf(1, "e_type\t\t0x%04x [%s]\n", ehdr.e_type, (ehdr.e_type == 0xFE01) ? "RPL" : "UNKNOWN");
+    dprintf(1, "e_machine\t0x%04x [%s]\n", ehdr.e_machine, (ehdr.e_machine == 0x0014) ? "PowerPC" : "UNKNOWN");
+    dprintf(1, "e_version\t0x%08x\n", ehdr.e_version);
+    dprintf(1, "e_entry\t\t0x%08x\n", ehdr.e_entry);
+    dprintf(1, "e_phoff\t\t0x%08x\n", ehdr.e_phoff);
+    dprintf(1, "e_shoff\t\t0x%08x\n", ehdr.e_shoff);
+    dprintf(1, "e_flags\t\t0x%08x\n", ehdr.e_flags);
+    dprintf(1, "e_ehsize\t0x%04x\n", ehdr.e_ehsize);
+    dprintf(1, "e_phentsize\t0x%04x\n", ehdr.e_phentsize);
+    dprintf(1, "e_phnum\t\t0x%04x\n", ehdr.e_phnum);
+    dprintf(1, "e_shentsize\t0x%04x\n", ehdr.e_shentsize);
+    dprintf(1, "e_shnum\t\t0x%04x\n", ehdr.e_shnum);
+    dprintf(1, "e_shstrndx\t0x%04x\n", ehdr.e_shstrndx);
+    dprintf(1, "\n");
+}
+
+void print_section_content(Core::Binary &binary)
+{
+    // Core::Interpreter interpreter(binary);
+    const Core::Section &textSection = binary.findSection(".text");
+    auto instructionDecoder = Utils::BeDecoder(textSection.data);
+
+    std::cout << "Content of section " << textSection.name << std::endl;
+    for (Elf32_Off offset = 0; offset < textSection.header.sh_size; offset += 4) {
+        const EncodedInstruction encodedInstruction(instructionDecoder.extractSwap<uint32_t>());
+        std::cout << " "
+            << std::hex << (offset + textSection.header.sh_addr) << std::dec << "\t"
+            << std::bitset<sizeof(uint32_t) * 8>(encodedInstruction.m_raw) << "\t";
+        // try {
+        //     std::cout << instructionIDToString(interpreter.findInstructionID(encodedInstruction));
+        // } catch (std::exception &) {}
+        std::cout << std::endl;
+    }
+}
+
+void print_symbols(Core::Binary &binary)
+{
+    std::cout << "Total of " << binary.symbols.size() << " symbols:" << std::endl;
+    for (const auto &symbol : binary.symbols) {
+        std::cout << symbol.name << " -> " << symbol.header.st_value << std::endl;
+    }
+    std::cout << std::endl;
+}
+
+int main(const int ac, char const* const *av)
+{
+    if (ac != 2) {
+        std::cerr << "Invalid arguments." << std::endl;
+        return ERROR_VALUE;
+    }
+    const Core::Loader loader(av[1]);
+
+    Core::Binary binary = loader.getBinary();
+    print_elf32_ehdr(binary.header);
+    print_symbols(binary);
+
+    Core::Interpreter interpreter(binary);
+    //
+    // interpreter.gp(0) = 8;
+    // interpreter.gp(1) = 4;
+    //
+    // Core::Instruction::ADD(&interpreter, EncodedInstruction(0b011111'00010'00000'00001'10000101000));
+    //
+    // std::cout << interpreter.gp(0) << " + " << interpreter.gp(1) << " = " << interpreter.gp(2) << std::endl;
+
+    interpreter.run();
+    return SUCCESS_VALUE;
+}

@@ -15,7 +15,6 @@ qt_add_executable(wemu_gui
 
 target_link_libraries(wemu_gui
         PRIVATE
-        core
         cpu_frontend
         gfx_frontend
         Qt6::Core

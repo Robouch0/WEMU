@@ -1,13 +1,36 @@
-add_library(core STATIC
-        src/coreDummy.cpp
+##
+## EPITECH PROJECT, 2025
+## WemuEmulator
+## File description:
+## CMakeLists
+##
+
+cmake_minimum_required(VERSION 3.28.1)
+
+set(CMAKE_CXX_STANDARD 23)
+
+find_package(ZLIB REQUIRED)
+
+add_executable(core
+        src/main.cpp
+        src/binary/Binary.hpp
+        src/utils/BeDecoder.hpp
+        src/exception/Exception.hpp
+        src/exception/Exception.cpp
+        src/binary/Loader.hpp
+        src/binary/Loader.cpp
+        src/utils/BeDecoder.cpp
+        src/interpreter/Interpreter.hpp
+        src/interpreter/Interpreter.cpp
+        src/cpu/instructions/Add.cpp
+        src/cpu/types/Field.hpp
+        src/cpu/types/Instruction.hpp
+        src/cpu/decoder/EncodedInstruction.hpp
 )
 
-target_link_libraries(core
-        PUBLIC cpu_frontend gfx_frontend
+target_include_directories(core PUBLIC
+        "${CMAKE_CURRENT_SOURCE_DIR}/src"
+        ${ZLIB_INCLUDE_DIRS}
 )
 
-target_include_directories(core
-        PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
-)
-
-target_compile_features(core PUBLIC cxx_std_20)
+target_link_libraries(core PRIVATE ${ZLIB_LIBRARIES})
