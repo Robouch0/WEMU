@@ -18,7 +18,7 @@
 
 #include "binary/Binary.hpp"
 #include "binary/Loader.hpp"
-#include "interpreter/Interpreter.hpp"
+#include "cpu/interpreter/Interpreter.hpp"
 #include "utils/BeDecoder.hpp"
 
 void print_elf32_ehdr(const Elf32_Ehdr &ehdr)
@@ -56,7 +56,7 @@ void print_section_content(Core::Binary &binary)
         const EncodedInstruction encodedInstruction(instructionDecoder.extractSwap<uint32_t>());
         std::cout << " "
             << std::hex << (offset + textSection.header.sh_addr) << std::dec << "\t"
-            << std::bitset<sizeof(uint32_t) * 8>(encodedInstruction.m_raw) << "\t";
+            << std::bitset<sizeof(uint32_t) * 8>(encodedInstruction.raw) << "\t";
         // try {
         //     std::cout << instructionIDToString(interpreter.findInstructionID(encodedInstruction));
         // } catch (std::exception &) {}
@@ -86,13 +86,18 @@ int main(const int ac, char const* const *av)
     print_symbols(binary);
 
     Core::Interpreter interpreter(binary);
+    // std::cout << std::bitset<sizeof(uint32_t) * 8>(interpreter.m_cr.raw) << std::endl;
+    // interpreter.m_cr.cr2 = 0b1111;
+    // std::cout << std::bitset<sizeof(uint32_t) * 8>(interpreter.m_cr.raw) << std::endl;
+
+
+    // interpreter.m_gpr[0] = 8;
+    // interpreter.m_gpr[1] = 4;
+    // interpreter.m_xer.ca = 1;
     //
-    // interpreter.gp(0) = 8;
-    // interpreter.gp(1) = 4;
+    // Core::Instruction::ADDE(interpreter, EncodedInstruction(0b011111'00010'00000'00001'10000101000));
     //
-    // Core::Instruction::ADD(&interpreter, EncodedInstruction(0b011111'00010'00000'00001'10000101000));
-    //
-    // std::cout << interpreter.gp(0) << " + " << interpreter.gp(1) << " = " << interpreter.gp(2) << std::endl;
+    // std::cout << interpreter.m_gpr[0] << " + " << interpreter.m_gpr[1] << " = " << interpreter.m_gpr[2] << std::endl;
 
     interpreter.run();
     return SUCCESS_VALUE;

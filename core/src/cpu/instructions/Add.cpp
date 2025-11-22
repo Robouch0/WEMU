@@ -7,7 +7,7 @@
 
 #include <iostream>
 
-#include "interpreter/Interpreter.hpp"
+#include "cpu/interpreter/Interpreter.hpp"
 
 #include "cpu/decoder/EncodedInstruction.hpp"
 
@@ -21,7 +21,7 @@ namespace Core::Instruction
      */
     void ADD(Core::Interpreter &cpu, const EncodedInstruction &instruction)
     {
-        cpu.gp(instruction.rt) = cpu.gp(instruction.ra) + cpu.gp(instruction.rb);
+        cpu.m_gpr[instruction.rt] = cpu.m_gpr[instruction.ra] + cpu.m_gpr[instruction.rb];
     }
 
     /**
@@ -31,6 +31,7 @@ namespace Core::Instruction
      */
     void ADDE(Core::Interpreter &cpu, const EncodedInstruction &instruction)
     {
+        cpu.m_gpr[instruction.rt] = cpu.m_gpr[instruction.ra] + cpu.m_gpr[instruction.rb] + cpu.m_xer.ca;
     }
 
     /**
@@ -40,5 +41,6 @@ namespace Core::Instruction
      */
     void ADDIS(Core::Interpreter &cpu, const EncodedInstruction &instruction)
     {
+        cpu.m_gpr[instruction.rt] = cpu.m_gpr[instruction.ra] + (instruction.si << 16);
     }
 }

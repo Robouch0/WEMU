@@ -20,8 +20,8 @@ add_executable(core
         src/binary/Loader.hpp
         src/binary/Loader.cpp
         src/utils/BeDecoder.cpp
-        src/interpreter/Interpreter.hpp
-        src/interpreter/Interpreter.cpp
+        src/cpu/interpreter/Interpreter.hpp
+        src/cpu/interpreter/Interpreter.cpp
         src/cpu/instructions/Add.cpp
         src/cpu/types/Field.hpp
         src/cpu/types/Instruction.hpp
