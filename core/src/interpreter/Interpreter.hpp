@@ -13,8 +13,8 @@
 #include <vector>
 
 #include "binary/Binary.hpp"
-#include "instructions/definitions/EncodedInstruction.hpp"
-#include "instructions/definitions/Instruction.hpp"
+#include "cpu/decoder/EncodedInstruction.hpp"
+#include "cpu/types/Instruction.hpp"
 
 namespace Core
 {

@@ -22,10 +22,10 @@ add_executable(core
         src/utils/BeDecoder.cpp
         src/interpreter/Interpreter.hpp
         src/interpreter/Interpreter.cpp
-        src/interpreter/instructions/operations/Add.cpp
-        src/interpreter/instructions/definitions/Field.hpp
-        src/interpreter/instructions/definitions/Instruction.hpp
-        src/interpreter/instructions/definitions/EncodedInstruction.hpp
+        src/cpu/instructions/Add.cpp
+        src/cpu/types/Field.hpp
+        src/cpu/types/Instruction.hpp
+        src/cpu/decoder/EncodedInstruction.hpp
 )
 
 target_include_directories(core PUBLIC

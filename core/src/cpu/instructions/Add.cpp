@@ -9,6 +9,8 @@
 
 #include "interpreter/Interpreter.hpp"
 
+#include "cpu/decoder/EncodedInstruction.hpp"
+
 namespace Core::Instruction
 {
 
