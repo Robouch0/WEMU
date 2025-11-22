@@ -12,8 +12,9 @@
 #include <map>
 #include <vector>
 
-#include "Instruction.hpp"
 #include "binary/Binary.hpp"
+#include "instructions/definitions/EncodedInstruction.hpp"
+#include "instructions/definitions/Instruction.hpp"
 
 namespace Core
 {
@@ -32,7 +33,12 @@ namespace Core
 
             void run();
 
-            InstructionID findInstructionID(const EncodedInstruction &encodedInstr);
+            InstructionID findInstructionID(const EncodedInstruction &instr);
+
+            void executeInstruction(const EncodedInstruction &instr);
+
+            std::uint32_t &gp(const std::uint32_t &idx) { return m_gpRegisters[idx]; }
+            [[nodiscard]] const std::uint32_t &gp(const std::uint32_t &idx) const { return m_gpRegisters[idx]; }
 
         private:
             void initInstructionMap();

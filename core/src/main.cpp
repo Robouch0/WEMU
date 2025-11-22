@@ -18,7 +18,6 @@
 
 #include "binary/Binary.hpp"
 #include "binary/Loader.hpp"
-#include "interpreter/Instruction.hpp"
 #include "interpreter/Interpreter.hpp"
 #include "utils/BeDecoder.hpp"
 
@@ -87,6 +86,14 @@ int main(const int ac, char const* const *av)
     print_symbols(binary);
 
     Core::Interpreter interpreter(binary);
+    //
+    // interpreter.gp(0) = 8;
+    // interpreter.gp(1) = 4;
+    //
+    // Core::Instruction::ADD(&interpreter, EncodedInstruction(0b011111'00010'00000'00001'10000101000));
+    //
+    // std::cout << interpreter.gp(0) << " + " << interpreter.gp(1) << " = " << interpreter.gp(2) << std::endl;
+
     interpreter.run();
     return SUCCESS_VALUE;
 }
