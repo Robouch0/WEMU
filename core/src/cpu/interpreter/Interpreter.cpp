@@ -12,7 +12,7 @@
 #include "Interpreter.hpp"
 #include "utils/BeDecoder.hpp"
 
-Core::Interpreter::Interpreter(Core::Binary binary) : m_binary(std::move(binary)), m_gpRegisters{{}}, m_fpRegisters{{}}
+Core::Interpreter::Interpreter(Core::Binary binary) : m_binary(std::move(binary)), m_gpr{{}}, m_fpr{{}}
 {
     initInstructionMap();
 }
@@ -27,7 +27,7 @@ void Core::Interpreter::run()
         const EncodedInstruction encodedInstruction(instructionDecoder.extractSwap<uint32_t>());
         std::cout << " "
             << std::hex << (offset + textSection.header.sh_addr) << std::dec << "\t"
-            << std::bitset<sizeof(uint32_t) * 8>(encodedInstruction.m_raw) << "\t";
+            << std::bitset<sizeof(uint32_t) * 8>(encodedInstruction.raw) << "\t";
         try {
             executeInstruction(encodedInstruction);
         } catch (Core::InterpreterException &e) {
@@ -60,7 +60,10 @@ InstructionID Core::Interpreter::findInstructionID(const EncodedInstruction &ins
 
 void Core::Interpreter::executeInstruction(const EncodedInstruction &instr)
 {
-    INSTRUCTIONARRAY[findInstructionID(instr)].function(*this, instr);
+    InstructionID id = findInstructionID(instr);
+
+    std::cout << instructionIDToString(id) << std::endl;
+    INSTRUCTIONARRAY[id].function(*this, instr);
 }
 
 void Core::Interpreter::initInstructionMap()

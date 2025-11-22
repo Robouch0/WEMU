@@ -12,6 +12,7 @@
 #include <map>
 #include <vector>
 
+#include "Registers.hpp"
 #include "binary/Binary.hpp"
 #include "cpu/decoder/EncodedInstruction.hpp"
 #include "cpu/types/Instruction.hpp"
@@ -37,15 +38,22 @@ namespace Core
 
             void executeInstruction(const EncodedInstruction &instr);
 
-            std::uint32_t &gp(const std::uint32_t &idx) { return m_gpRegisters[idx]; }
-            [[nodiscard]] const std::uint32_t &gp(const std::uint32_t &idx) const { return m_gpRegisters[idx]; }
-
         private:
             void initInstructionMap();
 
+            #define INSTR(name, ...) friend void Core::Instruction::name(Core::Interpreter&, const EncodedInstruction&);
+                #include "cpu/tables/cpu_instructions.anh"
+            #undef INSTR
+
             Core::Binary m_binary;
-            std::uint32_t m_gpRegisters[32];
-            std::float32_t m_fpRegisters[32];
+
+            ConditionRegister m_cr;
+            std::uint32_t m_lr;       // Link Register
+            std::uint32_t m_ctr;      // Counter Register
+            std::uint32_t m_gpr[32];  // General Purpose Registers
+            FixedPointExceptionRegister m_xer;
+            std::float32_t m_fpr[32]; // Fixed-Point Registers
+            FloatingPointStatusAndControlRegister m_fpscr;
             std::map<std::uint32_t, std::vector<InstructionInfo>> m_instructionMap;
     };
 }
