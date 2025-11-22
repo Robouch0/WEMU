@@ -40,7 +40,7 @@ public:
 		cleanup();
 	}
 
-	void run() const {
+	void run() {
 		mainLoop();
 	}
 
@@ -88,9 +88,16 @@ private:
 	void initWindow() {
 		glfwInit();
 		glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API); // don't create an useless OpenGL context
-		glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE); // for now can't resize the window
+		glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE); // for now can't resize the window
 
 		window = glfwCreateWindow(WIDTH, HEIGHT, "Vulkan", nullptr, nullptr);
+		glfwSetWindowUserPointer(window, this);
+		glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
+	}
+
+	static void framebufferResizeCallback(GLFWwindow* window, int width, int height) {
+		const auto app = static_cast<WemuEngineVulkan*>(glfwGetWindowUserPointer(window));
+		app->framebufferResized = true;
 	}
 
 	void initVulkan() {
@@ -99,7 +106,7 @@ private:
 		pickPhysicalDevice();
 		createLogicalDevice();
 		createSwapchain();
-		createImageView();
+		createImageViews();
 		createRenderPass();
 		createGraphicsPipeline();
 		createFramebuffers();
@@ -253,7 +260,7 @@ private:
 		colorBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE; // Optional
 		colorBlendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ZERO; // Optional
 		colorBlendAttachment.colorBlendOp = VK_BLEND_OP_ADD; // Optional
-		colorBlendAttachment.srcAlphaBlendFactor = VK_Buint32_t currentFrame = 0;LEND_FACTOR_ONE; // Optional
+		colorBlendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE; // Optional
 		colorBlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO; // Optional
 		colorBlendAttachment.alphaBlendOp = VK_BLEND_OP_ADD; // Optional
 
@@ -329,7 +336,7 @@ private:
 		}
 	}
 
-	void createImageView() {
+	void createImageViews() {
 		swapChainImageViews.resize(swapChainImages.size());
 
 		for (size_t i = 0; i < swapChainImages.size(); i++) {
@@ -656,7 +663,7 @@ private:
 		beginInfo.flags = 0; // Optional
 		beginInfo.pInheritanceInfo = nullptr; // Optional
 
-		if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) {
+		if (vkBeginCommandBuffer(commandBuffers[currentFrame], &beginInfo) != VK_SUCCESS) {
 			throw std::runtime_error("failed to begin recording command buffer!");
 		}
 
@@ -671,9 +678,9 @@ private:
 		renderPassInfo.clearValueCount = 1;
 		renderPassInfo.pClearValues = &clearColor;
 
-		vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE); // BEGIN RENDER PASS
+		vkCmdBeginRenderPass(commandBuffers[currentFrame], &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE); // BEGIN RENDER PASS
 
-		vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
+		vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
 
 		VkViewport viewport{};
 		viewport.x = 0.0f;
@@ -682,23 +689,23 @@ private:
 		viewport.height = static_cast<float>(swapChainExtent.height);
 		viewport.minDepth = 0.0f;
 		viewport.maxDepth = 1.0f;
-		vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+		vkCmdSetViewport(commandBuffers[currentFrame], 0, 1, &viewport);
 
 		VkRect2D scissor{};
 		scissor.offset = {0, 0};
 		scissor.extent = swapChainExtent;
-		vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+		vkCmdSetScissor(commandBuffers[currentFrame], 0, 1, &scissor);
 
-		vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+		vkCmdDraw(commandBuffers[currentFrame], 3, 1, 0, 0);
 
-		vkCmdEndRenderPass(commandBuffer); // END RENDER PASS
+		vkCmdEndRenderPass(commandBuffers[currentFrame]); // END RENDER PASS
 
-		if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
+		if (vkEndCommandBuffer(commandBuffers[currentFrame]) != VK_SUCCESS) {
 			throw std::runtime_error("failed to record command buffer!");
 		}
 	}
 
-	void mainLoop() const {
+	void mainLoop() {
 		while (!glfwWindowShouldClose(window)) {
 			glfwPollEvents();
 			drawFrame();
@@ -708,10 +715,19 @@ private:
 
 	void drawFrame() {
 		vkWaitForFences(logicalDevice, 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
-		vkResetFences(logicalDevice, 1, &inFlightFences[currentFrame]);
 
 		uint32_t imageIndex;
-		vkAcquireNextImageKHR(logicalDevice, swapChain, UINT64_MAX, imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
+
+		VkResult result = vkAcquireNextImageKHR(logicalDevice, swapChain, UINT64_MAX, imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
+
+		if (result == VK_ERROR_OUT_OF_DATE_KHR) {
+			recreateSwapChain();
+			return;
+		} if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
+			throw std::runtime_error("failed to acquire swap chain image!");
+		}
+
+		vkResetFences(logicalDevice, 1, &inFlightFences[currentFrame]);
 		vkResetCommandBuffer(commandBuffers[currentFrame], 0);
 		recordCommandBuffer(imageIndex);
 
@@ -745,28 +761,57 @@ private:
 		presentInfo.pSwapchains = swapChains;
 		presentInfo.pImageIndices = &imageIndex;
 		presentInfo.pResults = nullptr; // Optional
+		result = vkQueuePresentKHR(presentQueue, &presentInfo);
 
-		vkQueuePresentKHR(presentQueue, &presentInfo);
+		if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || framebufferResized) {
+			framebufferResized = false;
+			recreateSwapChain();
+		} else if (result != VK_SUCCESS) {
+			throw std::runtime_error("failed to present swap chain image!");
+		}
+
 		currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 	}
 
+	void recreateSwapChain() {
+		int width = 0, height = 0;
+		glfwGetFramebufferSize(window, &width, &height);
+		while (width == 0 || height == 0) {
+			glfwGetFramebufferSize(window, &width, &height);
+			glfwWaitEvents();
+		}
+
+		vkDeviceWaitIdle(logicalDevice);
+
+		cleanupSwapChain();
+
+		createSwapchain();
+		createImageViews();
+		createFramebuffers();
+	}
+
+	void cleanupSwapChain() const {
+		for (const auto framebuffer: swapChainFramebuffers) {
+			vkDestroyFramebuffer(logicalDevice, framebuffer, nullptr);
+		}
+		for (const auto imageView : swapChainImageViews) {
+			vkDestroyImageView(logicalDevice, imageView, nullptr);
+		}
+		vkDestroySwapchainKHR(logicalDevice, swapChain, nullptr);
+	}
+
 	void cleanup() const {
+		cleanupSwapChain();
+
 		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
 			vkDestroySemaphore(logicalDevice, imageAvailableSemaphores[i], nullptr);
 			vkDestroySemaphore(logicalDevice, renderFinishedSemaphores[i], nullptr);
 			vkDestroyFence(logicalDevice, inFlightFences[i], nullptr);
 		}
 		vkDestroyCommandPool(logicalDevice, commandPool, nullptr);
-		for (const auto framebuffer: swapChainFramebuffers) {
-			vkDestroyFramebuffer(logicalDevice, framebuffer, nullptr);
-		}
 		vkDestroyPipeline(logicalDevice, graphicsPipeline, nullptr);
 		vkDestroyPipelineLayout(logicalDevice, pipelineLayout, nullptr);
 		vkDestroyRenderPass(logicalDevice, renderPass, nullptr);
-		for (const auto imageView : swapChainImageViews) {
-			vkDestroyImageView(logicalDevice, imageView, nullptr);
-		}
-		vkDestroySwapchainKHR(logicalDevice, swapChain, nullptr);
 		vkDestroyDevice(logicalDevice, nullptr);
 		vkDestroySurfaceKHR(instance, surface, nullptr);
 		vkDestroyInstance(instance, nullptr);
@@ -796,6 +841,7 @@ private:
 	std::vector<VkSemaphore> renderFinishedSemaphores;
 	std::vector<VkFence> inFlightFences;
 	uint32_t currentFrame = 0;
+	bool framebufferResized = false;
 };
 
 #endif //WEMU_ENGINE_VULKAN_H
