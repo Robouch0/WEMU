@@ -6,10 +6,13 @@
 */
 
 #pragma once
+#include <bitset>
 #include <cstdint>
+#include <iostream>
 
 namespace Core
 {
+
 
     union FixedPointExceptionRegister
     {
@@ -28,6 +31,20 @@ namespace Core
     union ConditionRegister
     {
         std::uint32_t raw = 0;
+
+        static std::uint32_t update(const std::uint32_t &so, const std::int32_t &target)
+        {
+            std::bitset<4> crBits;
+
+            crBits[0] = target < 0; // LT
+            crBits[1] = target > 0; // GT
+            crBits[2] = target == 0; // EQ
+            crBits[3] = so; // SO
+
+            std::cout << "result -> " << crBits.to_ulong() << std::endl;
+
+            return crBits.to_ulong();
+        }
 
         struct
         {

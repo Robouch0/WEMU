@@ -21,4 +21,5 @@ union EncodedInstruction
     struct { std::uint32_t : 16; std::uint32_t ra : 5; std::uint32_t : 11; };
     struct { std::uint32_t : 11; std::uint32_t rb : 5; std::uint32_t : 16; };
     struct { std::uint32_t si : 16; std::uint32_t : 16; };
+    struct { std::uint32_t rc : 1; std::uint32_t : 31; };
 };

@@ -25,7 +25,7 @@ add_executable(core
         src/cpu/instructions/Add.cpp
         src/cpu/types/Field.hpp
         src/cpu/types/Instruction.hpp
-        src/cpu/decoder/EncodedInstruction.hpp
+        src/cpu/types/EncodedInstruction.hpp
 )
 
 target_include_directories(core PUBLIC

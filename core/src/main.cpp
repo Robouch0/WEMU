@@ -16,10 +16,11 @@
 #include <fstream>
 #include <map>
 
+#include "cpu/interpreter/Interpreter.hpp"
 #include "binary/Binary.hpp"
 #include "binary/Loader.hpp"
-#include "cpu/interpreter/Interpreter.hpp"
 #include "utils/BeDecoder.hpp"
+
 
 void print_elf32_ehdr(const Elf32_Ehdr &ehdr)
 {
@@ -45,25 +46,6 @@ void print_elf32_ehdr(const Elf32_Ehdr &ehdr)
     dprintf(1, "\n");
 }
 
-void print_section_content(Core::Binary &binary)
-{
-    // Core::Interpreter interpreter(binary);
-    const Core::Section &textSection = binary.findSection(".text");
-    auto instructionDecoder = Utils::BeDecoder(textSection.data);
-
-    std::cout << "Content of section " << textSection.name << std::endl;
-    for (Elf32_Off offset = 0; offset < textSection.header.sh_size; offset += 4) {
-        const EncodedInstruction encodedInstruction(instructionDecoder.extractSwap<uint32_t>());
-        std::cout << " "
-            << std::hex << (offset + textSection.header.sh_addr) << std::dec << "\t"
-            << std::bitset<sizeof(uint32_t) * 8>(encodedInstruction.raw) << "\t";
-        // try {
-        //     std::cout << instructionIDToString(interpreter.findInstructionID(encodedInstruction));
-        // } catch (std::exception &) {}
-        std::cout << std::endl;
-    }
-}
-
 void print_symbols(Core::Binary &binary)
 {
     std::cout << "Total of " << binary.symbols.size() << " symbols:" << std::endl;
@@ -86,18 +68,6 @@ int main(const int ac, char const* const *av)
     print_symbols(binary);
 
     Core::Interpreter interpreter(binary);
-    // std::cout << std::bitset<sizeof(uint32_t) * 8>(interpreter.m_cr.raw) << std::endl;
-    // interpreter.m_cr.cr2 = 0b1111;
-    // std::cout << std::bitset<sizeof(uint32_t) * 8>(interpreter.m_cr.raw) << std::endl;
-
-
-    // interpreter.m_gpr[0] = 8;
-    // interpreter.m_gpr[1] = 4;
-    // interpreter.m_xer.ca = 1;
-    //
-    // Core::Instruction::ADDE(interpreter, EncodedInstruction(0b011111'00010'00000'00001'10000101000));
-    //
-    // std::cout << interpreter.m_gpr[0] << " + " << interpreter.m_gpr[1] << " = " << interpreter.m_gpr[2] << std::endl;
 
     interpreter.run();
     return SUCCESS_VALUE;

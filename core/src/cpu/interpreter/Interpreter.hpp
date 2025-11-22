@@ -14,7 +14,7 @@
 
 #include "Registers.hpp"
 #include "binary/Binary.hpp"
-#include "cpu/decoder/EncodedInstruction.hpp"
+#include "cpu/types/EncodedInstruction.hpp"
 #include "cpu/types/Instruction.hpp"
 
 namespace Core
@@ -47,13 +47,14 @@ namespace Core
 
             Core::Binary m_binary;
 
-            ConditionRegister m_cr;
-            std::uint32_t m_lr;       // Link Register
-            std::uint32_t m_ctr;      // Counter Register
-            std::uint32_t m_gpr[32];  // General Purpose Registers
-            FixedPointExceptionRegister m_xer;
-            std::float32_t m_fpr[32]; // Fixed-Point Registers
-            FloatingPointStatusAndControlRegister m_fpscr;
+            Core::ConditionRegister m_cr;
+            std::uint32_t m_lr;                                             // Link Register
+            std::uint32_t m_ctr;                                            // Counter Register
+            union { std::uint32_t m_gpr[32]; std::int32_t m_gprSigned[32]; };   // General Purpose Registers (unsigned/signed)
+            Core::FixedPointExceptionRegister m_xer;
+            std::float32_t m_fpr[32];                                       // Fixed-Point Registers
+            Core::FloatingPointStatusAndControlRegister m_fpscr;
+
             std::map<std::uint32_t, std::vector<InstructionInfo>> m_instructionMap;
     };
 }
