@@ -41,8 +41,6 @@ namespace Core
             crBits[2] = target == 0; // EQ
             crBits[3] = so; // SO
 
-            std::cout << "result -> " << crBits.to_ulong() << std::endl;
-
             return crBits.to_ulong();
         }
 
