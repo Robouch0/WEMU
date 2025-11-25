@@ -150,9 +150,127 @@ TEST(InstructionTest, ADDIS_SignExtended)
     inst.rt = 4;
     inst.ra = 3;
 
-    inst.si = static_cast<int32_t>(0xFFFF);
+    inst.si = 0xFFFF;
 
     Core::Instruction::ADDIS(cpu, inst);
 
-    EXPECT_EQ(cpu.m_gpr[4], 0xFFFF);
+    EXPECT_EQ(cpu.m_gpr[4], -65536);
+}
+
+//
+// ────────────────────────────────────────────────
+//  ADDC TESTS
+// ────────────────────────────────────────────────
+//
+
+TEST(InstructionTest, ADDC_NoCarry)
+{
+    auto cpu = makeCPU();
+
+    cpu.m_gpr[3] = 10;
+    cpu.m_gpr[4] = 20;
+
+    EncodedInstruction inst(0);
+    inst.rt = 5;
+    inst.ra = 3;
+    inst.rb = 4;
+    inst.oe = 0;
+    inst.rc = 0;
+
+    Core::Instruction::ADDC(cpu, inst);
+
+    EXPECT_EQ(cpu.m_gpr[5], 30);
+    EXPECT_EQ(cpu.m_xer.ca, 0);
+}
+
+TEST(InstructionTest, ADDC_WithCarry)
+{
+    auto cpu = makeCPU();
+
+    cpu.m_gpr[3] = 0xFFFFFFFFu;
+    cpu.m_gpr[4] = 1;
+
+    EncodedInstruction inst(0);
+    inst.rt = 6;
+    inst.ra = 3;
+    inst.rb = 4;
+    inst.oe = 0;
+    inst.rc = 0;
+
+    Core::Instruction::ADDC(cpu, inst);
+
+    EXPECT_EQ(cpu.m_gpr[6], 0);
+    EXPECT_EQ(cpu.m_xer.ca, 1);
+}
+
+//
+// ────────────────────────────────────────────────
+//  ADDCO TESTS
+// ────────────────────────────────────────────────
+//
+
+TEST(InstructionTest, ADDCO_OverflowSetsSOandOV)
+{
+    auto cpu = makeCPU();
+
+    cpu.m_gpr[3] = 0x7FFFFFFF;
+    cpu.m_gpr[4] = 1;
+
+    EncodedInstruction inst(0);
+    inst.rt = 5;
+    inst.ra = 3;
+    inst.rb = 4;
+    inst.oe = 1;
+    inst.rc = 0;
+
+    Core::Instruction::ADDCO(cpu, inst);
+
+    EXPECT_EQ(cpu.m_gpr[5], 0x80000000u);
+    EXPECT_EQ(cpu.m_xer.ov, 1);
+    EXPECT_EQ(cpu.m_xer.so, 1);
+}
+
+TEST(InstructionTest, ADDCO_UpdateCR)
+{
+    auto cpu = makeCPU();
+
+    cpu.m_gpr[3] = 10;
+    cpu.m_gpr[4] = -20;
+
+    EncodedInstruction inst(0);
+    inst.rt = 8;
+    inst.ra = 3;
+    inst.rb = 4;
+    inst.oe = 0;
+    inst.rc = 1;
+
+    Core::Instruction::ADDCO(cpu, inst);
+
+    int32_t result = cpu.m_gprSigned[8];
+
+    EXPECT_EQ(result, -10);
+
+    EXPECT_EQ(cpu.m_cr.cr0.lt, 1);
+    EXPECT_EQ(cpu.m_cr.cr0.gt, 0);
+    EXPECT_EQ(cpu.m_cr.cr0.eq, 0);
+}
+
+TEST(InstructionTest, ADDCO_CarryOut)
+{
+    auto cpu = makeCPU();
+
+    cpu.m_gpr[3] = 0xFFFFFFFFu;
+    cpu.m_gpr[4] = 2;
+
+    EncodedInstruction inst(0);
+    inst.rt = 7;
+    inst.ra = 3;
+    inst.rb = 4;
+    inst.oe = 1;
+    inst.rc = 0;
+
+    Core::Instruction::ADDCO(cpu, inst);
+
+    EXPECT_EQ(cpu.m_gpr[7], 1);
+    EXPECT_EQ(cpu.m_xer.ca, 1);
 }

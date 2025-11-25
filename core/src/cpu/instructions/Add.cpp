@@ -46,4 +46,16 @@ namespace Core::Instruction
     {
         cpu.m_gpr[instruction.rt] = cpu.m_gpr[instruction.ra] + (instruction.si << 16);
     }
+
+    void ADDC(Interpreter &cpu, const EncodedInstruction &instruction){}
+    void ADDI(Interpreter &cpu, const EncodedInstruction &instruction){}
+    void ADDIC(Interpreter &cpu, const EncodedInstruction &instruction){}
+    void ADDCO(Interpreter &cpu, const EncodedInstruction &instruction){}
+    void ADDO(Interpreter &cpu, const EncodedInstruction &instruction){}
+    void ADDEO(Interpreter &cpu, const EncodedInstruction &instruction){}
+    void ADDME(Interpreter &cpu, const EncodedInstruction &instruction){}
+    void ADDMEO(Interpreter &cpu, const EncodedInstruction &instruction){}
+    void ADDZEO(Interpreter &cpu, const EncodedInstruction &instruction){}
+    void ADDZE(Interpreter &cpu, const EncodedInstruction &instruction){}
+    void ADDM(Interpreter &cpu, const EncodedInstruction &instruction){}
 }
