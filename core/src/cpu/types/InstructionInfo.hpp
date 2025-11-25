@@ -7,7 +7,7 @@
 
 #pragma once
 
-#include "cpu/decoder/EncodedInstruction.hpp"
+#include "EncodedInstruction.hpp"
 
 namespace Core {
     class Interpreter;
