@@ -18,10 +18,10 @@ namespace Core::Instruction
      */
     void ADD(Core::Interpreter &cpu, const EncodedInstruction &instruction)
     {
-        cpu.m_gpr[instruction.rt] = cpu.m_gpr[instruction.ra] + cpu.m_gpr[instruction.rb] + cpu.m_xer.ca;
+        cpu.m_gpr[instruction.rt] = cpu.m_gpr[instruction.ra] + cpu.m_gpr[instruction.rb];
 
         if (instruction.rc)
-            cpu.m_cr.cr0 = ConditionRegister::update(cpu.m_xer.so, cpu.m_gprSigned[instruction.rt]);
+            cpu.m_cr.cr0.raw = ConditionRegister::update(cpu.m_xer.so, cpu.m_gprSigned[instruction.rt]);
     }
 
     /**
@@ -34,7 +34,7 @@ namespace Core::Instruction
         cpu.m_gpr[instruction.rt] = cpu.m_gpr[instruction.ra] + cpu.m_gpr[instruction.rb] + cpu.m_xer.ca;
 
         if (instruction.rc)
-            cpu.m_cr.cr0 = ConditionRegister::update(cpu.m_xer.so, cpu.m_gprSigned[instruction.rt]);
+            cpu.m_cr.cr0.raw = ConditionRegister::update(cpu.m_xer.so, cpu.m_gprSigned[instruction.rt]);
     }
 
     /**

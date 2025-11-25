@@ -13,7 +13,6 @@
 namespace Core
 {
 
-
     union FixedPointExceptionRegister
     {
         std::uint32_t raw = 0;
@@ -44,16 +43,22 @@ namespace Core
             return crBits.to_ulong();
         }
 
+        union Register {
+            std::uint32_t raw : 4;
+
+            struct { std::uint32_t lt : 1; std::uint32_t gt : 1; std::uint32_t eq : 1; std::uint32_t so : 1; };
+        };
+
         struct
         {
-            std::uint32_t cr0 : 4;
-            std::uint32_t cr1 : 4;
-            std::uint32_t cr2 : 4;
-            std::uint32_t cr3 : 4;
-            std::uint32_t cr4 : 4;
-            std::uint32_t cr5 : 4;
-            std::uint32_t cr6 : 4;
-            std::uint32_t cr7 : 4;
+            ConditionRegister::Register cr0;
+            ConditionRegister::Register cr1;
+            ConditionRegister::Register cr2;
+            ConditionRegister::Register cr3;
+            ConditionRegister::Register cr4;
+            ConditionRegister::Register cr5;
+            ConditionRegister::Register cr6;
+            ConditionRegister::Register cr7;
         };
     };
 
