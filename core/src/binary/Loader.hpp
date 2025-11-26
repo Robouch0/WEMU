@@ -8,22 +8,21 @@
 #pragma once
 
 #include "Binary.hpp"
-#include "utils/BeDecoder.hpp"
 #include "Loader.hpp"
+#include "utils/BeDecoder.hpp"
 
 #define SHF_DEFLATED 0x08000000
 
-namespace Core
-{
-    class LoaderException final : public Core::Exception
-    {
+namespace Core {
+    class LoaderException final : public Core::Exception {
         public:
-        explicit LoaderException(const std::string &errorMessage) : Core::Exception("LoaderException", errorMessage) {}
-        ~LoaderException() override = default;
+            explicit LoaderException(const std::string &errorMessage) : Core::Exception(
+                "LoaderException", errorMessage) {}
+
+            ~LoaderException() override = default;
     };
 
-    class Loader
-    {
+    class Loader {
         public:
             explicit Loader(const std::string &filepath);
 
@@ -45,4 +44,4 @@ namespace Core
             Binary m_bin;
             Utils::BeDecoder m_beDecoder;
     };
-}
+} // namespace Core

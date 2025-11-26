@@ -15,11 +15,11 @@
 #define SUCCESS_VALUE 0
 
 namespace Core {
-
-    class Exception : public std::exception
-    {
+    class Exception : public std::exception {
         public:
-            Exception(std::string errorType, std::string errorMessage) : m_errorType(std::move(errorType)), m_errorMessage(std::move(errorMessage)) {}
+            Exception(std::string errorType, std::string errorMessage) : m_errorType(std::move(errorType)),
+                                                                         m_errorMessage(std::move(errorMessage)) {}
+
             ~Exception() override = 0;
 
             [[nodiscard]] char const *what() const noexcept override
@@ -33,4 +33,4 @@ namespace Core {
             std::string m_errorMessage;
             mutable std::string m_formatedMessage;
     };
-}
+} // namespace Core

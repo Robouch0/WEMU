@@ -17,7 +17,7 @@ Core::Loader::Loader(const std::string &filepath) : m_bin({}), m_beDecoder(filep
 
 void Core::Loader::loadHeader()
 {
-    for (unsigned char &i : m_bin.header.e_ident)
+    for (unsigned char &i: m_bin.header.e_ident)
         i = m_beDecoder.extract<unsigned char>();
     m_bin.header.e_type = m_beDecoder.extractSwap<Elf32_Half>();
     m_bin.header.e_machine = m_beDecoder.extractSwap<Elf32_Half>();
