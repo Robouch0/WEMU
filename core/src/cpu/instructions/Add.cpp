@@ -57,4 +57,5 @@ namespace Core::Instruction {
     void ADDZEO(Interpreter &cpu, const EncodedInstruction &instr) {}
     void ADDZE(Interpreter &cpu, const EncodedInstruction &instr) {}
     void ADDM(Interpreter &cpu, const EncodedInstruction &instr) {}
+
 } // namespace Core::Instruction

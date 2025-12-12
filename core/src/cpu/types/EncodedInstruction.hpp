@@ -19,6 +19,12 @@ union EncodedInstruction {
     };
 
     struct {
+        std::uint32_t : 2;
+        std::uint32_t bd : 14;
+        std::uint32_t : 16;
+    };
+
+    struct {
         std::uint32_t : 1;
         std::uint32_t xo10: 10;
         std::uint32_t : 21;

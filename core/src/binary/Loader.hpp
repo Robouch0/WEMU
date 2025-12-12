@@ -36,12 +36,19 @@ namespace Core {
             void loadSectionData(Section &section);
             void loadAndDecompressSectionData(Section &section);
             void loadSectionName();
+            void loadSectionInfos();
 
             void loadSymbols();
             void loadSymbolHeader(const Section &symSection, std::size_t symAmount);
             void loadSymbolName(const Section &symSection);
 
+            void writeFunctionThunk(Core::Symbol &symbol, Core::Section &section);
+
             Binary m_bin;
             Utils::BeDecoder m_beDecoder;
+
+        public:
+            std::pair<std::uint32_t, std::uint32_t> codeAddressRange;
+            std::pair<std::uint32_t, std::uint32_t> dataAddressRange;
     };
 } // namespace Core

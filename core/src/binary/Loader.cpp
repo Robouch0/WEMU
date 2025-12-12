@@ -6,7 +6,19 @@
 */
 
 #include "Loader.hpp"
+
+#include <bitset>
+#include <cassert>
+#include <cpu/types/InstructionID.hpp>
+
 #include "zlib.h"
+#include "elf.h"
+#include "cpu/types/EncodedInstruction.hpp"
+#include "cpu/types/Instruction.hpp"
+
+namespace Core {
+    class InterpreterException;
+}
 
 Core::Loader::Loader(const std::string &filepath) : m_bin({}), m_beDecoder(filepath)
 {
@@ -90,6 +102,60 @@ void Core::Loader::loadSectionName()
     }
 }
 
+void Core::Loader::loadSectionInfos()
+{
+    // load classic program sections infos
+    for (std::size_t i = 0; i < m_bin.header.e_shnum; i++) {
+        auto &section = m_bin.sections[i];
+        if (section.header.sh_type != SHT_PROGBITS && section.header.sh_type != SHT_NOBITS) {
+            continue;
+        }
+        section.address = section.header.sh_addr;
+        section.size = section.data.size();
+        if (section.header.sh_type == SHT_NOBITS) {
+            section.size = section.header.sh_size;
+        }
+        const auto start = section.address;
+        const auto end = section.address + section.size;
+        if (section.header.sh_flags & SHF_EXECINSTR) {
+            if (codeAddressRange.first == 0 || start < codeAddressRange.first) {
+                codeAddressRange.first = start;
+            }
+            if (codeAddressRange.second == 0 || end > codeAddressRange.second) {
+                codeAddressRange.second = end;
+            }
+        } else {
+            if (dataAddressRange.first == 0 || start < dataAddressRange.first) {
+                dataAddressRange.first = start;
+            }
+            if (dataAddressRange.second == 0 || end > dataAddressRange.second) {
+                dataAddressRange.second = end;
+            }
+        }
+    }
+
+    // load rpl imports sections
+    for (std::size_t i = 0; i < m_bin.header.e_shnum; i++) {
+        auto &section = m_bin.sections[i];
+        if (section.header.sh_type != SHT_RPL_IMPORTS) {
+            continue;
+        }
+        section.size = section.data.size();
+        if (section.header.sh_type == SHT_NOBITS) {
+            section.size = section.header.sh_size;
+        }
+        section.address = section.header.sh_addr;
+        assert(section.header.sh_addr & 0xC0000000);
+        if (section.header.sh_flags & SHF_EXECINSTR) {
+            // section.address = (codeAddressRange.second + section.header.sh_addralign) & ~section.header.sh_addralign;
+            codeAddressRange.second = section.address + section.size;
+        } else {
+            // section.address = (dataAddressRange.second + section.header.sh_addralign) & ~section.header.sh_addralign;
+            dataAddressRange.second = section.address + section.size;
+        }
+    }
+}
+
 void Core::Loader::loadSections()
 {
     m_bin.sections.resize(m_bin.header.e_shnum);
@@ -105,6 +171,7 @@ void Core::Loader::loadSections()
         }
     }
     loadSectionName();
+    loadSectionInfos();
 }
 
 void Core::Loader::loadSymbolHeader(const Section &symSection, const std::size_t symAmount)
@@ -119,6 +186,7 @@ void Core::Loader::loadSymbolHeader(const Section &symSection, const std::size_t
         symbol.header.st_info = symDecoder.extractSwap<unsigned char>();
         symbol.header.st_other = symDecoder.extractSwap<unsigned char>();
         symbol.header.st_shndx = symDecoder.extractSwap<Elf32_Section>();
+        symbol.index = i;
     }
 }
 
@@ -136,6 +204,25 @@ void Core::Loader::loadSymbolName(const Section &symSection)
     }
 }
 
+void Core::Loader::writeFunctionThunk(Core::Symbol &symbol, Core::Section &section)
+{
+    EncodedInstruction sc(0);
+    sc.opcd = INSTRUCTIONARRAY[InstructionID::E_SC].matchFields[0].second;
+    sc.bd = symbol.index;
+
+    std::vector<char> scData;
+
+    scData.resize(32);
+    char *tmp = scData.data();
+    std::memcpy(tmp, &sc.raw, sizeof(EncodedInstruction));
+
+    Utils::BeDecoder scBE(scData);
+    const std::uint32_t offset = symbol.address - section.address;
+    char *sectionData = section.data.data();
+    const auto scEndiannessSwapped = scBE.extractSwap<std::uint32_t>();
+    std::memcpy(sectionData + offset, &scEndiannessSwapped, sizeof(EncodedInstruction));
+}
+
 void Core::Loader::loadSymbols()
 {
     const auto &symSection = m_bin.findSection(".symtab");
@@ -144,4 +231,21 @@ void Core::Loader::loadSymbols()
     m_bin.symbols.resize(symAmount);
     loadSymbolHeader(symSection, symAmount);
     loadSymbolName(symSection);
+
+    for (auto &symbol : m_bin.symbols) {
+        if (symbol.header.st_shndx >= m_bin.sections.size()) {
+            continue;
+        }
+        auto &section = m_bin.sections[symbol.header.st_shndx];
+        std::size_t offset = symbol.header.st_value - section.header.sh_addr;
+        std::size_t virtAddress = section.address + offset;
+
+        symbol.address = virtAddress;
+
+        if (symbol.address) {
+            auto type = symbol.header.st_info & 0xF;
+            if (type == STT_FUNC)
+                writeFunctionThunk(symbol, section);
+        }
+    }
 }
