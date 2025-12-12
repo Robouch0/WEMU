@@ -7,9 +7,8 @@
 
 #pragma once
 
-enum InstructionID
-{
-#define INSTR(name, ...) E_##name,
+enum InstructionID {
+    #define INSTR(name, ...) E_##name,
     #include "cpu/tables/cpu_instructions.anh"
-#undef INSTR
+    #undef INSTR
 };

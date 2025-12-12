@@ -12,24 +12,23 @@
 */
 
 #include <bitset>
-#include <iostream>
 #include <fstream>
+#include <iostream>
 #include <map>
 
-#include "cpu/interpreter/Interpreter.hpp"
 #include "binary/Binary.hpp"
 #include "binary/Loader.hpp"
+#include "cpu/interpreter/Interpreter.hpp"
 #include "utils/BeDecoder.hpp"
 
 
 void print_elf32_ehdr(const Elf32_Ehdr &ehdr)
 {
     dprintf(1, "ELF header:\n");
-    dprintf(1, "e_ident\t\t%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x\n",
-        ehdr.e_ident[0], ehdr.e_ident[1], ehdr.e_ident[2], ehdr.e_ident[3],
-        ehdr.e_ident[4], ehdr.e_ident[5], ehdr.e_ident[6], ehdr.e_ident[7],
-        ehdr.e_ident[8], ehdr.e_ident[9], ehdr.e_ident[10], ehdr.e_ident[11],
-        ehdr.e_ident[12], ehdr.e_ident[13], ehdr.e_ident[14], ehdr.e_ident[15]);
+    dprintf(1, "e_ident\t\t%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x\n", ehdr.e_ident[0],
+            ehdr.e_ident[1], ehdr.e_ident[2], ehdr.e_ident[3], ehdr.e_ident[4], ehdr.e_ident[5], ehdr.e_ident[6],
+            ehdr.e_ident[7], ehdr.e_ident[8], ehdr.e_ident[9], ehdr.e_ident[10], ehdr.e_ident[11], ehdr.e_ident[12],
+            ehdr.e_ident[13], ehdr.e_ident[14], ehdr.e_ident[15]);
     dprintf(1, "e_type\t\t0x%04x [%s]\n", ehdr.e_type, (ehdr.e_type == 0xFE01) ? "RPL" : "UNKNOWN");
     dprintf(1, "e_machine\t0x%04x [%s]\n", ehdr.e_machine, (ehdr.e_machine == 0x0014) ? "PowerPC" : "UNKNOWN");
     dprintf(1, "e_version\t0x%08x\n", ehdr.e_version);
@@ -49,13 +48,13 @@ void print_elf32_ehdr(const Elf32_Ehdr &ehdr)
 void print_symbols(Core::Binary &binary)
 {
     std::cout << "Total of " << binary.symbols.size() << " symbols:" << std::endl;
-    for (const auto &symbol : binary.symbols) {
+    for (const auto &symbol: binary.symbols) {
         std::cout << symbol.name << " -> " << symbol.header.st_value << std::endl;
     }
     std::cout << std::endl;
 }
 
-int main(const int ac, char const* const *av)
+int main(const int ac, char const *const *av)
 {
     if (ac != 2) {
         std::cerr << "Invalid arguments." << std::endl;

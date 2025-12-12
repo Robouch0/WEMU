@@ -13,34 +13,30 @@
 #include "elf.h"
 #include "exception/Exception.hpp"
 
-namespace Core
-{
-
-    class BinaryException final : public Core::Exception
-    {
+namespace Core {
+    class BinaryException final : public Core::Exception {
         public:
-        explicit BinaryException(const std::string &errorMessage) : Core::Exception("BinaryException", errorMessage) {}
-        ~BinaryException() override = default;
+            explicit BinaryException(const std::string &errorMessage) : Core::Exception(
+                "BinaryException", errorMessage) {}
+
+            ~BinaryException() override = default;
     };
 
-    struct Section
-    {
+    struct Section {
         std::string name;
         Elf32_Shdr header;
         std::vector<char> data;
     };
 
-    struct Symbol
-    {
+    struct Symbol {
         std::string name;
         Elf32_Sym header;
     };
 
-    struct Binary
-    {
+    struct Binary {
         Section &findSection(const std::string &name)
         {
-            for (auto &section : sections) {
+            for (auto &section: sections) {
                 if (section.name == name) {
                     return section;
                 }
@@ -52,4 +48,4 @@ namespace Core
         std::vector<Section> sections;
         std::vector<Symbol> symbols;
     };
-}
+} // namespace Core

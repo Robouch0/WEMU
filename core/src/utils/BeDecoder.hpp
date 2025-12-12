@@ -7,30 +7,30 @@
 
 #pragma once
 
-#include <string_view>
-#include <vector>
 #include <bit>
+#include <cstring>
 #include <fstream>
 #include <iostream>
-#include <cstring>
+#include <string_view>
+#include <vector>
 
 #include "exception/Exception.hpp"
 
-namespace Utils
-{
-
-    class BeDecoderException final : public Core::Exception
-    {
+namespace Utils {
+    class BeDecoderException final : public Core::Exception {
         public:
-        explicit BeDecoderException(const std::string &errorMessage) : Core::Exception("BeDecoderException", errorMessage) {}
-        ~BeDecoderException() override = default;
+            explicit BeDecoderException(const std::string &errorMessage) : Core::Exception(
+                "BeDecoderException", errorMessage) {}
+
+            ~BeDecoderException() override = default;
     };
 
-    class BeDecoder
-    {
+    class BeDecoder {
         public:
             BeDecoder() : m_offset(0) {}
+
             explicit BeDecoder(std::vector<char> buffer);
+
             explicit BeDecoder(const std::string &filepath);
 
             template<typename T>
@@ -51,7 +51,7 @@ namespace Utils
             template<typename Type>
             const Type *extract(std::size_t count)
             {
-                auto ptr = reinterpret_cast<const Type*>(m_buffer.data() + m_offset);
+                auto ptr = reinterpret_cast<const Type *>(m_buffer.data() + m_offset);
                 m_offset += sizeof(Type) * count;
                 return ptr;
             }
@@ -72,4 +72,4 @@ namespace Utils
             std::string_view m_view;
             std::size_t m_offset;
     };
-}
+} // namespace Utils
