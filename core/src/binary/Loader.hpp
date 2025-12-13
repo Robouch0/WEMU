@@ -37,8 +37,8 @@ namespace Core {
             void updateSectionsAddress();
 
             void loadSectionHeader(Section &section);
-            void loadAndDecompressSectionData(Section &section);
             void loadSectionData(Section &section);
+            void loadAndDecompressSectionData(Section &section);
 
             void updateAddressRangeProgram(const Section &section, std::size_t start, unsigned long end);
             void updatAddressRangeImports(std::vector<Core::Section>::value_type &section, unsigned long end);
