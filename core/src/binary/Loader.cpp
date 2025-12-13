@@ -102,61 +102,51 @@ void Core::Loader::loadSectionName()
     }
 }
 
-void Core::Loader::loadSectionInfos()
+void Core::Loader::updateAddressRangeProgram(const Section &section, const std::size_t start, const unsigned long end)
 {
-    // load classic program sections infos
-    for (std::size_t i = 0; i < m_bin.header.e_shnum; i++) {
-        auto &section = m_bin.sections[i];
-        if (section.header.sh_type != SHT_PROGBITS && section.header.sh_type != SHT_NOBITS) {
-            continue;
-        }
-        section.address = section.header.sh_addr;
-        section.size = section.data.size();
-        if (section.header.sh_type == SHT_NOBITS) {
-            section.size = section.header.sh_size;
-        }
-        const auto start = section.address;
-        const auto end = section.address + section.size;
-        if (section.header.sh_flags & SHF_EXECINSTR) {
-            if (codeAddressRange.first == 0 || start < codeAddressRange.first) {
-                codeAddressRange.first = start;
-            }
-            if (codeAddressRange.second == 0 || end > codeAddressRange.second) {
-                codeAddressRange.second = end;
-            }
-        } else {
-            if (dataAddressRange.first == 0 || start < dataAddressRange.first) {
-                dataAddressRange.first = start;
-            }
-            if (dataAddressRange.second == 0 || end > dataAddressRange.second) {
-                dataAddressRange.second = end;
-            }
-        }
-    }
-
-    // load rpl imports sections
-    for (std::size_t i = 0; i < m_bin.header.e_shnum; i++) {
-        auto &section = m_bin.sections[i];
-        if (section.header.sh_type != SHT_RPL_IMPORTS) {
-            continue;
-        }
-        section.size = section.data.size();
-        if (section.header.sh_type == SHT_NOBITS) {
-            section.size = section.header.sh_size;
-        }
-        section.address = section.header.sh_addr;
-        assert(section.header.sh_addr & 0xC0000000);
-        if (section.header.sh_flags & SHF_EXECINSTR) {
-            // section.address = (codeAddressRange.second + section.header.sh_addralign) & ~section.header.sh_addralign;
-            codeAddressRange.second = section.address + section.size;
-        } else {
-            // section.address = (dataAddressRange.second + section.header.sh_addralign) & ~section.header.sh_addralign;
-            dataAddressRange.second = section.address + section.size;
-        }
+    if (section.header.sh_flags & SHF_EXECINSTR) {
+        if (codeAddressRange.first == 0 || start < codeAddressRange.first)
+            codeAddressRange.first = start;
+        if (codeAddressRange.second == 0 || end > codeAddressRange.second)
+            codeAddressRange.second = end;
+    } else {
+        if (dataAddressRange.first == 0 || start < dataAddressRange.first)
+            dataAddressRange.first = start;
+        if (dataAddressRange.second == 0 || end > dataAddressRange.second)
+            dataAddressRange.second = end;
     }
 }
 
-void Core::Loader::loadSections()
+void Core::Loader::updatAddressRangeImports(Core::Section &section, const unsigned long end)
+{
+    if (section.header.sh_flags & SHF_EXECINSTR) {
+        // section.address = (codeAddressRange.second + section.header.sh_addralign) & ~section.header.sh_addralign;
+        codeAddressRange.second = end;
+    } else {
+        // section.address = (dataAddressRange.second + section.header.sh_addralign) & ~section.header.sh_addralign;
+        dataAddressRange.second = end;
+    }
+}
+
+void Core::Loader::loadSectionInfos()
+{
+    for (std::size_t i = 0; i < m_bin.header.e_shnum; i++) {
+        auto &section = m_bin.sections[i];
+        section.address = section.header.sh_addr;
+        section.size = section.data.size();
+        const auto start = section.address;
+        const auto end = section.address + section.size;
+
+        if (section.header.sh_type == SHT_NOBITS)
+            section.size = section.header.sh_size;
+        if (!(section.header.sh_type != SHT_PROGBITS && section.header.sh_type != SHT_NOBITS))
+            updateAddressRangeProgram(section, start, end);
+        if (section.header.sh_type == SHT_RPL_IMPORTS)
+            updatAddressRangeImports(section, end);
+    }
+}
+
+void Core::Loader::initSectionData()
 {
     m_bin.sections.resize(m_bin.header.e_shnum);
     for (size_t i = 0; i < m_bin.header.e_shnum; i++) {
@@ -170,6 +160,11 @@ void Core::Loader::loadSections()
             loadSectionData(section);
         }
     }
+}
+
+void Core::Loader::loadSections()
+{
+    initSectionData();
     loadSectionName();
     loadSectionInfos();
 }
@@ -206,21 +201,14 @@ void Core::Loader::loadSymbolName(const Section &symSection)
 
 void Core::Loader::writeFunctionThunk(Core::Symbol &symbol, Core::Section &section)
 {
-    EncodedInstruction sc(0);
-    sc.opcd = INSTRUCTIONARRAY[InstructionID::E_SC].matchFields[0].second;
-    sc.bd = symbol.index;
+    EncodedInstruction syscall(0);
+    syscall.opcd = INSTRUCTIONARRAY[InstructionID::E_SC].OPCODE;
+    syscall.bd = symbol.index;
 
-    std::vector<char> scData;
-
-    scData.resize(32);
-    char *tmp = scData.data();
-    std::memcpy(tmp, &sc.raw, sizeof(EncodedInstruction));
-
-    Utils::BeDecoder scBE(scData);
     const std::uint32_t offset = symbol.address - section.address;
     char *sectionData = section.data.data();
-    const auto scEndiannessSwapped = scBE.extractSwap<std::uint32_t>();
-    std::memcpy(sectionData + offset, &scEndiannessSwapped, sizeof(EncodedInstruction));
+    EncodedInstruction syscallEndianSwapped = syscall.endianSwap();
+    std::memcpy(sectionData + offset, &syscallEndianSwapped, sizeof(EncodedInstruction));
 }
 
 void Core::Loader::loadSymbols()

@@ -36,13 +36,20 @@ namespace Core {
             void loadSectionData(Section &section);
             void loadAndDecompressSectionData(Section &section);
             void loadSectionName();
+
+            void updateAddressRangeProgram(const Section &section, const std::size_t start, const unsigned long end);
+
+            void updatAddressRangeImports(std::vector<Core::Section>::value_type &section, unsigned long end);
+
             void loadSectionInfos();
+
+            void initSectionData();
 
             void loadSymbols();
             void loadSymbolHeader(const Section &symSection, std::size_t symAmount);
             void loadSymbolName(const Section &symSection);
 
-            void writeFunctionThunk(Core::Symbol &symbol, Core::Section &section);
+            static void writeFunctionThunk(Core::Symbol &symbol, Core::Section &section);
 
             Binary m_bin;
             Utils::BeDecoder m_beDecoder;

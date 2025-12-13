@@ -13,6 +13,8 @@ union EncodedInstruction {
     explicit EncodedInstruction(const std::uint32_t &raw) : opcd(0) { this->raw = raw; }
     std::uint32_t raw;
 
+    [[nodiscard]] EncodedInstruction endianSwap() const { return EncodedInstruction(std::byteswap(raw)); };
+
     struct {
         std::uint32_t : 26;
         std::uint32_t opcd: 6;

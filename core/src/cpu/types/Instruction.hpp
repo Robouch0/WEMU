@@ -28,11 +28,13 @@ static const InstructionInfo INSTRUCTIONARRAY[] = {
 };
 #undef INSTR
 
+#define OPCODE matchFields[0].second
+
 inline std::string fieldToString(const Field f)
 {
     switch (f) {
-            #define FIELD(name)                                                                                                    \
-    case Field::F_##name:                                                                                              \
+            #define FIELD(name)                 \
+    case Field::F_##name:                       \
         return #name;
             #include "cpu/tables/cpu_fields.anh"
             #undef FIELD
@@ -43,8 +45,8 @@ inline std::string fieldToString(const Field f)
 inline std::string instructionIDToString(const InstructionID id)
 {
     switch (id) {
-            #define INSTR(name, ...)                                                                                               \
-    case InstructionID::E_##name:                                                                                      \
+            #define INSTR(name, ...)            \
+    case InstructionID::E_##name:               \
         return #name;
             #include "cpu/tables/cpu_instructions.anh"
             #undef INSTR
