@@ -21,6 +21,7 @@
 #include "binary/Binary.hpp"
 #include "binary/Loader.hpp"
 #include "cpu/interpreter/Interpreter.hpp"
+#include "lib/coreinit/Coreinint.hpp"
 #include "utils/BeDecoder.hpp"
 
 
@@ -93,8 +94,9 @@ int main(const int ac, char const *const *av)
     print_elf32_ehdr(binary.header);
     print_symbols(binary);
 
-    Core::Interpreter interpreter(binary);
+    // RegisterCoreInitFunctions();
 
+    Core::Interpreter interpreter(binary);
     std::cout << "Loaded module!" << std::endl;
     std::cout << "Code: " << std::hex << "0x" << loader.codeAddressRange.first << ":" << "0x" << loader.codeAddressRange.second << std::endl;
     std::cout << "Data: " << std::hex << "0x" << loader.dataAddressRange.first << ":" << "0x" << loader.dataAddressRange.second << std::endl;

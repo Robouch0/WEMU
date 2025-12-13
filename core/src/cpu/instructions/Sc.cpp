@@ -6,6 +6,7 @@
 */
 
 #include "cpu/interpreter/Interpreter.hpp"
+#include "cpu/interpreter/SyscallHandler.hpp"
 #include "cpu/types/EncodedInstruction.hpp"
 
 namespace Core::Instruction
@@ -14,6 +15,9 @@ namespace Core::Instruction
     {
         Core::Symbol sym = cpu.m_binary.symbols[instr.bd];
 
-        std::cout << "SC[" << sym.name << "]" << std::endl;
+        if (syscallHandler.syscallTable.contains(sym.name)) {
+            const auto handler = syscallHandler.get(sym.name);
+            handler(cpu);
+        }
     }
 }
