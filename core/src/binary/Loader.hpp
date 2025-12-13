@@ -34,18 +34,19 @@ namespace Core {
             void loadSections();
             void loadSectionsRaw();
             void loadSectionsName();
-            void updateSectionsAddress();
+            void loadSectionsMeta();
 
             void loadSectionHeader(Section &section);
             void loadSectionData(Section &section);
             void loadAndDecompressSectionData(Section &section);
 
-            void updateAddressRangeProgram(const Section &section, std::size_t start, unsigned long end);
-            void updatAddressRangeImports(std::vector<Core::Section>::value_type &section, unsigned long end);
+            void loadAddressRangeProgram(const Section &section, std::size_t start, unsigned long end);
+            void loadAddressRangeImports(std::vector<Core::Section>::value_type &section, unsigned long end);
 
             void loadSymbols();
             void loadSymbolsRaw();
             void loadSymbolsName();
+            void loadSymbolsMeta();
             void resolveSymbols();
 
             static void loadSymbolHeader(Utils::BeDecoder &symDecoder, Core::Symbol &symbol);

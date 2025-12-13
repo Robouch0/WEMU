@@ -32,6 +32,7 @@ namespace Core {
         struct SectionMeta {
             std::size_t size;
             std::size_t address;
+            std::uint32_t type;
         } meta;
     };
 
@@ -43,6 +44,7 @@ namespace Core {
         struct SymbolMeta {
             std::size_t index;
             std::size_t address;
+            std::uint32_t type;
         } meta;
     };
 
