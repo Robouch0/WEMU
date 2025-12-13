@@ -48,63 +48,63 @@ void Core::Loader::loadHeader()
 
 void Core::Loader::loadSectionHeader(Section &section)
 {
-    section.header.sh_name = m_beDecoder.extractSwap<Elf32_Word>();
-    section.header.sh_type = m_beDecoder.extractSwap<Elf32_Word>();
-    section.header.sh_flags = m_beDecoder.extractSwap<Elf32_Word>();
-    section.header.sh_addr = m_beDecoder.extractSwap<Elf32_Addr>();
-    section.header.sh_offset = m_beDecoder.extractSwap<Elf32_Off>();
-    section.header.sh_size = m_beDecoder.extractSwap<Elf32_Word>();
-    section.header.sh_link = m_beDecoder.extractSwap<Elf32_Word>();
-    section.header.sh_info = m_beDecoder.extractSwap<Elf32_Word>();
-    section.header.sh_addralign = m_beDecoder.extractSwap<Elf32_Word>();
-    section.header.sh_entsize = m_beDecoder.extractSwap<Elf32_Word>();
+    section.raw.header.sh_name = m_beDecoder.extractSwap<Elf32_Word>();
+    section.raw.header.sh_type = m_beDecoder.extractSwap<Elf32_Word>();
+    section.raw.header.sh_flags = m_beDecoder.extractSwap<Elf32_Word>();
+    section.raw.header.sh_addr = m_beDecoder.extractSwap<Elf32_Addr>();
+    section.raw.header.sh_offset = m_beDecoder.extractSwap<Elf32_Off>();
+    section.raw.header.sh_size = m_beDecoder.extractSwap<Elf32_Word>();
+    section.raw.header.sh_link = m_beDecoder.extractSwap<Elf32_Word>();
+    section.raw.header.sh_info = m_beDecoder.extractSwap<Elf32_Word>();
+    section.raw.header.sh_addralign = m_beDecoder.extractSwap<Elf32_Word>();
+    section.raw.header.sh_entsize = m_beDecoder.extractSwap<Elf32_Word>();
 }
 
 void Core::Loader::loadSectionData(Section &section)
 {
-    section.data.resize(section.header.sh_size);
-    m_beDecoder.extract<>(section.data.data(), section.header.sh_size);
+    section.raw.data.resize(section.raw.header.sh_size);
+    m_beDecoder.extract<>(section.raw.data.data(), section.raw.header.sh_size);
 }
 
 void Core::Loader::loadAndDecompressSectionData(Section &section)
 {
     auto stream = z_stream{};
     auto ret = Z_OK;
-    section.data.resize(m_beDecoder.extractSwap<uint32_t>());
+    section.raw.data.resize(m_beDecoder.extractSwap<uint32_t>());
     std::memset(&stream, 0, sizeof(stream));
     stream.zalloc = nullptr;
     stream.zfree = nullptr;
     stream.opaque = nullptr;
     ret = inflateInit(&stream);
     if (ret != Z_OK) {
-        section.data.clear();
+        section.raw.data.clear();
     } else {
-        stream.avail_in = section.header.sh_size;
-        stream.next_in = const_cast<unsigned char *>(m_beDecoder.extract<Bytef>(section.header.sh_size));
-        stream.avail_out = static_cast<uInt>(section.data.size());
-        stream.next_out = reinterpret_cast<Bytef *>(section.data.data());
+        stream.avail_in = section.raw.header.sh_size;
+        stream.next_in = const_cast<unsigned char *>(m_beDecoder.extract<Bytef>(section.raw.header.sh_size));
+        stream.avail_out = static_cast<uInt>(section.raw.data.size());
+        stream.next_out = reinterpret_cast<Bytef *>(section.raw.data.data());
         ret = inflate(&stream, Z_FINISH);
         if (ret != Z_OK && ret != Z_STREAM_END) {
-            section.data.clear();
+            section.raw.data.clear();
         }
         inflateEnd(&stream);
     }
 }
 
-void Core::Loader::loadSectionName()
+void Core::Loader::loadSectionsName()
 {
     const Section &shStr = m_bin.sections[m_bin.header.e_shstrndx];
-    char const *sectionNames = shStr.data.data();
+    char const *sectionNames = shStr.raw.data.data();
 
     for (std::size_t i = 0; i < m_bin.header.e_shnum; i++) {
         auto &section = m_bin.sections[i];
-        section.name = sectionNames + section.header.sh_name;
+        section.name = sectionNames + section.raw.header.sh_name;
     }
 }
 
 void Core::Loader::updateAddressRangeProgram(const Section &section, const std::size_t start, const unsigned long end)
 {
-    if (section.header.sh_flags & SHF_EXECINSTR) {
+    if (section.raw.header.sh_flags & SHF_EXECINSTR) {
         if (codeAddressRange.first == 0 || start < codeAddressRange.first)
             codeAddressRange.first = start;
         if (codeAddressRange.second == 0 || end > codeAddressRange.second)
@@ -119,42 +119,42 @@ void Core::Loader::updateAddressRangeProgram(const Section &section, const std::
 
 void Core::Loader::updatAddressRangeImports(Core::Section &section, const unsigned long end)
 {
-    if (section.header.sh_flags & SHF_EXECINSTR) {
-        // section.address = (codeAddressRange.second + section.header.sh_addralign) & ~section.header.sh_addralign;
+    if (section.raw.header.sh_flags & SHF_EXECINSTR) {
+        // section.address = (codeAddressRange.second + section.raw.header.sh_addralign) & ~section.raw.header.sh_addralign;
         codeAddressRange.second = end;
     } else {
-        // section.address = (dataAddressRange.second + section.header.sh_addralign) & ~section.header.sh_addralign;
+        // section.address = (dataAddressRange.second + section.raw.header.sh_addralign) & ~section.raw.header.sh_addralign;
         dataAddressRange.second = end;
     }
 }
 
-void Core::Loader::loadSectionInfos()
+void Core::Loader::updateSectionsAddress()
 {
     for (std::size_t i = 0; i < m_bin.header.e_shnum; i++) {
         auto &section = m_bin.sections[i];
-        section.address = section.header.sh_addr;
-        section.size = section.data.size();
-        const auto start = section.address;
-        const auto end = section.address + section.size;
+        section.meta.address = section.raw.header.sh_addr;
+        section.meta.size = section.raw.data.size();
+        const auto start = section.meta.address;
+        const auto end = section.meta.address + section.meta.size;
 
-        if (section.header.sh_type == SHT_NOBITS)
-            section.size = section.header.sh_size;
-        if (!(section.header.sh_type != SHT_PROGBITS && section.header.sh_type != SHT_NOBITS))
+        if (section.raw.header.sh_type == SHT_NOBITS)
+            section.meta.size = section.raw.header.sh_size;
+        if (!(section.raw.header.sh_type != SHT_PROGBITS && section.raw.header.sh_type != SHT_NOBITS))
             updateAddressRangeProgram(section, start, end);
-        if (section.header.sh_type == SHT_RPL_IMPORTS)
+        if (section.raw.header.sh_type == SHT_RPL_IMPORTS)
             updatAddressRangeImports(section, end);
     }
 }
 
-void Core::Loader::initSectionData()
+void Core::Loader::loadSectionsRaw()
 {
     m_bin.sections.resize(m_bin.header.e_shnum);
     for (size_t i = 0; i < m_bin.header.e_shnum; i++) {
         auto &section = m_bin.sections[i];
         m_beDecoder.seek(m_bin.header.e_shoff + i * m_bin.header.e_shentsize);
         loadSectionHeader(section);
-        m_beDecoder.seek(section.header.sh_offset);
-        if (section.header.sh_flags & SHF_DEFLATED) {
+        m_beDecoder.seek(section.raw.header.sh_offset);
+        if (section.raw.header.sh_flags & SHF_DEFLATED) {
             loadAndDecompressSectionData(section);
         } else {
             loadSectionData(section);
@@ -164,37 +164,29 @@ void Core::Loader::initSectionData()
 
 void Core::Loader::loadSections()
 {
-    initSectionData();
-    loadSectionName();
-    loadSectionInfos();
+    loadSectionsRaw();
+    loadSectionsName();
+    updateSectionsAddress();
 }
 
-void Core::Loader::loadSymbolHeader(const Section &symSection, const std::size_t symAmount)
+void Core::Loader::loadSymbolHeader(Utils::BeDecoder &symDecoder, Core::Symbol &symbol)
 {
-    auto symDecoder = Utils::BeDecoder(symSection.data);
-
-    for (std::size_t i = 0; i < symAmount; i++) {
-        auto &symbol = m_bin.symbols[i];
-        symbol.header.st_name = symDecoder.extractSwap<Elf32_Word>();
-        symbol.header.st_value = symDecoder.extractSwap<Elf32_Addr>();
-        symbol.header.st_size = symDecoder.extractSwap<Elf32_Word>();
-        symbol.header.st_info = symDecoder.extractSwap<unsigned char>();
-        symbol.header.st_other = symDecoder.extractSwap<unsigned char>();
-        symbol.header.st_shndx = symDecoder.extractSwap<Elf32_Section>();
-        symbol.index = i;
-    }
+    symbol.raw.header.st_name = symDecoder.extractSwap<Elf32_Word>();
+    symbol.raw.header.st_value = symDecoder.extractSwap<Elf32_Addr>();
+    symbol.raw.header.st_size = symDecoder.extractSwap<Elf32_Word>();
+    symbol.raw.header.st_info = symDecoder.extractSwap<unsigned char>();
+    symbol.raw.header.st_other = symDecoder.extractSwap<unsigned char>();
+    symbol.raw.header.st_shndx = symDecoder.extractSwap<Elf32_Section>();
 }
 
-void Core::Loader::loadSymbolName(const Section &symSection)
+void Core::Loader::loadSymbolsName()
 {
-    const Section &symStr = m_bin.sections[symSection.header.sh_link];
-    char const *symbolNames = symStr.data.data();
-    const std::size_t symAmount = symSection.header.sh_size / symSection.header.sh_entsize;
+    const Section &symStr = m_bin.findSection(".strtab");
+    char const *symbolNames = symStr.raw.data.data();
 
-    for (std::size_t i = 0; i < symAmount; i++) {
-        auto &symbol = m_bin.symbols[i];
-        if (symbol.header.st_name > 0 && symbol.header.st_name < symStr.data.size()) {
-            symbol.name = symbolNames + symbol.header.st_name;
+    for (auto &symbol : m_bin.symbols) {
+        if (symbol.raw.header.st_name > 0 && symbol.raw.header.st_name < symStr.raw.data.size()) {
+            symbol.name = symbolNames + symbol.raw.header.st_name;
         }
     }
 }
@@ -203,37 +195,48 @@ void Core::Loader::writeFunctionThunk(Core::Symbol &symbol, Core::Section &secti
 {
     EncodedInstruction syscall(0);
     syscall.opcd = INSTRUCTIONARRAY[InstructionID::E_SC].OPCODE;
-    syscall.bd = symbol.index;
+    syscall.bd = symbol.meta.index;
 
-    const std::uint32_t offset = symbol.address - section.address;
-    char *sectionData = section.data.data();
+    const std::uint32_t offset = symbol.meta.address - section.meta.address;
+    char *sectionData = section.raw.data.data();
     EncodedInstruction syscallEndianSwapped = syscall.endianSwap();
     std::memcpy(sectionData + offset, &syscallEndianSwapped, sizeof(EncodedInstruction));
 }
 
+void Core::Loader::resolveSymbols()
+{
+    for (auto &symbol : m_bin.symbols) {
+        if (symbol.raw.header.st_shndx >= m_bin.sections.size())
+            continue;
+        auto &section = m_bin.sections[symbol.raw.header.st_shndx];
+        const std::size_t offset = symbol.raw.header.st_value - section.raw.header.sh_addr;
+        symbol.meta.address = section.meta.address + offset;
+        if (!symbol.meta.address)
+            continue;
+        const auto type = ELF32_ST_TYPE(symbol.raw.header.st_info);
+        if (type == STT_FUNC)
+            writeFunctionThunk(symbol, section);
+    }
+}
+
+
 void Core::Loader::loadSymbols()
 {
+    loadSymbolsRaw();
+    loadSymbolsName();
+    resolveSymbols();
+}
+
+void Core::Loader::loadSymbolsRaw()
+{
     const auto &symSection = m_bin.findSection(".symtab");
-    const std::size_t symAmount = symSection.header.sh_size / symSection.header.sh_entsize;
+    Utils::BeDecoder symDecoder(symSection.raw.data);
+    const std::size_t symAmount = symSection.raw.header.sh_size / symSection.raw.header.sh_entsize;
 
     m_bin.symbols.resize(symAmount);
-    loadSymbolHeader(symSection, symAmount);
-    loadSymbolName(symSection);
-
-    for (auto &symbol : m_bin.symbols) {
-        if (symbol.header.st_shndx >= m_bin.sections.size()) {
-            continue;
-        }
-        auto &section = m_bin.sections[symbol.header.st_shndx];
-        std::size_t offset = symbol.header.st_value - section.header.sh_addr;
-        std::size_t virtAddress = section.address + offset;
-
-        symbol.address = virtAddress;
-
-        if (symbol.address) {
-            auto type = symbol.header.st_info & 0xF;
-            if (type == STT_FUNC)
-                writeFunctionThunk(symbol, section);
-        }
+    for (std::uint32_t i = 0; i < symAmount; i++) {
+        auto &symbol = m_bin.symbols[i];
+        loadSymbolHeader(symDecoder, symbol);
+        symbol.meta.index = i;
     }
 }

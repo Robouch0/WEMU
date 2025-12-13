@@ -32,22 +32,23 @@ namespace Core {
             void loadHeader();
 
             void loadSections();
+            void loadSectionsRaw();
+            void loadSectionsName();
+            void updateSectionsAddress();
+
             void loadSectionHeader(Section &section);
-            void loadSectionData(Section &section);
             void loadAndDecompressSectionData(Section &section);
-            void loadSectionName();
+            void loadSectionData(Section &section);
 
-            void updateAddressRangeProgram(const Section &section, const std::size_t start, const unsigned long end);
-
+            void updateAddressRangeProgram(const Section &section, std::size_t start, unsigned long end);
             void updatAddressRangeImports(std::vector<Core::Section>::value_type &section, unsigned long end);
 
-            void loadSectionInfos();
-
-            void initSectionData();
-
             void loadSymbols();
-            void loadSymbolHeader(const Section &symSection, std::size_t symAmount);
-            void loadSymbolName(const Section &symSection);
+            void loadSymbolsRaw();
+            void loadSymbolsName();
+            void resolveSymbols();
+
+            static void loadSymbolHeader(Utils::BeDecoder &symDecoder, Core::Symbol &symbol);
 
             static void writeFunctionThunk(Core::Symbol &symbol, Core::Section &section);
 

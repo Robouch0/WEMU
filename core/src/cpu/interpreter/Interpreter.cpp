@@ -17,12 +17,12 @@ Core::Interpreter::Interpreter(Core::Binary binary) : m_binary(std::move(binary)
 void Core::Interpreter::run()
 {
     const Core::Section &textSection = m_binary.findSection(".text");
-    auto instructionDecoder = Utils::BeDecoder(textSection.data);
+    auto instructionDecoder = Utils::BeDecoder(textSection.raw.data);
 
     std::cout << "Content of section " << textSection.name << std::endl;
-    for (Elf32_Off offset = 0; offset < textSection.header.sh_size; offset += 4) {
+    for (Elf32_Off offset = 0; offset < textSection.raw.header.sh_size; offset += 4) {
         const EncodedInstruction encodedInstruction(instructionDecoder.extractSwap<uint32_t>());
-        std::cout << " " << std::hex << (offset + textSection.header.sh_addr) << std::dec << "\t"
+        std::cout << " " << std::hex << (offset + textSection.raw.header.sh_addr) << std::dec << "\t"
                 << std::bitset<sizeof(uint32_t) * 8>(encodedInstruction.raw) << "\t";
         try {
             executeInstruction(encodedInstruction);

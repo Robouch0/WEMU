@@ -25,17 +25,25 @@ namespace Core {
 
     struct Section {
         std::string name;
-        Elf32_Shdr header;
-        std::vector<char> data;
-        std::size_t size;
-        std::size_t address;
+        struct RawSection {
+            Elf32_Shdr header;
+            std::vector<char> data;
+        } raw;
+        struct SectionMeta {
+            std::size_t size;
+            std::size_t address;
+        } meta;
     };
 
     struct Symbol {
         std::string name;
-        Elf32_Sym header;
-        std::size_t index;
-        std::size_t address;
+        struct RawSymbol {
+            Elf32_Sym header;
+        } raw;
+        struct SymbolMeta {
+            std::size_t index;
+            std::size_t address;
+        } meta;
     };
 
     struct Binary {
@@ -52,7 +60,7 @@ namespace Core {
         Section &findSection(const std::uint32_t symbolAddress)
         {
             for (auto &section: sections) {
-                if (symbolAddress >= section.address && symbolAddress < section.address + section.size) {
+                if (symbolAddress >= section.meta.address && symbolAddress < section.meta.address + section.meta.size) {
                     return section;
                 }
             }

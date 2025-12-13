@@ -54,11 +54,11 @@ void print_symbols(Core::Binary &binary)
     std::cout << "Total of " << binary.symbols.size() << " symbols:" << std::endl;
     for (const auto &symbol: binary.symbols) {
         std::cout << "index " << i << " ";
-        if (symbol.header.st_shndx < binary.sections.size()) {
-            auto &sec = binary.sections[symbol.header.st_shndx];
-            std::cout << "[" << sec.name << "] " << symbol.name << " -> " << std::hex << symbol.address << std::dec << std::endl;
+        if (symbol.raw.header.st_shndx < binary.sections.size()) {
+            auto &sec = binary.sections[symbol.raw.header.st_shndx];
+            std::cout << "[" << sec.name << "] " << symbol.name << " -> " << std::hex << symbol.meta.address << std::dec << std::endl;
         } else {
-            std::cout << symbol.name << " -> " << std::hex << symbol.header.st_value << std::dec << std::endl;
+            std::cout << symbol.name << " -> " << std::hex << symbol.raw.header.st_value << std::dec << std::endl;
         }
         i++;
     }
@@ -67,14 +67,14 @@ void print_symbols(Core::Binary &binary)
 
 void print_section(const Core::Section &section)
 {
-    auto instructionDecoder = Utils::BeDecoder(section.data);
+    auto instructionDecoder = Utils::BeDecoder(section.raw.data);
 
     std::cout << "Content of section " << section.name << std::endl;
-    for (Elf32_Off offset = 0; offset < section.header.sh_size; offset += 4) {
+    for (Elf32_Off offset = 0; offset < section.raw.header.sh_size; offset += 4) {
         const EncodedInstruction encodedInstruction(instructionDecoder.extractSwap<uint32_t>());
 
         std::cout << " "
-                << std::hex << (offset + section.header.sh_addr)
+                << std::hex << (offset + section.raw.header.sh_addr)
                 << std::dec << "\t"
                 << std::bitset<sizeof(uint32_t) * 8>(encodedInstruction.raw) << "\t"
                 << std::endl;
