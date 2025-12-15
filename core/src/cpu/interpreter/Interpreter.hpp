@@ -38,7 +38,11 @@ namespace Core {
 
             void executeInstruction(const EncodedInstruction &instr);
 
+            template<typename T>
+            T readArgs(size_t index) { return m_gpr[3 + index]; }
+
         private:
+        public:
             void initInstructionMap();
 
             void updateCR(Core::ConditionRegister::Register &cr, const std::int32_t &result,
@@ -57,7 +61,7 @@ namespace Core {
             std::uint32_t m_lr{}; // Link Register
             std::uint32_t m_ctr{}; // Counter Register
             union {
-                std::uint32_t m_gpr[32];
+                std::uint32_t m_gpr[32]{};
                 std::int32_t m_gprSigned[32];
             }; // General Purpose Registers (unsigned/signed)
             Core::FixedPointExceptionRegister m_xer{};
@@ -66,4 +70,6 @@ namespace Core {
 
             std::map<std::uint32_t, std::vector<InstructionInfo> > m_instructionMap{};
     };
+
+
 } // namespace Core

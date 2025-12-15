@@ -94,9 +94,11 @@ int main(const int ac, char const *const *av)
     print_elf32_ehdr(binary.header);
     print_symbols(binary);
 
-    // RegisterCoreInitFunctions();
+    RegisterCoreInitFunctions();
 
     Core::Interpreter interpreter(binary);
+    interpreter.m_gpr[3] = 2;
+    interpreter.m_gpr[4] = 1;
     std::cout << "Loaded module!" << std::endl;
     std::cout << "Code: " << std::hex << "0x" << loader.codeAddressRange.first << ":" << "0x" << loader.codeAddressRange.second << std::endl;
     std::cout << "Data: " << std::hex << "0x" << loader.dataAddressRange.first << ":" << "0x" << loader.dataAddressRange.second << std::endl;
