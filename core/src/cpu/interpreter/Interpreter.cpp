@@ -16,7 +16,7 @@ Core::Interpreter::Interpreter(Core::Binary binary) : m_binary(std::move(binary)
 
 void Core::Interpreter::run()
 {
-    const Core::Section &textSection = m_binary.findSection(".fimport_coreinit");
+    const Core::Section &textSection = m_binary.findSection(".text");
     auto instructionDecoder = Utils::BeDecoder(textSection.raw.data);
 
     std::cout << "Content of section " << textSection.name << std::endl;
