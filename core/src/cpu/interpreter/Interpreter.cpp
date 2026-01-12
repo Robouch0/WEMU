@@ -16,21 +16,20 @@ Core::Interpreter::Interpreter(Core::Binary binary) : m_binary(std::move(binary)
 
 void Core::Interpreter::run()
 {
-    int pc = 0;
-
     auto instructionDecoder = Utils::BeDecoder(m_binary.m_memory.getMemory());
 
-    std::cout << "Starting at entrypoint" << std::endl;
+    m_pc = m_binary.header.e_entry - Core::Memory::MemoryMap::ApplicationCode;
+    std::cout << "Starting at entrypoint 0x" << m_pc + Core::Memory::MemoryMap::ApplicationCode << std::endl;
     while (true) {
-        instructionDecoder.seek(pc);
+        instructionDecoder.seek(m_pc);
         const EncodedInstruction encodedInstruction(instructionDecoder.extractSwap<uint32_t>());
-        std::cout << " " << std::hex << 0x2000000 + pc << std::dec << "\t" << std::bitset<sizeof(uint32_t) * 8>(encodedInstruction.raw) << "\t";
+        std::cout << " 0x" << std::hex << m_pc + Core::Memory::MemoryMap::ApplicationCode << std::dec << "\t" << std::bitset<sizeof(uint32_t) * 8>(encodedInstruction.raw) << "\t";
         try {
             executeInstruction(encodedInstruction);
         } catch (Core::InterpreterException &e) {
             std::cout << e.what() << std::endl;
         }
-        pc += 4;
+        m_pc += 4;
     }
 }
 

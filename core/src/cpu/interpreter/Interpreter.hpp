@@ -59,6 +59,8 @@ namespace Core {
             Core::Binary m_binary;
             Core::Memory m_memory;
 
+            std::uint32_t m_pc {};
+
             Core::ConditionRegister m_cr{};
             std::uint32_t m_lr{}; // Link Register
             std::uint32_t m_ctr{}; // Counter Register

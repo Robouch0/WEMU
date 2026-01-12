@@ -7,16 +7,16 @@
 
 namespace Core {
     class Memory {
-        enum MemoryMap : size_t
-        {
-            ApplicationCode = 0x02000000,
-            ApplicationData = 0x10000000,
-            ApplicationMemoryEnd = 0x02000000 + 0x40000000, // 1GB
-            GraphicsResources = 0xF4000000,
-            GraphicsResourcesEnd = 0xF6000000
-         };
-
         public:
+            enum MemoryMap : size_t
+            {
+                ApplicationCode = 0x02000000,
+                ApplicationData = 0x10000000,
+                ApplicationMemoryEnd = 0x02000000 + 0x40000000, // 1GB
+                GraphicsResources = 0xF4000000,
+                GraphicsResourcesEnd = 0xF6000000
+             };
+
             explicit Memory(const std::size_t &size = 0x40000000) : m_memory(),  m_virtAddress(0x2000000), m_memAddress(), m_memSize(size)
             {
                 m_memory.resize(size);

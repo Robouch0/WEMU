@@ -171,13 +171,15 @@ void Core::Loader::loadSectionsInMemory()
         if (section.meta.type == SHT_NOBITS) {
             const std::size_t ptr = m_bin.m_memory.allocate(section.meta.virtAddress, section.meta.size);
 
-            if (ptr)
+            if (ptr) {
                 memset(reinterpret_cast<void *>(ptr), 0, section.meta.size);
+            }
         } else {
             const std::size_t ptr = m_bin.m_memory.allocate(section.meta.virtAddress, section.meta.size);
 
-            if (ptr)
+            if (ptr) {
                 memcpy(reinterpret_cast<void *>(ptr), section.raw.data.data(), section.meta.size);
+            }
         }
     }
 }
