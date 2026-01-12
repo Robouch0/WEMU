@@ -5,7 +5,7 @@
 #ifndef WEMU_VERTEX_H
 #define WEMU_VERTEX_H
 
-#include "WemuEngineVulkan.h"
+#include "WemuEngineVulkan.hpp"
 #include <glm/glm.hpp>
 #include <array>
 

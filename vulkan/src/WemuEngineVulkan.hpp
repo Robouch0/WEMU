@@ -20,8 +20,8 @@
 #include <chrono>
 #include <cstring>
 #include <fstream>
-#include "utils.h"
-#include "vertex.h"
+#include "utils.hpp"
+#include "vertex.hpp"
 #define GLM_FORCE_RADIANS
 #define GLM_FORCE_DEFAULT_ALIGNED_GENTYPES
 #include <glm/glm.hpp>
