@@ -1038,7 +1038,6 @@ private:
 	void cleanup() const {
 		cleanupSwapChain();
 
-		vkDestroyDescriptorSetLayout(logicalDevice, descriptorSetLayout, nullptr);
 		vkDestroyBuffer(logicalDevice, vertexBuffer, nullptr);
 		vkFreeMemory(logicalDevice, vertexBufferMemory, nullptr);
 		vkDestroyBuffer(logicalDevice, indexBuffer, nullptr);
