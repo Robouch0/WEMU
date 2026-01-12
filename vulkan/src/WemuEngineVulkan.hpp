@@ -111,7 +111,7 @@ private:
 		createSurface();
 		pickPhysicalDevice();
 		createLogicalDevice();
-		createSwapchain();
+		createSwapChain();
 		createImageViews();
 		createRenderPass();
 		createDescriptorSetLayout();
@@ -395,7 +395,7 @@ private:
 		}
 	}
 
-	void createSwapchain() {
+	void createSwapChain() {
 		const SwapChainSupportDetails swapChainSupport = querySwapChainSupport(physicalDevice);
 		const VkSurfaceFormatKHR surfaceFormat = chooseSwapSurfaceFormat(swapChainSupport.formats);
 		const VkPresentModeKHR presentMode = chooseSwapPresentMode(swapChainSupport.presentModes);
@@ -1020,7 +1020,7 @@ private:
 
 		cleanupSwapChain();
 
-		createSwapchain();
+		createSwapChain();
 		createImageViews();
 		createFramebuffers();
 	}
