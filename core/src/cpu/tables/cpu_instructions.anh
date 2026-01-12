@@ -11,7 +11,10 @@ INSTR(ADDCO, OPCD(31), OE(0))
 //INSTR(STWU, OPCD(37))
 
 // Branching
-//INSTR(B, OPCD(18))
+INSTR(B, OPCD(18), AA(0), LK(0))
+INSTR(BA, OPCD(18), AA(1), LK(0))
+INSTR(BL, OPCD(18), AA(0), LK(1))
+INSTR(BLA, OPCD(18), AA(1), LK(1))
 //INSTR(BC, OPCD(16))
 
 // System Linkage

@@ -8,6 +8,7 @@
 #pragma once
 
 #include <cstdint>
+#include <iomanip>
 #include <map>
 #include <stdfloat>
 #include <vector>
@@ -42,6 +43,26 @@ namespace Core {
             template<typename T>
             T readArgs(size_t index) { return m_gpr[3 + index]; }
 
+            void debugDumpGPR() const
+            {
+                std::ios oldState(nullptr);
+                oldState.copyfmt(std::cout);
+
+                std::cout << "==== GPR Dump ====\n";
+
+                for (int i = 0; i < 32; ++i) {
+                    std::cout
+                        << "r" << std::setw(2) << std::setfill('0') << i << " : "
+                        << "0x" << std::hex << std::setw(8) << std::setfill('0') << m_gpr[i]
+                        << "  (" << std::dec << m_gprSigned[i] << ")\n";
+                }
+
+                std::cout << "==================\n";
+
+                std::cout.copyfmt(oldState);
+            }
+
+
         private:
         public:
             void initInstructionMap();
@@ -60,6 +81,7 @@ namespace Core {
             Core::Memory m_memory;
 
             std::uint32_t m_pc {};
+            std::uint32_t m_nextPc {};
 
             Core::ConditionRegister m_cr{};
             std::uint32_t m_lr{}; // Link Register
