@@ -12,6 +12,7 @@
 #include <cinttypes>
 
 #include "elf.h"
+#include "cpu/memory/Memory.hpp"
 #include "exception/Exception.hpp"
 
 namespace Core {
@@ -31,7 +32,7 @@ namespace Core {
         } raw;
         struct SectionMeta {
             std::size_t size;
-            std::size_t address;
+            std::size_t virtAddress;
             std::uint32_t type;
         } meta;
     };
@@ -43,7 +44,7 @@ namespace Core {
         } raw;
         struct SymbolMeta {
             std::size_t index;
-            std::size_t address;
+            std::size_t virtAddress;
             std::uint32_t type;
         } meta;
     };
@@ -62,7 +63,7 @@ namespace Core {
         Section &findSection(const std::uint32_t symbolAddress)
         {
             for (auto &section: sections) {
-                if (symbolAddress >= section.meta.address && symbolAddress < section.meta.address + section.meta.size) {
+                if (symbolAddress >= section.meta.virtAddress && symbolAddress < section.meta.virtAddress + section.meta.size) {
                     return section;
                 }
             }
@@ -72,5 +73,6 @@ namespace Core {
         Elf32_Ehdr header;
         std::vector<Section> sections;
         std::vector<Symbol> symbols;
+        Core::Memory m_memory {};
     };
 } // namespace Core

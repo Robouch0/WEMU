@@ -16,19 +16,21 @@ Core::Interpreter::Interpreter(Core::Binary binary) : m_binary(std::move(binary)
 
 void Core::Interpreter::run()
 {
-    const Core::Section &textSection = m_binary.findSection(".text");
-    auto instructionDecoder = Utils::BeDecoder(textSection.raw.data);
+    int pc = 0;
 
-    std::cout << "Content of section " << textSection.name << std::endl;
-    for (Elf32_Off offset = 0; offset < textSection.raw.header.sh_size; offset += 4) {
+    auto instructionDecoder = Utils::BeDecoder(m_binary.m_memory.getMemory());
+
+    std::cout << "Starting at entrypoint" << std::endl;
+    while (true) {
+        instructionDecoder.seek(pc);
         const EncodedInstruction encodedInstruction(instructionDecoder.extractSwap<uint32_t>());
-        std::cout << " " << std::hex << (offset + textSection.raw.header.sh_addr) << std::dec << "\t"
-                << std::bitset<sizeof(uint32_t) * 8>(encodedInstruction.raw) << "\t";
+        std::cout << " " << std::hex << 0x2000000 + pc << std::dec << "\t" << std::bitset<sizeof(uint32_t) * 8>(encodedInstruction.raw) << "\t";
         try {
             executeInstruction(encodedInstruction);
         } catch (Core::InterpreterException &e) {
             std::cout << e.what() << std::endl;
         }
+        pc += 4;
     }
 }
 

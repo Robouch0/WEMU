@@ -14,6 +14,7 @@
 
 #include "Registers.hpp"
 #include "binary/Binary.hpp"
+#include "cpu/memory/Memory.hpp"
 #include "cpu/types/EncodedInstruction.hpp"
 #include "cpu/types/Instruction.hpp"
 
@@ -56,6 +57,7 @@ namespace Core {
             #undef INSTR
 
             Core::Binary m_binary;
+            Core::Memory m_memory;
 
             Core::ConditionRegister m_cr{};
             std::uint32_t m_lr{}; // Link Register
