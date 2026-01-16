@@ -1,4 +1,4 @@
-#include "WemuEngineVulkan.hpp"
+#include "wemuEngineVulkan.hpp"
 
 int main(int ac, char *av[]) {
 	try {

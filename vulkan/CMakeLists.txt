@@ -23,7 +23,11 @@ add_custom_target(compile_shaders ALL
         DEPENDS ${SHADER_STAMP}
 )
 
-add_executable(WEMU src/main.cpp)
+add_executable(WEMU
+        src/main.cpp
+        src/buffer.cpp
+        src/image.cpp
+)
 
 target_include_directories(WEMU PRIVATE
         ${Vulkan_INCLUDE_DIRS}
