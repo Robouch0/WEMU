@@ -8,15 +8,17 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Quick Multimedia QuickControls2)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Quick QuickControls2)
 
 qt_standard_project_setup(REQUIRES 6.6.2)
 qt_add_resources(RESOURCES resources.qrc)
+find_package(SDL2 REQUIRED)
 
 qt_add_executable(appgui
     src/main.cpp
     ../core/src/utils/EmulatorCounter.hpp
     src/input/KeyboardInput.cpp
+    src/input/SDLGamepadInput.cpp
     src/input/InputManager.cpp
     ${RESOURCES}
 
@@ -26,9 +28,10 @@ target_sources(appgui PRIVATE
         src/input/IInputDevice.hpp
         src/input/KeyboardInput.hpp
         src/input/InputManager.hpp
+        src/input/SDLGamepadInput.hpp
 )
 
-qt_policy(SET QTP0004 NEW)
+#qt_policy(SET QTP0004 NEW)
 
 
 qt_add_qml_module(appgui
@@ -66,8 +69,9 @@ target_link_libraries(appgui
         Qt6::Core
         Qt6::Quick
         Qt6::Gui
-        Qt6::Multimedia
+#        Qt6::Multimedia
         Qt6::QuickControls2
+        SDL2::SDL2
 )
 
 include(GNUInstallDirs)

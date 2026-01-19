@@ -2,12 +2,16 @@
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QDebug>
-#include "IInputDevice.hpp"
-#include "InputManager.hpp"
-#include "KeyboardInput.hpp"
+#include <SDL2/SDL.h>
+#include "input/IInputDevice.hpp"
+#include "input/InputManager.hpp"
+#include "input/KeyboardInput.hpp"
 
 int main(int argc, char *argv[])
 {
+    if (SDL_Init(SDL_INIT_GAMECONTROLLER) != 0) {
+        qFatal("SDL_Init failed: %s", SDL_GetError());
+    }
     QGuiApplication app(argc, argv);
     QQmlApplicationEngine engine;
 
@@ -24,5 +28,7 @@ int main(int argc, char *argv[])
 
     qDebug() << "Emulator GUI started with persistent InputManager";
 
-    return app.exec();
+    const int ret = app.exec();
+    SDL_Quit();
+    return ret;
 }

@@ -19,7 +19,6 @@ Rectangle {
         Button {
             text: "Settings"
             onClicked: {
-                // Navigate to settings page
                 mainLoader.source = "pages/SettingsPage.qml"
             }
         }

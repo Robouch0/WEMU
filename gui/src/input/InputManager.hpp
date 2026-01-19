@@ -25,6 +25,7 @@ public:
 
     private slots:
         void updateAll();
+        void pollSDLEvents();
 
     private:
         QVector<IInputDevice*> m_devices;
