@@ -3,12 +3,12 @@ import QtQuick.Controls
 
 Item {
     id: root
-    width: 500
-    height: 300
+    width: 520
+    height: 330
 
     Image {
         anchors.fill: parent
-        source: "qrc:/assets/qml/assets/xboxController.png"
+        source: "qrc:/assets/qml/assets/wiiuGamepad.png"
         fillMode: Image.PreserveAspectCrop
     }
 
