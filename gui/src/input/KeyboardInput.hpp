@@ -1,4 +1,3 @@
-// KeyboardInput.hpp
 #pragma once
 #include <QMap>
 #include <QObject>

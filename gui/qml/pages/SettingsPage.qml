@@ -1,10 +1,20 @@
 import QtQuick
 import QtQuick.Controls
+import gui 1.0
 
 Column {
     spacing: 10
     Text {
         text: "Devices: " + InputManager.connectedDevices().join(", ")
+    }
+
+    Row {
+        spacing: 40
+
+        Column {
+            Text { text: "Physical Controller"; font.pixelSize: 22 }
+            ControllerPreview {}
+        }
     }
 
     Timer {

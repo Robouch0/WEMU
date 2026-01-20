@@ -1,5 +1,5 @@
-// KeyboardInput.cpp
 #include "KeyboardInput.hpp"
+#include <qguiapplication.h>
 #include <QKeyEvent>
 
 KeyboardInput::KeyboardInput(QObject *parent)
@@ -10,16 +10,16 @@ KeyboardInput::KeyboardInput(QObject *parent)
 
 bool KeyboardInput::eventFilter(QObject *obj, QEvent *event) {
     if (event->type() == QEvent::KeyPress) {
-        QKeyEvent *keyEvent = static_cast<QKeyEvent*>(event);
+        const auto *keyEvent = dynamic_cast<QKeyEvent*>(event);
         onKeyPressed(keyEvent->key());
     } else if (event->type() == QEvent::KeyRelease) {
-        QKeyEvent *keyEvent = static_cast<QKeyEvent*>(event);
+        const auto *keyEvent = dynamic_cast<QKeyEvent*>(event);
         onKeyReleased(keyEvent->key());
     }
     return QObject::eventFilter(obj, event);
 }
 
-void KeyboardInput::onKeyPressed(int key) {
+void KeyboardInput::onKeyPressed(const int key) {
     auto it = m_keyStates.find(key);
     if (it == m_keyStates.end() || it.value() != KeyState::Pressed) {
         m_keyStates[key] = KeyState::Pressed;
@@ -27,19 +27,13 @@ void KeyboardInput::onKeyPressed(int key) {
     }
 }
 
-void KeyboardInput::onKeyReleased(int key) {
+void KeyboardInput::onKeyReleased(const int key) {
     m_keyStates[key] = KeyState::Released;
     emit keyStateChanged(QKeySequence(key).toString(), false);
 }
 
 void KeyboardInput::update()
 {
-    // for (auto it = m_keyStates.begin(); it != m_keyStates.end(); ++it) {
-    //     if (it.value() == KeyState::Pressed)
-    //         it.value() = KeyState::Held;
-    //     else if (it.value() == KeyState::Released)
-    //         it.value() = KeyState::Up;
-    // }
 }
 
 bool KeyboardInput::isButtonPressed(const QString &buttonName) const {

@@ -4,8 +4,8 @@ import QtQuick.Controls
 ApplicationWindow {
     id: rootWindow
     visible: true
-    width: 1200
-    height: 900
+    width: 1450
+    height: 950
     title: "Emulator"
 
     Loader {

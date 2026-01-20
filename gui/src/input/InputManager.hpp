@@ -1,4 +1,3 @@
-// InputManager.hpp
 #pragma once
 #include <QVector>
 #include <QMap>
@@ -13,15 +12,17 @@ public:
 
         void addDevice(IInputDevice *device);
         void removeDevice(const QString &deviceName);
-        IInputDevice* getDevice(const QString &deviceName) const;
+        [[nodiscard]] IInputDevice* getDevice(const QString &deviceName) const;
 
-        Q_INVOKABLE bool isButtonPressed(const QString &buttonName) const;
-        Q_INVOKABLE bool isButtonReleased(const QString &buttonName) const;
-        Q_INVOKABLE QStringList connectedDevices() const;
+        Q_INVOKABLE [[nodiscard]] bool isButtonPressed(const QString &buttonName) const;
+        Q_INVOKABLE [[nodiscard]] bool isButtonReleased(const QString &buttonName) const;
+        Q_INVOKABLE [[nodiscard]] QStringList connectedDevices() const;
+        Q_INVOKABLE [[nodiscard]] float getAxis(const QString &axisName) const;
 
         signals:
             void inputUpdated();
-        void buttonChanged(QString buttonName, bool pressed, QString deviceName);
+            void axisChanged(QString axisName, float value, QString deviceName);
+            void buttonChanged(QString buttonName, bool pressed, QString deviceName);
 
     private slots:
         void updateAll();
