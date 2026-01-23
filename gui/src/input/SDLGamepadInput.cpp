@@ -98,5 +98,9 @@ float SDLGamepadInput::getAxisValue(const QString &axisName) const
         v = normalizeAxis(SDL_GameControllerGetAxis(m_controller, SDL_CONTROLLER_AXIS_LEFTX));
     else if (axisName == "LY")
         v = normalizeAxis(SDL_GameControllerGetAxis(m_controller, SDL_CONTROLLER_AXIS_LEFTY));
+    else if (axisName == "RX")
+        v = normalizeAxis(SDL_GameControllerGetAxis(m_controller, SDL_CONTROLLER_AXIS_RIGHTX));
+    else if (axisName == "RY")
+        v = normalizeAxis(SDL_GameControllerGetAxis(m_controller, SDL_CONTROLLER_AXIS_RIGHTY));
     return v;
 }

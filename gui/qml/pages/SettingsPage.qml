@@ -13,7 +13,7 @@ Rectangle {
         spacing: 12
 
         Rectangle {
-            width: parent.width
+            Layout.fillWidth: true
             height: 100
             color: "#dddddd"
             radius: 8
@@ -23,7 +23,11 @@ Rectangle {
                 anchors.margins: 12
                 spacing: 16
 
-                Button { text: "← Home"; width: 120 }
+                Button {
+                    text: "← Home"
+                    width: 120
+                    onClicked: mainLoader.source = "pages/MainMenu.qml"
+                }
                 Button { text: "Input" }
                 Button { text: "Graphics" }
                 Button { text: "Audio" }
