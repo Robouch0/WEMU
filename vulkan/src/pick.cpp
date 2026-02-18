@@ -8,14 +8,14 @@
 #include <stdexcept>
 
 void WemuEngineVulkan::pickPhysicalDevice() {
-    physicalDevice = VK_NULL_HANDLE;
+    m_physicalDevice = VK_NULL_HANDLE;
     uint32_t deviceCount = 0;
 
-    vkEnumeratePhysicalDevices(instance, &deviceCount, nullptr); // first one to count the devices
+    vkEnumeratePhysicalDevices(m_instance, &deviceCount, nullptr); // first one to count the devices
 
     std::vector<VkPhysicalDevice> devices(deviceCount);
 
-    vkEnumeratePhysicalDevices(instance, &deviceCount, devices.data()); // second one to fill the devices vector
+    vkEnumeratePhysicalDevices(m_instance, &deviceCount, devices.data()); // second one to fill the devices vector
 
     if (deviceCount == 0) {
         throw std::runtime_error("failed to find GPUs with Vulkan support");
@@ -25,12 +25,12 @@ void WemuEngineVulkan::pickPhysicalDevice() {
 
     for (const auto &device: devices) {
         if (isDeviceSuitable(device)) {
-            physicalDevice = device;
+            m_physicalDevice = device;
             break;
         }
     }
 
-    if (physicalDevice == VK_NULL_HANDLE) {
+    if (m_physicalDevice == VK_NULL_HANDLE) {
         throw std::runtime_error("failed to find a suitable GPU!");
     }
 }
@@ -48,7 +48,7 @@ WemuEngineVulkan::QueueFamilyIndices WemuEngineVulkan::findQueueFamilies(const V
     int i = 0;
     for (const auto &queueFamily: queueFamilies) {
         VkBool32 presentSupport = false;
-        vkGetPhysicalDeviceSurfaceSupportKHR(device, i, surface, &presentSupport);
+        vkGetPhysicalDeviceSurfaceSupportKHR(device, i, m_surface, &presentSupport);
 
         if (presentSupport) {
             indices.presentFamily = 1;
@@ -98,7 +98,7 @@ bool WemuEngineVulkan::isDeviceSuitable(const VkPhysicalDevice device) const {
 
 [[nodiscard]] uint32_t WemuEngineVulkan::findMemoryType(const uint32_t typeFilter, const VkMemoryPropertyFlags properties) const {
     VkPhysicalDeviceMemoryProperties memProperties;
-    vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
+    vkGetPhysicalDeviceMemoryProperties(m_physicalDevice, &memProperties);
 
     for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
         if ((typeFilter & (1 << i)) && (memProperties.memoryTypes[i].propertyFlags & properties) == properties) {

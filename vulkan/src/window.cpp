@@ -9,7 +9,7 @@ void WemuEngineVulkan::initWindow() {
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API); // don't create an useless OpenGL context
     glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE); // for now can't resize the window
 
-    window = glfwCreateWindow(WIDTH, HEIGHT, "Vulkan", nullptr, nullptr);
-    glfwSetWindowUserPointer(window, this);
-    glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
+    m_window = glfwCreateWindow(WIDTH, HEIGHT, "Vulkan", nullptr, nullptr);
+    glfwSetWindowUserPointer(m_window, this);
+    glfwSetFramebufferSizeCallback(m_window, framebufferResizeCallback);
 }

@@ -12,19 +12,19 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 void WemuEngineVulkan::mainLoop() {
-	while (!glfwWindowShouldClose(window)) {
+	while (!glfwWindowShouldClose(m_window)) {
 		glfwPollEvents();
 		drawFrame();
 	}
-	vkDeviceWaitIdle(logicalDevice);
+	vkDeviceWaitIdle(m_logicalDevice);
 }
 
 void WemuEngineVulkan::drawFrame() {
-	vkWaitForFences(logicalDevice, 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
+	vkWaitForFences(m_logicalDevice, 1, &m_inFlightFences[m_currentFrame], VK_TRUE, UINT64_MAX);
 
 	uint32_t imageIndex;
 
-	VkResult result = vkAcquireNextImageKHR(logicalDevice, swapChain, UINT64_MAX, imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
+	VkResult result = vkAcquireNextImageKHR(m_logicalDevice, m_swapChain, UINT64_MAX, m_imageAvailableSemaphores[m_currentFrame], VK_NULL_HANDLE, &imageIndex);
 
 	if (result == VK_ERROR_OUT_OF_DATE_KHR) {
 		recreateSwapChain();
@@ -33,32 +33,32 @@ void WemuEngineVulkan::drawFrame() {
 		throw std::runtime_error("failed to acquire swap chain image!");
 	}
 
-	vkResetFences(logicalDevice, 1, &inFlightFences[currentFrame]);
-	vkResetCommandBuffer(commandBuffers[currentFrame], 0);
-	recordCommandBuffer(commandBuffers[currentFrame], imageIndex);
+	vkResetFences(m_logicalDevice, 1, &m_inFlightFences[m_currentFrame]);
+	vkResetCommandBuffer(m_commandBuffers[m_currentFrame], 0);
+	recordCommandBuffer(m_commandBuffers[m_currentFrame], imageIndex);
 
-	updateUniformBuffer(currentFrame);
+	updateUniformBuffer(m_currentFrame);
 
 	VkSubmitInfo submitInfo{};
 	submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 
-	const VkSemaphore waitSemaphores[] = {imageAvailableSemaphores[currentFrame]};
+	const VkSemaphore waitSemaphores[] = {m_imageAvailableSemaphores[m_currentFrame]};
 	constexpr VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
 	submitInfo.waitSemaphoreCount = 1;
 	submitInfo.pWaitSemaphores = waitSemaphores;
 	submitInfo.pWaitDstStageMask = waitStages;
 	submitInfo.commandBufferCount = 1;
-	submitInfo.pCommandBuffers = &commandBuffers[currentFrame];
+	submitInfo.pCommandBuffers = &m_commandBuffers[m_currentFrame];
 
-	const VkSemaphore signalSemaphores[] = {renderFinishedSemaphores[currentFrame]};
+	const VkSemaphore signalSemaphores[] = {m_renderFinishedSemaphores[m_currentFrame]};
 	submitInfo.signalSemaphoreCount = 1;
 	submitInfo.pSignalSemaphores = signalSemaphores;
 
-	if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, inFlightFences[currentFrame]) != VK_SUCCESS) {
+	if (vkQueueSubmit(m_graphicsQueue, 1, &submitInfo, m_inFlightFences[m_currentFrame]) != VK_SUCCESS) {
 		throw std::runtime_error("failed to submit draw command buffer!");
 	}
 
-	const VkSwapchainKHR swapChains[] = {swapChain};
+	const VkSwapchainKHR swapChains[] = {m_swapChain};
 
 	VkPresentInfoKHR presentInfo{};
 	presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
@@ -69,16 +69,16 @@ void WemuEngineVulkan::drawFrame() {
 	presentInfo.pImageIndices = &imageIndex;
 	presentInfo.pResults = nullptr; // Optional
 
-	result = vkQueuePresentKHR(presentQueue, &presentInfo);
+	result = vkQueuePresentKHR(m_presentQueue, &presentInfo);
 
-	if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || framebufferResized) {
-		framebufferResized = false;
+	if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || m_framebufferResized) {
+		m_framebufferResized = false;
 		recreateSwapChain();
 	} else if (result != VK_SUCCESS) {
 		throw std::runtime_error("failed to present swap chain image!");
 	}
 
-	currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
+	m_currentFrame = (m_currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 }
 
 void WemuEngineVulkan::updateUniformBuffer(const uint32_t currentImage) const {
@@ -90,8 +90,8 @@ void WemuEngineVulkan::updateUniformBuffer(const uint32_t currentImage) const {
 	UniformBufferObject ubo{};
 	ubo.model = glm::rotate(glm::mat4(1.0f), time * glm::radians(90.0f), glm::vec3(0.0f, 0.0f, 1.0f));
 	ubo.view = glm::lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f)); //move and rotate the view
-	ubo.proj = glm::perspective(glm::radians(45.0f), static_cast<float>(swapChainExtent.width) / static_cast<float>(swapChainExtent.height), 0.1f, 10.0f);
+	ubo.proj = glm::perspective(glm::radians(45.0f), static_cast<float>(m_swapChainExtent.width) / static_cast<float>(m_swapChainExtent.height), 0.1f, 10.0f);
 	ubo.proj[1][1] *= -1; // flip the Y axis
 
-	memcpy(uniformBuffersMapped[currentImage], &ubo, sizeof(ubo));
+	memcpy(m_uniformBuffersMapped[currentImage], &ubo, sizeof(ubo));
 }

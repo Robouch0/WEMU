@@ -163,41 +163,52 @@ private:
 
 	void cleanup() const;
 
-	GLFWwindow *window;
-	VkInstance instance;
-	VkPhysicalDevice physicalDevice;
-	VkDevice logicalDevice;
-	VkSurfaceKHR surface;
-	VkQueue graphicsQueue;
-	VkQueue presentQueue;
-	VkSwapchainKHR swapChain;
-	std::vector<VkImage> swapChainImages;
-	VkFormat swapChainImageFormat;
-	VkExtent2D swapChainExtent;
-	std::vector<VkImageView> swapChainImageViews;
-	VkRenderPass renderPass;
-	VkDescriptorSetLayout descriptorSetLayout;
-	VkDescriptorPool descriptorPool;
-	std::vector<VkDescriptorSet> descriptorSets;
-	VkPipelineLayout pipelineLayout;
-	VkPipeline graphicsPipeline;
-	VkImage textureImage;
-	VkDeviceMemory textureImageMemory;
+	GLFWwindow *m_window;
+	VkInstance m_instance;
+	VkPhysicalDevice m_physicalDevice;
+	VkDevice m_logicalDevice;
+	VkSurfaceKHR m_surface;
+
+	VkQueue m_graphicsQueue;
+	VkQueue m_presentQueue;
+
+	VkSwapchainKHR m_swapChain;
+	std::vector<VkImage> m_swapChainImages;
+	VkFormat m_swapChainImageFormat;
+	VkExtent2D m_swapChainExtent;
+	std::vector<VkImageView> m_swapChainImageViews;
 	std::vector<VkFramebuffer> swapChainFramebuffers;
-	VkCommandPool commandPool;
-	std::vector<VkCommandBuffer> commandBuffers;
-	std::vector<VkSemaphore> imageAvailableSemaphores;
-	std::vector<VkSemaphore> renderFinishedSemaphores;
-	std::vector<VkFence> inFlightFences;
-	VkBuffer vertexBuffer;
-	VkDeviceMemory vertexBufferMemory;
-	VkBuffer indexBuffer;
-	VkDeviceMemory indexBufferMemory;
-	std::vector<VkBuffer> uniformBuffers;
-	std::vector<VkDeviceMemory> uniformBuffersMemory;
-	std::vector<void*> uniformBuffersMapped;
-	uint32_t currentFrame = 0;
-	bool framebufferResized = false;
+	VkRenderPass m_renderPass;
+
+	VkDescriptorSetLayout m_descriptorSetLayout;
+	VkDescriptorPool m_descriptorPool;
+	std::vector<VkDescriptorSet> m_descriptorSets;
+
+	VkPipelineLayout m_pipelineLayout;
+	VkPipeline m_graphicsPipeline;
+
+	VkImage m_textureImage;
+	VkDeviceMemory m_textureImageMemory;
+
+	VkCommandPool m_commandPool;
+	std::vector<VkCommandBuffer> m_commandBuffers;
+
+	std::vector<VkSemaphore> m_imageAvailableSemaphores;
+	std::vector<VkSemaphore> m_renderFinishedSemaphores;
+	std::vector<VkFence> m_inFlightFences;
+
+	VkBuffer m_vertexBuffer;
+	VkDeviceMemory m_vertexBufferMemory;
+
+	VkBuffer m_indexBuffer;
+	VkDeviceMemory m_indexBufferMemory;
+
+	std::vector<VkBuffer> m_uniformBuffers;
+	std::vector<VkDeviceMemory> m_uniformBuffersMemory;
+	std::vector<void*> m_uniformBuffersMapped;
+
+	uint32_t m_currentFrame = 0;
+	bool m_framebufferResized = false;
 };
 
 #endif //Wemu_ENGINE_VULKAN_H
