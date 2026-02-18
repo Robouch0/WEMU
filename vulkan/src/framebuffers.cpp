@@ -2,7 +2,7 @@
 // Created by nicolas on 2/18/26.
 //
 
-#include "wemuEngineVulkan.hpp"
+#include "headers/wemuEngineVulkan.hpp"
 
 void WemuEngineVulkan::framebufferResizeCallback(GLFWwindow* window, int width, int height) {
     const auto app = static_cast<WemuEngineVulkan*>(glfwGetWindowUserPointer(window));

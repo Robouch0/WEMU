@@ -2,7 +2,7 @@
 // Created by nicolas on 2/18/26.
 //
 
-#include "wemuEngineVulkan.hpp"
+#include "headers/wemuEngineVulkan.hpp"
 
 [[nodiscard]] VkShaderModule WemuEngineVulkan::createShaderModule(const std::vector<char> &code) const {
     VkShaderModuleCreateInfo createInfo{};
