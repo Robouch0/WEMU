@@ -24,9 +24,24 @@ add_custom_target(compile_shaders ALL
 )
 
 add_executable(WEMU
-        src/main.cpp
         src/buffer.cpp
+        src/cleanup.cpp
+        src/commandPool.cpp
+        src/descriptor.cpp
+        src/framebuffers.cpp
+        src/graphicsPipelineInit.cpp
         src/image.cpp
+        src/instance.cpp
+        src/logicalDevice.cpp
+        src/main.cpp
+        src/pick.cpp
+        src/renderPass.cpp
+        src/semaphoreAndFence.cpp
+        src/shader.cpp
+        src/surface.cpp
+        src/swapChain.cpp
+        src/update.cpp
+        src/window.cpp
 )
 
 target_include_directories(WEMU PRIVATE
