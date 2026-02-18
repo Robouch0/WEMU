@@ -8,31 +8,31 @@
 #include <limits>
 
 void WemuEngineVulkan::createSwapChain() {
-	const SwapChainSupportDetails swapChainSupport = querySwapChainSupport(m_physicalDevice);
-	const VkSurfaceFormatKHR surfaceFormat = chooseSwapSurfaceFormat(swapChainSupport.formats);
-	const VkPresentModeKHR presentMode = chooseSwapPresentMode(swapChainSupport.presentModes);
-	const VkExtent2D extent = chooseSwapExtent(swapChainSupport.capabilities);
+	const auto [capabilities, formats, presentModes] = querySwapChainSupport(m_physicalDevice);
+	const auto [format, colorSpace] = chooseSwapSurfaceFormat(formats);
+	const VkPresentModeKHR presentMode = chooseSwapPresentMode(presentModes);
+	const VkExtent2D extent = chooseSwapExtent(capabilities);
 
-	uint32_t imageCount = swapChainSupport.capabilities.minImageCount + 1;
+	uint32_t imageCount = capabilities.minImageCount + 1;
 
-	if (swapChainSupport.capabilities.maxImageCount > 0 && imageCount > swapChainSupport.capabilities.maxImageCount) {
-		imageCount = swapChainSupport.capabilities.maxImageCount;
+	if (capabilities.maxImageCount > 0 && imageCount > capabilities.maxImageCount) {
+		imageCount = capabilities.maxImageCount;
 	}
 
 	VkSwapchainCreateInfoKHR createInfo{};
 	createInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
 	createInfo.surface = m_surface;
 	createInfo.minImageCount = imageCount;
-	createInfo.imageFormat = surfaceFormat.format;
-	createInfo.imageColorSpace = surfaceFormat.colorSpace;
+	createInfo.imageFormat = format;
+	createInfo.imageColorSpace = colorSpace;
 	createInfo.imageExtent = extent;
 	createInfo.imageArrayLayers = 1;
 	createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
 
-	const QueueFamilyIndices indices = findQueueFamilies(m_physicalDevice);
-	const uint32_t queueFamilyIndices[] = {indices.graphicsFamily.value(), indices.presentFamily.value()};
+	const auto [graphicsFamily, presentFamily] = findQueueFamilies(m_physicalDevice);
+	const uint32_t queueFamilyIndices[] = {graphicsFamily.value(), presentFamily.value()};
 
-	if (indices.graphicsFamily != indices.presentFamily) {
+	if (graphicsFamily != presentFamily) {
 		createInfo.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
 		createInfo.queueFamilyIndexCount = 2;
 		createInfo.pQueueFamilyIndices = queueFamilyIndices;
@@ -42,7 +42,7 @@ void WemuEngineVulkan::createSwapChain() {
 		createInfo.pQueueFamilyIndices = nullptr; // Optional
 	}
 
-	createInfo.preTransform = swapChainSupport.capabilities.currentTransform;
+	createInfo.preTransform = capabilities.currentTransform;
 	createInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
 	createInfo.presentMode = presentMode;
 	createInfo.clipped = VK_TRUE;
@@ -56,7 +56,7 @@ void WemuEngineVulkan::createSwapChain() {
 	m_swapChainImages.resize(imageCount);
 	vkGetSwapchainImagesKHR(m_logicalDevice, m_swapChain, &imageCount, m_swapChainImages.data());
 
-	m_swapChainImageFormat = surfaceFormat.format;
+	m_swapChainImageFormat = format;
 	m_swapChainExtent = extent;
 }
 

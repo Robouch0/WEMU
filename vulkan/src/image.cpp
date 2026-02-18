@@ -3,8 +3,8 @@
 #include "headers/stb_image.h"
 #include <stdexcept>
 
-void WemuEngineVulkan::createImage(uint32_t width, uint32_t height, VkFormat format, VkImageTiling tiling,
-    VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage& image, VkDeviceMemory& imageMemory) const {
+void WemuEngineVulkan::createImage(const uint32_t width, const uint32_t height, const VkFormat format, const VkImageTiling tiling,
+    const VkImageUsageFlags usage, const VkMemoryPropertyFlags properties, VkImage& image, VkDeviceMemory& imageMemory) const {
     VkImageCreateInfo imageInfo{};
     imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     imageInfo.imageType = VK_IMAGE_TYPE_2D;
@@ -89,7 +89,7 @@ void WemuEngineVulkan::createTextureImage() {
 }
 
 void WemuEngineVulkan::transitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout) const {
-    VkCommandBuffer commandBuffer = beginSingleTimeCommands();
+    const VkCommandBuffer commandBuffer = beginSingleTimeCommands();
 
     endSingleTimeCommands(commandBuffer);
 }

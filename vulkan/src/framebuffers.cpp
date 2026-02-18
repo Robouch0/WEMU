@@ -5,7 +5,7 @@
 #include "headers/wemuEngineVulkan.hpp"
 #include <stdexcept>
 
-void WemuEngineVulkan::framebufferResizeCallback(GLFWwindow* window, int width, int height) {
+void WemuEngineVulkan::framebufferResizeCallback(GLFWwindow* window, int, int) {
     const auto app = static_cast<WemuEngineVulkan*>(glfwGetWindowUserPointer(window));
     app->m_framebufferResized = true;
 }

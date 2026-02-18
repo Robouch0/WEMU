@@ -3,7 +3,7 @@
 #include <stdexcept>
 #include <cstring>
 
-void WemuEngineVulkan::createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkBuffer &buffer, VkDeviceMemory &bufferMemory) const {
+void WemuEngineVulkan::createBuffer(const VkDeviceSize size, const VkBufferUsageFlags usage, const VkMemoryPropertyFlags properties, VkBuffer &buffer, VkDeviceMemory &bufferMemory) const {
     VkBufferCreateInfo bufferInfo{};
     bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     bufferInfo.size = size;
@@ -47,7 +47,7 @@ VkCommandBuffer WemuEngineVulkan::beginSingleTimeCommands() const {
     return commandBuffer;
 }
 
-void WemuEngineVulkan::endSingleTimeCommands(VkCommandBuffer commandBuffer) const {
+void WemuEngineVulkan::endSingleTimeCommands(const VkCommandBuffer commandBuffer) const {
     vkEndCommandBuffer(commandBuffer);
 
     VkSubmitInfo submitInfo{};

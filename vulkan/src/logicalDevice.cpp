@@ -7,10 +7,10 @@
 #include <stdexcept>
 
 void WemuEngineVulkan::createLogicalDevice() {
-    const QueueFamilyIndices indices = findQueueFamilies(m_physicalDevice);
+    const auto [graphicsFamily, presentFamily] = findQueueFamilies(m_physicalDevice);
 
     std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
-    const std::set<uint32_t> uniqueQueueFamilies = {indices.graphicsFamily.value(), indices.presentFamily.value()};
+    const std::set<uint32_t> uniqueQueueFamilies = {graphicsFamily.value(), presentFamily.value()};
 
     float queuePriority = 1.0f;
     for (uint32_t queueFamily : uniqueQueueFamilies) {
@@ -37,6 +37,6 @@ void WemuEngineVulkan::createLogicalDevice() {
         throw std::runtime_error("failed to create logical device");
     }
 
-    vkGetDeviceQueue(m_logicalDevice, indices.graphicsFamily.value(), 0, &m_graphicsQueue);
-    vkGetDeviceQueue(m_logicalDevice, indices.presentFamily.value(), 0, &m_presentQueue);
+    vkGetDeviceQueue(m_logicalDevice, graphicsFamily.value(), 0, &m_graphicsQueue);
+    vkGetDeviceQueue(m_logicalDevice, presentFamily.value(), 0, &m_presentQueue);
 }
