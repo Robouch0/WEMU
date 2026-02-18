@@ -3,6 +3,9 @@
 //
 
 #include "headers/wemuEngineVulkan.hpp"
+#include <map>
+#include <set>
+#include <stdexcept>
 
 void WemuEngineVulkan::pickPhysicalDevice() {
     physicalDevice = VK_NULL_HANDLE;

@@ -4,7 +4,6 @@
 
 #ifndef WEMU_UTILS_H
 #define WEMU_UTILS_H
-
 #include <stdexcept>
 #include <vector>
 #include <string>

@@ -3,6 +3,7 @@
 //
 
 #include "headers/wemuEngineVulkan.hpp"
+#include <stdexcept>
 
 void WemuEngineVulkan::createSurface() {
     if (glfwCreateWindowSurface(instance, window, nullptr, &surface) != VK_SUCCESS) {

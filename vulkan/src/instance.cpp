@@ -3,6 +3,7 @@
 //
 
 #include "headers/wemuEngineVulkan.hpp"
+#include <stdexcept>
 
 void WemuEngineVulkan::createInstance() {
     VkApplicationInfo appInfo{};

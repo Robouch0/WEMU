@@ -3,6 +3,9 @@
 //
 
 #include "headers/wemuEngineVulkan.hpp"
+#include <algorithm> // Necessary for std::clamp
+#include <stdexcept>
+#include <limits>
 
 void WemuEngineVulkan::createSwapChain() {
 	const SwapChainSupportDetails swapChainSupport = querySwapChainSupport(physicalDevice);

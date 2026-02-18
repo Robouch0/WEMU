@@ -1,4 +1,7 @@
 #include "headers/wemuEngineVulkan.hpp"
+#include "headers/vertex.hpp"
+#include <stdexcept>
+#include <cstring>
 
 void WemuEngineVulkan::createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkBuffer &buffer, VkDeviceMemory &bufferMemory) const {
     VkBufferCreateInfo bufferInfo{};

@@ -3,6 +3,7 @@
 //
 
 #include "headers/wemuEngineVulkan.hpp"
+#include <stdexcept>
 
 [[nodiscard]] VkShaderModule WemuEngineVulkan::createShaderModule(const std::vector<char> &code) const {
     VkShaderModuleCreateInfo createInfo{};

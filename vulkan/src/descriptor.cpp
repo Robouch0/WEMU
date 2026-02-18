@@ -3,6 +3,8 @@
 //
 
 #include "headers/wemuEngineVulkan.hpp"
+#include "headers/vertex.hpp"
+#include <stdexcept>
 
 void WemuEngineVulkan::createDescriptorSetLayout() {
     VkDescriptorSetLayoutBinding uboLayoutBinding{};

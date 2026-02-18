@@ -8,24 +8,12 @@
 #define GLFW_INCLUDE_VULKAN // will include <vulkan/vulkan.h>
 
 #include <GLFW/glfw3.h>
-#include <iostream>
-#include <stdexcept>
 #include <vector>
-#include <map>
 #include <optional>
-#include <set>
 #include <cstdint> // Necessary for uint32_t
-#include <limits> // Necessary for std::numeric_limits
-#include <algorithm> // Necessary for std::clamp
-#include <chrono>
-#include <cstring>
-#include <fstream>
-#include "utils.hpp"
-#include "vertex.hpp"
+
 #define GLM_FORCE_RADIANS
 #define GLM_FORCE_DEFAULT_ALIGNED_GENTYPES
-#include <glm/glm.hpp>
-#include <glm/gtc/matrix_transform.hpp>
 
 constexpr uint32_t WIDTH = 800;
 constexpr uint32_t HEIGHT = 600;

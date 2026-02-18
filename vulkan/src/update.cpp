@@ -3,6 +3,13 @@
 //
 
 #include "headers/wemuEngineVulkan.hpp"
+#include "headers/vertex.hpp"
+#include <chrono>
+#include <cstring>
+#include <stdexcept>
+
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 
 void WemuEngineVulkan::mainLoop() {
 	while (!glfwWindowShouldClose(window)) {

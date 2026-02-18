@@ -3,6 +3,8 @@
 //
 
 #include "headers/wemuEngineVulkan.hpp"
+#include <set>
+#include <stdexcept>
 
 void WemuEngineVulkan::createLogicalDevice() {
     const QueueFamilyIndices indices = findQueueFamilies(physicalDevice);

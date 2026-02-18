@@ -1,6 +1,7 @@
 #include "headers/wemuEngineVulkan.hpp"
 #define STB_IMAGE_IMPLEMENTATION
 #include "headers/stb_image.h"
+#include <stdexcept>
 
 void WemuEngineVulkan::createImage(uint32_t width, uint32_t height, VkFormat format, VkImageTiling tiling,
     VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage& image, VkDeviceMemory& imageMemory) const {

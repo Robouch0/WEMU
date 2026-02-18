@@ -3,6 +3,8 @@
 //
 
 #include "headers/wemuEngineVulkan.hpp"
+#include "headers/utils.hpp"
+#include "headers/vertex.hpp"
 
 void WemuEngineVulkan::createGraphicsPipeline() {
 	auto vertShaderCode = Utils::readFile(std::string(PROJECT_RELATIVE_PATH) + "/src/shaders/vert.spv"); // won't work if the user didn't compile
