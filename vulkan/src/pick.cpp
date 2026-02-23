@@ -93,7 +93,10 @@ bool WemuEngineVulkan::isDeviceSuitable(const VkPhysicalDevice device) const {
         swapChainAdequate = !swapChainSupport.formats.empty() && !swapChainSupport.presentModes.empty();
     }
 
-    return indices.isComplete() && extensionsSupported && swapChainAdequate;
+    // VkPhysicalDeviceFeatures supportedFeatures;
+    // vkGetPhysicalDeviceFeatures(m_logicalDevice, &supportedFeatures);
+
+    return indices.isComplete() && extensionsSupported && swapChainAdequate /*&& supportedFeatures.samplerAnisotropy*/;
 }
 
 [[nodiscard]] uint32_t WemuEngineVulkan::findMemoryType(const uint32_t typeFilter, const VkMemoryPropertyFlags properties) const {
