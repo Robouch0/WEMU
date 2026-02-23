@@ -20,6 +20,8 @@
 *.mod
 *.smod
 
+compile_commands.json
+
 # Compiled Static libraries
 *.lai
 *.la
@@ -33,3 +35,6 @@
 .idea
 cmake-build-debug
 build
+WEMU
+
+.cache
