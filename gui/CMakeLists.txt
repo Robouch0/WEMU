@@ -3,6 +3,7 @@ cmake_minimum_required(VERSION 3.16)
 project(gui VERSION 0.1 LANGUAGES CXX)
 
 
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
@@ -74,6 +75,7 @@ target_link_libraries(appgui
 #        Qt6::Multimedia
         Qt6::QuickControls2
         SDL2::SDL2
+#        Qt6::Widgets
 )
 
 include(GNUInstallDirs)
