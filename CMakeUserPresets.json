@@ -1,0 +1,10 @@
+{
+  "version": 2,
+  "configurePresets": [
+    {
+      "name": "default",
+      "inherits": "vcpkg"
+    }
+  ]
+}
+
