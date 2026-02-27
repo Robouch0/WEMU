@@ -73,6 +73,8 @@ private:
 		createFramebuffers();
 		createCommandPool();
 		createTextureImage();
+		createTextureImageView();
+		createTextureSampler();
 		createVertexBuffer();
 		createIndexBuffer();
 		createUniformBuffers();
@@ -91,8 +93,6 @@ private:
 	void createGraphicsPipeline();
 
 	void createFramebuffers();
-
-	void createImageViews();
 
 	void createSwapChain();
 
@@ -123,9 +123,17 @@ private:
 
 	void createImage(uint32_t width, uint32_t height, VkFormat format, VkImageTiling tiling, VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage& image, VkDeviceMemory& imageMemory) const;
 
+	VkImageView createImageView(VkImage image, VkFormat format);
+
+	void createImageViews();
+
 	void createTextureImage();
 
-	void transitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout) const;
+	void createTextureImageView();
+
+	void createTextureSampler();
+
+	void transitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout);
 
 	[[nodiscard]] VkCommandBuffer beginSingleTimeCommands() const;
 
@@ -134,6 +142,8 @@ private:
 	void createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkBuffer &buffer, VkDeviceMemory &bufferMemory) const;
 
 	void copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size) const;
+
+	void copyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width, uint32_t height) const;
 
 	void createVertexBuffer();
 
@@ -188,6 +198,8 @@ private:
 	VkPipeline m_graphicsPipeline;
 
 	VkImage m_textureImage;
+	VkImageView m_textureImageView;
+	VkSampler m_textureSampler;
 	VkDeviceMemory m_textureImageMemory;
 
 	VkCommandPool m_commandPool;
