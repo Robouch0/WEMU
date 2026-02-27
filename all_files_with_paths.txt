@@ -1,0 +1,765 @@
+===== ./CMakeLists.txt =====
+cmake_minimum_required(VERSION 3.18)
+project(WemuEmulator VERSION 0.1 LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+add_subdirectory(libs/cpu_IR)
+add_subdirectory(libs/gfx_IR)
+add_subdirectory(core)
+add_subdirectory(gui)
+===== ./libs/gfx_IR/src/translatorGFX.cpp =====
+#include "gpuInterface.hpp"
+
+namespace graphics_frontend {
+
+    GraphicsIR GfxTranslator::translateCommand(uint32_t rawCommand) {
+        GraphicsIR ir;
+        ir.commandId = rawCommand;
+        ir.params = {}; // dummy
+        return ir;
+    }
+
+}
+===== ./libs/gfx_IR/CMakeLists.txt =====
+add_library(gfx_frontend STATIC
+        src/translatorGFX.cpp
+)
+
+target_include_directories(gfx_frontend
+        PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+target_compile_features(gfx_frontend PUBLIC cxx_std_20)
+target_compile_options(gfx_frontend PRIVATE -Wall -Wextra -Wpedantic)
+===== ./libs/gfx_IR/include/gpuInterface.hpp =====
+#pragma once
+#include <cstdint>
+#include <vector>
+
+namespace graphics_frontend {
+
+    struct GraphicsIR {
+        uint32_t commandId;   // e.g. DrawCall, SetTexture, etc.
+        std::vector<uint64_t> params;
+    };
+
+    class GfxTranslator {
+        public:
+            static GraphicsIR translateCommand(uint32_t rawCommand);
+    };
+
+}
+===== ./libs/cpu_IR/src/translatorCPU.cpp =====
+#include "cpuInterface.hpp"
+
+namespace cpu_frontend {
+
+IRInstruction CpuTranslator::decodeInstruction(uint32_t rawInstruction) {
+    IRInstruction instruction = {};
+    instruction.opcode = rawInstruction;
+    instruction.operand = 0; // dummy
+    return instruction;
+}
+
+}
+===== ./libs/cpu_IR/CMakeLists.txt =====
+add_library(cpu_frontend STATIC
+        src/translatorCPU.cpp
+)
+
+target_include_directories(cpu_frontend
+        PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+target_compile_features(cpu_frontend PUBLIC cxx_std_20)
+target_compile_options(cpu_frontend PRIVATE -Wall -Wextra -Wpedantic)
+===== ./libs/cpu_IR/include/cpuInterface.hpp =====
+#pragma once
+#include <cstdint>
+
+namespace cpu_frontend {
+
+    struct IRInstruction {
+        uint32_t opcode;   // IR opcode ID
+        uint64_t operand;  // Simplified operand
+    };
+
+    class CpuTranslator {
+        public:
+            // Takes raw instruction (4 bytes PowerPC) and decodes into IR
+            static IRInstruction decodeInstruction(uint32_t rawInstruction);
+    };
+
+}
+===== ./all_files_with_paths.txt =====
+===== ./core/src/utils/EmulatorCounter.hpp =====
+// EmulatorCounter.hpp
+#pragma once
+
+#include <QObject>
+#include <QTimer>
+
+class EmulatorCounter : public QObject {
+    Q_OBJECT
+    Q_PROPERTY(int seconds READ seconds NOTIFY secondsChanged)
+
+
+public:
+        explicit EmulatorCounter(QObject* parent = nullptr)
+            : QObject(parent), m_seconds(0)
+        {
+            connect(&m_timer, &QTimer::timeout, this, &EmulatorCounter::tick);
+            m_timer.start(1000);
+        }
+
+        Q_INVOKABLE void reset() {
+            m_seconds = 0;
+            emit secondsChanged();
+        }
+
+        int seconds() const { return m_seconds; }
+
+        signals:
+            void secondsChanged();
+
+    private slots:
+        void tick() {
+            m_seconds++;
+            emit secondsChanged();
+        }
+
+    private:
+        int m_seconds;
+        QTimer m_timer;
+};
+===== ./core/src/utils/Loader.hpp =====
+#pragma once
+#include <string>
+#include <vector>
+#include <memory>
+#include <iostream>
+#include <cstdint>
+
+namespace core {
+    namespace utils {
+
+        struct LoadedSegment {
+            uint32_t vaddr;
+            std::vector<uint8_t> data;
+            bool executable;
+        };
+
+        class Loader {
+            public:
+                explicit Loader(const std::string &filepath);
+
+                bool loadFile();
+                const std::vector<LoadedSegment>& getSegments() const;
+
+            private:
+                std::vector<LoadedSegment> _segments;
+                std::string _filePath;
+
+                bool loadSegments(const std::vector<uint8_t>& fileData);
+        };
+
+    } // namespace utils
+} // namespace core
+===== ./core/src/utils/Loader.cpp =====
+#include "Loader.hpp"
+#include <filesystem>
+#include <fstream>
+
+using namespace core::utils;
+
+Loader::Loader(const std::string& filepath) : _filePath(filepath) {}
+
+bool Loader::loadFile() {
+    std::ifstream file(_filePath, std::ios::binary);
+    if (!file) {
+        std::cerr << "Failed to open: " << _filePath << "\n";
+        return false;
+    }
+
+    std::vector<uint8_t> buffer((std::istreambuf_iterator<char>(file)),
+                                std::istreambuf_iterator<char>());
+
+    if (buffer.empty()) {
+        std::cerr << "File is empty or unreadable\n";
+        return false;
+    }
+
+    //  just load the entire file as a single segment for now
+    return loadSegments(buffer);
+}
+
+bool Loader::loadSegments(const std::vector<uint8_t>& fileData) {
+    _segments.clear();
+
+    LoadedSegment seg;
+    seg.vaddr = 0x10000000; // placeholder
+    seg.data = fileData;
+
+    _segments.push_back(std::move(seg));
+
+    std::cout << "Loaded " << fileData.size() << " bytes at virtual address 0x"
+              << std::hex << _segments.back().vaddr << std::dec << "\n";
+
+    return true;
+}
+
+const std::vector<LoadedSegment>& Loader::getSegments() const {
+    return _segments;
+}
+===== ./core/src/coreDummy.cpp =====
+#include <iostream>
+#include <iomanip>
+#include "../../libs/cpu_IR/include/cpuInterface.hpp"
+#include "../../libs/gfx_IR/include/gpuInterface.hpp"
+#include "utils/Loader.hpp"
+
+int main() {
+    std::cout << "Wemu core skeleton\n";
+
+    cpu_frontend::CpuTranslator cpuTrans;
+    std::vector<uint8_t> sample(16, 0xAA);
+    std::vector<cpu_frontend::IRInstruction> irOut;
+
+    for (size_t i = 0; i + 4 <= sample.size(); i += 4) {
+        irOut.push_back(cpu_frontend::CpuTranslator::decodeInstruction(
+            (uint32_t(sample[i]) << 24) |
+            (uint32_t(sample[i+1]) << 16) |
+            (uint32_t(sample[i+2]) << 8) |
+            uint32_t(sample[i+3])
+        ));
+    }
+
+    std::cout << "Parsed " << irOut.size() << " dummy instructions\n";
+
+    graphics_frontend::GfxTranslator gfxTrans;
+    std::vector<graphics_frontend::GraphicsIR> gfxOut;
+    gfxOut.push_back(graphics_frontend::GfxTranslator::translateCommand(0xDEADBEEF));
+
+    std::cout << "Parsed " << gfxOut.size() << " dummy graphics calls\n";
+
+    core::utils::Loader loader("root.rpx");
+    if (loader.loadFile()) {
+        const auto& segments = loader.getSegments();
+        std::cout << "Segments loaded: " << segments.size() << "\n";
+        std::cout << "Segment 0 size: " << segments[0].data.size() << " bytes\n";
+
+        const auto& data = segments[0].data;
+        size_t bytesToPrint = 32;
+
+        std::cout << "First " << bytesToPrint << " bytes (hex):\n";
+
+        for (size_t i = 0; i < bytesToPrint; ++i) {
+            if (i % 16 == 0) std::cout << std::setw(8) << std::setfill('0')
+                                       << std::hex << i << "  ";
+
+            std::cout << std::setw(2) << std::setfill('0')
+                      << std::hex << static_cast<int>(data[i]) << " ";
+
+            if ((i + 1) % 16 == 0 || i + 1 == bytesToPrint)
+                std::cout << "\n";
+        }
+    }
+
+
+    return 0;
+}
+===== ./core/CMakeLists.txt =====
+add_library(core STATIC
+        src/coreDummy.cpp
+        src/utils/Loader.cpp
+)
+
+target_link_libraries(core
+        PUBLIC cpu_frontend gfx_frontend
+)
+
+target_include_directories(core
+        PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
+        PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/utils/
+)
+add_executable(testLoader
+        src/coreDummy.cpp
+)
+
+target_link_libraries(testLoader
+    PUBLIC core cpu_frontend gfx_frontend
+)
+target_compile_features(core PUBLIC cxx_std_20)
+===== ./gui/src/input/InputManager.cpp =====
+#include "InputManager.hpp"
+
+InputManager::InputManager(QObject* parent)
+    : QObject(parent)
+{
+    m_keyboard = new KeyboardInputDevice(this);
+
+    connect(m_keyboard, &KeyboardInputDevice::keyPressed, this, &InputManager::onKeyPressed);
+    connect(m_keyboard, &KeyboardInputDevice::keyReleased, this, &InputManager::onKeyReleased);
+}
+===== ./gui/src/input/InputManager.hpp =====
+#pragma once
+#include <QObject>
+#include <QGuiApplication>
+#include "KeyboardInputDevice.hpp"
+
+class InputManager : public QObject {
+    Q_OBJECT
+    Q_PROPERTY(QString keyboardLayout READ keyboardLayout CONSTANT)
+
+public:
+        explicit InputManager(QObject* parent = nullptr);
+
+        QString keyboardLayout() const {
+            return QGuiApplication::inputMethod()->locale().name(); // e.g. fr_FR
+        }
+
+    public slots:
+        void onKeyPressed(Qt::Key, const QString &text) { emit keyChanged(text, true); }
+        void onKeyReleased(Qt::Key, const QString &text) { emit keyChanged(text, false); }
+
+        signals:
+            void keyChanged(QString keyText, bool pressed);
+
+    private:
+        KeyboardInputDevice* m_keyboard;  // <-- declare it here
+};
+===== ./gui/src/input/IInputDevice.hpp =====
+#pragma once
+#include <QObject>
+#include <QString>
+
+struct ButtonState {
+    bool pressed = false;
+};
+
+struct AxisState {
+    double value = 0.0;  // Range [-1.0, +1.0]
+};
+
+class IInputDevice : public QObject {
+    Q_OBJECT
+public:
+        explicit IInputDevice(QObject* parent = nullptr) : QObject(parent) {}
+        virtual ~IInputDevice() = default;
+
+        virtual QString deviceName() const = 0;
+        virtual void start() = 0;
+        virtual void stop() = 0;
+
+        signals:
+            void buttonChanged(int buttonId, ButtonState state);
+            void axisChanged(int axisId, AxisState state);
+            void deviceDisconnected();
+};
+===== ./gui/src/input/KeyboardInputDevice.cpp =====
+#include "KeyboardInputDevice.hpp"
+#include <QDebug>
+
+KeyboardInputDevice::KeyboardInputDevice(QObject* parent)
+    : IInputDevice(parent)
+{}
+
+void KeyboardInputDevice::handleKeyPress(QKeyEvent* event) {
+    if (!event->isAutoRepeat()) {
+        QString keyText = event->text(); // preserves AZERTY
+        emit keyPressed(static_cast<Qt::Key>(event->key()), keyText);
+
+        if (!m_pressedKeys.contains(event->key())) {
+            m_pressedKeys.insert(event->key());
+            qDebug() << "Key pressed:" << keyText;
+        }
+    }
+}
+
+void KeyboardInputDevice::handleKeyRelease(QKeyEvent* event) {
+    if (!event->isAutoRepeat()) {
+        QString keyText = event->text();
+        if (m_pressedKeys.remove(event->key())) {
+            emit keyReleased(static_cast<Qt::Key>(event->key()), keyText);
+            qDebug() << "Key released:" << keyText;
+        }
+    }
+}
+===== ./gui/src/input/KeyboardInputDevice.hpp =====
+#pragma once
+#include "IInputDevice.hpp"
+#include <QSet>
+#include <QKeyEvent>
+
+class KeyboardInputDevice : public IInputDevice {
+    Q_OBJECT
+public:
+        explicit KeyboardInputDevice(QObject* parent = nullptr);
+
+        QString deviceName() const override { return "Keyboard"; }
+        void start() override {}
+        void stop() override {}
+
+        void handleKeyPress(QKeyEvent* event);
+        void handleKeyRelease(QKeyEvent* event);
+
+        signals:
+            void keyPressed(Qt::Key key, QString text);
+        void keyReleased(Qt::Key key, QString text);
+
+    private:
+        QSet<int> m_pressedKeys;
+};
+===== ./gui/src/EmulatorWindow.hpp =====
+#pragma once
+#include <QQuickWindow>
+#include "input/InputManager.hpp"
+#include "input/KeyboardInputDevice.hpp"
+
+class EmulatorWindow : public QQuickWindow {
+    Q_OBJECT
+public:
+        explicit EmulatorWindow(QWindow* parent = nullptr);
+
+    protected:
+        void keyPressEvent(QKeyEvent* event) override;
+        void keyReleaseEvent(QKeyEvent* event) override;
+
+    private:
+        InputManager* m_manager;
+        KeyboardInputDevice* m_keyboard;
+};
+===== ./gui/src/EmulatorWindow.cpp =====
+#include "EmulatorWindow.hpp"
+#include <QDebug>
+
+EmulatorWindow::EmulatorWindow(QWindow* parent)
+    : QQuickWindow(parent)
+{
+    m_manager = new InputManager(this);
+    m_keyboard = new KeyboardInputDevice(this);
+
+    // Forward key signals to InputManager
+    connect(m_keyboard, &KeyboardInputDevice::keyPressed,
+            m_manager, &InputManager::onKeyPressed);
+    connect(m_keyboard, &KeyboardInputDevice::keyReleased,
+            m_manager, &InputManager::onKeyReleased);
+}
+
+void EmulatorWindow::keyPressEvent(QKeyEvent* event) {
+    if (m_keyboard) m_keyboard->handleKeyPress(event);
+}
+
+void EmulatorWindow::keyReleaseEvent(QKeyEvent* event) {
+    if (m_keyboard) m_keyboard->handleKeyRelease(event);
+}
+===== ./gui/src/main.cpp =====
+#include <QGuiApplication>
+#include <QQmlApplicationEngine>
+#include <QQmlContext>
+#include "input/InputManager.hpp"
+
+int main(int argc, char *argv[])
+{
+    QGuiApplication app(argc, argv);
+
+    QQmlApplicationEngine engine;
+
+    // Expose InputManager globally
+    auto inputManager = new InputManager(&app);
+    engine.rootContext()->setContextProperty("InputManager", inputManager);
+
+    // Load main QML
+    engine.load(QUrl("qrc:/assets/qml/Main.qml"));
+
+    if (engine.rootObjects().isEmpty())
+        return -1;
+
+    return app.exec();
+}
+===== ./gui/CMakeLists.txt =====
+cmake_minimum_required(VERSION 3.16)
+
+project(gui VERSION 0.1 LANGUAGES CXX)
+
+
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+find_package(Qt6 REQUIRED COMPONENTS Quick Multimedia)
+
+qt_standard_project_setup(REQUIRES 6.6.2)
+qt_add_resources(RESOURCES resources.qrc)
+
+qt_add_executable(appgui
+    src/main.cpp
+    src/EmulatorWindow.cpp
+    src/EmulatorWindow.hpp
+    ../core/src/utils/EmulatorCounter.hpp
+    src/input/IInputDevice.hpp
+    src/input/KeyboardInputDevice.cpp
+    src/input/KeyboardInputDevice.hpp
+    src/input/InputManager.hpp
+    src/input/InputManager.cpp
+    ${RESOURCES}
+
+)
+qt_policy(SET QTP0004 NEW)
+
+
+qt_add_qml_module(appgui
+    URI gui
+    VERSION 1.0
+    QML_FILES
+        qml/Main.qml
+        qml/pages/IntroSequence.qml
+        qml/pages/MainMenu.qml
+        qml/pages/SettingsPage.qml
+        qml/assets/FrenchGuy.mp4
+        RESOURCES resources.qrc
+)
+
+# Qt for iOS sets MACOSX_BUNDLE_GUI_IDENTIFIER automatically since Qt 6.1.
+# If you are developing for iOS or macOS you should consider setting an
+# explicit, fixed bundle identifier manually though.
+set_target_properties(appgui PROPERTIES
+#    MACOSX_BUNDLE_GUI_IDENTIFIER com.example.appgui
+    MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION}
+    MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}
+    MACOSX_BUNDLE TRUE
+    WIN32_EXECUTABLE TRUE
+)
+
+target_include_directories(appgui
+        PRIVATE
+        ${CMAKE_SOURCE_DIR}/core/src
+        ${Qt6Core_INCLUDE_DIRS}
+)
+
+target_link_libraries(appgui
+    PRIVATE
+        Qt6::Core
+        Qt6::Quick
+        Qt6::Multimedia
+)
+
+include(GNUInstallDirs)
+install(TARGETS appgui
+    BUNDLE DESTINATION .
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
+===== ./gui/resources.qrc =====
+<RCC>
+    <qresource prefix="/assets">
+        <file>qml/assets/FrenchGuy.mp4</file>
+        <file>qml/Main.qml</file>
+        <file>qml/pages/MainMenu.qml</file>
+        <file>qml/pages/IntroSequence.qml</file>
+        <file>qml/pages/SettingsPage.qml</file>
+    </qresource>
+</RCC>
+===== ./gui/qml/Main.qml =====
+import QtQuick
+import QtQuick.Controls
+
+ApplicationWindow {
+    id: rootWindow
+    visible: true
+    width: 1200
+    height: 900
+    title: "Emulator"
+
+    Keys.onPressed: InputManager.keyPressed(key, event.text)
+    Keys.onReleased: InputManager.keyReleased(key, event.text)
+
+    Loader {
+        id: mainLoader
+        anchors.fill: parent
+        sourceComponent: introComponent
+    }
+
+    Component {
+        id: introComponent
+        Loader {
+            anchors.fill: parent
+            source: "pages/IntroSequence.qml"
+            onLoaded: {
+                item.introFinished.connect(() => {
+                    console.log("Intro finished → loading main menu")
+                    mainLoader.source = "pages/MainMenu.qml"
+                })
+            }
+        }
+    }
+}
+===== ./gui/qml/pages/MainMenu.qml =====
+import QtQuick
+import QtQuick.Controls
+
+Rectangle {
+    color: "black"
+    anchors.fill: parent
+
+    Column {
+        anchors.centerIn: parent
+        spacing: 20
+
+        Text {
+            text: "Main Menu"
+            color: "green"
+            font.pixelSize: 40
+            horizontalAlignment: Text.AlignHCenter
+        }
+
+        Button {
+            text: "Settings"
+            onClicked: {
+                // Navigate to settings page
+                mainLoader.source = "pages/SettingsPage.qml"
+            }
+        }
+    }
+}
+===== ./gui/qml/pages/IntroSequence.qml =====
+import QtQuick
+import QtQuick.Controls
+import QtMultimedia
+
+Rectangle {
+    id: root
+    width: 1200
+    height: 900
+
+    signal introFinished()
+    property bool introFinishedFlag: false
+
+    Row {
+        anchors.fill: parent
+        spacing: 0
+
+        Rectangle {
+            SequentialAnimation on color {
+                running: !root.introFinishedFlag
+                loops: 1
+                ColorAnimation { from: "white"; to: "grey"; duration: 1000; easing.type: Easing.InOutQuad }
+                ColorAnimation { from: "grey"; to: "white"; duration: 1000; easing.type: Easing.InOutQuad }
+                ColorAnimation { from: "white"; to: "grey"; duration: 900;  easing.type: Easing.InOutQuad }
+                ColorAnimation { from: "grey"; to: "white"; duration: 900;  easing.type: Easing.InOutQuad }
+                ColorAnimation { from: "white"; to: "blue";  duration: 800;  easing.type: Easing.InOutQuad }
+            }
+            width: parent.width / 3
+            height: parent.height
+        }
+
+        Rectangle {
+            id: middleColumn
+            width: parent.width / 3
+            height: parent.height
+            color: "white"
+
+            SequentialAnimation on color {
+                running: !root.introFinishedFlag
+                loops: 1
+                ColorAnimation {
+                    from: "white";
+                    to: "white"; duration: 1000; easing.type: Easing.InOutQuad
+                }
+                ColorAnimation {
+                    from: "white";
+                    to: "white"; duration: 1000; easing.type: Easing.InOutQuad
+                }
+            }
+
+            Rectangle {
+                id: videoCircle
+                width: Math.min(parent.width, parent.height) * 0.5
+                height: width
+                color: "transparent"
+                radius: width * 0.3
+                border.color: "transparent"
+                anchors.centerIn: parent
+
+                MediaPlayer {
+                    id: introVideo
+                    source: "qrc:/assets/qml/assets/FrenchGuy.mp4"
+                    autoPlay: true
+                    loops: 1
+                    videoOutput: videoOutput
+
+                    onPlaybackStateChanged: {
+                        if (playbackState === MediaPlayer.StoppedState) {
+                            console.log("Video finished.")
+                            root.introFinishedFlag = true
+                            root.introFinished()
+                        }
+                    }
+
+                    onErrorOccurred: console.log("Video error:", errorString)
+                }
+
+                VideoOutput {
+                    id: videoOutput
+                    anchors.fill: parent
+                    fillMode: VideoOutput.PreserveAspectCrop
+                }
+            }
+        }
+
+            Rectangle {
+            SequentialAnimation on color {
+                running: !root.introFinishedFlag
+                loops: 1
+                ColorAnimation { from: "white"; to: "grey"; duration: 1000; easing.type: Easing.InOutQuad }
+                ColorAnimation { from: "grey"; to: "white"; duration: 1000; easing.type: Easing.InOutQuad }
+                ColorAnimation { from: "white"; to: "grey"; duration: 500;  easing.type: Easing.InOutQuad }
+                ColorAnimation { from: "grey"; to: "white"; duration: 500;  easing.type: Easing.InOutQuad }
+                ColorAnimation { from: "white"; to: "red";  duration: 1700; easing.type: Easing.InOutQuad }
+                ScriptAction { script: { root.introFinishedFlag = true; root.introFinished(); } }
+            }
+            width: parent.width / 3
+            height: parent.height
+        }
+    }
+}
+===== ./gui/qml/pages/SettingsPage.qml =====
+import QtQuick
+import QtQuick.Controls
+
+Page {
+    id: settingsPage
+    anchors.fill: parent
+    background: Rectangle { color: "black" }
+
+    Column {
+        anchors.centerIn: parent
+        spacing: 15
+
+        Text {
+            text: "Keyboard Layout: " + InputManager.keyboardLayout
+            color: "white"
+            font.pixelSize: 18
+        }
+
+        Text {
+            id: keyLabel
+            text: "Press any key..."
+            color: "lime"
+            font.pixelSize: 22
+        }
+
+        Connections {
+            target: InputManager
+            function onKeyChanged(keyText, pressed) {
+                keyLabel.text = (pressed ? "Key pressed: " : "Key released: ") + keyText;
+            }
+        }
+
+        Button {
+            text: "Back to Menu"
+            onClicked: mainLoader.source = "pages/MainMenu.qml"
+        }
+    }
+}
