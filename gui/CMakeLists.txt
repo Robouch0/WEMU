@@ -31,9 +31,6 @@ target_sources(appgui PRIVATE
         src/input/SDLGamepadInput.hpp
 )
 
-#qt_policy(SET QTP0004 NEW)
-
-
 qt_add_qml_module(appgui
     URI gui
     VERSION 1.0
@@ -44,7 +41,6 @@ qt_add_qml_module(appgui
         qml/pages/SettingsPage.qml
         qml/ControllerPreview.qml
         qml/GamepadPreview.qml
-#        qml/assets/FrenchGuy.mp4
         RESOURCES resources.qrc
 )
 
@@ -64,10 +60,8 @@ target_link_libraries(appgui
         Qt6::Core
         Qt6::Quick
         Qt6::Gui
-#        Qt6::Multimedia
         Qt6::QuickControls2
         SDL2::SDL2
-#        Qt6::Widgets
 )
 
 include(GNUInstallDirs)

@@ -35,19 +35,6 @@ Item {
     }
 
     // ================= LEFT STICK =================
-    // Rectangle {
-    //     id: leftStick
-    //     width: 40; height: 40
-    //     radius: 20
-    //     border.color: "#3498ff"
-    //     color: "#3498ff55"
-    //
-    //     x: 120
-    //     y: 150
-    //
-    //     Behavior on x { NumberAnimation { duration: 40 } }
-    //     Behavior on y { NumberAnimation { duration: 40 } }
-    // }
     Rectangle {
         id: leftStick
         width: 80; height: 80
@@ -66,8 +53,6 @@ Item {
         Behavior on x { NumberAnimation { duration: 40 } }
         Behavior on y { NumberAnimation { duration: 40 } }
     }
-
-
 
     property bool aPressed: false
     property bool bPressed: false
