@@ -60,3 +60,5 @@ enable_testing()
 # 4. TESTS UNITAIRES
 # ------------------------------------------------------------
 add_subdirectory(tests)
+
+target_compile_features(core PUBLIC cxx_std_20)

@@ -34,6 +34,9 @@ void WemuEngineVulkan::cleanupSwapChain() const {
 void WemuEngineVulkan::cleanup() const {
     cleanupSwapChain();
 
+    vkDestroySampler(m_logicalDevice, m_textureSampler, nullptr);
+    vkDestroyImageView(m_logicalDevice, m_textureImageView, nullptr);
+    vkDestroyImage(m_logicalDevice, m_textureImage, nullptr);
     vkDestroyBuffer(m_logicalDevice, m_vertexBuffer, nullptr);
     vkFreeMemory(m_logicalDevice, m_vertexBufferMemory, nullptr);
     vkDestroyBuffer(m_logicalDevice, m_indexBuffer, nullptr);

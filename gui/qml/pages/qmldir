@@ -1,0 +1,4 @@
+module pages
+
+IntroSequence 1.0 IntroSequence.qml
+MainMenu 1.0 MainMenu.qml

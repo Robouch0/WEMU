@@ -38,3 +38,4 @@ build
 WEMU
 
 .cache
+vulkan/src/shaders/*.spv
