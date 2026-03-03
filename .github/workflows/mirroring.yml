@@ -3,7 +3,8 @@ name: Mirror Repository
 on:
   push:
     branches:
-      - "**"
+      - 'dev'
+      - 'main'
 
 jobs:
   mirror:
