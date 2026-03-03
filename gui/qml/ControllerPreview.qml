@@ -134,11 +134,64 @@ Item {
         Behavior on y { NumberAnimation { duration: 40 } }
     }
 
+    // ================= DPAD DOWN =================
+    Rectangle {
+        id: dpadDown
+        width: 12; height: 17
+        border.color: dpadDownPressed ? "#3498ff" : "white"
+        border.width: 1
+        radius: 1
+        color: dpadDownPressed ? "#3498ff" : "white"
+        x:166
+        y:151
+    }
+
+    // ================= DPAD UP =================
+    Rectangle {
+        id: dpadUp
+        width: 12; height: 17
+        border.color: dpadUpPressed ? "#3498ff" : "white"
+        border.width: 1
+        radius: 1
+        color: dpadUpPressed ? "#3498ff" : "white"
+        x:166
+        y:122
+    }
+
+    // ================= DPAD LEFT =================
+    Rectangle {
+        id: dpadLeft
+        width: 17; height: 12
+        border.color: dpadLeftPressed ? "#3498ff" : "white"
+        border.width: 1
+        radius: 1
+        color: dpadLeftPressed ? "#3498ff" : "white"
+        x:149
+        y:139
+    }
+
+    // ================= DPAD RIGHT =================
+    Rectangle {
+        id: dpadRight
+        width: 17; height: 12
+        border.color: dpadRightPressed ? "#3498ff" : "white"
+        border.width: 1
+        radius: 1
+        color: dpadRightPressed ? "#3498ff" : "white"
+        x:178
+        y:139
+    }
+
 
     property bool aPressed: false
     property bool bPressed: false
     property bool xPressed: false
     property bool yPressed: false
+
+    property bool dpadDownPressed: false
+    property bool dpadUpPressed: false
+    property bool dpadRightPressed: false
+    property bool dpadLeftPressed: false
 
     Connections {
         target: InputManager
@@ -155,6 +208,18 @@ Item {
 
             if (button === "Y")
                 yPressed = pressed
+
+            if (button === "DPAD_DOWN")
+                dpadDownPressed = pressed
+
+            if (button === "DPAD_UP")
+                dpadUpPressed = pressed
+
+            if (button === "DPAD_LEFT")
+                dpadLeftPressed = pressed
+
+            if (button === "DPAD_RIGHT")
+                dpadRightPressed = pressed
         }
 
         function onAxisChanged(axis, value, device) {
