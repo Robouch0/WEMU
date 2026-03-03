@@ -17,30 +17,81 @@ Item {
 
     Image {
         anchors.fill: parent
-        source: "qrc:/assets/qml/assets/xboxController.png"
+        source: "qrc:/assets/qml/assets/xboxControllerBlank.png"
         fillMode: Image.PreserveAspectCrop
+        scale: 0.85
     }
 
     // ================= BUTTON A =================
     Rectangle {
         id: aButton
-        x: 293; y: 120
-        width: 27; height: 27
+        x: 290; y: 105
+        width: 25; height: 25
         radius: 12
-        border.color: "#3498ff"
-        border.width: 3
-        color: aPressed ? "#3498ff" : "transparent"
+        border.color: aPressed ? "#3498ff" : "white"
+        border.width: 2
+        color: aPressed ? "transparent" : "transparent"
+        Text {
+            anchors.centerIn: parent
+            text: "A"
+            font.family: "Helvetica"
+            font.pointSize: 15
+            color: aPressed ? "#3498ff" : "white"
+        }
     }
 
     // ================= BUTTON B =================
     Rectangle {
         id: bButton
-        x: 315; y: 99
-        width: 27; height: 27
-        radius: 13
-        border.color: "#3498ff"
-        border.width: 3
-        color: bPressed ? "#3498ff" : "transparent"
+        x: 315; y: 80
+        width: 25; height: 25
+        radius: 12
+        border.color: bPressed ? "#3498ff" : "white"
+        border.width: 2
+        color: bPressed ? "transparent" : "transparent"
+        Text {
+            anchors.centerIn: parent
+            text: "B"
+            font.family: "Helvetica"
+            font.pointSize: 15
+            color: bPressed ? "#3498ff" : "white"
+        }
+    }
+
+    // ================= BUTTON X =================
+    Rectangle {
+        id: xButton
+        x: 265; y: 80
+        width: 25; height: 25
+        radius: 12
+        border.color: xPressed ? "#3498ff" : "white"
+        border.width: 2
+        color: xPressed ? "transparent" : "transparent"
+        Text {
+            anchors.centerIn: parent
+            text: "X"
+            font.family: "Helvetica"
+            font.pointSize: 15
+            color: xPressed ? "#3498ff" : "white"
+        }
+    }
+
+    // ================= BUTTON Y =================
+    Rectangle {
+        id: yButton
+        x: 290; y: 60
+        width: 25; height: 25
+        radius: 12
+        border.color: yPressed ? "#3498ff" : "white"
+        border.width: 2
+        color: yPressed ? "transparent" : "transparent"
+        Text {
+            anchors.centerIn: parent
+            text: "Y"
+            font.family: "Helvetica"
+            font.pointSize: 15
+            color: yPressed ? "#3498ff" : "white"
+        }
     }
 
     // ================= LEFT STICK =================
@@ -50,8 +101,8 @@ Item {
         radius: 50
         clip: true
         color: "transparent"
-        x:107
-        y:73
+        x:98
+        y:62
 
         Image {
             anchors.fill: parent
@@ -70,8 +121,8 @@ Item {
         radius: 50
         clip: true
         color: "transparent"
-        x:231
-        y:124
+        x:223
+        y:111
 
         Image {
             anchors.fill: parent
@@ -84,9 +135,10 @@ Item {
     }
 
 
-
     property bool aPressed: false
     property bool bPressed: false
+    property bool xPressed: false
+    property bool yPressed: false
 
     Connections {
         target: InputManager
@@ -97,18 +149,24 @@ Item {
 
             if (button === "B")
                 bPressed = pressed
+
+            if (button === "X")
+                xPressed = pressed
+
+            if (button === "Y")
+                yPressed = pressed
         }
 
         function onAxisChanged(axis, value, device) {
             if (axis === "LX")
-                leftStick.x = 107 + value * 18
+                leftStick.x = 98 + value * 18
             if (axis === "LY")
-                leftStick.y = 73 + value * 18
+                leftStick.y = 62 + value * 18
 
             if (axis === "RX")
-                rightStick.x = 231 + value * 18
+                rightStick.x = 223 + value * 18
             if (axis === "RY")
-                rightStick.y = 124 + value * 18
+                rightStick.y = 111 + value * 18
         }
     }
 }

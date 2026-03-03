@@ -19,7 +19,7 @@ SDLGamepadInput::SDLGamepadInput(const int index, QObject *parent)
         { "DPAD_UP",    SDL_CONTROLLER_BUTTON_DPAD_UP },
         { "DPAD_DOWN",  SDL_CONTROLLER_BUTTON_DPAD_DOWN },
         { "DPAD_LEFT",  SDL_CONTROLLER_BUTTON_DPAD_LEFT },
-        { "DPAD_RIGHT", SDL_CONTROLLER_BUTTON_DPAD_RIGHT }
+        { "DPAD_RIGHT", SDL_CONTROLLER_BUTTON_DPAD_RIGHT },
     };
 
     m_controller = SDL_GameControllerOpen(index);
