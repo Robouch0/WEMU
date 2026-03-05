@@ -86,7 +86,15 @@ namespace Core {
             syscallTable[symbolName] = handler;
         }
 
+        // Register a handler for a Wii U OS virtual address (0xC0000000 range).
+        // Used to intercept direct OS calls (addis/addi/bctr pattern).
+        void registerAddress(const std::uint32_t osAddr, const Handler handler)
+        {
+            addressTable[osAddr] = handler;
+        }
+
         std::map<std::string, Handler> syscallTable;
+        std::map<std::uint32_t, Handler> addressTable;
     };
 
     inline SyscallHandler syscallHandler;

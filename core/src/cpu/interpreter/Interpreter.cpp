@@ -10,12 +10,22 @@
 #include <utility>
 
 #include "Interpreter.hpp"
+#include "cpu/interpreter/SyscallHandler.hpp"
 #include "utils/BeDecoder.hpp"
 
 Core::Interpreter::Interpreter(Core::Binary binary)
     : m_binary(std::move(binary))
 {
     initInstructionMap();
+
+    // Build OS address → handler map from the binary's symbol table.
+    // For Wii U import symbols, st_value holds the OS virtual address
+    // (0xC0000000 range) that the game may call directly via addis/addi/bctr.
+    for (const auto &sym : m_binary.symbols) {
+        const auto osAddr = static_cast<std::uint32_t>(sym.raw.header.st_value);
+        if (osAddr >= 0xC0000000u && Core::syscallHandler.syscallTable.contains(sym.name))
+            Core::syscallHandler.registerAddress(osAddr, Core::syscallHandler.get(sym.name));
+    }
 }
 
 void Core::Interpreter::run()
@@ -34,6 +44,17 @@ void Core::Interpreter::run()
         // Sentinel: LR was initialised to 0; when main() returns via BLR, m_pc becomes 0.
         if (m_pc == 0)
             break;
+
+        // Intercept direct calls to Wii U OS addresses (0xC0000000+ range).
+        // These come from addis/addi/bctr sequences that bypass import stubs.
+        if (m_pc >= 0xC0000000u) {
+            if (Core::syscallHandler.addressTable.contains(m_pc))
+                Core::syscallHandler.addressTable[m_pc](*this);
+            else
+                std::cerr << "[HLE] unhandled OS call at 0x" << std::hex << m_pc << std::dec << std::endl;
+            m_pc = m_lr & ~3u; // return to caller
+            continue;
+        }
 
         instructionDecoder.seek(m_pc - Core::Memory::MemoryMap::ApplicationCode);
         const EncodedInstruction encodedInstruction(instructionDecoder.extractSwap<uint32_t>());
