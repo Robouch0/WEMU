@@ -22,20 +22,24 @@ void Core::Interpreter::run()
 {
     auto instructionDecoder = Utils::BeDecoder(m_binary.m_memory.getMemory());
 
-    // Plan step 2: initialise stack pointer (GPR1) and set LR sentinel
+    // m_pc stores the full virtual address (same convention as GPRs, LR, CTR).
+    // The instruction decoder offset = m_pc - ApplicationCode.
     m_gpr[1] = Core::Memory::MemoryMap::ApplicationData + 0x1000000 - 0x10;
-    m_lr = 0; // sentinel: BLR from main() returns to 0 → exit loop
+    m_lr = 0; // sentinel: BLR from main() returns here → exit loop (0 is never a valid vaddr)
 
-    m_pc = m_binary.header.e_entry - Core::Memory::MemoryMap::ApplicationCode;
-    std::cout << "Starting at entrypoint 0x" << std::hex
-              << (m_pc + Core::Memory::MemoryMap::ApplicationCode) << std::dec << std::endl;
+    m_pc = m_binary.header.e_entry;
+    std::cout << "Starting at entrypoint 0x" << std::hex << m_pc << std::dec << std::endl;
 
     while (true) {
-        instructionDecoder.seek(m_pc);
+        // Sentinel: LR was initialised to 0; when main() returns via BLR, m_pc becomes 0.
+        if (m_pc == 0)
+            break;
+
+        instructionDecoder.seek(m_pc - Core::Memory::MemoryMap::ApplicationCode);
         const EncodedInstruction encodedInstruction(instructionDecoder.extractSwap<uint32_t>());
         m_nextPc = m_pc + 4;
 
-        std::cout << " 0x" << std::hex << (m_pc + Core::Memory::MemoryMap::ApplicationCode)
+        std::cout << " 0x" << std::hex << m_pc
                   << std::dec << "\t"
                   << std::bitset<sizeof(uint32_t) * 8>(encodedInstruction.raw) << "\t";
 
@@ -46,11 +50,6 @@ void Core::Interpreter::run()
         }
 
         m_pc = m_nextPc;
-
-        // Exit condition: PC = 0 means BLR returned to the sentinel LR=0 set in run().
-        // Checked AFTER the first instruction so an entry point at offset 0 is valid.
-        if (m_pc == 0)
-            break;
     }
 
     std::cout << "Execution finished." << std::endl;
