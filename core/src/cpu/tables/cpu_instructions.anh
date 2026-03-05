@@ -1,4 +1,4 @@
-// Operations
+// Arithmetic operations
 INSTR(ADD, OPCD(31), XO9(266))
 INSTR(ADDE, OPCD(31), XO9(138))
 INSTR(ADDI, OPCD(14))
@@ -6,10 +6,33 @@ INSTR(ADDIS, OPCD(15))
 INSTR(ADDC, OPCD(31), OE(1))
 INSTR(ADDCO, OPCD(31), OE(0))
 
-// Memory
-//INSTR(STW, OPCD(36))
-//INSTR(STWU, OPCD(37))
+// Memory load/store
+INSTR(LWZ, OPCD(32))
+INSTR(LWZU, OPCD(33))
+INSTR(LBZ, OPCD(34))
+INSTR(LBZU, OPCD(35))
+INSTR(STW, OPCD(36))
+INSTR(STWU, OPCD(37))
+INSTR(STB, OPCD(38))
+INSTR(STBU, OPCD(39))
+INSTR(LHZ, OPCD(40))
+INSTR(STH, OPCD(44))
 
-// Branching
-//INSTR(B, OPCD(18))
-//INSTR(BC, OPCD(16))
+// Unconditional branches (B-form: OPCD=18, AA/LK variants)
+INSTR(B,   OPCD(18), AA(0), LK(0))
+INSTR(BA,  OPCD(18), AA(1), LK(0))
+INSTR(BL,  OPCD(18), AA(0), LK(1))
+INSTR(BLA, OPCD(18), AA(1), LK(1))
+
+// Conditional branches (BC-form: OPCD=16, AA/LK variants)
+INSTR(BC,   OPCD(16), AA(0), LK(0))
+INSTR(BCA,  OPCD(16), AA(1), LK(0))
+INSTR(BCL,  OPCD(16), AA(0), LK(1))
+INSTR(BCLA, OPCD(16), AA(1), LK(1))
+
+// Branch to link/count register (XL-form: OPCD=19)
+INSTR(BLR,   OPCD(19), XO10(16))
+INSTR(BCCTR, OPCD(19), XO10(528))
+
+// System call
+INSTR(SC, OPCD(17))

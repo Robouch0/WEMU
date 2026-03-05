@@ -12,24 +12,48 @@
 #include "Interpreter.hpp"
 #include "utils/BeDecoder.hpp"
 
-Core::Interpreter::Interpreter(Core::Binary binary) : m_binary(std::move(binary)) { initInstructionMap(); }
+Core::Interpreter::Interpreter(Core::Binary binary)
+    : m_binary(std::move(binary))
+{
+    initInstructionMap();
+}
 
 void Core::Interpreter::run()
 {
-    const Core::Section &textSection = m_binary.findSection(".text");
-    auto instructionDecoder = Utils::BeDecoder(textSection.data);
+    auto instructionDecoder = Utils::BeDecoder(m_binary.m_memory.getMemory());
 
-    std::cout << "Content of section " << textSection.name << std::endl;
-    for (Elf32_Off offset = 0; offset < textSection.header.sh_size; offset += 4) {
+    // Plan step 2: initialise stack pointer (GPR1) and set LR sentinel
+    m_gpr[1] = Core::Memory::MemoryMap::ApplicationData + 0x1000000 - 0x10;
+    m_lr = 0; // sentinel: BLR from main() returns to 0 → exit loop
+
+    m_pc = m_binary.header.e_entry - Core::Memory::MemoryMap::ApplicationCode;
+    std::cout << "Starting at entrypoint 0x" << std::hex
+              << (m_pc + Core::Memory::MemoryMap::ApplicationCode) << std::dec << std::endl;
+
+    while (true) {
+        // Plan step 2: exit condition — PC = 0 means BLR returned to sentinel
+        if (m_pc == 0)
+            break;
+
+        instructionDecoder.seek(m_pc);
         const EncodedInstruction encodedInstruction(instructionDecoder.extractSwap<uint32_t>());
-        std::cout << " " << std::hex << (offset + textSection.header.sh_addr) << std::dec << "\t"
-                << std::bitset<sizeof(uint32_t) * 8>(encodedInstruction.raw) << "\t";
+        m_nextPc = m_pc + 4;
+
+        std::cout << " 0x" << std::hex << (m_pc + Core::Memory::MemoryMap::ApplicationCode)
+                  << std::dec << "\t"
+                  << std::bitset<sizeof(uint32_t) * 8>(encodedInstruction.raw) << "\t";
+
         try {
             executeInstruction(encodedInstruction);
         } catch (Core::InterpreterException &e) {
             std::cout << e.what() << std::endl;
         }
+
+        m_pc = m_nextPc;
     }
+
+    std::cout << "Execution finished." << std::endl;
+    debugDumpGPR();
 }
 
 InstructionID Core::Interpreter::findInstructionID(const EncodedInstruction &instr)
@@ -40,10 +64,20 @@ InstructionID Core::Interpreter::findInstructionID(const EncodedInstruction &ins
         const bool found = std::ranges::all_of(fields.begin(), fields.end(), [&](const auto &p) {
             const auto &[field, value] = p;
             switch (field) {
+                case Field::F_AA:
+                    return instr.aa == value;
+                case Field::F_LK:
+                    return instr.lk == value;
                 case Field::F_XO10:
                     return instr.xo10 == value;
                 case Field::F_XO9:
                     return instr.xo9 == value;
+                case Field::F_OE:
+                    return instr.oe == value;
+                case Field::F_BO:
+                    return instr.bo == value;
+                case Field::F_BI:
+                    return instr.bi == value;
                 case Field::F_OPCD:
                     return true;
                 default:
@@ -54,8 +88,8 @@ InstructionID Core::Interpreter::findInstructionID(const EncodedInstruction &ins
         if (found)
             return id;
     }
-    throw Core::InterpreterException("No instruction found with this fields. (opcode == " + std::to_string(instr.opcd) +
-                                     ")");
+    throw Core::InterpreterException("No instruction found with this fields. (opcode == " +
+                                     std::to_string(instr.opcd) + ")");
 }
 
 void Core::Interpreter::executeInstruction(const EncodedInstruction &instr)
@@ -100,7 +134,7 @@ void Core::Interpreter::updateOverflow(const std::int32_t &a, const std::int32_t
     const bool resultSign = result < 0;
 
     m_xer.ov = (aSign == bSign) && (aSign != resultSign) ||
-               ((carry == 1) && (aSign == resultSign) && (bSign == resultSign));;
+               ((carry == 1) && (aSign == resultSign) && (bSign == resultSign));
 
     if (m_xer.ov)
         m_xer.so = true;

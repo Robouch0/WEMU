@@ -28,6 +28,8 @@ static const InstructionInfo INSTRUCTIONARRAY[] = {
 };
 #undef INSTR
 
+#define OPCODE matchFields[0].second
+
 inline std::string fieldToString(const Field f)
 {
     switch (f) {

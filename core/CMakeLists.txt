@@ -25,10 +25,16 @@ add_library(core STATIC
         src/utils/BeDecoder.cpp
         src/cpu/interpreter/Interpreter.hpp
         src/cpu/interpreter/Interpreter.cpp
+        src/cpu/interpreter/SyscallHandler.hpp
         src/cpu/instructions/Add.cpp
+        src/cpu/instructions/Branch.cpp
+        src/cpu/instructions/Memory.cpp
+        src/cpu/instructions/Sc.cpp
         src/cpu/types/Field.hpp
         src/cpu/types/Instruction.hpp
         src/cpu/types/EncodedInstruction.hpp
+        src/cpu/memory/Memory.hpp
+        src/lib/coreinit/Coreinint.hpp
 )
 
 target_include_directories(core PUBLIC
@@ -61,4 +67,4 @@ enable_testing()
 # ------------------------------------------------------------
 add_subdirectory(tests)
 
-target_compile_features(core PUBLIC cxx_std_20)
+target_compile_features(core PUBLIC cxx_std_23)
