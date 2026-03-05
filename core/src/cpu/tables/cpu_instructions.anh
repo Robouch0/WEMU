@@ -3,8 +3,8 @@ INSTR(ADD, OPCD(31), XO9(266))
 INSTR(ADDE, OPCD(31), XO9(138))
 INSTR(ADDI, OPCD(14))
 INSTR(ADDIS, OPCD(15))
-INSTR(ADDC, OPCD(31), OE(1))
-INSTR(ADDCO, OPCD(31), OE(0))
+INSTR(ADDC,  OPCD(31), XO9(10), OE(0))
+INSTR(ADDCO, OPCD(31), XO9(10), OE(1))
 
 // Memory load/store
 INSTR(LWZ, OPCD(32))
@@ -33,6 +33,10 @@ INSTR(BCLA, OPCD(16), AA(1), LK(1))
 // Branch to link/count register (XL-form: OPCD=19)
 INSTR(BLR,   OPCD(19), XO10(16))
 INSTR(BCCTR, OPCD(19), XO10(528))
+
+// Move to/from Special Purpose Registers (XFX-form: OPCD=31)
+INSTR(MTSPR, OPCD(31), XO10(467))
+INSTR(MFSPR, OPCD(31), XO10(339))
 
 // System call
 INSTR(SC, OPCD(17))

@@ -30,6 +30,7 @@ add_library(core STATIC
         src/cpu/instructions/Branch.cpp
         src/cpu/instructions/Memory.cpp
         src/cpu/instructions/Sc.cpp
+        src/cpu/instructions/Spr.cpp
         src/cpu/types/Field.hpp
         src/cpu/types/Instruction.hpp
         src/cpu/types/EncodedInstruction.hpp
