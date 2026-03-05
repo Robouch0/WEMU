@@ -31,10 +31,6 @@ void Core::Interpreter::run()
               << (m_pc + Core::Memory::MemoryMap::ApplicationCode) << std::dec << std::endl;
 
     while (true) {
-        // Plan step 2: exit condition — PC = 0 means BLR returned to sentinel
-        if (m_pc == 0)
-            break;
-
         instructionDecoder.seek(m_pc);
         const EncodedInstruction encodedInstruction(instructionDecoder.extractSwap<uint32_t>());
         m_nextPc = m_pc + 4;
@@ -50,6 +46,11 @@ void Core::Interpreter::run()
         }
 
         m_pc = m_nextPc;
+
+        // Exit condition: PC = 0 means BLR returned to the sentinel LR=0 set in run().
+        // Checked AFTER the first instruction so an entry point at offset 0 is valid.
+        if (m_pc == 0)
+            break;
     }
 
     std::cout << "Execution finished." << std::endl;

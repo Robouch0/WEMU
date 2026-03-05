@@ -34,6 +34,50 @@ namespace Core {
                 }
             }
 
+            // Copy constructor: recalculate m_memAddress from the new vector's data pointer.
+            Memory(const Memory &other)
+                : m_memory(other.m_memory),
+                  m_virtAddress(other.m_virtAddress),
+                  m_memAddress(m_memory.empty() ? 0 : reinterpret_cast<std::size_t>(m_memory.data())),
+                  m_memSize(other.m_memSize),
+                  m_heapPtr(other.m_heapPtr) {}
+
+            Memory &operator=(const Memory &other)
+            {
+                if (this != &other) {
+                    m_memory     = other.m_memory;
+                    m_virtAddress = other.m_virtAddress;
+                    m_memAddress = m_memory.empty() ? 0 : reinterpret_cast<std::size_t>(m_memory.data());
+                    m_memSize    = other.m_memSize;
+                    m_heapPtr    = other.m_heapPtr;
+                }
+                return *this;
+            }
+
+            // Move constructor: vector buffer stays at the same address after move.
+            Memory(Memory &&other) noexcept
+                : m_memory(std::move(other.m_memory)),
+                  m_virtAddress(other.m_virtAddress),
+                  m_memAddress(m_memory.empty() ? 0 : reinterpret_cast<std::size_t>(m_memory.data())),
+                  m_memSize(other.m_memSize),
+                  m_heapPtr(other.m_heapPtr)
+            {
+                other.m_memAddress = 0;
+            }
+
+            Memory &operator=(Memory &&other) noexcept
+            {
+                if (this != &other) {
+                    m_memory      = std::move(other.m_memory);
+                    m_virtAddress = other.m_virtAddress;
+                    m_memAddress  = m_memory.empty() ? 0 : reinterpret_cast<std::size_t>(m_memory.data());
+                    m_memSize     = other.m_memSize;
+                    m_heapPtr     = other.m_heapPtr;
+                    other.m_memAddress = 0;
+                }
+                return *this;
+            }
+
             std::vector<char> &getMemory() { return m_memory; }
 
             [[nodiscard]] std::size_t translate(const std::size_t &address) const
