@@ -14,14 +14,14 @@ Rectangle {
 
         Rectangle {
             Layout.fillWidth: true
-            height: 100
+            height: 70
             color: "#dddddd"
             radius: 8
 
             Row {
                 anchors.fill: parent
-                anchors.margins: 12
-                spacing: 16
+                anchors.margins: 10
+                spacing: 12
 
                 Button {
                     text: "← Home"
@@ -51,7 +51,7 @@ Rectangle {
 
                 Column {
                     width: parent.width
-                    spacing: 12
+                    spacing: 25
                     padding: 12
 
                     Text {
@@ -88,7 +88,7 @@ Rectangle {
 
                     Rectangle {
                         width: parent.width - 24
-                        height: 410
+                        height: 450
                         color: "#ffffff"
                         radius: 6
                         border.color: "#cccccc"
@@ -118,7 +118,7 @@ Rectangle {
 
                 Column {
                     width: parent.width
-                    spacing: 12
+                    spacing: 25
                     padding: 12
 
                     Text {

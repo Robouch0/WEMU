@@ -21,6 +21,8 @@ SDLGamepadInput::SDLGamepadInput(const int index, QObject *parent)
         { "DPAD_LEFT",  SDL_CONTROLLER_BUTTON_DPAD_LEFT },
         { "DPAD_RIGHT", SDL_CONTROLLER_BUTTON_DPAD_RIGHT },
 
+        { "LEFTSTICK_BUTTON",  SDL_CONTROLLER_BUTTON_LEFTSTICK },
+        { "RIGHTSTICK_BUTTON",  SDL_CONTROLLER_BUTTON_RIGHTSTICK },
     };
 
     m_controller = SDL_GameControllerOpen(index);
@@ -57,6 +59,7 @@ void SDLGamepadInput::update()
         if (m_lastButtons.value(name) != now)
         {
             m_lastButtons[name] = now;
+            qDebug() << name;
             emit buttonStateChanged(name, now);
         }
     }

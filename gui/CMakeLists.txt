@@ -42,8 +42,11 @@ qt_add_qml_module(appgui
         qml/pages/IntroSequence.qml
         qml/pages/MainMenu.qml
         qml/pages/SettingsPage.qml
-        qml/ControllerPreview.qml
-        qml/GamepadPreview.qml
+        qml/components/ControllerPreview.qml
+        qml/components/ControllerButton.qml
+        qml/components/DpadButton.qml
+        qml/components/ControllerStick.qml
+        qml/components/GamepadPreview.qml
 #        qml/assets/FrenchGuy.mp4
         RESOURCES resources.qrc
 )
