@@ -52,6 +52,7 @@ QString SDLGamepadInput::name() const
 void SDLGamepadInput::update()
 {
     SDL_GameControllerUpdate();
+
     for (const QString &name : m_buttonMap.keys()) {
         const auto sdlButton = m_buttonMap.value(name);
         bool now = SDL_GameControllerGetButton(m_controller, sdlButton);
@@ -63,6 +64,7 @@ void SDLGamepadInput::update()
             emit buttonStateChanged(name, now);
         }
     }
+
     auto checkAxis = [&](const QString &name, float &last)
     {
         float v = getAxisValue(name);
@@ -77,8 +79,22 @@ void SDLGamepadInput::update()
     checkAxis("LY", m_lastLY);
     checkAxis("RX", m_lastRX);
     checkAxis("RY", m_lastRY);
-}
 
+    auto checkTrigger = [&](const QString &name, SDL_GameControllerAxis axis, bool &last)
+    {
+        Sint16 value = SDL_GameControllerGetAxis(m_controller, axis);
+        bool now = value > 13000;
+
+        if (now != last) {
+            last = now;
+            qDebug() << name;
+            emit buttonStateChanged(name, now);
+        }
+    };
+
+    checkTrigger("LT", SDL_CONTROLLER_AXIS_TRIGGERLEFT, m_lastLT);
+    checkTrigger("RT", SDL_CONTROLLER_AXIS_TRIGGERRIGHT, m_lastRT);
+}
 bool SDLGamepadInput::isButtonPressed(const QString &buttonName) const
 {
     if (!m_controller)

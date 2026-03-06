@@ -14,7 +14,7 @@ Rectangle {
 
         Rectangle {
             Layout.fillWidth: true
-            height: 70
+            height: 50
             color: "#dddddd"
             radius: 8
 

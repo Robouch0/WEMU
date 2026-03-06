@@ -7,8 +7,9 @@ Item {
     height: 480
 
     Column {
-        anchors.centerIn: parent
-        spacing: 5
+        anchors.top: parent.top
+        anchors.horizontalCenter: parent.horizontalCenter
+        spacing: 10
 
         // ================= FRONT CONTROLLER =================
 
@@ -70,8 +71,16 @@ Item {
                 pressed: leftStickPressed
                 stickImage: "qrc:/assets/qml/assets/joystickXbox.png"
 
-                Behavior on x { NumberAnimation { duration: 40 } }
-                Behavior on y { NumberAnimation { duration: 40 } }
+                Behavior on x {
+                    NumberAnimation {
+                        duration: 40
+                    }
+                }
+                Behavior on y {
+                    NumberAnimation {
+                        duration: 40
+                    }
+                }
             }
 
             // ================= RIGHT STICK =================
@@ -83,8 +92,16 @@ Item {
                 pressed: rightStickPressed
                 stickImage: "qrc:/assets/qml/assets/joystickXbox.png"
 
-                Behavior on x { NumberAnimation { duration: 40 } }
-                Behavior on y { NumberAnimation { duration: 40 } }
+                Behavior on x {
+                    NumberAnimation {
+                        duration: 40
+                    }
+                }
+                Behavior on y {
+                    NumberAnimation {
+                        duration: 40
+                    }
+                }
             }
 
             // ================= DPAD =================
@@ -120,12 +137,101 @@ Item {
 
         // ================= BACK CONTROLLER =================
 
-        Image {
+        Item {
             id: backController
             width: 435
-            fillMode: Image.PreserveAspectFit
-            source: "qrc:/assets/qml/assets/xboxControllerBackview.png"
-            scale: 0.9
+            height: 290
+
+            Image {
+                anchors.fill: parent
+                fillMode: Image.PreserveAspectFit
+                source: "qrc:/assets/qml/assets/xboxControllerBackview.png"
+                scale: 0.95
+            }
+
+            Rectangle {
+                id: buttonLT
+                x: 120
+                y: 115
+                width: 40
+                height: 25
+                radius: 10
+
+                border.width: 2
+                border.color: ltPressed ? "#3498ff" : "white"
+                color: "transparent"
+
+                Text {
+                    anchors.centerIn: parent
+                    text: "LT"
+                    font.family: "Helvetica"
+                    font.pointSize: 14
+                    color: ltPressed ? "#3498ff" : "white"
+                }
+            }
+
+            Rectangle {
+                id: buttonRT
+                x: 275
+                y: 115
+                width: 40
+                height: 25
+                radius: 10
+
+                border.width: 2
+                border.color: rtPressed ? "#3498ff" : "white"
+                color: "transparent"
+
+                Text {
+                    anchors.centerIn: parent
+                    text: "RT"
+                    font.family: "Helvetica"
+                    font.pointSize: 12
+                    color: rtPressed ? "#3498ff" : "white"
+                }
+            }
+
+            Rectangle {
+                id: buttonRB
+                x: 274
+                y: 85
+                width: 40
+                height: 18
+                radius: 11
+
+                border.width: 2
+                border.color: rbPressed ? "#3498ff" : "white"
+                color: "transparent"
+
+                Text {
+                    anchors.centerIn: parent
+                    text: "RB"
+                    font.family: "Helvetica"
+                    font.pointSize: 11
+                    color: rbPressed ? "#3498ff" : "white"
+                }
+            }
+
+            Rectangle {
+                id: buttonLB
+                x: 120
+                y: 85
+                width: 40
+                height: 18
+                radius: 11
+
+                border.width: 2
+                border.color: lbPressed ? "#3498ff" : "white"
+                color: "transparent"
+
+                Text {
+                    anchors.centerIn: parent
+                    text: "LB"
+                    font.family: "Helvetica"
+                    font.pointSize: 11
+                    color: lbPressed ? "#3498ff" : "white"
+                }
+            }
         }
     }
 
@@ -143,6 +249,12 @@ Item {
 
     property bool leftStickPressed: false
     property bool rightStickPressed: false
+
+    property bool ltPressed: false
+    property bool rtPressed: false
+    property bool lbPressed: false
+    property bool rbPressed: false
+
 
     // ================= INPUT EVENTS =================
 
@@ -173,6 +285,15 @@ Item {
                 leftStickPressed = pressed
             if (button === "RIGHTSTICK_BUTTON")
                 rightStickPressed = pressed
+
+            if (button === "LT")
+                ltPressed = pressed
+            if (button === "RT")
+                rtPressed = pressed
+            if (button === "LB")
+                lbPressed = pressed
+            if (button === "RB")
+                rbPressed = pressed
         }
 
         function onAxisChanged(axis, value, device) {
