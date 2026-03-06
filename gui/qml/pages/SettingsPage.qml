@@ -88,7 +88,7 @@ Rectangle {
 
                     Rectangle {
                         width: parent.width - 24
-                        height: 300
+                        height: 410
                         color: "#ffffff"
                         radius: 6
                         border.color: "#cccccc"

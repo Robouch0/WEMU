@@ -111,6 +111,17 @@ Item {
             source: "qrc:/assets/qml/assets/joystickXbox.png"
             fillMode: Image.PreserveAspectCrop
         }
+
+        Rectangle {
+            width: 28
+            height: 28
+            radius: 25
+            anchors.centerIn: parent
+            anchors.horizontalCenterOffset: -4.7
+            anchors.verticalCenterOffset: -6.9
+
+            color: leftStickPressed ? "#3498ff" : "transparent"
+        }
         Behavior on x { NumberAnimation { duration: 40 } }
         Behavior on y { NumberAnimation { duration: 40 } }
     }
@@ -130,6 +141,17 @@ Item {
             width: 68; height: 68
             source: "qrc:/assets/qml/assets/joystickXbox.png"
             fillMode: Image.PreserveAspectCrop
+        }
+
+        Rectangle {
+            width: 28
+            height: 28
+            radius: 25
+            anchors.centerIn: parent
+            anchors.horizontalCenterOffset: -4.7
+            anchors.verticalCenterOffset: -6.9
+
+            color: rightStickPressed ? "#3498ff" : "transparent"
         }
         Behavior on x { NumberAnimation { duration: 40 } }
         Behavior on y { NumberAnimation { duration: 40 } }
@@ -193,6 +215,9 @@ Item {
     property bool dpadRightPressed: false
     property bool dpadLeftPressed: false
 
+    property bool leftStickPressed: false
+    property bool rightStickPressed: false
+
     Connections {
         target: InputManager
 
@@ -220,18 +245,25 @@ Item {
 
             if (button === "DPAD_RIGHT")
                 dpadRightPressed = pressed
+
+            if (button === "LEFTSTICK_BUTTON")
+                leftStickPressed = pressed
+
+            if (button === "RIGHTSTICK_BUTTON")
+                rightStickPressed = pressed
+
         }
 
         function onAxisChanged(axis, value, device) {
             if (axis === "LX")
-                leftStick.x = 45 + value * 17
+                leftStick.x = 45 + value * 16
             if (axis === "LY")
-                leftStick.y = 35 + value * 17
+                leftStick.y = 35 + value * 16
 
             if (axis === "RX")
-                rightStick.x = 325 + value * 17
+                rightStick.x = 325 + value * 16
             if (axis === "RY")
-                rightStick.y = 35 + value * 17
+                rightStick.y = 35 + value * 16
         }
     }
 }
