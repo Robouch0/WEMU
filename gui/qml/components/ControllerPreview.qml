@@ -12,7 +12,6 @@ Item {
         spacing: 10
 
         // ================= FRONT CONTROLLER =================
-
         Item {
             id: frontController
             width: 435
@@ -33,7 +32,6 @@ Item {
             }
 
             // ================= FACE BUTTONS =================
-
             ControllerButton {
                 x: 290
                 y: 105
@@ -62,8 +60,40 @@ Item {
                 pressed: yPressed
             }
 
-            // ================= LEFT STICK =================
+            // ================= MENU BUTTONS =================
+            ControllerButton {
+                x: 230
+                y: 85
+                label: ""
+                width: 15
+                height: 15
+                pressed: startPressed
+            }
 
+            ControllerButton {
+                x: 184
+                y: 85
+                label: ""
+                width: 15
+                height: 15
+                pressed: backPressed
+            }
+
+            Rectangle {
+                id: guideButton
+
+                width: 29
+                height: 29
+                radius: 25
+                x: 200
+                y: 47
+
+                border.width: 2
+                border.color: guidePressed ? "green" : "transparent"
+                color: "transparent"
+            }
+
+            // ================= LEFT STICK =================
             ControllerStick {
                 id: leftStick
                 x: 98
@@ -84,7 +114,6 @@ Item {
             }
 
             // ================= RIGHT STICK =================
-
             ControllerStick {
                 id: rightStick
                 x: 223
@@ -105,7 +134,6 @@ Item {
             }
 
             // ================= DPAD =================
-
             DpadButton {
                 x: 166
                 y: 151
@@ -136,7 +164,6 @@ Item {
         }
 
         // ================= BACK CONTROLLER =================
-
         Item {
             id: backController
             width: 435
@@ -236,7 +263,6 @@ Item {
     }
 
     // ================= STATE =================
-
     property bool aPressed: false
     property bool bPressed: false
     property bool xPressed: false
@@ -255,9 +281,12 @@ Item {
     property bool lbPressed: false
     property bool rbPressed: false
 
+    property bool startPressed: false
+    property bool backPressed: false
+    property bool guidePressed: false
+
 
     // ================= INPUT EVENTS =================
-
     Connections {
         target: InputManager
 
@@ -294,6 +323,13 @@ Item {
                 lbPressed = pressed
             if (button === "RB")
                 rbPressed = pressed
+
+            if (button === "START")
+                startPressed = pressed
+            if (button === "BACK")
+                backPressed = pressed
+            if (button === "XBOX_GUIDE")
+                guidePressed = pressed
         }
 
         function onAxisChanged(axis, value, device) {

@@ -15,6 +15,7 @@ SDLGamepadInput::SDLGamepadInput(const int index, QObject *parent)
 
         { "BACK",  SDL_CONTROLLER_BUTTON_BACK },
         { "START", SDL_CONTROLLER_BUTTON_START },
+        { "XBOX_GUIDE", SDL_CONTROLLER_BUTTON_GUIDE},
 
         { "DPAD_UP",    SDL_CONTROLLER_BUTTON_DPAD_UP },
         { "DPAD_DOWN",  SDL_CONTROLLER_BUTTON_DPAD_DOWN },
@@ -23,6 +24,7 @@ SDLGamepadInput::SDLGamepadInput(const int index, QObject *parent)
 
         { "LEFTSTICK_BUTTON",  SDL_CONTROLLER_BUTTON_LEFTSTICK },
         { "RIGHTSTICK_BUTTON",  SDL_CONTROLLER_BUTTON_RIGHTSTICK },
+
     };
 
     m_controller = SDL_GameControllerOpen(index);
