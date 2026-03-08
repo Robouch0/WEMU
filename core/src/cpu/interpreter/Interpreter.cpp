@@ -51,7 +51,7 @@ void Core::Interpreter::run()
             if (Core::syscallHandler.addressTable.contains(m_pc))
                 Core::syscallHandler.addressTable[m_pc](*this);
             else
-                std::cerr << "[HLE] unhandled OS call at 0x" << std::hex << m_pc << std::dec << std::endl;
+                std::cout << "[HLE] unhandled OS call at 0x" << std::hex << m_pc << std::dec << std::endl;
             m_pc = m_lr & ~3u; // return to caller
             continue;
         }
@@ -109,6 +109,7 @@ InstructionID Core::Interpreter::findInstructionID(const EncodedInstruction &ins
         if (found)
             return id;
     }
+    std::cout << std::endl;
     throw Core::InterpreterException("No instruction found with this fields. (opcode == " +
                                      std::to_string(instr.opcd) + ")");
 }

@@ -39,6 +39,7 @@ static constexpr std::uint32_t kDrcBufSize =  854u * 480u  * 4u; // 1,639,680 by
 // void OSScreenInit(void)
 inline void OSScreenInit(Core::Interpreter & /*cpu*/)
 {
+    std::cout << "OSScreenInit called!" << std::endl;
     g_osScreenState[0] = {};
     g_osScreenState[1] = {};
 }

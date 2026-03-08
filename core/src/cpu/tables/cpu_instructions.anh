@@ -34,6 +34,9 @@ INSTR(BCLA, OPCD(16), AA(1), LK(1))
 INSTR(BLR,   OPCD(19), XO10(16))
 INSTR(BCCTR, OPCD(19), XO10(528))
 
+// Logical operations (X-form: OPCD=31)
+INSTR(OR, OPCD(31), XO10(444))
+
 // Move to/from Special Purpose Registers (XFX-form: OPCD=31)
 INSTR(MTSPR, OPCD(31), XO10(467))
 INSTR(MFSPR, OPCD(31), XO10(339))

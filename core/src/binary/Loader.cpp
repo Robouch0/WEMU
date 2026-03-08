@@ -21,6 +21,7 @@ Core::Loader::Loader(const std::string &filepath) : m_bin({}), m_beDecoder(filep
     loadHeader();
     loadSections();
     loadSymbols();
+    loadSectionsInMemory();
 }
 
 void Core::Loader::loadHeader()
@@ -185,7 +186,6 @@ void Core::Loader::loadSections()
     loadSectionsRaw();
     loadSectionsName();
     loadSectionsMeta();
-    loadSectionsInMemory();
 }
 
 void Core::Loader::loadSymbolHeader(Utils::BeDecoder &symDecoder, Core::Symbol &symbol)

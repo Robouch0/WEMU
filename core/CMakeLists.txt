@@ -27,6 +27,7 @@ add_library(core STATIC
         src/cpu/interpreter/Interpreter.cpp
         src/cpu/interpreter/SyscallHandler.hpp
         src/cpu/instructions/Add.cpp
+        src/cpu/instructions/Logic.cpp
         src/cpu/instructions/Branch.cpp
         src/cpu/instructions/Memory.cpp
         src/cpu/instructions/Sc.cpp
