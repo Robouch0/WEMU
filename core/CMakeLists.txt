@@ -26,13 +26,17 @@ add_library(core STATIC
         src/cpu/interpreter/Interpreter.hpp
         src/cpu/interpreter/Interpreter.cpp
         src/cpu/instructions/Add.cpp
+        src/cpu/instructions/Sc.cpp
         src/cpu/types/Field.hpp
         src/cpu/types/Instruction.hpp
         src/cpu/types/EncodedInstruction.hpp
+        src/cpu/interpreter/SyscallHandler.hpp
+        src/lib/coreinit/Coreinint.hpp
 )
 
 target_include_directories(core PUBLIC
         "${CMAKE_CURRENT_SOURCE_DIR}/src"
+        "${CMAKE_CURRENT_SOURCE_DIR}/include"
         ${ZLIB_INCLUDE_DIRS}
 )
 

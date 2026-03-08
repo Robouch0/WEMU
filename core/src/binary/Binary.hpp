@@ -9,6 +9,7 @@
 
 #include <string>
 #include <vector>
+#include <cinttypes>
 
 #include "elf.h"
 #include "exception/Exception.hpp"
@@ -24,13 +25,27 @@ namespace Core {
 
     struct Section {
         std::string name;
-        Elf32_Shdr header;
-        std::vector<char> data;
+        struct RawSection {
+            Elf32_Shdr header;
+            std::vector<char> data;
+        } raw;
+        struct SectionMeta {
+            std::size_t size;
+            std::size_t address;
+            std::uint32_t type;
+        } meta;
     };
 
     struct Symbol {
         std::string name;
-        Elf32_Sym header;
+        struct RawSymbol {
+            Elf32_Sym header;
+        } raw;
+        struct SymbolMeta {
+            std::size_t index;
+            std::size_t address;
+            std::uint32_t type;
+        } meta;
     };
 
     struct Binary {
@@ -42,6 +57,16 @@ namespace Core {
                 }
             }
             throw Core::BinaryException("Could not find section with specified name.");
+        }
+
+        Section &findSection(const std::uint32_t symbolAddress)
+        {
+            for (auto &section: sections) {
+                if (symbolAddress >= section.meta.address && symbolAddress < section.meta.address + section.meta.size) {
+                    return section;
+                }
+            }
+            throw Core::BinaryException(std::to_string(symbolAddress));
         }
 
         Elf32_Ehdr header;

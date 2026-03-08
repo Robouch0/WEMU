@@ -32,16 +32,32 @@ namespace Core {
             void loadHeader();
 
             void loadSections();
+            void loadSectionsRaw();
+            void loadSectionsName();
+            void loadSectionsMeta();
+
             void loadSectionHeader(Section &section);
             void loadSectionData(Section &section);
             void loadAndDecompressSectionData(Section &section);
-            void loadSectionName();
+
+            void loadAddressRangeProgram(const Section &section, std::size_t start, unsigned long end);
+            void loadAddressRangeImports(std::vector<Core::Section>::value_type &section, unsigned long end);
 
             void loadSymbols();
-            void loadSymbolHeader(const Section &symSection, std::size_t symAmount);
-            void loadSymbolName(const Section &symSection);
+            void loadSymbolsRaw();
+            void loadSymbolsName();
+            void loadSymbolsMeta();
+            void resolveSymbols();
+
+            static void loadSymbolHeader(Utils::BeDecoder &symDecoder, Core::Symbol &symbol);
+
+            static void writeFunctionThunk(Core::Symbol &symbol, Core::Section &section);
 
             Binary m_bin;
             Utils::BeDecoder m_beDecoder;
+
+        public:
+            std::pair<std::uint32_t, std::uint32_t> codeAddressRange;
+            std::pair<std::uint32_t, std::uint32_t> dataAddressRange;
     };
 } // namespace Core
