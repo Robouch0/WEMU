@@ -11,13 +11,10 @@ WEMU/
 ├── core/           # PowerPC interpreter, ELF/RPX loader, CPU state — the heart of the emulator
 ├── gui/            # Qt6/QML launcher and input management
 ├── vulkan/         # Vulkan/GLFW rendering engine (standalone)
-├── libs/
-│   ├── cpu_IR/     # CPU intermediate representation interface
-│   └── gfx_IR/     # GPU intermediate representation interface
 └── docs/           # Contributor documentation
 ```
 
-The root `CMakeLists.txt` builds `core`, `gui`, `libs/cpu_IR`, and `libs/gfx_IR` together. `vulkan/` has its own independent build.
+The root `CMakeLists.txt` builds `core` and `gui`together. `vulkan/` has its own independent build.
 
 ---
 
@@ -33,17 +30,6 @@ This is where the actual emulation happens. It is a standalone C++ library (`cor
 - Fetch, decode, and execute PowerPC instructions
 
 **Entry point:** `core/src/main.cpp` — takes a binary file path as argument, loads it, and runs the interpreter.
-
----
-
-### `libs/cpu_IR/` and `libs/gfx_IR/` — IR interfaces
-
-These are static libraries that define a translation boundary between raw hardware emulation and higher-level processing.
-
-- `cpu_IR` exposes `cpu_frontend::CpuTranslator::decodeInstruction(uint32_t)` → `IRInstruction`
-- `gfx_IR` exposes `graphics_frontend::GfxTranslator::translateCommand(uint32_t)` → `GraphicsIR`
-
-Their current implementations are stubs. Their intended role is to translate raw PowerPC instructions and GPU commands into a normalized IR that the rest of the system can consume without depending on the specifics of the hardware encoding.
 
 ---
 
@@ -116,10 +102,6 @@ The target architecture once all components are connected:
                   Core::Interpreter
                   ┌───────┴───────────────┐
                   │                       │
-                  ▼                       ▼
-          cpu_frontend::          graphics_frontend::
-          CpuTranslator           GfxTranslator
-          (cpu_IR lib)            (gfx_IR lib)
                   │                       │
                   ▼                       ▼
           [higher-level         WemuEngineVulkan
@@ -136,8 +118,6 @@ The target architecture once all components are connected:
        ─ SDLGamepadInput
        ─ [future: phone GamePad via web app]
 ```
-
-The IR libraries (`cpu_IR`, `gfx_IR`) are the planned boundary: the interpreter will emit IR rather than executing everything directly, which decouples the hardware-level decoding from the execution backend and renderer.
 
 ---
 
@@ -194,17 +174,17 @@ InputManager (QObject)
 
 ## What is implemented vs. planned
 
-| Feature | Status |
-|---|---|
-| Big-endian ELF loader (header, sections, symbols) | Done |
-| ZLIB section decompression (`SHF_DEFLATED`) | Done |
-| PowerPC interpreter + dispatch system | In progress |
-| ADD instruction family | Done |
-| Other instruction families | Planned |
+| Feature | Status                  |
+|---|-------------------------|
+| Big-endian ELF loader (header, sections, symbols) | Done                    |
+| ZLIB section decompression (`SHF_DEFLATED`) | Done                    |
+| PowerPC interpreter + dispatch system | In progress             |
+| ADD instruction family | Done                    |
+| Other instruction families | Planned                 |
 | RPX-specific metadata (`e_type == 0xFE01`) | Detected, not fully parsed |
-| Wii U title library browser | Planned |
-| CPU IR integration | Planned |
-| GPU IR integration | Planned |
-| Vulkan renderer connected to emulator | Planned |
-| GUI launcher connected to emulator | Planned |
-| Phone-as-GamePad web app | Planned |
+| Wii U title library browser | Planned                 |
+| CPU IR integration | On Hold                 |
+| GPU IR integration | Planned ?               |
+| Vulkan renderer connected to emulator | Planned                 |
+| GUI launcher connected to emulator | Planned                 |
+| Phone-as-GamePad web app | Planned                 |
