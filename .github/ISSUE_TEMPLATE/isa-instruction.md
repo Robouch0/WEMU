@@ -18,6 +18,9 @@ labels: isa, enhancement
 **Encoding:**
 <!-- drag & drop a screenshot of the bit diagram from the PDF here -->
 
+<br>
+<br>
+
 **Operation:**
 ```
 <!-- copy pseudocode from PDF -->
