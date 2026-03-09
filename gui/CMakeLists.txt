@@ -47,6 +47,7 @@ qt_add_qml_module(appgui
         qml/components/DpadButton.qml
         qml/components/ControllerStick.qml
         qml/components/GamepadPreview.qml
+        qml/components/BindingRow.qml
 #        qml/assets/FrenchGuy.mp4
         RESOURCES resources.qrc
 )

@@ -7,6 +7,21 @@ Rectangle {
     color: "#e8e8ed"
     anchors.fill: parent
 
+    property var bindingModel: [
+        { wiiu: "A",          wiiuLabel: "A",       xboxButton: "A" },
+        { wiiu: "B",          wiiuLabel: "B",       xboxButton: "B" },
+        { wiiu: "X",          wiiuLabel: "X",       xboxButton: "X" },
+        { wiiu: "Y",          wiiuLabel: "Y",       xboxButton: "Y" },
+        { wiiu: "DPAD_UP",    wiiuLabel: "D-Up",    xboxButton: "DPAD_UP" },
+        { wiiu: "DPAD_DOWN",  wiiuLabel: "D-Down",  xboxButton: "DPAD_DOWN" },
+        { wiiu: "DPAD_LEFT",  wiiuLabel: "D-Left",  xboxButton: "DPAD_LEFT" },
+        { wiiu: "DPAD_RIGHT", wiiuLabel: "D-Right", xboxButton: "DPAD_RIGHT" },
+        { wiiu: "L",          wiiuLabel: "L",       xboxButton: "LB" },
+        { wiiu: "R",          wiiuLabel: "R",       xboxButton: "RB" },
+        { wiiu: "ZL",         wiiuLabel: "ZL",      xboxButton: "LT" },
+        { wiiu: "ZR",         wiiuLabel: "ZR",      xboxButton: "RT" },
+    ]
+
     ColumnLayout {
         anchors.fill: parent
         anchors.margins: 20
@@ -88,21 +103,63 @@ Rectangle {
 
                     Rectangle {
                         width: parent.width - 24
-                        height: 450
+                        height: 28
+                        color: "#e4e4ea"
+                        radius: 4
+
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: 8
+                            anchors.rightMargin: 8
+                            spacing: 0
+
+                            Text {
+                                Layout.fillWidth: true
+                                text: "Xbox"
+                                font.pixelSize: 12
+                                font.bold: true
+                                color: "#444444"
+                            }
+
+                            Text {
+                                Layout.fillWidth: true
+                                text: "Wii U"
+                                font.pixelSize: 12
+                                font.bold: true
+                                color: "#444444"
+                                leftPadding: 8
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        width: parent.width - 24
+                        height: bindingRepeater.count * 36
                         color: "#ffffff"
                         radius: 6
                         border.color: "#cccccc"
+                        clip: true
+
+                        Column {
+                            anchors.fill: parent
+
+                            Repeater {
+                                id: bindingRepeater
+                                model: bindingModel
+
+                                BindingRow {
+                                    width: parent.width
+                                    wiiuLabel: modelData.wiiuLabel
+                                    xboxButton: modelData.xboxButton
+                                    isListening: false
+                                }
+                            }
+                        }
                     }
 
                     Text {
                         text: "Devices: " + InputManager.connectedDevices().join(", ")
                         color: "#555555"
-                    }
-
-                    Text {
-                        id: keyLabel
-                        text: "Waiting for input..."
-                        color: "#c46a00"
                     }
                 }
             }
