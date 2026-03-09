@@ -1,0 +1,87 @@
+name: "[ISA] Implement instruction"
+description: Template for implementing a single PowerPC instruction.
+title: "[ISA][<CATEGORY>] Implement <INSTRUCTION>"
+labels: ["isa", "enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Fill in each field by copying directly from the [PowerPC ISA Book I v2.01](https://math-atlas.sourceforge.net/devel/assembly/ppc_isa.pdf).
+
+  - type: input
+    id: isa-ref
+    attributes:
+      label: ISA Reference
+      description: Section and page number in the PDF.
+      placeholder: "e.g. §3.3.8, p. 50"
+    validations:
+      required: true
+
+  - type: input
+    id: form
+    attributes:
+      label: Form
+      description: Instruction encoding form.
+      placeholder: "e.g. XO-form, D-form, X-form"
+    validations:
+      required: true
+
+  - type: textarea
+    id: syntax
+    attributes:
+      label: Syntax
+      description: All variants (OE/Rc combinations) exactly as written in the PDF.
+      placeholder: |
+        subf   RT,RA,RB   (OE=0 Rc=0)
+        subf.  RT,RA,RB   (OE=0 Rc=1)
+        subfo  RT,RA,RB   (OE=1 Rc=0)
+        subfo. RT,RA,RB   (OE=1 Rc=1)
+    validations:
+      required: true
+
+  - type: input
+    id: encoding
+    attributes:
+      label: Encoding
+      description: Opcode fields from the instruction bit diagram.
+      placeholder: "e.g. OPCD=31 | RT | RA | RB | OE | XO=40 | Rc"
+    validations:
+      required: true
+
+  - type: textarea
+    id: operation
+    attributes:
+      label: Operation
+      description: Pseudocode from the PDF, verbatim.
+      placeholder: |
+        RT ← ¬(RA) + (RB) + 1
+    validations:
+      required: true
+
+  - type: textarea
+    id: special-registers
+    attributes:
+      label: Special Registers Altered
+      description: Registers affected, as listed in the PDF.
+      placeholder: |
+        CR0       (if Rc=1)
+        SO OV     (if OE=1)
+    validations:
+      required: true
+
+  - type: textarea
+    id: extended-mnemonics
+    attributes:
+      label: Extended Mnemonics
+      description: Extended mnemonics from the PDF, if any. Leave empty if none.
+      placeholder: |
+        sub Rx,Ry,Rz  →  subf Rx,Rz,Ry
+
+  - type: input
+    id: parent
+    attributes:
+      label: Parent issue
+      description: Category tracking issue number.
+      placeholder: "e.g. #85"
+    validations:
+      required: true
