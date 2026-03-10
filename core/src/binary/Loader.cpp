@@ -9,6 +9,7 @@
 
 #include <bitset>
 #include <cassert>
+#include <iostream>
 #include <cpu/types/InstructionID.hpp>
 
 #include "zlib.h"
@@ -25,6 +26,7 @@ Core::Loader::Loader(const std::string &filepath) : m_bin({}), m_beDecoder(filep
     loadHeader();
     loadSections();
     loadSymbols();
+    loadSectionsInMemory();
 }
 
 void Core::Loader::loadHeader()
@@ -136,10 +138,10 @@ void Core::Loader::loadAddressRangeProgram(const Section &section, const std::si
 void Core::Loader::loadAddressRangeImports(Core::Section &section, const unsigned long end)
 {
     if (section.raw.header.sh_flags & SHF_EXECINSTR) {
-        // section.address = (codeAddressRange.second + section.raw.header.sh_addralign) & ~section.raw.header.sh_addralign;
+        section.meta.virtAddress = (codeAddressRange.second + section.raw.header.sh_addralign) & ~section.raw.header.sh_addralign;
         codeAddressRange.second = end;
     } else {
-        // section.address = (dataAddressRange.second + section.raw.header.sh_addralign) & ~section.raw.header.sh_addralign;
+        section.meta.virtAddress = (dataAddressRange.second + section.raw.header.sh_addralign) & ~section.raw.header.sh_addralign;
         dataAddressRange.second = end;
     }
 }
@@ -148,11 +150,11 @@ void Core::Loader::loadSectionsMeta()
 {
     for (std::size_t i = 0; i < m_bin.header.e_shnum; i++) {
         auto &section = m_bin.sections[i];
-        section.meta.address = section.raw.header.sh_addr;
+        section.meta.virtAddress = section.raw.header.sh_addr;
         section.meta.size = section.raw.data.size();
         section.meta.type = section.raw.header.sh_type;
-        const auto start = section.meta.address;
-        const auto end = section.meta.address + section.meta.size;
+        const auto start = section.meta.virtAddress;
+        const auto end = section.meta.virtAddress + section.meta.size;
 
         if (section.meta.type == SHT_NOBITS)
             section.meta.size = section.raw.header.sh_size;
@@ -160,6 +162,27 @@ void Core::Loader::loadSectionsMeta()
             loadAddressRangeProgram(section, start, end);
         if (section.meta.type == SHT_RPL_IMPORTS)
             loadAddressRangeImports(section, end);
+    }
+}
+
+void Core::Loader::loadSectionsInMemory()
+{
+    for (auto &section : m_bin.sections) {
+        if (!(section.raw.header.sh_flags & SHF_ALLOC))
+            continue;
+        if (section.meta.type == SHT_NOBITS) {
+            const std::size_t ptr = m_bin.m_memory.allocate(section.meta.virtAddress, section.meta.size);
+
+            if (ptr) {
+                memset(reinterpret_cast<void *>(ptr), 0, section.meta.size);
+            }
+        } else {
+            const std::size_t ptr = m_bin.m_memory.allocate(section.meta.virtAddress, section.meta.size);
+
+            if (ptr) {
+                memcpy(reinterpret_cast<void *>(ptr), section.raw.data.data(), section.meta.size);
+            }
+        }
     }
 }
 
@@ -188,7 +211,7 @@ void Core::Loader::loadSymbolsMeta()
             continue;
         const auto &section = m_bin.sections[symbol.raw.header.st_shndx];
         const std::size_t offset = symbol.raw.header.st_value - section.raw.header.sh_addr;
-        symbol.meta.address = section.meta.address + offset;
+        symbol.meta.virtAddress = section.meta.virtAddress + offset;
     }
 }
 
@@ -198,7 +221,7 @@ void Core::Loader::writeFunctionThunk(Core::Symbol &symbol, Core::Section &secti
     syscall.opcd = INSTRUCTIONARRAY[InstructionID::E_SC].OPCODE;
     syscall.bd = symbol.meta.index;
 
-    const std::uint32_t offset = symbol.meta.address - section.meta.address;
+    const std::uint32_t offset = symbol.meta.virtAddress - section.meta.virtAddress;
     char *sectionData = section.raw.data.data();
     EncodedInstruction syscallEndianSwapped = syscall.endianSwap();
     std::memcpy(sectionData + offset, &syscallEndianSwapped, sizeof(EncodedInstruction));

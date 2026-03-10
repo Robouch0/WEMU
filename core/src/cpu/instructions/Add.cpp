@@ -47,7 +47,17 @@ namespace Core::Instruction {
     }
 
     void ADDC(Interpreter &cpu, const EncodedInstruction &instr) {}
-    void ADDI(Interpreter &cpu, const EncodedInstruction &instr) {}
+
+    void ADDI(Core::Interpreter &cpu, const EncodedInstruction &instr)
+    {
+        const int32_t imm = static_cast<int16_t>(instr.si);
+
+        if (instr.ra == 0)
+            cpu.m_gpr[instr.rt] = imm;
+        else
+            cpu.m_gpr[instr.rt] = cpu.m_gpr[instr.ra] + imm;
+    }
+
     void ADDIC(Interpreter &cpu, const EncodedInstruction &instr) {}
     void ADDCO(Interpreter &cpu, const EncodedInstruction &instr) {}
     void ADDO(Interpreter &cpu, const EncodedInstruction &instr) {}
@@ -57,5 +67,4 @@ namespace Core::Instruction {
     void ADDZEO(Interpreter &cpu, const EncodedInstruction &instr) {}
     void ADDZE(Interpreter &cpu, const EncodedInstruction &instr) {}
     void ADDM(Interpreter &cpu, const EncodedInstruction &instr) {}
-
 } // namespace Core::Instruction

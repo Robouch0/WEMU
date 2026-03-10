@@ -32,6 +32,8 @@ add_library(core STATIC
         src/cpu/types/EncodedInstruction.hpp
         src/cpu/interpreter/SyscallHandler.hpp
         src/lib/coreinit/Coreinint.hpp
+        src/cpu/memory/Memory.hpp
+        src/cpu/instructions/Branch.cpp
 )
 
 target_include_directories(core PUBLIC

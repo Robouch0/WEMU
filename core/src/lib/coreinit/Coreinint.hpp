@@ -6,7 +6,7 @@
 
 inline std::uint32_t OSScreenInit(const std::uint32_t retValue, const std::uint32_t b)
 {
-    std::cout << __FUNCTION__ << "called ! " << retValue + b <<  std::endl;
+    std::cout << __FUNCTION__ << " called ! " << retValue + b <<  std::endl;
     return retValue;
 }
 

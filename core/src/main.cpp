@@ -23,6 +23,7 @@
 #include "cpu/interpreter/Interpreter.hpp"
 #include "lib/coreinit/Coreinint.hpp"
 #include "utils/BeDecoder.hpp"
+#include "cpu/memory/Memory.hpp"
 
 
 void print_elf32_ehdr(const Elf32_Ehdr &ehdr)
@@ -57,7 +58,7 @@ void print_symbols(Core::Binary &binary)
         std::cout << "index " << i << " ";
         if (symbol.raw.header.st_shndx < binary.sections.size()) {
             auto &sec = binary.sections[symbol.raw.header.st_shndx];
-            std::cout << "[" << sec.name << "] " << symbol.name << " -> " << std::hex << symbol.meta.address << std::dec << std::endl;
+            std::cout << "[" << sec.name << "] " << symbol.name << " -> " << std::hex << symbol.meta.virtAddress << std::dec << std::endl;
         } else {
             std::cout << symbol.name << " -> " << std::hex << symbol.raw.header.st_value << std::dec << std::endl;
         }
@@ -97,13 +98,17 @@ int main(const int ac, char const *const *av)
     RegisterCoreInitFunctions();
 
     Core::Interpreter interpreter(binary);
+
     interpreter.m_gpr[3] = 2;
-    interpreter.m_gpr[4] = 1;
+    interpreter.m_gpr[4] = 3;
+
     std::cout << "Loaded module!" << std::endl;
     std::cout << "Code: " << std::hex << "0x" << loader.codeAddressRange.first << ":" << "0x" << loader.codeAddressRange.second << std::endl;
     std::cout << "Data: " << std::hex << "0x" << loader.dataAddressRange.first << ":" << "0x" << loader.dataAddressRange.second << std::endl;
 
     interpreter.run();
+
+    Core::Memory mem;
 
     return SUCCESS_VALUE;
 }
