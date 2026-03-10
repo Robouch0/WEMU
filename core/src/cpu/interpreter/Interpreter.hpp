@@ -20,6 +20,8 @@
 #include "cpu/types/Instruction.hpp"
 
 namespace Core {
+    static constexpr std::uint32_t INSTR_SIZE = sizeof(std::uint32_t);
+
     class InterpreterException final : public Core::Exception {
         public:
             explicit InterpreterException(const std::string &errorMessage) : Core::Exception(

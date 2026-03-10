@@ -24,7 +24,7 @@ void Core::Interpreter::run()
         instructionDecoder.seek(m_pc);
         const EncodedInstruction encodedInstruction(instructionDecoder.extractSwap<uint32_t>());
         std::cout << " 0x" << std::hex << m_pc + Core::Memory::MemoryMap::ApplicationCode << std::dec << "\t" << std::bitset<sizeof(uint32_t) * 8>(encodedInstruction.raw) << "\t";
-        m_nextPc = m_pc + 4;
+        m_nextPc = m_pc + Core::INSTR_SIZE;
         try {
             executeInstruction(encodedInstruction);
             debugDumpGPR();
