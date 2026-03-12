@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.16)
 
 project(gui VERSION 0.1 LANGUAGES CXX)
 
+include(CPM.cmake)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -11,9 +12,18 @@ set(CMAKE_AUTOUIC ON)
 
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Quick QuickControls2)
 
+if(NOT Qt6_FOUND)
+    message(FATAL_ERROR "Qt6 not found. Install with: sudo apt install qt6-base-dev")
+endif()
+
 qt_standard_project_setup(REQUIRES 6.6.2)
 qt_add_resources(RESOURCES resources.qrc)
-find_package(SDL2 REQUIRED)
+
+CPMAddPackage(
+        NAME SDL2
+        GITHUB_REPOSITORY libsdl-org/SDL
+        GIT_TAG release-2.32.2
+)
 
 qt_add_executable(appgui
     src/main.cpp
@@ -21,7 +31,6 @@ qt_add_executable(appgui
     src/input/SDLGamepadInput.cpp
     src/input/InputManager.cpp
     ${RESOURCES}
-
 )
 
 target_sources(appgui PRIVATE
@@ -44,9 +53,9 @@ qt_add_qml_module(appgui
         RESOURCES resources.qrc
 )
 
-set_target_properties(appgui PROPERTIES
-    WIN32_EXECUTABLE TRUE
-)
+#set_target_properties(appgui PROPERTIES
+#    WIN32_EXECUTABLE TRUE
+#)
 
 target_include_directories(appgui
         PRIVATE

@@ -2,6 +2,11 @@ cmake_minimum_required(VERSION 3.28.0)
 project(WEMU)
 
 find_package(Vulkan REQUIRED)
+
+if(NOT Vulkan_FOUND)
+    message(FATAL_ERROR "Vulkan not found. Install with: sudo apt install libvulkan-dev")
+endif()
+
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(GLFW3 REQUIRED glfw3)
 
