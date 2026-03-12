@@ -22,6 +22,32 @@ Rectangle {
         { wiiu: "ZR",         wiiuLabel: "ZR",      xboxButton: "RT" },
     ]
 
+    property string listeningFor: ""
+
+    function updateBinding(wiiuKey, newXboxButton) {
+        const targetEntry = bindingModel.find(function(e) { return e.wiiu === wiiuKey })
+        const displaced = bindingModel.find(function(e) { return e.xboxButton === newXboxButton && e.wiiu !== wiiuKey })
+
+        bindingModel = bindingModel.map(function(entry) {
+            if (entry.wiiu === wiiuKey)
+                return { wiiu: entry.wiiu, wiiuLabel: entry.wiiuLabel, xboxButton: newXboxButton }
+            if (displaced && entry.wiiu === displaced.wiiu)
+                return { wiiu: entry.wiiu, wiiuLabel: entry.wiiuLabel, xboxButton: targetEntry.xboxButton }
+            return entry
+        })
+    }
+
+    Connections {
+        target: InputManager
+
+        function onButtonChanged(button, pressed, device) {
+            if (listeningFor !== "" && pressed && bindingModel.some(function(entry) { return entry.xboxButton === button })) {
+                updateBinding(listeningFor, button)
+                listeningFor = ""
+            }
+        }
+    }
+
     ColumnLayout {
         anchors.fill: parent
         anchors.margins: 20
@@ -111,7 +137,7 @@ Rectangle {
                             anchors.fill: parent
                             anchors.leftMargin: 8
                             anchors.rightMargin: 8
-                            spacing: 0
+                            spacing: 5
 
                             Text {
                                 Layout.fillWidth: true
@@ -151,15 +177,28 @@ Rectangle {
                                     width: parent.width
                                     wiiuLabel: modelData.wiiuLabel
                                     xboxButton: modelData.xboxButton
-                                    isListening: false
+                                    isListening: listeningFor === modelData.wiiu
+                                    onRowClicked: listeningFor = modelData.wiiu
                                 }
                             }
                         }
                     }
 
                     Text {
-                        text: "Devices: " + InputManager.connectedDevices().join(", ")
-                        color: "#555555"
+                        visible: listeningFor !== ""
+                        text: "Press a button on the controller..."
+                        color: "#c46a00"
+                        font.pixelSize: 12
+                        font.italic: true
+                    }
+
+                    Text {
+                        visible: listeningFor === ""
+                        text: InputManager.connectedDevices().length > 0
+                              ? "Connected: " + InputManager.connectedDevices().join(", ")
+                              : "No controller connected"
+                        color: "#888888"
+                        font.pixelSize: 11
                     }
                 }
             }
