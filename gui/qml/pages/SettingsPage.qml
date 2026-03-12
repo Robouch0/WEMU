@@ -153,7 +153,6 @@ Rectangle {
                                 font.pixelSize: 12
                                 font.bold: true
                                 color: "#444444"
-                                leftPadding: 8
                             }
                         }
                     }

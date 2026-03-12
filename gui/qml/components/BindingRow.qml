@@ -58,7 +58,7 @@ Rectangle {
             Text {
                 anchors.verticalCenter: parent.verticalCenter
                 anchors.left: parent.left
-                anchors.leftMargin: 8
+                anchors.leftMargin: 15
                 text: root.wiiuLabel
                 color: "#555555"
                 font.pixelSize: 13
