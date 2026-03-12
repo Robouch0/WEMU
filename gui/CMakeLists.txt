@@ -25,6 +25,12 @@ CPMAddPackage(
         GIT_TAG release-2.32.2
 )
 
+CPMAddPackage(
+        NAME xkbcommon
+        GITHUB_REPOSITORY xkbcommon/libxkbcommon
+        GIT_TAG xkbcommon-1.13.1
+)
+
 qt_add_executable(appgui
     src/main.cpp
     src/input/KeyboardInput.cpp
