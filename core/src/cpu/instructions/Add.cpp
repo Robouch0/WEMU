@@ -30,7 +30,7 @@ namespace Core::Instruction {
     void ADDE(Core::Interpreter &cpu, const EncodedInstruction &instr)
     {
         const uint64_t result = static_cast<uint64_t>(cpu.m_gpr[instr.ra]) + static_cast<uint64_t>(cpu.m_gpr[instr.rb]) + static_cast<uint64_t>(cpu.m_xer.ca);
-        cpu.m_gpr[instr.rt] = static_cast<int32_t>(result);
+        cpu.m_gpr[instr.rt] = static_cast<uint32_t>(result);
 
         cpu.m_xer.ca = (result >> CARRY_OFFSET) & 1;
         cpu.updateCR(cpu.m_cr.cr0, cpu.m_gprSigned[instr.rt], instr);

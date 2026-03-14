@@ -9,6 +9,8 @@
 
 #include <cstdint>
 
+static constexpr std::uint32_t CARRY_OFFSET = 32;
+
 union EncodedInstruction {
     explicit EncodedInstruction(const std::uint32_t &raw) : opcd(0) { this->raw = raw; }
     std::uint32_t raw;
