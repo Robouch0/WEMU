@@ -304,39 +304,38 @@ Item {
 
         function onButtonChanged(button, pressed, device) {
 
-            if (button === "A")
+            if (button === InputProfileManager.getBinding("A"))
                 aPressed = pressed
-            if (button === "B")
+            if (button === InputProfileManager.getBinding("B"))
                 bPressed = pressed
-            if (button === "X")
+            if (button === InputProfileManager.getBinding("X"))
                 xPressed = pressed
-            if (button === "Y")
+            if (button === InputProfileManager.getBinding("Y"))
                 yPressed = pressed
 
-            if (button === "DPAD_DOWN")
+            if (button === InputProfileManager.getBinding("DPAD_DOWN"))
                 dpadDownPressed = pressed
-            if (button === "DPAD_UP")
+            if (button === InputProfileManager.getBinding("DPAD_UP"))
                 dpadUpPressed = pressed
-            if (button === "DPAD_LEFT")
+            if (button === InputProfileManager.getBinding("DPAD_LEFT"))
                 dpadLeftPressed = pressed
-            if (button === "DPAD_RIGHT")
+            if (button === InputProfileManager.getBinding("DPAD_RIGHT"))
                 dpadRightPressed = pressed
 
+            if (button === InputProfileManager.getBinding("L"))
+                lPressed = pressed
+            if (button === InputProfileManager.getBinding("R"))
+                rPressed = pressed
+            if (button === InputProfileManager.getBinding("ZL"))
+                zlPressed = pressed
+            if (button === InputProfileManager.getBinding("ZR"))
+                zrPressed = pressed
+
+            // Non-mappable buttons, so pass through InputProfileManager
             if (button === "LEFTSTICK_BUTTON")
                 leftStickPressed = pressed
             if (button === "RIGHTSTICK_BUTTON")
                 rightStickPressed = pressed
-
-            if (button === "LT")
-                zlPressed = pressed
-            if (button === "RT")
-                zrPressed = pressed
-            if (button === "LB")
-                lPressed = pressed
-            if (button === "RB")
-                rPressed = pressed
-
-
             if (button === "START")
                 startPressed = pressed
             if (button === "BACK")

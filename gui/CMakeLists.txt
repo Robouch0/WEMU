@@ -20,6 +20,7 @@ qt_add_executable(appgui
     src/input/KeyboardInput.cpp
     src/input/SDLGamepadInput.cpp
     src/input/InputManager.cpp
+    src/input/InputProfileManager.cpp
     ${RESOURCES}
 
 )
@@ -29,6 +30,8 @@ target_sources(appgui PRIVATE
         src/input/KeyboardInput.hpp
         src/input/InputManager.hpp
         src/input/SDLGamepadInput.hpp
+        src/input/InputProfile.hpp
+        src/input/InputProfileManager.hpp
 )
 
 #qt_policy(SET QTP0004 NEW)

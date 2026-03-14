@@ -7,42 +7,15 @@ Rectangle {
     color: "#e8e8ed"
     anchors.fill: parent
 
-    property var bindingModel: [
-        { wiiu: "A",          wiiuLabel: "A",       xboxButton: "A" },
-        { wiiu: "B",          wiiuLabel: "B",       xboxButton: "B" },
-        { wiiu: "X",          wiiuLabel: "X",       xboxButton: "X" },
-        { wiiu: "Y",          wiiuLabel: "Y",       xboxButton: "Y" },
-        { wiiu: "DPAD_UP",    wiiuLabel: "D-Up",    xboxButton: "DPAD_UP" },
-        { wiiu: "DPAD_DOWN",  wiiuLabel: "D-Down",  xboxButton: "DPAD_DOWN" },
-        { wiiu: "DPAD_LEFT",  wiiuLabel: "D-Left",  xboxButton: "DPAD_LEFT" },
-        { wiiu: "DPAD_RIGHT", wiiuLabel: "D-Right", xboxButton: "DPAD_RIGHT" },
-        { wiiu: "L",          wiiuLabel: "L",       xboxButton: "LB" },
-        { wiiu: "R",          wiiuLabel: "R",       xboxButton: "RB" },
-        { wiiu: "ZL",         wiiuLabel: "ZL",      xboxButton: "LT" },
-        { wiiu: "ZR",         wiiuLabel: "ZR",      xboxButton: "RT" },
-    ]
-
     property string listeningFor: ""
-
-    function updateBinding(wiiuKey, newXboxButton) {
-        const targetEntry = bindingModel.find(function(e) { return e.wiiu === wiiuKey })
-        const displaced = bindingModel.find(function(e) { return e.xboxButton === newXboxButton && e.wiiu !== wiiuKey })
-
-        bindingModel = bindingModel.map(function(entry) {
-            if (entry.wiiu === wiiuKey)
-                return { wiiu: entry.wiiu, wiiuLabel: entry.wiiuLabel, xboxButton: newXboxButton }
-            if (displaced && entry.wiiu === displaced.wiiu)
-                return { wiiu: entry.wiiu, wiiuLabel: entry.wiiuLabel, xboxButton: targetEntry.xboxButton }
-            return entry
-        })
-    }
 
     Connections {
         target: InputManager
 
         function onButtonChanged(button, pressed, device) {
-            if (listeningFor !== "" && pressed && bindingModel.some(function(entry) { return entry.xboxButton === button })) {
-                updateBinding(listeningFor, button)
+            if (listeningFor !== "" && pressed
+                && InputProfileManager.bindingModel.some(function(e) { return e.xboxButton === button })) {
+                InputProfileManager.setBinding(listeningFor, button)
                 listeningFor = ""
             }
         }
@@ -170,7 +143,7 @@ Rectangle {
 
                             Repeater {
                                 id: bindingRepeater
-                                model: bindingModel
+                                model: InputProfileManager.bindingModel
 
                                 BindingRow {
                                     width: parent.width
