@@ -13,7 +13,9 @@ int main(int argc, char *argv[])
     if (SDL_Init(SDL_INIT_GAMECONTROLLER) != 0) {
         qFatal("SDL_Init failed: %s", SDL_GetError());
     }
+
     QGuiApplication app(argc, argv);
+    QGuiApplication::setApplicationName("wemu");
     QQmlApplicationEngine engine;
 
     auto inputManager = new InputManager();

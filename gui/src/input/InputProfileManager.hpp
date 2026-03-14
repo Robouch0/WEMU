@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QObject>
+#include <QString>
 #include <QVariantList>
 #include "InputProfile.hpp"
 
@@ -20,6 +21,11 @@ signals:
     void bindingsChanged();
 
 private:
+    void save() const;
+    void load();
+
+    [[nodiscard]] static QString configPath();
+
     InputProfile m_profile;
 
     static const QStringList s_displayOrder;
