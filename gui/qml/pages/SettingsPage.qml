@@ -100,6 +100,38 @@ Rectangle {
                         color: "#1a1a1a"
                     }
 
+                    Row {
+                        spacing: 6
+
+                        Repeater {
+                            model: 3
+
+                            Rectangle {
+                                width: 90
+                                height: 28
+                                radius: 4
+                                color: InputProfileManager.currentProfileIndex === index ? "#3498ff" : "#e4e4ea"
+                                border.color: InputProfileManager.currentProfileIndex === index ? "#2980d9" : "#cccccc"
+
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: "Profile " + (index + 1)
+                                    font.pixelSize: 12
+                                    color: InputProfileManager.currentProfileIndex === index ? "white" : "#444444"
+                                }
+
+                                MouseArea {
+                                    anchors.fill: parent
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: {
+                                        listeningFor = ""
+                                        InputProfileManager.selectProfile(index)
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     Rectangle {
                         width: parent.width - 24
                         height: 28

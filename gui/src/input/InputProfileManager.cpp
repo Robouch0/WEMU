@@ -2,6 +2,7 @@
 
 #include <QDir>
 #include <QFile>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QStandardPaths>
@@ -15,8 +16,17 @@ const QStringList InputProfileManager::s_displayOrder = {
 InputProfileManager::InputProfileManager(QObject *parent)
     : QObject(parent)
 {
-    m_profile.name = "Default";
-    m_profile.bindings = {
+    for (int i = 0; i < MAX_PROFILES; ++i)
+        m_profiles.append(createDefaultProfile("Profile " + QString::number(i + 1)));
+
+    load();
+}
+
+InputProfile InputProfileManager::createDefaultProfile(const QString &name) const
+{
+    InputProfile profile;
+    profile.name = name;
+    profile.bindings = {
         { "A",          "A"         },
         { "B",          "B"         },
         { "X",          "X"         },
@@ -30,44 +40,60 @@ InputProfileManager::InputProfileManager(QObject *parent)
         { "ZL",         "LT"        },
         { "ZR",         "RT"        },
     };
-
-    load();
+    return profile;
 }
 
 QVariantList InputProfileManager::bindingModel() const
 {
     QVariantList result;
+    const auto &profile = m_profiles[m_currentIndex];
 
     for (const auto &wiiu : s_displayOrder) {
         QVariantMap entry;
         entry["wiiu"]       = wiiu;
         entry["wiiuLabel"]  = wiiu;
-        entry["xboxButton"] = m_profile.bindings.value(wiiu, "");
+        entry["xboxButton"] = profile.bindings.value(wiiu, "");
         result.append(entry);
     }
 
     return result;
 }
 
+int InputProfileManager::currentProfileIndex() const
+{
+    return m_currentIndex;
+}
+
+void InputProfileManager::selectProfile(int index)
+{
+    if (index < 0 || index >= MAX_PROFILES || index == m_currentIndex)
+        return;
+
+    m_currentIndex = index;
+    save();
+    emit bindingsChanged();
+}
+
 void InputProfileManager::setBinding(const QString &wiiuButton, const QString &xboxButton)
 {
-    const QString oldXbox = m_profile.bindings.value(wiiuButton);
+    auto &bindings = m_profiles[m_currentIndex].bindings;
+    const QString oldXbox = bindings.value(wiiuButton);
 
-    for (auto it = m_profile.bindings.begin(); it != m_profile.bindings.end(); ++it) {
+    for (auto it = bindings.begin(); it != bindings.end(); ++it) {
         if (it.value() == xboxButton && it.key() != wiiuButton) {
             it.value() = oldXbox;
             break;
         }
     }
 
-    m_profile.bindings[wiiuButton] = xboxButton;
+    bindings[wiiuButton] = xboxButton;
     save();
     emit bindingsChanged();
 }
 
 QString InputProfileManager::getBinding(const QString &wiiuButton) const
 {
-    return m_profile.bindings.value(wiiuButton, "");
+    return m_profiles[m_currentIndex].bindings.value(wiiuButton, "");
 }
 
 QString InputProfileManager::configPath()
@@ -79,13 +105,22 @@ QString InputProfileManager::configPath()
 
 void InputProfileManager::save() const
 {
-    QJsonObject bindings;
-    for (auto it = m_profile.bindings.constBegin(); it != m_profile.bindings.constEnd(); ++it)
-        bindings[it.key()] = it.value();
+    QJsonArray profilesArray;
+
+    for (const auto &profile : m_profiles) {
+        QJsonObject bindings;
+        for (auto it = profile.bindings.constBegin(); it != profile.bindings.constEnd(); ++it)
+            bindings[it.key()] = it.value();
+
+        QJsonObject obj;
+        obj["name"]     = profile.name;
+        obj["bindings"] = bindings;
+        profilesArray.append(obj);
+    }
 
     QJsonObject root;
-    root["name"]     = m_profile.name;
-    root["bindings"] = bindings;
+    root["currentIndex"] = m_currentIndex;
+    root["profiles"]     = profilesArray;
 
     QFile file(configPath());
     if (file.open(QIODevice::WriteOnly))
@@ -99,10 +134,19 @@ void InputProfileManager::load()
         return;
 
     const QJsonObject root = QJsonDocument::fromJson(file.readAll()).object();
-    const QJsonObject bindings = root["bindings"].toObject();
+    const QJsonArray profilesArray = root["profiles"].toArray();
 
-    for (auto it = bindings.constBegin(); it != bindings.constEnd(); ++it) {
-        if (m_profile.bindings.contains(it.key()))
-            m_profile.bindings[it.key()] = it.value().toString();
+    for (int i = 0; i < qMin(static_cast<int>(profilesArray.size()), MAX_PROFILES); ++i) {
+        const QJsonObject obj = profilesArray[i].toObject();
+        const QJsonObject bindings = obj["bindings"].toObject();
+
+        for (auto it = bindings.constBegin(); it != bindings.constEnd(); ++it) {
+            if (m_profiles[i].bindings.contains(it.key()))
+                m_profiles[i].bindings[it.key()] = it.value().toString();
+        }
     }
+
+    const int savedIndex = root["currentIndex"].toInt(0);
+    if (savedIndex >= 0 && savedIndex < MAX_PROFILES)
+        m_currentIndex = savedIndex;
 }
