@@ -61,7 +61,6 @@ namespace Core::Instruction {
     void ADDIC(Interpreter &cpu, const EncodedInstruction &instr) {}
     void ADDCO(Interpreter &cpu, const EncodedInstruction &instr) {}
     void ADDO(Interpreter &cpu, const EncodedInstruction &instr) {}
-    void ADDEO(Interpreter &cpu, const EncodedInstruction &instr) {}
     void ADDME(Interpreter &cpu, const EncodedInstruction &instr) {}
     void ADDMEO(Interpreter &cpu, const EncodedInstruction &instr) {}
     void ADDZEO(Interpreter &cpu, const EncodedInstruction &instr) {}
