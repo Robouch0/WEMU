@@ -65,8 +65,6 @@ namespace Core::Instruction {
         cpu.m_gpr[instr.rt] = cpu.m_gpr[instr.ra] + (instr.si << 16);
     }
 
-    void ADDC(Interpreter &cpu, const EncodedInstruction &instr) {}
-
     void ADDI(Core::Interpreter &cpu, const EncodedInstruction &instr)
     {
         const int32_t imm = static_cast<int16_t>(instr.si);
@@ -75,6 +73,17 @@ namespace Core::Instruction {
             cpu.m_gpr[instr.rt] = imm;
         else
             cpu.m_gpr[instr.rt] = cpu.m_gpr[instr.ra] + imm;
+    }
+
+    void ADDC(Interpreter &cpu, const EncodedInstruction &instr)
+    {
+        const uint64_t result = static_cast<uint64_t>(cpu.m_gpr[instr.ra]) + static_cast<uint64_t>(cpu.m_gpr[instr.rb]);
+
+        cpu.m_gpr[instr.rt] = static_cast<uint32_t>(result);
+        cpu.m_xer.ca = (result >> CARRY_OFFSET) & 1;
+
+        cpu.updateOverflow(cpu.m_gprSigned[instr.ra], cpu.m_gprSigned[instr.rb], cpu.m_gprSigned[instr.rt], instr);
+        cpu.updateCR(cpu.m_cr.cr0, cpu.m_gprSigned[instr.rt], instr);
     }
 
     void ADDIC(Interpreter &cpu, const EncodedInstruction &instr) {}
