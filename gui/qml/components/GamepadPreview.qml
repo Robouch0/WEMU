@@ -359,4 +359,23 @@ Item {
                 rightStick.y = 35 + value * 16
         }
     }
+
+    Connections {
+        target: InputProfileManager
+
+        function onBindingsChanged() {
+            aPressed = false
+            bPressed = false
+            xPressed = false
+            yPressed = false
+            dpadDownPressed = false
+            dpadUpPressed = false
+            dpadLeftPressed = false
+            dpadRightPressed = false
+            lPressed = false
+            rPressed = false
+            zlPressed = false
+            zrPressed = false
+        }
+    }
 }
