@@ -320,7 +320,7 @@ TEST(InstructionTest, ADDME_NoOE_NoRc_NoCarry)
     EXPECT_EQ(cpu.m_xer.ov, 0);
     EXPECT_EQ(cpu.m_xer.so, 0);
     EXPECT_EQ(cpu.m_cr.cr0.eq, 0);
-    EXPECT_EQ(cpu.m_xer.ca, 0);
+    EXPECT_EQ(cpu.m_xer.ca, 1);
 }
 
 //
@@ -348,7 +348,7 @@ TEST(InstructionTest, ADDME_NoOE_NoRc_WithCarry)
     EXPECT_EQ(cpu.m_xer.ov, 0);
     EXPECT_EQ(cpu.m_xer.so, 0);
     EXPECT_EQ(cpu.m_cr.cr0.eq, 0);
-    EXPECT_EQ(cpu.m_xer.ca, 0);
+    EXPECT_EQ(cpu.m_xer.ca, 1);
 }
 
 //
@@ -380,7 +380,7 @@ TEST(InstructionTest, ADDME_NoOe_WithRc_NoCarry)
 
     EXPECT_EQ(cpu.m_xer.ov, 0);
     EXPECT_EQ(cpu.m_xer.so, 0);
-    EXPECT_EQ(cpu.m_xer.ca, 0);
+    EXPECT_EQ(cpu.m_xer.ca, 1);
 }
 
 //
@@ -412,7 +412,7 @@ TEST(InstructionTest, ADDME_NoOe_WithRc_WithCarry)
 
     EXPECT_EQ(cpu.m_xer.ov, 0);
     EXPECT_EQ(cpu.m_xer.so, 0);
-    EXPECT_EQ(cpu.m_xer.ca, 0);
+    EXPECT_EQ(cpu.m_xer.ca, 1);
 }
 
 //
@@ -440,7 +440,7 @@ TEST(InstructionTest, ADDME_WithOe_NoRc_NoCarry)
     EXPECT_EQ(cpu.m_xer.ov, 1);
     EXPECT_EQ(cpu.m_xer.so, 1);
     EXPECT_EQ(cpu.m_cr.cr0.eq, 0);
-    EXPECT_EQ(cpu.m_xer.ca, 0);
+    EXPECT_EQ(cpu.m_xer.ca, 1);
 }
 
 //
@@ -464,7 +464,7 @@ TEST(InstructionTest, ADDME_WithOe_NoRc_WithCarry)
 
     Core::Instruction::ADDME(cpu, inst);
 
-    EXPECT_EQ(cpu.m_gpr[4], 0);
+    EXPECT_EQ(cpu.m_gpr[4], 1);
     EXPECT_EQ(cpu.m_xer.ov, 0);
     EXPECT_EQ(cpu.m_xer.so, 0);
     EXPECT_EQ(cpu.m_cr.cr0.eq, 0);
@@ -481,7 +481,7 @@ TEST(InstructionTest, ADDME_WithOe_WithRc_NoCarry)
 {
     auto cpu = makeCPU();
 
-    cpu.m_gpr[3] = 1;
+    cpu.m_gpr[3] = 0X80000000;
     cpu.m_xer.ca = 0;
 
     EncodedInstruction inst(0);
@@ -492,7 +492,7 @@ TEST(InstructionTest, ADDME_WithOe_WithRc_NoCarry)
 
     Core::Instruction::ADDME(cpu, inst);
 
-    EXPECT_EQ(cpu.m_gpr[4], 0);
+    EXPECT_EQ(cpu.m_gpr[4], 0x7FFFFFFF);
     EXPECT_EQ(cpu.m_xer.ov, 1);
     EXPECT_EQ(cpu.m_xer.so, 1);
 
@@ -530,7 +530,7 @@ TEST(InstructionTest, ADDME_WithOe_WithRc_WithCarry)
     EXPECT_EQ(cpu.m_cr.cr0.lt, 1);
     EXPECT_EQ(cpu.m_cr.cr0.gt, 0);
     EXPECT_EQ(cpu.m_cr.cr0.eq, 0);
-    EXPECT_EQ(cpu.m_xer.ca, 0);
+    EXPECT_EQ(cpu.m_xer.ca, 1);
 }
 
 //
