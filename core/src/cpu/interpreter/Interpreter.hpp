@@ -73,7 +73,7 @@ namespace Core {
                           const EncodedInstruction &instr) const;
 
             void updateOverflow(const std::int32_t &a, const std::int32_t &b, const std::int32_t &result,
-                                const EncodedInstruction &instr, const std::uint32_t &carry = 0);
+                                const EncodedInstruction &instr);
 
             #define INSTR(name, ...) friend void Core::Instruction::name(Core::Interpreter &, const EncodedInstruction &);
             #include "cpu/tables/cpu_instructions.anh"
