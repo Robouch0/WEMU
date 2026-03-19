@@ -1057,3 +1057,43 @@ TEST(InstructionTest, ADDC_WithOE_WithRc_SOReflectedInCR0)
     EXPECT_EQ(cpu.m_cr.cr0.eq, 0);
     EXPECT_EQ(cpu.m_cr.cr0.so, 1);
 }
+
+//
+// ───────────────────────────────────────────────────────────────
+//  ADDIC OPCODE 12
+// ───────────────────────────────────────────────────────────────
+//
+
+TEST(InstructionTest, ADDIC_NoCarry)
+{
+    auto cpu = makeCPU();
+
+    cpu.m_gpr[3] = 100;
+
+    EncodedInstruction inst(0);
+    inst.rt = 4;
+    inst.ra = 3;
+    inst.si = 50;
+
+    Core::Instruction::ADDIC(cpu, inst);
+
+    EXPECT_EQ(cpu.m_gpr[4], 150);
+    EXPECT_EQ(cpu.m_xer.ca, 0);
+}
+
+TEST(InstructionTest, ADDIC_WithCarry)
+{
+    auto cpu = makeCPU();
+
+    cpu.m_gpr[3] = 0xFFFFFFFF;
+
+    EncodedInstruction inst(0);
+    inst.rt = 4;
+    inst.ra = 3;
+    inst.si = 1;
+
+    Core::Instruction::ADDIC(cpu, inst);
+
+    EXPECT_EQ(cpu.m_gpr[4], 0);
+    EXPECT_EQ(cpu.m_xer.ca, 1);
+}

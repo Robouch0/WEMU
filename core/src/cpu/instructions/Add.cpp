@@ -86,7 +86,15 @@ namespace Core::Instruction {
         cpu.updateCR(cpu.m_cr.cr0, cpu.m_gprSigned[instr.rt], instr);
     }
 
-    void ADDIC(Interpreter &cpu, const EncodedInstruction &instr) {}
+    void ADDIC(Interpreter &cpu, const EncodedInstruction &instr)
+    {
+        const int32_t imm = static_cast<int16_t>(instr.si);
+        const uint64_t result = static_cast<uint64_t>(cpu.m_gpr[instr.ra]) + static_cast<uint64_t>(imm);
+
+        cpu.m_gpr[instr.rt] = static_cast<uint32_t>(result);
+        cpu.m_xer.ca = (result >> CARRY_OFFSET) & 1;
+    }
+
     void ADDCO(Interpreter &cpu, const EncodedInstruction &instr) {}
     void ADDO(Interpreter &cpu, const EncodedInstruction &instr) {}
     void ADDZEO(Interpreter &cpu, const EncodedInstruction &instr) {}
