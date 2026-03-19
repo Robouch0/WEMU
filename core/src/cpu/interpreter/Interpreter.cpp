@@ -97,7 +97,7 @@ void Core::Interpreter::updateCR(Core::ConditionRegister::Register &cr, const st
 }
 
 void Core::Interpreter::updateOverflow(const std::int32_t &a, const std::int32_t &b, const std::int32_t &result,
-                                       const EncodedInstruction &instr, const std::uint32_t &carry)
+                                       const EncodedInstruction &instr)
 {
     if (!instr.oe)
         return;
