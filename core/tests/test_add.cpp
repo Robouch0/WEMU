@@ -1057,3 +1057,333 @@ TEST(InstructionTest, ADDC_WithOE_WithRc_SOReflectedInCR0)
     EXPECT_EQ(cpu.m_cr.cr0.eq, 0);
     EXPECT_EQ(cpu.m_cr.cr0.so, 1);
 }
+
+//
+// ───────────────────────────────────────────────────────────────
+//  ADDZE (OE=0, RC=0, CA=0)
+// ───────────────────────────────────────────────────────────────
+//
+
+TEST(InstructionTest, ADDZE_NoOE_NoRc_NoCarry)
+{
+    auto cpu = makeCPU();
+
+    cpu.m_gpr[3] = 42;
+    cpu.m_xer.ca = 0;
+
+    EncodedInstruction inst(0);
+    inst.rt = 4;
+    inst.ra = 3;
+    inst.oe = 0;
+    inst.rc = 0;
+
+    Core::Instruction::ADDZE(cpu, inst);
+
+    EXPECT_EQ(cpu.m_gpr[4], 42);
+    EXPECT_EQ(cpu.m_xer.ca, 0);
+    EXPECT_EQ(cpu.m_xer.ov, 0);
+    EXPECT_EQ(cpu.m_xer.so, 0);
+    EXPECT_EQ(cpu.m_cr.cr0.eq, 0);
+}
+
+//
+// ───────────────────────────────────────────────────────────────
+//  ADDZE (OE=0, RC=0, CA=1)
+// ───────────────────────────────────────────────────────────────
+//
+
+TEST(InstructionTest, ADDZE_NoOE_NoRc_WithCarry)
+{
+    auto cpu = makeCPU();
+
+    cpu.m_gpr[3] = 42;
+    cpu.m_xer.ca = 1;
+
+    EncodedInstruction inst(0);
+    inst.rt = 4;
+    inst.ra = 3;
+    inst.oe = 0;
+    inst.rc = 0;
+
+    Core::Instruction::ADDZE(cpu, inst);
+
+    EXPECT_EQ(cpu.m_gpr[4], 43);
+    EXPECT_EQ(cpu.m_xer.ca, 0);
+    EXPECT_EQ(cpu.m_xer.ov, 0);
+    EXPECT_EQ(cpu.m_xer.so, 0);
+    EXPECT_EQ(cpu.m_cr.cr0.eq, 0);
+}
+
+//
+// ───────────────────────────────────────────────────────────────
+//  ADDZE (OE=0, RC=0, CA=1, carry out)
+// ───────────────────────────────────────────────────────────────
+//
+
+TEST(InstructionTest, ADDZE_NoOE_NoRc_CarryOut)
+{
+    auto cpu = makeCPU();
+
+    cpu.m_gpr[3] = 0xFFFFFFFF;
+    cpu.m_xer.ca = 1;
+
+    EncodedInstruction inst(0);
+    inst.rt = 4;
+    inst.ra = 3;
+    inst.oe = 0;
+    inst.rc = 0;
+
+    Core::Instruction::ADDZE(cpu, inst);
+
+    EXPECT_EQ(cpu.m_gpr[4], 0);
+    EXPECT_EQ(cpu.m_xer.ca, 1);
+    EXPECT_EQ(cpu.m_xer.ov, 0);
+    EXPECT_EQ(cpu.m_xer.so, 0);
+    EXPECT_EQ(cpu.m_cr.cr0.eq, 0);
+}
+
+//
+// ───────────────────────────────────────────────────────────────
+//  ADDZE. (OE=0, RC=1, CA=0)
+// ───────────────────────────────────────────────────────────────
+//
+
+TEST(InstructionTest, ADDZE_NoOE_WithRc_Positive)
+{
+    auto cpu = makeCPU();
+
+    cpu.m_gpr[3] = 10;
+    cpu.m_xer.ca = 0;
+
+    EncodedInstruction inst(0);
+    inst.rt = 4;
+    inst.ra = 3;
+    inst.oe = 0;
+    inst.rc = 1;
+
+    Core::Instruction::ADDZE(cpu, inst);
+
+    EXPECT_EQ(cpu.m_gpr[4], 10);
+    EXPECT_EQ(cpu.m_xer.ca, 0);
+
+    EXPECT_EQ(cpu.m_cr.cr0.lt, 0);
+    EXPECT_EQ(cpu.m_cr.cr0.gt, 1);
+    EXPECT_EQ(cpu.m_cr.cr0.eq, 0);
+
+    EXPECT_EQ(cpu.m_xer.ov, 0);
+    EXPECT_EQ(cpu.m_xer.so, 0);
+}
+
+//
+// ───────────────────────────────────────────────────────────────
+//  ADDZE. (OE=0, RC=1, CA=1, negative result)
+// ───────────────────────────────────────────────────────────────
+//
+
+TEST(InstructionTest, ADDZE_NoOE_WithRc_Negative)
+{
+    auto cpu = makeCPU();
+
+    cpu.m_gprSigned[3] = -5;
+    cpu.m_xer.ca = 0;
+
+    EncodedInstruction inst(0);
+    inst.rt = 4;
+    inst.ra = 3;
+    inst.oe = 0;
+    inst.rc = 1;
+
+    Core::Instruction::ADDZE(cpu, inst);
+
+    EXPECT_EQ(cpu.m_gprSigned[4], -5);
+    EXPECT_EQ(cpu.m_xer.ca, 0);
+
+    EXPECT_EQ(cpu.m_cr.cr0.lt, 1);
+    EXPECT_EQ(cpu.m_cr.cr0.gt, 0);
+    EXPECT_EQ(cpu.m_cr.cr0.eq, 0);
+
+    EXPECT_EQ(cpu.m_xer.ov, 0);
+    EXPECT_EQ(cpu.m_xer.so, 0);
+}
+
+//
+// ───────────────────────────────────────────────────────────────
+//  ADDZE. (OE=0, RC=1, CA=1, zero result)
+// ───────────────────────────────────────────────────────────────
+//
+
+TEST(InstructionTest, ADDZE_NoOE_WithRc_Zero)
+{
+    auto cpu = makeCPU();
+
+    cpu.m_gprSigned[3] = -1;
+    cpu.m_xer.ca = 1;
+
+    EncodedInstruction inst(0);
+    inst.rt = 4;
+    inst.ra = 3;
+    inst.oe = 0;
+    inst.rc = 1;
+
+    Core::Instruction::ADDZE(cpu, inst);
+
+    EXPECT_EQ(cpu.m_gpr[4], 0);
+    EXPECT_EQ(cpu.m_xer.ca, 1);
+
+    EXPECT_EQ(cpu.m_cr.cr0.lt, 0);
+    EXPECT_EQ(cpu.m_cr.cr0.gt, 0);
+    EXPECT_EQ(cpu.m_cr.cr0.eq, 1);
+
+    EXPECT_EQ(cpu.m_xer.ov, 0);
+    EXPECT_EQ(cpu.m_xer.so, 0);
+}
+
+//
+// ───────────────────────────────────────────────────────────────
+//  ADDZEO (OE=1, RC=0, CA=1, overflow)
+// ───────────────────────────────────────────────────────────────
+//
+
+TEST(InstructionTest, ADDZE_WithOE_NoRc_Overflow)
+{
+    auto cpu = makeCPU();
+
+    cpu.m_gpr[3] = 0x7FFFFFFF;
+    cpu.m_xer.ca = 1;
+
+    EncodedInstruction inst(0);
+    inst.rt = 4;
+    inst.ra = 3;
+    inst.oe = 1;
+    inst.rc = 0;
+
+    Core::Instruction::ADDZE(cpu, inst);
+
+    EXPECT_EQ(cpu.m_gpr[4], 0x80000000);
+    EXPECT_EQ(cpu.m_xer.ca, 0);
+    EXPECT_EQ(cpu.m_xer.ov, 1);
+    EXPECT_EQ(cpu.m_xer.so, 1);
+    EXPECT_EQ(cpu.m_cr.cr0.eq, 0);
+}
+
+//
+// ───────────────────────────────────────────────────────────────
+//  ADDZEO (OE=1, RC=0, CA=0, no overflow)
+// ───────────────────────────────────────────────────────────────
+//
+
+TEST(InstructionTest, ADDZE_WithOE_NoRc_NoOverflow)
+{
+    auto cpu = makeCPU();
+
+    cpu.m_gpr[3] = 10;
+    cpu.m_xer.ca = 0;
+
+    EncodedInstruction inst(0);
+    inst.rt = 4;
+    inst.ra = 3;
+    inst.oe = 1;
+    inst.rc = 0;
+
+    Core::Instruction::ADDZE(cpu, inst);
+
+    EXPECT_EQ(cpu.m_gpr[4], 10);
+    EXPECT_EQ(cpu.m_xer.ca, 0);
+    EXPECT_EQ(cpu.m_xer.ov, 0);
+    EXPECT_EQ(cpu.m_xer.so, 0);
+    EXPECT_EQ(cpu.m_cr.cr0.eq, 0);
+}
+
+//
+// ───────────────────────────────────────────────────────────────
+//  ADDZEO (OE=1, RC=0, SO persists)
+// ───────────────────────────────────────────────────────────────
+//
+
+TEST(InstructionTest, ADDZE_WithOE_NoRc_SOPersists)
+{
+    auto cpu = makeCPU();
+
+    cpu.m_xer.so = 1;
+    cpu.m_gpr[3] = 5;
+    cpu.m_xer.ca = 0;
+
+    EncodedInstruction inst(0);
+    inst.rt = 4;
+    inst.ra = 3;
+    inst.oe = 1;
+    inst.rc = 0;
+
+    Core::Instruction::ADDZE(cpu, inst);
+
+    EXPECT_EQ(cpu.m_gpr[4], 5);
+    EXPECT_EQ(cpu.m_xer.ca, 0);
+    EXPECT_EQ(cpu.m_xer.ov, 0);
+    EXPECT_EQ(cpu.m_xer.so, 1);
+    EXPECT_EQ(cpu.m_cr.cr0.eq, 0);
+}
+
+//
+// ───────────────────────────────────────────────────────────────
+//  ADDZEO. (OE=1, RC=1, CA=1, overflow)
+// ───────────────────────────────────────────────────────────────
+//
+
+TEST(InstructionTest, ADDZE_WithOE_WithRc_Overflow)
+{
+    auto cpu = makeCPU();
+
+    cpu.m_gpr[3] = 0x7FFFFFFF;
+    cpu.m_xer.ca = 1;
+
+    EncodedInstruction inst(0);
+    inst.rt = 4;
+    inst.ra = 3;
+    inst.oe = 1;
+    inst.rc = 1;
+
+    Core::Instruction::ADDZE(cpu, inst);
+
+    EXPECT_EQ(cpu.m_gpr[4], 0x80000000);
+    EXPECT_EQ(cpu.m_xer.ca, 0);
+    EXPECT_EQ(cpu.m_xer.ov, 1);
+    EXPECT_EQ(cpu.m_xer.so, 1);
+
+    EXPECT_EQ(cpu.m_cr.cr0.lt, 1);
+    EXPECT_EQ(cpu.m_cr.cr0.gt, 0);
+    EXPECT_EQ(cpu.m_cr.cr0.eq, 0);
+    EXPECT_EQ(cpu.m_cr.cr0.so, 1);
+}
+
+//
+// ───────────────────────────────────────────────────────────────
+//  ADDZEO. (OE=1, RC=1, no overflow, SO reflected in CR0)
+// ───────────────────────────────────────────────────────────────
+//
+
+TEST(InstructionTest, ADDZE_WithOE_WithRc_SOReflectedInCR0)
+{
+    auto cpu = makeCPU();
+
+    cpu.m_xer.so = 1;
+    cpu.m_gpr[3] = 5;
+    cpu.m_xer.ca = 1;
+
+    EncodedInstruction inst(0);
+    inst.rt = 4;
+    inst.ra = 3;
+    inst.oe = 1;
+    inst.rc = 1;
+
+    Core::Instruction::ADDZE(cpu, inst);
+
+    EXPECT_EQ(cpu.m_gpr[4], 6);
+    EXPECT_EQ(cpu.m_xer.ca, 0);
+    EXPECT_EQ(cpu.m_xer.ov, 0);
+    EXPECT_EQ(cpu.m_xer.so, 1);
+
+    EXPECT_EQ(cpu.m_cr.cr0.lt, 0);
+    EXPECT_EQ(cpu.m_cr.cr0.gt, 1);
+    EXPECT_EQ(cpu.m_cr.cr0.eq, 0);
+    EXPECT_EQ(cpu.m_cr.cr0.so, 1);
+}
