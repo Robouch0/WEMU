@@ -106,8 +106,7 @@ void Core::Interpreter::updateOverflow(const std::int32_t &a, const std::int32_t
     const bool bSign = b < 0;
     const bool resultSign = result < 0;
 
-    m_xer.ov = (aSign == bSign) && (aSign != resultSign) ||
-               ((carry == 1) && (aSign == resultSign) && (bSign == resultSign));;
+    m_xer.ov = (aSign == bSign) && (aSign != resultSign);
 
     if (m_xer.ov)
         m_xer.so = true;
