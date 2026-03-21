@@ -1097,3 +1097,29 @@ TEST(InstructionTest, ADDIC_WithCarry)
     EXPECT_EQ(cpu.m_gpr[4], 0);
     EXPECT_EQ(cpu.m_xer.ca, 1);
 }
+
+TEST(InstructionTest, ADDIC_NegativeImmediate)
+{
+    auto cpu = makeCPU();
+    cpu.m_gpr[3] = 100;
+    EncodedInstruction inst(0);
+    inst.rt = 4;
+    inst.ra = 3;
+    inst.si = -50;
+    Core::Instruction::ADDIC(cpu, inst);
+    EXPECT_EQ(cpu.m_gpr[4], 50);
+    EXPECT_EQ(cpu.m_xer.ca, 1);
+}
+
+TEST(InstructionTest, ADDIC_NegativeImmediate_NoCarry)
+{
+    auto cpu = makeCPU();
+    cpu.m_gpr[3] = 0;
+    EncodedInstruction inst(0);
+    inst.rt = 4;
+    inst.ra = 3;
+    inst.si = -1;
+    Core::Instruction::ADDIC(cpu, inst);
+    EXPECT_EQ(cpu.m_gpr[4], 0xFFFFFFFF);
+    EXPECT_EQ(cpu.m_xer.ca, 0);
+}
