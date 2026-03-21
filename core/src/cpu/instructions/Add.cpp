@@ -19,7 +19,9 @@ namespace Core::Instruction {
         cpu.m_gpr[instr.rt] = cpu.m_gpr[instr.ra] + cpu.m_gpr[instr.rb];
 
         cpu.updateOverflow(cpu.m_gprSigned[instr.ra], cpu.m_gprSigned[instr.rb], cpu.m_gprSigned[instr.rt], instr);
-        cpu.updateCR(cpu.m_cr.cr0, cpu.m_gprSigned[instr.rt], instr);
+        if (instr.rc) {
+            cpu.updateCR(cpu.m_cr.cr0, cpu.m_gprSigned[instr.rt], instr);
+        }
     }
 
     /**
@@ -35,7 +37,9 @@ namespace Core::Instruction {
         cpu.m_xer.ca = (result >> CARRY_OFFSET) & 1;
 
         cpu.updateOverflow(cpu.m_gprSigned[instr.ra], cpu.m_gprSigned[instr.rb], cpu.m_gprSigned[instr.rt], instr);
-        cpu.updateCR(cpu.m_cr.cr0, cpu.m_gprSigned[instr.rt], instr);
+        if (instr.rc) {
+            cpu.updateCR(cpu.m_cr.cr0, cpu.m_gprSigned[instr.rt], instr);
+        }
     }
 
     /**
@@ -52,7 +56,9 @@ namespace Core::Instruction {
         cpu.m_xer.ca = (result >> CARRY_OFFSET) & 1;
 
         cpu.updateOverflow(cpu.m_gprSigned[instr.ra], static_cast<std::int32_t>(addMESubtractor), cpu.m_gprSigned[instr.rt], instr);
-        cpu.updateCR(cpu.m_cr.cr0, cpu.m_gprSigned[instr.rt], instr);
+        if (instr.rc) {
+            cpu.updateCR(cpu.m_cr.cr0, cpu.m_gprSigned[instr.rt], instr);
+        }
     }
 
     /**
@@ -83,7 +89,9 @@ namespace Core::Instruction {
         cpu.m_xer.ca = (result >> CARRY_OFFSET) & 1;
 
         cpu.updateOverflow(cpu.m_gprSigned[instr.ra], cpu.m_gprSigned[instr.rb], cpu.m_gprSigned[instr.rt], instr);
-        cpu.updateCR(cpu.m_cr.cr0, cpu.m_gprSigned[instr.rt], instr);
+        if (instr.rc) {
+            cpu.updateCR(cpu.m_cr.cr0, cpu.m_gprSigned[instr.rt], instr);
+        }
     }
 
     void ADDIC(Interpreter &cpu, const EncodedInstruction &instr)
