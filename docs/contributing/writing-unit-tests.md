@@ -10,14 +10,24 @@ Tests live in `core/tests/`. The test executable is built alongside the emulator
 
 GoogleTest is fetched automatically via CMake `FetchContent` on the first build — no manual installation needed.
 
-```
-core/
-├── tests/
-│   ├── CMakeLists.txt   — auto-discovers all *.cpp files in this directory
-│   └── test_add.cpp     — existing instruction tests
-```
+    core/
+    ├── tests/
+    │   ├── CMakeLists.txt      — auto-discovers all *.cpp files recursively
+    │   ├── TestFixture.hpp     — shared test fixture (CPU singleton)
+    │   ├── TestFixture.cpp     — fixture static member definition
+    │   ├── arithmetic/
+    │   │   ├── test_add.cpp    — ADD, ADDO, ADD.
+    │   │   ├── test_addi.cpp   — ADDI, ADDIS
+    │   │   ├── test_adde.cpp   — ADDE, ADDEO
+    │   │   ├── test_addme.cpp  — ADDME, ADDMEO
+    │   │   ├── test_addc.cpp   — ADDC, ADDCO
+    │   │   └── test_addic.cpp  — ADDIC, ADDIC.
+    │   ├── branch/
+    │   │   └── test_branch.cpp
+    │   └── system/
+    │       └── test_sc.cpp
 
-The `CMakeLists.txt` uses `file(GLOB TEST_SOURCES "*.cpp")`, which means **any `.cpp` file you drop in `core/tests/` is automatically compiled and linked into the test binary**. No CMake edits needed to add a new test file.
+The `CMakeLists.txt` uses `file(GLOB_RECURSE TEST_SOURCES "*.cpp")`, which means **any `.cpp` file you drop in any subfolder of `core/tests/` is automatically compiled and linked into the test binary**. No CMake edits needed to add a new test file.
 
 ---
 
@@ -25,23 +35,20 @@ The `CMakeLists.txt` uses `file(GLOB TEST_SOURCES "*.cpp")`, which means **any `
 
 ```bash
 cd core && mkdir -p build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Debug
+cmake ..
 make -j$(nproc)
 
 # Run all tests
 ctest
 
-# Show test output even on success
-ctest --verbose
-
 # Show output only on failure (useful in CI)
 ctest --output-on-failure
 
-# Run the test binary directly for more control
+# Run the test binary directly for detailed per-test output
 ./tests/wemu_tests
 
-# Filter by test suite
-./tests/wemu_tests --gtest_filter=InstructionTest.*
+# Filter by instruction family
+./tests/wemu_tests --gtest_filter=InstructionTest.ADD*
 
 # Filter by individual test
 ./tests/wemu_tests --gtest_filter=InstructionTest.ADD_NoOE_NoRc
@@ -50,39 +57,49 @@ ctest --output-on-failure
 ./tests/wemu_tests --gtest_list_tests
 ```
 
----
+### With coverage report
 
-## The `#define private public` pattern
-
-`Interpreter`'s CPU state (`m_gpr`, `m_cr`, `m_xer`, `m_fpr`, etc.) is declared `private`. Tests need to read and write these fields directly to set up CPU state before calling an instruction and verify register values after.
-
-The convention used in this project is to redefine `private` as `public` for the single translation unit of the test file:
-
-```cpp
-#define private public
-#include "cpu/interpreter/Interpreter.hpp"
-#undef private
+```bash
+cmake .. -DENABLE_COVERAGE=ON
+make -j$(nproc)
+make coverage          # terminal summary
+make coverage-html     # + HTML report at build/coverage_report/index.html
 ```
 
-**This only affects the current `.cpp` file.** The `#undef` restores normal visibility immediately after. The `Interpreter` class itself is not modified.
-
-> This is an intentional testing convention. Do not use it in production code.
+> Requires `lcov`: `sudo dnf install lcov` (Fedora) or `sudo apt install lcov` (Debian/Ubuntu)
 
 ---
 
-## Creating a minimal CPU for tests
+## The test fixture
 
-Most instruction tests do not need a real binary file. Construct a dummy `Interpreter` with an empty `Binary`:
+All tests share a single `InstructionTest` fixture defined in `TestFixture.hpp`. It:
+
+- Creates the `Interpreter` **once** for the entire test suite via `SetUpTestSuite` — avoiding the expensive `initInstructionMap()` call on every test
+- Resets all CPU registers to zero before each test via `SetUp` → `cpu->reset()`
+
+Tests use `TEST_F` instead of `TEST`, and access the CPU via `cpu->` instead of a local variable.
 
 ```cpp
-static Core::Interpreter makeCPU()
+#include "TestFixture.hpp"
+
+TEST_F(InstructionTest, ADD_NoOE_NoRc)
 {
-    const Core::Binary dummyBinary = {};
-    return Core::Interpreter(dummyBinary);
+    cpu->m_gpr[3] = 10;
+    cpu->m_gpr[4] = 32;
+
+    EncodedInstruction inst(0);
+    inst.rt = 5;
+    inst.ra = 3;
+    inst.rb = 4;
+    inst.oe = 0;
+    inst.rc = 0;
+
+    Core::Instruction::ADD(*cpu, inst);
+
+    EXPECT_EQ(cpu->m_gpr[5], 42u);
+    EXPECT_EQ(cpu->m_xer.ov, 0);
 }
 ```
-
-This gives you a fully initialized CPU with all registers zeroed and the instruction dispatch map built. Calling `cpu.run()` on it would fail (no `.text` section), but calling instruction functions directly works fine.
 
 ---
 
@@ -106,33 +123,9 @@ inst.rc = 0;    // disable CR0 update
 
 ## Test structure and naming conventions
 
-```cpp
-TEST(SuiteName, TestName)
-{
-    // 1. Arrange — build CPU state
-    auto cpu = makeCPU();
-    cpu.m_gpr[3] = 10;
-    cpu.m_gpr[4] = 32;
+**Naming convention:** `TestName` describes the exact scenario being tested.
 
-    EncodedInstruction inst(0);
-    inst.rt = 5;
-    inst.ra = 3;
-    inst.rb = 4;
-    inst.oe = 0;
-    inst.rc = 0;
-
-    // 2. Act — call the instruction directly
-    Core::Instruction::ADD(cpu, inst);
-
-    // 3. Assert — check register state
-    EXPECT_EQ(cpu.m_gpr[5], 42u);
-    EXPECT_EQ(cpu.m_xer.ov, 0);
-}
-```
-
-**Naming convention:** `SuiteName` groups related tests; `TestName` describes the exact scenario.
-
-Existing pattern from `test_add.cpp`:
+Existing pattern:
 
 | Test name | What it covers |
 |---|---|
@@ -169,65 +162,53 @@ For immediate-form instructions (`ADDI`, `ADDIS`, …), test:
 
 ```cpp
 // Exact equality (use 'u' suffix for unsigned comparisons to avoid sign mismatch warnings)
-EXPECT_EQ(cpu.m_gpr[5], 42u);
-EXPECT_EQ(cpu.m_gprSigned[5], -10);
+EXPECT_EQ(cpu->m_gpr[5], 42u);
+EXPECT_EQ(cpu->m_gprSigned[5], -10);
 
 // Condition register fields
-EXPECT_EQ(cpu.m_cr.cr0.lt, 1);   // result < 0
-EXPECT_EQ(cpu.m_cr.cr0.gt, 0);   // result > 0
-EXPECT_EQ(cpu.m_cr.cr0.eq, 0);   // result == 0
-EXPECT_EQ(cpu.m_cr.cr0.so, 0);   // summary overflow
+EXPECT_EQ(cpu->m_cr.cr0.lt, 1);   // result < 0
+EXPECT_EQ(cpu->m_cr.cr0.gt, 0);   // result > 0
+EXPECT_EQ(cpu->m_cr.cr0.eq, 0);   // result == 0
+EXPECT_EQ(cpu->m_cr.cr0.so, 0);   // summary overflow
 
 // Fixed-point exception register
-EXPECT_EQ(cpu.m_xer.ov, 1);      // overflow occurred
-EXPECT_EQ(cpu.m_xer.so, 1);      // sticky overflow (set once, stays set)
-EXPECT_EQ(cpu.m_xer.ca, 1);      // carry out
+EXPECT_EQ(cpu->m_xer.ov, 1);      // overflow occurred
+EXPECT_EQ(cpu->m_xer.so, 1);      // sticky overflow (set once, stays set)
+EXPECT_EQ(cpu->m_xer.ca, 1);      // carry out
 
 // For floating-point instructions
-EXPECT_FLOAT_EQ(cpu.m_fpr[5], 1.5f);
+EXPECT_FLOAT_EQ(cpu->m_fpr[5], 1.5f);
 ```
 
 ---
 
 ## Adding a test file
 
-1. Create `core/tests/test_myinstruction.cpp`
-2. No CMake changes needed — `file(GLOB TEST_SOURCES "*.cpp")` picks it up automatically
+1. Identify the right subfolder under `core/tests/` (`arithmetic/`, `branch/`, `system/`, or create a new one for a new family)
+2. Create your `.cpp` file there — `GLOB_RECURSE` picks it up automatically, no CMake changes needed
 3. Rebuild and run:
 
 ```bash
 # From core/build/
 make -j$(nproc)
-./tests/wemu_tests --gtest_filter=MyInstructionTest.*
+./tests/wemu_tests --gtest_filter=InstructionTest.MYINSTR*
 ```
 
 Minimal file template:
 
 ```cpp
-#include <gtest/gtest.h>
+#include "TestFixture.hpp"
 
-#define private public
-#include "cpu/interpreter/Interpreter.hpp"
-#undef private
-
-#include "cpu/types/EncodedInstruction.hpp"
-
-static Core::Interpreter makeCPU()
+TEST_F(InstructionTest, MYINSTR_BasicCase)
 {
-    return Core::Interpreter(Core::Binary{});
-}
-
-TEST(MyInstructionTest, BasicCase)
-{
-    auto cpu = makeCPU();
-
-    // set up registers ...
+    cpu->m_gpr[3] = 42;
 
     EncodedInstruction inst(0);
-    // set fields ...
+    inst.rt = 4;
+    inst.ra = 3;
 
-    Core::Instruction::MYINSTR(cpu, inst);
+    Core::Instruction::MYINSTR(*cpu, inst);
 
-    EXPECT_EQ(cpu.m_gpr[inst.rt], expected_value);
+    EXPECT_EQ(cpu->m_gpr[4], expected_value);
 }
 ```
