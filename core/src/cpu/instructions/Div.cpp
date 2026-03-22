@@ -36,28 +36,15 @@ namespace Core::Instruction {
      */
     void DIVWU(Core::Interpreter &cpu, const EncodedInstruction &instr)
     {
-        const std::uint64_t ra = cpu.m_gpr[instr.ra];
-        const std::uint64_t rb = cpu.m_gpr[instr.rb];
+        const std::uint32_t ra = cpu.m_gpr[instr.ra];
+        const std::uint32_t rb = cpu.m_gpr[instr.rb];
+        const bool isOverflow = rb == 0;
 
-        if (instr.oe) {
-            cpu.m_xer.ov = rb == 0;
+        cpu.updateOverflow(isOverflow, instr);
 
-            if (cpu.m_xer.ov) {
-                cpu.m_xer.so = true;
-                if (instr.rc)
-                    cpu.m_cr.cr0.so = true;
-                return;
-            }
-        }
+        if (!isOverflow)
+            cpu.m_gpr[instr.rt] = ra / rb;
 
-        const std::uint64_t result = ra / rb;
-        cpu.m_gpr[instr.rt] = static_cast<std::uint32_t>(result);
-
-        if (instr.rc) {
-            const std::int32_t signedRt = cpu.m_gprSigned[instr.rt];
-            cpu.m_cr.cr0.lt = signedRt < 0;
-            cpu.m_cr.cr0.gt = signedRt > 0;
-            cpu.m_cr.cr0.eq = signedRt == 0;
-        }
+        cpu.updateCR(cpu.m_cr.cr0, cpu.m_gprSigned[instr.rt], instr);
     }
 };
