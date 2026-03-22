@@ -19,7 +19,7 @@ namespace Core::Instruction {
     {
         const std::int32_t ra = cpu.m_gprSigned[instr.ra];
         const std::int32_t rb = cpu.m_gprSigned[instr.rb];
-        const bool isOverflow = (ra == static_cast<std::int32_t>(0x80000000) && rb == -1) || (rb == 0);
+        const bool isOverflow = (ra == INT32_MIN && rb == -1) || (rb == 0);
 
         cpu.updateOverflow(isOverflow, instr);
 
