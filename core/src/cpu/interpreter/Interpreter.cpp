@@ -86,9 +86,9 @@ void Core::Interpreter::initInstructionMap()
 }
 
 void Core::Interpreter::updateCR(Core::ConditionRegister::Register &cr, const std::int32_t &result,
-                                 const EncodedInstruction &instr) const
+                                 const EncodedInstruction &instr, const bool forceUpdate) const
 {
-    if (instr.rc) {
+    if (instr.rc || forceUpdate) {
         cr.lt = result < 0;
         cr.gt = result > 0;
         cr.eq = result == 0;
@@ -96,18 +96,23 @@ void Core::Interpreter::updateCR(Core::ConditionRegister::Register &cr, const st
     }
 }
 
-void Core::Interpreter::updateOverflow(const std::int32_t &a, const std::int32_t &b, const std::int32_t &result,
-                                       const EncodedInstruction &instr)
+void Core::Interpreter::updateOverflow(const bool overflow, const EncodedInstruction &instr)
 {
     if (!instr.oe)
         return;
 
+    m_xer.ov = overflow;
+    if (m_xer.ov)
+        m_xer.so = true;
+}
+
+void Core::Interpreter::updateOverflow(const std::int32_t &a, const std::int32_t &b, const std::int32_t &result,
+                                       const EncodedInstruction &instr)
+{
     const bool aSign = a < 0;
     const bool bSign = b < 0;
     const bool resultSign = result < 0;
+    const bool overflow = (aSign == bSign) && (aSign != resultSign);
 
-    m_xer.ov = (aSign == bSign) && (aSign != resultSign);
-
-    if (m_xer.ov)
-        m_xer.so = true;
+    this->updateOverflow(overflow, instr);
 }
