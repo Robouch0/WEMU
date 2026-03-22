@@ -86,6 +86,18 @@ namespace Core::Instruction {
         cpu.updateCR(cpu.m_cr.cr0, cpu.m_gprSigned[instr.rt], instr);
     }
 
+    void ADDZE(Interpreter &cpu, const EncodedInstruction &instr)
+    {
+        const uint32_t oldCarry = cpu.m_xer.ca;
+        const uint64_t result = static_cast<uint64_t>(cpu.m_gpr[instr.ra]) + cpu.m_xer.ca;
+
+        cpu.m_gpr[instr.rt] = static_cast<uint32_t>(result);
+        cpu.m_xer.ca = (result >> CARRY_OFFSET) & 1;
+
+        cpu.updateOverflow(cpu.m_gprSigned[instr.ra], static_cast<std::int32_t>(oldCarry), cpu.m_gprSigned[instr.rt], instr);
+        cpu.updateCR(cpu.m_cr.cr0, cpu.m_gprSigned[instr.rt], instr);
+    }
+
     void ADDIC(Interpreter &cpu, const EncodedInstruction &instr)
     {
         const int32_t imm = static_cast<int16_t>(instr.si);
@@ -103,7 +115,5 @@ namespace Core::Instruction {
 
     void ADDCO(Interpreter &cpu, const EncodedInstruction &instr) {}
     void ADDO(Interpreter &cpu, const EncodedInstruction &instr) {}
-    void ADDZEO(Interpreter &cpu, const EncodedInstruction &instr) {}
-    void ADDZE(Interpreter &cpu, const EncodedInstruction &instr) {}
     void ADDM(Interpreter &cpu, const EncodedInstruction &instr) {}
 } // namespace Core::Instruction
