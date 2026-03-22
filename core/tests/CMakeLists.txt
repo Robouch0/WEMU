@@ -1,7 +1,8 @@
 file(GLOB_RECURSE TEST_SOURCES "*.cpp")
 
 add_executable(wemu_tests ${TEST_SOURCES}
-        logical/test_ori.cpp)
+        logical/test_ori.cpp
+        logical/test_oris.cpp)
 
 target_include_directories(wemu_tests PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}"

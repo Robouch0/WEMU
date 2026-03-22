@@ -15,13 +15,24 @@
 namespace Core::Instruction {
 
     /**
-    * @brief The contents of register RS are ORed with 480 || UI and the result is placed into register RA.
+    * @brief The contents of register RS are ORed with 48 0s || UI and the result is placed into register RA.
      * @param cpu
      * @param instr
      */
     void ORI(Core::Interpreter &cpu, const EncodedInstruction &instr)
     {
         const std::uint64_t rightComparison = cpu.m_gpr[instr.ui];
+        cpu.m_gpr[instr.ra] = cpu.m_gpr[instr.rs] | rightComparison;
+    }
+
+    /**
+    * @brief The contents of register RS are ORed with 32 0s || UI || 16 0s and the result is placed into register RA.
+     * @param cpu
+     * @param instr
+     */
+    void ORIS(Core::Interpreter &cpu, const EncodedInstruction &instr)
+    {
+        const std::uint64_t rightComparison = cpu.m_gpr[instr.ui] << 16;
         cpu.m_gpr[instr.ra] = cpu.m_gpr[instr.rs] | rightComparison;
     }
 }
