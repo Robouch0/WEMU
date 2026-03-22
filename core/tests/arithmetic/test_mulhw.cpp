@@ -118,3 +118,36 @@ TEST_F(InstructionTest, MULHW_WithRc_NegativeProduct)
     EXPECT_EQ(cpu->m_cr.cr0.gt, 0);
     EXPECT_EQ(cpu->m_cr.cr0.eq, 0);
 }
+
+TEST_F(InstructionTest, MULHW_NoRc_BothNegative)
+{
+    cpu->m_gprSigned[3] = -45987;
+    cpu->m_gprSigned[4] = -653293;
+
+    EncodedInstruction inst(0);
+    inst.rt = 5;
+    inst.ra = 3;
+    inst.rb = 4;
+    inst.rc = 0;
+
+    Core::Instruction::MULHW(*cpu, inst);
+
+    EXPECT_EQ(cpu->m_gpr[5], 6);
+}
+
+TEST_F(InstructionTest, MULHW_NoRc_MinMin)
+{
+    cpu->m_gprSigned[3] = INT32_MIN;
+    cpu->m_gprSigned[4] = INT32_MIN;
+
+    EncodedInstruction inst(0);
+    inst.rt = 5;
+    inst.ra = 3;
+    inst.rb = 4;
+    inst.rc = 0;
+
+    Core::Instruction::MULHW(*cpu, inst);
+
+    // INT32_MIN * INT32_MIN = 0x4000000000000000 >> 32 = 0x40000000
+    EXPECT_EQ(cpu->m_gpr[5], 0x40000000u);
+}
