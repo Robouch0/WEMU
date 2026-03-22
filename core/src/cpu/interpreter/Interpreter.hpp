@@ -64,6 +64,18 @@ namespace Core {
                 std::cout.copyfmt(oldState);
             }
 
+            void reset()
+            {
+                m_pc = 0;
+                m_nextPc = 0;
+                m_cr = {};
+                m_lr = 0;
+                m_ctr = 0;
+                std::fill(std::begin(m_gpr), std::end(m_gpr), 0u);
+                m_xer = {};
+                std::fill(std::begin(m_fpr), std::end(m_fpr), 0.0f);
+                m_fpscr = {};
+            }
 
         private:
         public:
