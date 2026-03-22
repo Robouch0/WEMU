@@ -86,12 +86,14 @@ void Core::Interpreter::initInstructionMap()
 }
 
 void Core::Interpreter::updateCR(Core::ConditionRegister::Register &cr, const std::int32_t &result,
-                                 const EncodedInstruction &instr) const
+                                 const EncodedInstruction &instr, const bool forceUpdate) const
 {
-    cr.lt = result < 0;
-    cr.gt = result > 0;
-    cr.eq = result == 0;
-    cr.so = m_xer.so;
+    if (instr.rt || forceUpdate) {
+        cr.lt = result < 0;
+        cr.gt = result > 0;
+        cr.eq = result == 0;
+        cr.so = m_xer.so;
+    }
 }
 
 void Core::Interpreter::updateOverflow(const std::int32_t &a, const std::int32_t &b, const std::int32_t &result,

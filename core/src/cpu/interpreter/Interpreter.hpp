@@ -82,7 +82,7 @@ namespace Core {
             void initInstructionMap();
 
             void updateCR(Core::ConditionRegister::Register &cr, const std::int32_t &result,
-                          const EncodedInstruction &instr) const;
+                          const EncodedInstruction &instr, bool forceUpdate = false) const;
 
             void updateOverflow(const std::int32_t &a, const std::int32_t &b, const std::int32_t &result,
                                 const EncodedInstruction &instr);
