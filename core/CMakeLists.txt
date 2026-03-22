@@ -39,7 +39,7 @@ add_library(core STATIC
         src/lib/coreinit/Coreinint.hpp
         src/cpu/memory/Memory.hpp
         src/cpu/instructions/Branch.cpp
-        src/cpu/instructions/Or.cpp
+        src/cpu/instructions/Logical.cpp
 )
 
 target_include_directories(core PUBLIC
