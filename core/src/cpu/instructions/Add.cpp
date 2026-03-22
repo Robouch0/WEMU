@@ -95,6 +95,12 @@ namespace Core::Instruction {
         cpu.m_xer.ca = (result >> CARRY_OFFSET) & 1;
     }
 
+    void ADDIC_(Interpreter &cpu, const EncodedInstruction &instr)
+    {
+        ADDIC(cpu, instr);
+        cpu.updateCR(cpu.m_cr.cr0, cpu.m_gprSigned[instr.rt], instr, true);
+    }
+
     void ADDCO(Interpreter &cpu, const EncodedInstruction &instr) {}
     void ADDO(Interpreter &cpu, const EncodedInstruction &instr) {}
     void ADDZEO(Interpreter &cpu, const EncodedInstruction &instr) {}

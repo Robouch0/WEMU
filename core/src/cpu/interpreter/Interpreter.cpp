@@ -86,9 +86,9 @@ void Core::Interpreter::initInstructionMap()
 }
 
 void Core::Interpreter::updateCR(Core::ConditionRegister::Register &cr, const std::int32_t &result,
-                                 const EncodedInstruction &instr) const
+                                 const EncodedInstruction &instr, const bool forceUpdate) const
 {
-    if (instr.rc) {
+    if (instr.rc || forceUpdate) {
         cr.lt = result < 0;
         cr.gt = result > 0;
         cr.eq = result == 0;
