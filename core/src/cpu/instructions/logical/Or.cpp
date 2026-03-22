@@ -31,7 +31,7 @@ namespace Core::Instruction {
      */
     void ORIS(Core::Interpreter &cpu, const EncodedInstruction &instr)
     {
-        const std::uint64_t rightComparison = cpu.m_gpr[instr.ui] << 16;
+        const std::uint32_t rightComparison = cpu.m_gpr[instr.ui] << 16;
         cpu.m_gpr[instr.ra] = cpu.m_gpr[instr.rs] | rightComparison;
     }
 }
