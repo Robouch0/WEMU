@@ -1,6 +1,7 @@
 file(GLOB_RECURSE TEST_SOURCES "*.cpp")
 
-add_executable(wemu_tests ${TEST_SOURCES})
+add_executable(wemu_tests ${TEST_SOURCES}
+        arithmetic/test_divw.cpp)
 
 target_include_directories(wemu_tests PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}"
