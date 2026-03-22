@@ -42,8 +42,7 @@ namespace Core::Instruction {
      */
     void XORI(Core::Interpreter &cpu, const EncodedInstruction &instr)
     {
-        const std::uint64_t rightComparison = cpu.m_gpr[instr.ui];
-        cpu.m_gpr[instr.ra] = cpu.m_gpr[instr.rs] ^ rightComparison;
+        cpu.m_gpr[instr.ra] = cpu.m_gpr[instr.rs] ^ cpu.m_gpr[instr.ui];
     }
 
     /**
@@ -53,7 +52,7 @@ namespace Core::Instruction {
      */
     void XORIS(Core::Interpreter &cpu, const EncodedInstruction &instr)
     {
-        const std::uint64_t rightComparison = cpu.m_gpr[instr.ui] << 16;
+        const std::uint32_t rightComparison = cpu.m_gpr[instr.ui] << 16;
         cpu.m_gpr[instr.ra] = cpu.m_gpr[instr.rs] ^ rightComparison;
     }
 }
