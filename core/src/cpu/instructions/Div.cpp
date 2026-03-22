@@ -28,4 +28,23 @@ namespace Core::Instruction {
 
         cpu.updateCR(cpu.m_cr.cr0, cpu.m_gprSigned[instr.rt], instr);
     }
+
+    /**
+     * @brief The quotient (RA) / (RB) is placed into register RT.
+     * @param cpu
+     * @param instr
+     */
+    void DIVWU(Core::Interpreter &cpu, const EncodedInstruction &instr)
+    {
+        const std::uint32_t ra = cpu.m_gpr[instr.ra];
+        const std::uint32_t rb = cpu.m_gpr[instr.rb];
+        const bool isOverflow = rb == 0;
+
+        cpu.updateOverflow(isOverflow, instr);
+
+        if (!isOverflow)
+            cpu.m_gpr[instr.rt] = ra / rb;
+
+        cpu.updateCR(cpu.m_cr.cr0, cpu.m_gprSigned[instr.rt], instr);
+    }
 };
