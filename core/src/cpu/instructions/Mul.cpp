@@ -20,9 +20,7 @@ namespace Core::Instruction {
         const std::int64_t result = static_cast<std::int64_t>(cpu.m_gprSigned[instr.ra]) * static_cast<std::int64_t>(cpu.m_gprSigned[instr.rb]);
         cpu.m_gpr[instr.rt] = static_cast<std::uint32_t>(result >> 32);
 
-        if (instr.rc) {
-            cpu.updateCR(cpu.m_cr.cr0, cpu.m_gprSigned[instr.rt], instr);
-        }
+        cpu.updateCR(cpu.m_cr.cr0, cpu.m_gprSigned[instr.rt], instr);
     }
 
 };
