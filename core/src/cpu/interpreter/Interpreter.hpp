@@ -82,10 +82,29 @@ namespace Core {
             void initInstructionMap();
 
             void updateCR(Core::ConditionRegister::Register &cr, const std::int32_t &result,
-                          const EncodedInstruction &instr) const;
+                          const EncodedInstruction &instr, bool forceUpdate = false) const;
 
+            /**
+             * @brief Updates XER overflow bits based on a precomputed overflow condition.
+             *        Use this overload for instructions with custom overflow logic (e.g. DIVW, DIVWU).
+             *
+             * @param overflow Precomputed overflow condition
+             * @param instr    Encoded instruction (used to check OE bit)
+             */
+            void updateOverflow(bool overflow, const EncodedInstruction &instr);
+
+            /**
+             * @brief Updates XER overflow bits for signed addition-based instructions.
+             *        Overflow is detected when two operands of the same sign produce a result of opposite sign.
+             *        Use this overload for ADD, ADDC, ADDE, ADDZE, ADDME and their variants.
+             *
+             * @param a      First operand (signed)
+             * @param b      Second operand (signed)
+             * @param result Result of the addition (signed)
+             * @param instr  Encoded instruction (used to check OE bit)
+             */
             void updateOverflow(const std::int32_t &a, const std::int32_t &b, const std::int32_t &result,
-                                const EncodedInstruction &instr);
+                const EncodedInstruction &instr);
 
             #define INSTR(name, ...) friend void Core::Instruction::name(Core::Interpreter &, const EncodedInstruction &);
             #include "cpu/tables/cpu_instructions.anh"
