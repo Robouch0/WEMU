@@ -9,6 +9,7 @@
 #include "cpu/types/EncodedInstruction.hpp"
 
 namespace Core::Instruction {
+
     /**
      * @brief The sum (RA) + (RB) is placed into register RT.
      * @param cpu
