@@ -10,12 +10,11 @@
 TEST_F(InstructionTest, XORIS)
 {
     cpu->m_gpr[3] = 1768428544;
-    cpu->m_gpr[4] = 65535;
 
     EncodedInstruction inst(0);
     inst.ra = 5;
     inst.rs = 3;
-    inst.ui = 4;
+    inst.ui = 65535;
 
     Core::Instruction::XORIS(*cpu, inst);
 
