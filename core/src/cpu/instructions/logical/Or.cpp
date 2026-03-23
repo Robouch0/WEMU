@@ -14,6 +14,12 @@
 
 namespace Core::Instruction {
 
+    void OR(Core::Interpreter &cpu, const EncodedInstruction &instr)
+    {
+        cpu.m_gpr[instr.ra] = cpu.m_gpr[instr.rs] | cpu.m_gpr[instr.rb];
+        cpu.updateCR(cpu.m_cr.cr0, cpu.m_gprSigned[instr.ra], instr);
+    }
+
     /**
     * @brief The contents of register RS are ORed with 48 0s || UI and the result is placed into register RA.
      * @param cpu
