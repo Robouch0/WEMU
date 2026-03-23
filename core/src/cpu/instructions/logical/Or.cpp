@@ -21,6 +21,6 @@ namespace Core::Instruction {
      */
     void ORI(Core::Interpreter &cpu, const EncodedInstruction &instr)
     {
-        cpu.m_gpr[instr.ra] = cpu.m_gpr[instr.rs] | cpu.m_gpr[instr.ui];
+        cpu.m_gpr[instr.ra] = cpu.m_gpr[instr.rs] | instr.ui;
     }
 }
