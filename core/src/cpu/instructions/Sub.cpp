@@ -38,4 +38,20 @@ namespace Core::Instruction {
         cpu.updateOverflow(-cpu.m_gprSigned[instr.ra], cpu.m_gprSigned[instr.rb], cpu.m_gprSigned[instr.rt], instr);
         cpu.updateCR(cpu.m_cr.cr0, cpu.m_gprSigned[instr.rt], instr);
     }
+
+    /**
+     * @brief The sum ¬(RA) + (RB) + 1 is placed into register RT. CA is set.
+     * @param cpu
+     * @param instr
+     */
+    void SUBFC(Interpreter &cpu, const EncodedInstruction &instr)
+    {
+        const uint64_t result = static_cast<uint64_t>(~cpu.m_gpr[instr.ra]) + static_cast<uint64_t>(cpu.m_gpr[instr.rb]) + 1;
+
+        cpu.m_gpr[instr.rt] = static_cast<uint32_t>(result);
+        cpu.m_xer.ca = (result >> CARRY_OFFSET) & 1;
+
+        cpu.updateOverflow(-cpu.m_gprSigned[instr.ra], cpu.m_gprSigned[instr.rb], cpu.m_gprSigned[instr.rt], instr);
+        cpu.updateCR(cpu.m_cr.cr0, cpu.m_gprSigned[instr.rt], instr);
+    }
 }
