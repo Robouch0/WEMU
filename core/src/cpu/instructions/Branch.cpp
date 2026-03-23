@@ -9,6 +9,7 @@
 #include "cpu/types/EncodedInstruction.hpp"
 
 namespace Core::Instruction {
+
     static inline std::int32_t branchOffset(const EncodedInstruction &instr)
     {
         const auto value = static_cast<std::int32_t>(instr.li << 2);

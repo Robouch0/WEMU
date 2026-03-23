@@ -7,7 +7,9 @@ add_executable(wemu_tests ${TEST_SOURCES}
         logical/test_xoris.cpp
         logical/test_or.cpp
         logical/test_orc.cpp
-        logical/test_nor.cpp)
+        logical/test_nor.cpp
+        logical/test_xor.cpp
+        logical/test_eqv.cpp)
 
 target_include_directories(wemu_tests PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}"
