@@ -43,6 +43,7 @@ add_library(core STATIC
         src/cpu/instructions/Mul.cpp
         src/cpu/instructions/Div.cpp
         src/cpu/instructions/logical/Xor.cpp
+        src/cpu/instructions/logical/Xor.cpp
 )
 
 target_include_directories(core PUBLIC
