@@ -9,8 +9,8 @@
 #include "cpu/interpreter/SyscallHandler.hpp"
 #include "cpu/types/EncodedInstruction.hpp"
 
-namespace Core::Instruction
-{
+namespace Core::Instruction {
+
     void SC(Core::Interpreter &cpu, const EncodedInstruction &instr)
     {
         Core::Symbol sym = cpu.m_binary.symbols[instr.bd];
