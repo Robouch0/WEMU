@@ -250,7 +250,7 @@ void Core::Loader::loadSymbolsRaw()
 {
     const auto &symSection = m_bin.findSection(".symtab");
     Utils::BeDecoder symDecoder(symSection.raw.data);
-    const std::size_t symAmount = symSection.raw.header.sh_size / symSection.raw.header.sh_entsize;
+    const std::size_t symAmount = symSection.raw.data.size() / symSection.raw.header.sh_entsize;
 
     m_bin.symbols.resize(symAmount);
     for (std::uint32_t i = 0; i < symAmount; i++) {
