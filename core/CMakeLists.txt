@@ -42,6 +42,7 @@ add_library(core STATIC
         src/cpu/instructions/logical/Or.cpp
         src/cpu/instructions/Mul.cpp
         src/cpu/instructions/Div.cpp
+        src/cpu/instructions/Sub.cpp
         src/cpu/instructions/logical/Xor.cpp
         src/cpu/instructions/Neg.cpp
 )
@@ -108,7 +109,7 @@ if(ENABLE_COVERAGE)
             --capture
             --directory ${CMAKE_BINARY_DIR}
             --branch-coverage
-            --ignore-errors mismatch,unused
+            --ignore-errors mismatch,unused,inconsistent
             --rc geninfo_unexecuted_blocks=1
             --exclude "*/usr/include/*"
             --output-file ${COVERAGE_RAW}
@@ -116,7 +117,7 @@ if(ENABLE_COVERAGE)
             --remove ${COVERAGE_RAW}
             "${CMAKE_BINARY_DIR}/_deps/*"
             --branch-coverage
-            --ignore-errors mismatch,unused
+            --ignore-errors mismatch,unused,inconsistent
             --output-file ${COVERAGE_INFO}
             COMMAND ${LCOV} --list ${COVERAGE_INFO}
             WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
