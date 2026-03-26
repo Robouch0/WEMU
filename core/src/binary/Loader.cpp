@@ -233,7 +233,7 @@ void Core::Loader::resolveSymbols()
         if (symbol.raw.header.st_shndx >= m_bin.sections.size())
             continue;
         auto &section = m_bin.sections[symbol.raw.header.st_shndx];
-        if (symbol.meta.type == STT_FUNC)
+        if (symbol.meta.type == STT_FUNC && section.raw.header.sh_flags & SHF_EXECINSTR)
             writeFunctionThunk(symbol, section);
     }
 }
