@@ -17,13 +17,6 @@ Item {
             width: 430
             height: 270
 
-            MouseArea {
-                anchors.fill: parent
-                onClicked: (mouse) => {
-                    console.log("Clicked at:", mouse.x, mouse.y)
-                }
-            }
-
             Image {
                 anchors.fill: parent
                 source: "qrc:/assets/qml/assets/wiiuControllerBlank.png"

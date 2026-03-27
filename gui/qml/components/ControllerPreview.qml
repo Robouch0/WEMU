@@ -17,13 +17,6 @@ Item {
             width: 435
             height: 285
 
-            MouseArea {
-                anchors.fill: parent
-                onClicked: (mouse) => {
-                    console.log("Clicked at:", mouse.x, mouse.y)
-                }
-            }
-
             Image {
                 anchors.fill: parent
                 source: "qrc:/assets/qml/assets/xboxControllerBlank.png"
