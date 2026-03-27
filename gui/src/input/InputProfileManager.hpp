@@ -18,6 +18,7 @@ class InputProfileManager : public QObject {
 
         Q_INVOKABLE void setBinding(const QString &wiiuButton, const QString &xboxButton);
         Q_INVOKABLE [[nodiscard]] QString getBinding(const QString &wiiuButton) const;
+        Q_INVOKABLE [[nodiscard]] bool isKnownXboxButton(const QString &button) const;
         Q_INVOKABLE void selectProfile(int index);
 
     signals:

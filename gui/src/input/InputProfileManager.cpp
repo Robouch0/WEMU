@@ -97,6 +97,12 @@ QString InputProfileManager::getBinding(const QString &wiiuButton) const
     return m_profiles[m_currentIndex].bindings.value(wiiuButton, "");
 }
 
+bool InputProfileManager::isKnownXboxButton(const QString &button) const
+{
+    const auto &bindings = m_profiles[m_currentIndex].bindings;
+    return bindings.values().contains(button);
+}
+
 QString InputProfileManager::configPath()
 {
     const QString dir = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation);

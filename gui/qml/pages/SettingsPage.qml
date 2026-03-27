@@ -13,8 +13,7 @@ Rectangle {
         target: InputManager
 
         function onButtonChanged(button, pressed, device) {
-            if (listeningFor !== "" && pressed
-                && InputProfileManager.bindingModel.some(function(e) { return e.xboxButton === button })) {
+            if (listeningFor !== "" && pressed && InputProfileManager.isKnownXboxButton(button)) {
                 InputProfileManager.setBinding(listeningFor, button)
                 listeningFor = ""
             }
