@@ -184,7 +184,7 @@ Item {
                 Text {
                     anchors.centerIn: parent
                     text: "LT"
-                    font.family: "Helvetica"
+                    font.family: "sans-serif"
                     font.pointSize: 14
                     color: ltPressed ? "#3498ff" : "white"
                 }
@@ -205,7 +205,7 @@ Item {
                 Text {
                     anchors.centerIn: parent
                     text: "RT"
-                    font.family: "Helvetica"
+                    font.family: "sans-serif"
                     font.pointSize: 12
                     color: rtPressed ? "#3498ff" : "white"
                 }
@@ -226,7 +226,7 @@ Item {
                 Text {
                     anchors.centerIn: parent
                     text: "RB"
-                    font.family: "Helvetica"
+                    font.family: "sans-serif"
                     font.pointSize: 11
                     color: rbPressed ? "#3498ff" : "white"
                 }
@@ -247,7 +247,7 @@ Item {
                 Text {
                     anchors.centerIn: parent
                     text: "LB"
-                    font.family: "Helvetica"
+                    font.family: "sans-serif"
                     font.pointSize: 11
                     color: lbPressed ? "#3498ff" : "white"
                 }

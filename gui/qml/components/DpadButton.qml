@@ -1,6 +1,8 @@
 import QtQuick
 
 Rectangle {
+    id: root
+
     property bool pressed: false
 
     width: 12

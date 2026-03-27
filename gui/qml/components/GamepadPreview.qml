@@ -100,7 +100,7 @@ Item {
                 Text {
                     anchors.centerIn: parent
                     text: "H"
-                    font.family: "Helvetica"
+                    font.family: "sans-serif"
                     font.pointSize: 7
                     color: guidePressed ? "green" : "white"
                 }

@@ -18,7 +18,7 @@ Rectangle {
     Text {
         anchors.centerIn: parent
         text: root.label
-        font.family: "Helvetica"
+        font.family: "sans-serif"
         font.pointSize: root.fontSize
         color: root.pressed ? "#3498ff" : "white"
     }

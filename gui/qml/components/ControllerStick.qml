@@ -23,6 +23,7 @@ Rectangle {
         height: 30
         radius: 25
         anchors.centerIn: parent
+        // offsets compensate for the visual center of the joystickXbox.png asset
         anchors.horizontalCenterOffset: -4.7
         anchors.verticalCenterOffset: -6.9
 

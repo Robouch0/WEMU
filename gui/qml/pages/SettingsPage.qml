@@ -42,9 +42,6 @@ Rectangle {
                     width: 120
                     onClicked: mainLoader.source = "pages/MainMenu.qml"
                 }
-                Button { text: "Input" }
-                Button { text: "Graphics" }
-                Button { text: "Audio" }
             }
         }
 
