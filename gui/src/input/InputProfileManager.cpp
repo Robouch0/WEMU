@@ -6,6 +6,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QStandardPaths>
+#include <QFileInfo>
 
 const QStringList InputProfileManager::s_displayOrder = {
     "A", "B", "X", "Y",
@@ -22,7 +23,7 @@ InputProfileManager::InputProfileManager(QObject *parent)
     load();
 }
 
-InputProfile InputProfileManager::createDefaultProfile(const QString &name) const
+InputProfile InputProfileManager::createDefaultProfile(const QString &name)
 {
     InputProfile profile;
     profile.name = name;
@@ -99,7 +100,6 @@ QString InputProfileManager::getBinding(const QString &wiiuButton) const
 QString InputProfileManager::configPath()
 {
     const QString dir = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation);
-    QDir().mkpath(dir);
     return dir + "/bindings.json";
 }
 
@@ -122,9 +122,12 @@ void InputProfileManager::save() const
     root["currentIndex"] = m_currentIndex;
     root["profiles"]     = profilesArray;
 
-    QFile file(configPath());
-    if (file.open(QIODevice::WriteOnly))
-        file.write(QJsonDocument(root).toJson());
+    const QString path = configPath();
+    if (QDir().mkpath(QFileInfo(path).absolutePath())) {
+        QFile file(path);
+        if (file.open(QIODevice::WriteOnly))
+            file.write(QJsonDocument(root).toJson());
+    }
 }
 
 void InputProfileManager::load()

@@ -27,7 +27,7 @@ private:
     void save() const;
     void load();
 
-    [[nodiscard]] InputProfile createDefaultProfile(const QString &name) const;
+    [[nodiscard]] static InputProfile createDefaultProfile(const QString &name);
     [[nodiscard]] static QString configPath();
 
     QList<InputProfile> m_profiles;
