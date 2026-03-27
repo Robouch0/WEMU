@@ -17,7 +17,7 @@ const QStringList InputProfileManager::s_displayOrder = {
 InputProfileManager::InputProfileManager(QObject *parent)
     : QObject(parent)
 {
-    for (int i = 0; i < MAX_PROFILES; ++i)
+    for (int i = 0; i < k_maxProfiles; ++i)
         m_profiles.append(createDefaultProfile("Profile " + QString::number(i + 1)));
 
     load();
@@ -67,7 +67,7 @@ int InputProfileManager::currentProfileIndex() const
 
 void InputProfileManager::selectProfile(int index)
 {
-    if (index < 0 || index >= MAX_PROFILES || index == m_currentIndex)
+    if (index < 0 || index >= k_maxProfiles || index == m_currentIndex)
         return;
 
     m_currentIndex = index;
@@ -139,7 +139,7 @@ void InputProfileManager::load()
     const QJsonObject root = QJsonDocument::fromJson(file.readAll()).object();
     const QJsonArray profilesArray = root["profiles"].toArray();
 
-    for (int i = 0; i < qMin(static_cast<int>(profilesArray.size()), MAX_PROFILES); ++i) {
+    for (int i = 0; i < qMin(static_cast<int>(profilesArray.size()), k_maxProfiles); ++i) {
         const QJsonObject obj = profilesArray[i].toObject();
         const QJsonObject bindings = obj["bindings"].toObject();
 
@@ -150,6 +150,6 @@ void InputProfileManager::load()
     }
 
     const int savedIndex = root["currentIndex"].toInt(0);
-    if (savedIndex >= 0 && savedIndex < MAX_PROFILES)
+    if (savedIndex >= 0 && savedIndex < k_maxProfiles)
         m_currentIndex = savedIndex;
 }
