@@ -5,8 +5,8 @@
 ** Div
 */
 
-#include "cpu/interpreter/Interpreter.hpp"
-#include "cpu/types/EncodedInstruction.hpp"
+#include "../../interpreter/Interpreter.hpp"
+#include "../../types/EncodedInstruction.hpp"
 
 namespace Core::Instruction {
 
