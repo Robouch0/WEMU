@@ -78,16 +78,14 @@ namespace Core::Instruction {
      */
     void SUBFZE(Interpreter &cpu, const EncodedInstruction &instr)
     {
+        const uint32_t notRa = ~cpu.m_gpr[instr.ra];
         const uint32_t oldCarry = cpu.m_xer.ca;
-        const uint64_t result = static_cast<uint64_t>(~cpu.m_gpr[instr.ra])
-            + static_cast<uint64_t>(oldCarry);
+        const uint64_t result = static_cast<uint64_t>(notRa) + static_cast<uint64_t>(oldCarry);
 
         cpu.m_gpr[instr.rt] = static_cast<uint32_t>(result);
         cpu.m_xer.ca = (result >> CARRY_OFFSET) & 1;
 
-        const bool isOverflow = (~cpu.m_gpr[instr.ra] == 0x7FFFFFFF) && (oldCarry == 1);
-
-        cpu.updateOverflow(isOverflow, instr);
+        cpu.updateOverflow(static_cast<int32_t>(notRa), static_cast<int32_t>(oldCarry), cpu.m_gprSigned[instr.rt], instr);
         cpu.updateCR(cpu.m_cr.cr0, cpu.m_gprSigned[instr.rt], instr);
     }
 }

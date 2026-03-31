@@ -346,3 +346,48 @@ TEST_F(InstructionTest, SUBFZE_WithOE_WithRc_SOReflectedInCR0)
     EXPECT_EQ(cpu->m_cr.cr0.eq, 0);
     EXPECT_EQ(cpu->m_cr.cr0.so, 1);
 }
+
+//
+// ───────────────────────────────────────────────
+//  SUBFZE — rt == ra aliasing
+// ───────────────────────────────────────────────
+//
+
+TEST_F(InstructionTest, SUBFZE_RtEqualsRa_NoCarry)
+{
+    cpu->m_gpr[3] = 0xFFFFFFFE;
+    cpu->m_xer.ca = 0;
+
+    EncodedInstruction inst(0);
+    inst.rt = 3;
+    inst.ra = 3;
+    inst.oe = 0;
+    inst.rc = 0;
+
+    Core::Instruction::SUBFZE(*cpu, inst);
+
+    // ~0xFFFFFFFE + 0 = 1
+    EXPECT_EQ(cpu->m_gpr[3], 1u);
+    EXPECT_EQ(cpu->m_xer.ca, 0);
+    EXPECT_EQ(cpu->m_xer.ov, 0);
+}
+
+TEST_F(InstructionTest, SUBFZE_RtEqualsRa_OverflowCase)
+{
+    // ~INT32_MIN + 1 = 0x7FFFFFFF + 1 = 0x80000000 -> overflow
+    cpu->m_gprSigned[3] = INT32_MIN;
+    cpu->m_xer.ca = 1;
+
+    EncodedInstruction inst(0);
+    inst.rt = 3;
+    inst.ra = 3;
+    inst.oe = 1;
+    inst.rc = 0;
+
+    Core::Instruction::SUBFZE(*cpu, inst);
+
+    EXPECT_EQ(cpu->m_gpr[3], 0x80000000u);
+    EXPECT_EQ(cpu->m_xer.ca, 0);
+    EXPECT_EQ(cpu->m_xer.ov, 1);
+    EXPECT_EQ(cpu->m_xer.so, 1);
+}
