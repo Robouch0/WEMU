@@ -5,8 +5,8 @@
 ** Mul
 */
 
-#include "../../interpreter/Interpreter.hpp"
-#include "../../types/EncodedInstruction.hpp"
+#include "cpu/interpreter/Interpreter.hpp"
+#include "cpu/types/EncodedInstruction.hpp"
 
 namespace Core::Instruction {
 
