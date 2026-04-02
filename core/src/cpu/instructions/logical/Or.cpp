@@ -6,7 +6,7 @@
 ** EPITECH PROJECT, 2025
 ** core
 ** File description:
-** Add
+** Or
 */
 
 #include "cpu/interpreter/Interpreter.hpp"
