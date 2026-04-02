@@ -45,6 +45,8 @@ add_library(core STATIC
         src/cpu/instructions/arithmetic/Sub.cpp
         src/cpu/instructions/logical/Xor.cpp
         src/cpu/instructions/arithmetic/Neg.cpp
+        src/cpu/instructions/Load/Load.cpp
+        src/cpu/instructions/Store/Store.cpp
 )
 
 target_include_directories(core PUBLIC

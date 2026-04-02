@@ -10,8 +10,6 @@
 
 namespace Core::Instruction {
 
-    //(in the PPC doc ¬ signify NOT operator)
-
     /**
      * @brief The sum ¬(RA) + EXTS(SI) + 1 is placed into register RT.
      * @param cpu
