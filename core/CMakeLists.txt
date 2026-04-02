@@ -40,6 +40,7 @@ add_library(core STATIC
         src/cpu/memory/Memory.hpp
         src/cpu/instructions/Branch.cpp
         src/cpu/instructions/logical/Or.cpp
+        src/cpu/instructions/logical/And.cpp
         src/cpu/instructions/arithmetic/Mul.cpp
         src/cpu/instructions/arithmetic/Div.cpp
         src/cpu/instructions/arithmetic/Sub.cpp

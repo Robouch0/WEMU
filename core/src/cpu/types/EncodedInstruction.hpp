@@ -87,7 +87,7 @@ union EncodedInstruction {
 
     struct {
         std::uint32_t : 22;
-        std::uint32_t rs: 4;
+        std::uint32_t rs: 5;
         std::uint32_t : 6;
     };
 

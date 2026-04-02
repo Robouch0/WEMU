@@ -2,6 +2,13 @@
 // Created by nicolas on 3/22/26.
 //
 
+/*
+** EPITECH PROJECT, 2025
+** core
+** File description:
+** Or
+*/
+
 #include "cpu/interpreter/Interpreter.hpp"
 #include "cpu/types/EncodedInstruction.hpp"
 
