@@ -15,11 +15,16 @@ SDLGamepadInput::SDLGamepadInput(const int index, QObject *parent)
 
         { "BACK",  SDL_CONTROLLER_BUTTON_BACK },
         { "START", SDL_CONTROLLER_BUTTON_START },
+        { "XBOX_GUIDE", SDL_CONTROLLER_BUTTON_GUIDE},
 
         { "DPAD_UP",    SDL_CONTROLLER_BUTTON_DPAD_UP },
         { "DPAD_DOWN",  SDL_CONTROLLER_BUTTON_DPAD_DOWN },
         { "DPAD_LEFT",  SDL_CONTROLLER_BUTTON_DPAD_LEFT },
-        { "DPAD_RIGHT", SDL_CONTROLLER_BUTTON_DPAD_RIGHT }
+        { "DPAD_RIGHT", SDL_CONTROLLER_BUTTON_DPAD_RIGHT },
+
+        { "LEFTSTICK_BUTTON",  SDL_CONTROLLER_BUTTON_LEFTSTICK },
+        { "RIGHTSTICK_BUTTON",  SDL_CONTROLLER_BUTTON_RIGHTSTICK },
+
     };
 
     m_controller = SDL_GameControllerOpen(index);
@@ -49,6 +54,7 @@ QString SDLGamepadInput::name() const
 void SDLGamepadInput::update()
 {
     SDL_GameControllerUpdate();
+
     for (const QString &name : m_buttonMap.keys()) {
         const auto sdlButton = m_buttonMap.value(name);
         bool now = SDL_GameControllerGetButton(m_controller, sdlButton);
@@ -56,9 +62,11 @@ void SDLGamepadInput::update()
         if (m_lastButtons.value(name) != now)
         {
             m_lastButtons[name] = now;
+            qDebug() << name;
             emit buttonStateChanged(name, now);
         }
     }
+
     auto checkAxis = [&](const QString &name, float &last)
     {
         float v = getAxisValue(name);
@@ -73,8 +81,22 @@ void SDLGamepadInput::update()
     checkAxis("LY", m_lastLY);
     checkAxis("RX", m_lastRX);
     checkAxis("RY", m_lastRY);
-}
 
+    auto checkTrigger = [&](const QString &name, SDL_GameControllerAxis axis, bool &last)
+    {
+        Sint16 value = SDL_GameControllerGetAxis(m_controller, axis);
+        bool now = value > 13000;
+
+        if (now != last) {
+            last = now;
+            qDebug() << name;
+            emit buttonStateChanged(name, now);
+        }
+    };
+
+    checkTrigger("LT", SDL_CONTROLLER_AXIS_TRIGGERLEFT, m_lastLT);
+    checkTrigger("RT", SDL_CONTROLLER_AXIS_TRIGGERRIGHT, m_lastRT);
+}
 bool SDLGamepadInput::isButtonPressed(const QString &buttonName) const
 {
     if (!m_controller)
@@ -98,5 +120,9 @@ float SDLGamepadInput::getAxisValue(const QString &axisName) const
         v = normalizeAxis(SDL_GameControllerGetAxis(m_controller, SDL_CONTROLLER_AXIS_LEFTX));
     else if (axisName == "LY")
         v = normalizeAxis(SDL_GameControllerGetAxis(m_controller, SDL_CONTROLLER_AXIS_LEFTY));
+    else if (axisName == "RX")
+        v = normalizeAxis(SDL_GameControllerGetAxis(m_controller, SDL_CONTROLLER_AXIS_RIGHTX));
+    else if (axisName == "RY")
+        v = normalizeAxis(SDL_GameControllerGetAxis(m_controller, SDL_CONTROLLER_AXIS_RIGHTY));
     return v;
 }

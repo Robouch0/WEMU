@@ -32,6 +32,8 @@ public:
         float m_lastLY = 0.0f;
         float m_lastRX = 0.0f;
         float m_lastRY = 0.0f;
+        bool m_lastLT = false;
+        bool m_lastRT = false;
 
         SDL_JoystickID m_instanceId = -1;
 };

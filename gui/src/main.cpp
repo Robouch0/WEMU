@@ -5,6 +5,7 @@
 #include <SDL2/SDL.h>
 #include "input/IInputDevice.hpp"
 #include "input/InputManager.hpp"
+#include "input/InputProfileManager.hpp"
 #include "input/KeyboardInput.hpp"
 
 int main(int argc, char *argv[])
@@ -12,14 +13,19 @@ int main(int argc, char *argv[])
     if (SDL_Init(SDL_INIT_GAMECONTROLLER) != 0) {
         qFatal("SDL_Init failed: %s", SDL_GetError());
     }
+
     QGuiApplication app(argc, argv);
+    QGuiApplication::setApplicationName("wemu");
     QQmlApplicationEngine engine;
 
     auto inputManager = new InputManager();
     auto keyboard = new KeyboardInput();
     inputManager->addDevice(keyboard);
 
+    auto inputProfileManager = new InputProfileManager();
+
     engine.rootContext()->setContextProperty("InputManager", inputManager);
+    engine.rootContext()->setContextProperty("InputProfileManager", inputProfileManager);
 
     QObject::connect(&engine, &QQmlApplicationEngine::objectCreationFailed,
                      &app, []() { QCoreApplication::exit(-1); }, Qt::QueuedConnection);

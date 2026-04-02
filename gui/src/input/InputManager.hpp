@@ -7,7 +7,7 @@
 class InputManager final : public QObject {
     Q_OBJECT
 
-public:
+    public:
         explicit InputManager(QObject *parent = nullptr);
 
         void addDevice(IInputDevice *device);
@@ -19,10 +19,10 @@ public:
         Q_INVOKABLE [[nodiscard]] QStringList connectedDevices() const;
         Q_INVOKABLE [[nodiscard]] float getAxis(const QString &axisName) const;
 
-        signals:
-            void inputUpdated();
-            void axisChanged(QString axisName, float value, QString deviceName);
-            void buttonChanged(QString buttonName, bool pressed, QString deviceName);
+    signals:
+        void inputUpdated();
+        void axisChanged(QString axisName, float value, QString deviceName);
+        void buttonChanged(QString buttonName, bool pressed, QString deviceName);
 
     private slots:
         void updateAll();

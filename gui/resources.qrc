@@ -1,9 +1,11 @@
 <RCC>
     <qresource prefix="/assets">
         <file>qml/assets/FrenchGuy.mp4</file>
-        <file>qml/assets/xboxController.png</file>
+        <file>qml/assets/xboxControllerBlank.png</file>
         <file>qml/assets/joystickXbox.png</file>
-        <file>qml/assets/wiiuGamepad.png</file>
+        <file>qml/assets/wiiuControllerBlank.png</file>
+        <file>qml/assets/xboxControllerBackview.png</file>
+        <file>qml/assets/wiiuGamepadBackview.png</file>
 
         <file>qml/Main.qml</file>
         <file>qml/pages/MainMenu.qml</file>

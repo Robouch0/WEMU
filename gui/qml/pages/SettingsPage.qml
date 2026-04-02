@@ -7,26 +7,40 @@ Rectangle {
     color: "#e8e8ed"
     anchors.fill: parent
 
+    property string listeningFor: ""
+
+    Connections {
+        target: InputManager
+
+        function onButtonChanged(button, pressed, device) {
+            if (listeningFor !== "" && pressed && InputProfileManager.isKnownXboxButton(button)) {
+                InputProfileManager.setBinding(listeningFor, button)
+                listeningFor = ""
+            }
+        }
+    }
+
     ColumnLayout {
         anchors.fill: parent
         anchors.margins: 20
         spacing: 12
 
         Rectangle {
-            width: parent.width
-            height: 100
+            Layout.fillWidth: true
+            height: 50
             color: "#dddddd"
             radius: 8
 
             Row {
                 anchors.fill: parent
-                anchors.margins: 12
-                spacing: 16
+                anchors.margins: 10
+                spacing: 12
 
-                Button { text: "← Home"; width: 120 }
-                Button { text: "Input" }
-                Button { text: "Graphics" }
-                Button { text: "Audio" }
+                Button {
+                    text: "← Home"
+                    width: 120
+                    onClicked: mainLoader.source = "pages/MainMenu.qml"
+                }
             }
         }
 
@@ -47,7 +61,7 @@ Rectangle {
 
                 Column {
                     width: parent.width
-                    spacing: 12
+                    spacing: 25
                     padding: 12
 
                     Text {
@@ -82,23 +96,109 @@ Rectangle {
                         color: "#1a1a1a"
                     }
 
+                    Row {
+                        spacing: 6
+
+                        Repeater {
+                            model: 3
+
+                            Rectangle {
+                                width: 90
+                                height: 28
+                                radius: 4
+                                color: InputProfileManager.currentProfileIndex === index ? "#3498ff" : "#e4e4ea"
+                                border.color: InputProfileManager.currentProfileIndex === index ? "#2980d9" : "#cccccc"
+
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: "Profile " + (index + 1)
+                                    font.pixelSize: 12
+                                    color: InputProfileManager.currentProfileIndex === index ? "white" : "#444444"
+                                }
+
+                                MouseArea {
+                                    anchors.fill: parent
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: {
+                                        listeningFor = ""
+                                        InputProfileManager.selectProfile(index)
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     Rectangle {
                         width: parent.width - 24
-                        height: 300
+                        height: 28
+                        color: "#e4e4ea"
+                        radius: 4
+
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: 8
+                            anchors.rightMargin: 8
+                            spacing: 5
+
+                            Text {
+                                Layout.fillWidth: true
+                                text: "Xbox"
+                                font.pixelSize: 12
+                                font.bold: true
+                                color: "#444444"
+                            }
+
+                            Text {
+                                Layout.fillWidth: true
+                                text: "Wii U"
+                                font.pixelSize: 12
+                                font.bold: true
+                                color: "#444444"
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        width: parent.width - 24
+                        height: bindingRepeater.count * 36
                         color: "#ffffff"
                         radius: 6
                         border.color: "#cccccc"
+                        clip: true
+
+                        Column {
+                            anchors.fill: parent
+
+                            Repeater {
+                                id: bindingRepeater
+                                model: InputProfileManager.bindingModel
+
+                                BindingRow {
+                                    width: parent.width
+                                    wiiuLabel: modelData.wiiuLabel
+                                    xboxButton: modelData.xboxButton
+                                    isListening: listeningFor === modelData.wiiu
+                                    onRowClicked: listeningFor = modelData.wiiu
+                                }
+                            }
+                        }
                     }
 
                     Text {
-                        text: "Devices: " + InputManager.connectedDevices().join(", ")
-                        color: "#555555"
-                    }
-
-                    Text {
-                        id: keyLabel
-                        text: "Waiting for input..."
+                        visible: listeningFor !== ""
+                        text: "Press a button on the controller..."
                         color: "#c46a00"
+                        font.pixelSize: 12
+                        font.italic: true
+                    }
+
+                    Text {
+                        visible: listeningFor === ""
+                        text: InputManager.connectedDevices().length > 0
+                              ? "Connected: " + InputManager.connectedDevices().join(", ")
+                              : "No controller connected"
+                        color: "#888888"
+                        font.pixelSize: 11
                     }
                 }
             }
@@ -114,7 +214,7 @@ Rectangle {
 
                 Column {
                     width: parent.width
-                    spacing: 12
+                    spacing: 25
                     padding: 12
 
                     Text {

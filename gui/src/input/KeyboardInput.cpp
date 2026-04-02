@@ -8,7 +8,8 @@ KeyboardInput::KeyboardInput(QObject *parent)
     qApp->installEventFilter(this);
 }
 
-bool KeyboardInput::eventFilter(QObject *obj, QEvent *event) {
+bool KeyboardInput::eventFilter(QObject *obj, QEvent *event)
+{
     if (event->type() == QEvent::KeyPress) {
         const auto *keyEvent = dynamic_cast<QKeyEvent*>(event);
         onKeyPressed(keyEvent->key());
@@ -19,7 +20,8 @@ bool KeyboardInput::eventFilter(QObject *obj, QEvent *event) {
     return QObject::eventFilter(obj, event);
 }
 
-void KeyboardInput::onKeyPressed(const int key) {
+void KeyboardInput::onKeyPressed(const int key)
+{
     auto it = m_keyStates.find(key);
     if (it == m_keyStates.end() || it.value() != KeyState::Pressed) {
         m_keyStates[key] = KeyState::Pressed;
@@ -27,7 +29,8 @@ void KeyboardInput::onKeyPressed(const int key) {
     }
 }
 
-void KeyboardInput::onKeyReleased(const int key) {
+void KeyboardInput::onKeyReleased(const int key)
+{
     m_keyStates[key] = KeyState::Released;
     emit keyStateChanged(QKeySequence(key).toString(), false);
 }
@@ -36,7 +39,8 @@ void KeyboardInput::update()
 {
 }
 
-bool KeyboardInput::isButtonPressed(const QString &buttonName) const {
+bool KeyboardInput::isButtonPressed(const QString &buttonName) const
+{
     for (auto it = m_keyStates.begin(); it != m_keyStates.end(); ++it) {
         QString keyName = QKeySequence(it.key()).toString();
         if (keyName.compare(buttonName, Qt::CaseInsensitive) == 0) {
