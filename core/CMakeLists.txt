@@ -30,7 +30,7 @@ add_library(core STATIC
         src/utils/BeDecoder.cpp
         src/cpu/interpreter/Interpreter.hpp
         src/cpu/interpreter/Interpreter.cpp
-        src/cpu/instructions/Add.cpp
+        src/cpu/instructions/arithmetic/Add.cpp
         src/cpu/instructions/Sc.cpp
         src/cpu/types/Field.hpp
         src/cpu/types/Instruction.hpp
@@ -40,9 +40,12 @@ add_library(core STATIC
         src/cpu/memory/Memory.hpp
         src/cpu/instructions/Branch.cpp
         src/cpu/instructions/logical/Or.cpp
-        src/cpu/instructions/Mul.cpp
-        src/cpu/instructions/Div.cpp
         src/cpu/instructions/logical/And.cpp
+        src/cpu/instructions/arithmetic/Mul.cpp
+        src/cpu/instructions/arithmetic/Div.cpp
+        src/cpu/instructions/arithmetic/Sub.cpp
+        src/cpu/instructions/logical/Xor.cpp
+        src/cpu/instructions/arithmetic/Neg.cpp
 )
 
 target_include_directories(core PUBLIC
@@ -107,7 +110,7 @@ if(ENABLE_COVERAGE)
             --capture
             --directory ${CMAKE_BINARY_DIR}
             --branch-coverage
-            --ignore-errors mismatch,unused
+            --ignore-errors mismatch,unused,inconsistent
             --rc geninfo_unexecuted_blocks=1
             --exclude "*/usr/include/*"
             --output-file ${COVERAGE_RAW}
@@ -115,7 +118,7 @@ if(ENABLE_COVERAGE)
             --remove ${COVERAGE_RAW}
             "${CMAKE_BINARY_DIR}/_deps/*"
             --branch-coverage
-            --ignore-errors mismatch,unused
+            --ignore-errors mismatch,unused,inconsistent
             --output-file ${COVERAGE_INFO}
             COMMAND ${LCOV} --list ${COVERAGE_INFO}
             WORKING_DIRECTORY ${CMAKE_BINARY_DIR}

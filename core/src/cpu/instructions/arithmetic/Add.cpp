@@ -63,7 +63,10 @@ namespace Core::Instruction {
      */
     void ADDIS(Core::Interpreter &cpu, const EncodedInstruction &instr)
     {
-        cpu.m_gpr[instr.rt] = cpu.m_gpr[instr.ra] + (instr.si << 16);
+        if (instr.ra == 0)
+            cpu.m_gpr[instr.rt] = instr.si << 16;
+        else
+            cpu.m_gpr[instr.rt] = cpu.m_gpr[instr.ra] + (instr.si << 16);
     }
 
     void ADDI(Core::Interpreter &cpu, const EncodedInstruction &instr)

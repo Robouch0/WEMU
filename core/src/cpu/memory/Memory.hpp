@@ -4,6 +4,9 @@
 
 #include <vector>
 #include <cinttypes>
+#include <bit>
+#include <iomanip>
+#include <iostream>
 
 namespace Core {
     class Memory {
@@ -12,30 +15,77 @@ namespace Core {
             {
                 ApplicationCode = 0x02000000,
                 ApplicationData = 0x10000000,
-                ApplicationMemoryEnd = 0x02000000 + 0x40000000, // 1GB
+                ApplicationMemoryEnd = 0x42000000,
                 GraphicsResources = 0xF4000000,
                 GraphicsResourcesEnd = 0xF6000000
              };
 
-            explicit Memory(const std::size_t &size = 0x40000000) : m_memory(),  m_virtAddress(0x2000000), m_memAddress(), m_memSize(size)
+            static constexpr uint32_t STACK_BASE   = 0xC0FF0000;
+            static constexpr uint32_t STACK_SIZE   = 0x100000;   // 1 MB
+            static constexpr uint32_t HEAP_BASE    = 0x28000000;
+
+            explicit Memory(const std::size_t &size = 0x40000000) : m_memory(),  m_virtAddress(ApplicationCode), m_memSize(size)
             {
                 m_memory.resize(size);
-                m_memAddress = reinterpret_cast<std::size_t>(m_memory.data());
+                m_stack.resize(STACK_SIZE);
             }
 
-            std::vector<char> &getMemory() { return m_memory; }
+            [[nodiscard]] std::uint8_t *hostPtr(const std::uint32_t address) noexcept
+            {
+                if (address >= STACK_BASE && address < STACK_BASE + STACK_SIZE)
+                    return reinterpret_cast<std::uint8_t*>(m_stack.data() + (address - STACK_BASE));
+                if (address >= m_virtAddress) {
+                    const std::size_t offset = address - m_virtAddress;
+                    if (address + offset < m_memory.size())
+                        return reinterpret_cast<std::uint8_t*>(m_memory.data() + offset);
+                }
+                return nullptr;
+            }
+
+            template<typename T>
+            [[nodiscard]] T read(const std::uint32_t address) noexcept
+            {
+                T *ptr = reinterpret_cast<T*>(this->hostPtr(address));
+
+                if (ptr == nullptr) {
+                    std::cerr << "[MEM] Unmapped read @ 0x"
+                      << std::hex << std::uppercase << std::setw(0) << std::setfill('0')
+                      << address << std::endl;
+                    return 0;
+                }
+                return std::byteswap(ptr[0]);
+            }
+
+            template<typename T>
+            void write(const std::uint32_t address, const T value)
+            {
+                T *ptr = reinterpret_cast<T*>(this->hostPtr(address));
+
+                if (ptr == nullptr) {
+                    std::cerr << "[MEM] Unmapped write @ 0x"
+                        << std::hex << std::uppercase << std::setw(0) << std::setfill('0')
+                        << address << std::endl;
+                    return;
+                }
+                ptr[0] = std::byteswap(value);
+            }
+
+            [[nodiscard]] std::uint32_t heapAllocate(const std::uint32_t size, std::uint32_t align)
+            {
+                if (align < 4)
+                    align = 4;
+                m_heapPtr = (m_heapPtr + align -1) & ~(align - 1);
+                m_heapPtr += size;
+                return m_heapPtr - size;
+            }
+
+            [[nodiscard]] std::vector<char> &getMemory() noexcept { return m_memory; }
 
             [[nodiscard]] std::size_t translate(const std::size_t &address) const
             {
-                if (address >= ApplicationCode && address < ApplicationData) {
-                } else if (address >= ApplicationData && address < ApplicationMemoryEnd) {
-                } else if (address >= GraphicsResources && address <= GraphicsResourcesEnd) {
-                } else {
+                if (address < m_virtAddress || address > m_virtAddress + m_memory.size())
                     return 0;
-                }
-                if (address < m_virtAddress)
-                    throw std::exception();
-                return (address - m_virtAddress) + m_memAddress;
+                return reinterpret_cast<std::size_t>(m_memory.data() + (address - m_virtAddress));
             }
 
             [[nodiscard]] std::size_t allocate(const std::size_t &address, const std::size_t &size) const
@@ -45,8 +95,9 @@ namespace Core {
 
         private:
             std::vector<char> m_memory;
+            std::vector<char> m_stack;
+            std::size_t m_heapPtr = HEAP_BASE;
             std::size_t m_virtAddress;
-            std::size_t m_memAddress;
             std::size_t m_memSize;
     };
 }
