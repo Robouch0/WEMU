@@ -30,9 +30,9 @@ namespace Core::Instruction {
      */
     void ADDE(Core::Interpreter &cpu, const EncodedInstruction &instr)
     {
-        const uint64_t result = static_cast<uint64_t>(cpu.m_gpr[instr.ra]) + static_cast<uint64_t>(cpu.m_gpr[instr.rb]) + static_cast<uint64_t>(cpu.m_xer.ca);
+        const std::uint64_t result = static_cast<std::uint64_t>(cpu.m_gpr[instr.ra]) + static_cast<std::uint64_t>(cpu.m_gpr[instr.rb]) + static_cast<std::uint64_t>(cpu.m_xer.ca);
 
-        cpu.m_gpr[instr.rt] = static_cast<uint32_t>(result);
+        cpu.m_gpr[instr.rt] = static_cast<std::uint32_t>(result);
         cpu.m_xer.ca = (result >> CARRY_OFFSET) & 1;
 
         cpu.updateOverflow(cpu.m_gprSigned[instr.ra], cpu.m_gprSigned[instr.rb], cpu.m_gprSigned[instr.rt], instr);
@@ -46,10 +46,10 @@ namespace Core::Instruction {
      */
     void ADDME(Interpreter &cpu, const EncodedInstruction &instr)
     {
-        const uint64_t addMESubtractor = static_cast<uint64_t>(cpu.m_xer.ca) + static_cast<uint32_t>(-1); // will never cause an overflow as ca is either equal to 0 or 1
-        const uint64_t result = static_cast<uint64_t>(cpu.m_gpr[instr.ra]) + addMESubtractor;
+        const std::uint64_t addMESubtractor = static_cast<std::uint64_t>(cpu.m_xer.ca) + static_cast<std::uint32_t>(-1); // will never cause an overflow as ca is either equal to 0 or 1
+        const std::uint64_t result = static_cast<std::uint64_t>(cpu.m_gpr[instr.ra]) + addMESubtractor;
 
-        cpu.m_gpr[instr.rt] = static_cast<uint32_t>(result);
+        cpu.m_gpr[instr.rt] = static_cast<std::uint32_t>(result);
         cpu.m_xer.ca = (result >> CARRY_OFFSET) & 1;
 
         cpu.updateOverflow(cpu.m_gprSigned[instr.ra], static_cast<std::int32_t>(addMESubtractor), cpu.m_gprSigned[instr.rt], instr);
@@ -71,7 +71,7 @@ namespace Core::Instruction {
 
     void ADDI(Core::Interpreter &cpu, const EncodedInstruction &instr)
     {
-        const int32_t imm = static_cast<int16_t>(instr.si);
+        const std::int32_t imm = static_cast<std::int16_t>(instr.si);
 
         if (instr.ra == 0)
             cpu.m_gpr[instr.rt] = imm;
@@ -81,9 +81,9 @@ namespace Core::Instruction {
 
     void ADDC(Interpreter &cpu, const EncodedInstruction &instr)
     {
-        const uint64_t result = static_cast<uint64_t>(cpu.m_gpr[instr.ra]) + static_cast<uint64_t>(cpu.m_gpr[instr.rb]);
+        const std::uint64_t result = static_cast<std::uint64_t>(cpu.m_gpr[instr.ra]) + static_cast<std::uint64_t>(cpu.m_gpr[instr.rb]);
 
-        cpu.m_gpr[instr.rt] = static_cast<uint32_t>(result);
+        cpu.m_gpr[instr.rt] = static_cast<std::uint32_t>(result);
         cpu.m_xer.ca = (result >> CARRY_OFFSET) & 1;
 
         cpu.updateOverflow(cpu.m_gprSigned[instr.ra], cpu.m_gprSigned[instr.rb], cpu.m_gprSigned[instr.rt], instr);
@@ -92,10 +92,10 @@ namespace Core::Instruction {
 
     void ADDZE(Interpreter &cpu, const EncodedInstruction &instr)
     {
-        const uint32_t oldCarry = cpu.m_xer.ca;
-        const uint64_t result = static_cast<uint64_t>(cpu.m_gpr[instr.ra]) + cpu.m_xer.ca;
+        const std::uint32_t oldCarry = cpu.m_xer.ca;
+        const std::uint64_t result = static_cast<std::uint64_t>(cpu.m_gpr[instr.ra]) + cpu.m_xer.ca;
 
-        cpu.m_gpr[instr.rt] = static_cast<uint32_t>(result);
+        cpu.m_gpr[instr.rt] = static_cast<std::uint32_t>(result);
         cpu.m_xer.ca = (result >> CARRY_OFFSET) & 1;
 
         cpu.updateOverflow(cpu.m_gprSigned[instr.ra], static_cast<std::int32_t>(oldCarry), cpu.m_gprSigned[instr.rt], instr);
@@ -104,10 +104,10 @@ namespace Core::Instruction {
 
     void ADDIC(Interpreter &cpu, const EncodedInstruction &instr)
     {
-        const int32_t imm = static_cast<int16_t>(instr.si);
-        const uint64_t result = static_cast<uint64_t>(cpu.m_gpr[instr.ra]) + static_cast<uint64_t>(static_cast<uint32_t>(imm));
+        const std::int32_t imm = static_cast<std::int16_t>(instr.si);
+        const std::uint64_t result = static_cast<std::uint64_t>(cpu.m_gpr[instr.ra]) + static_cast<std::uint64_t>(static_cast<std::uint32_t>(imm));
 
-        cpu.m_gpr[instr.rt] = static_cast<uint32_t>(result);
+        cpu.m_gpr[instr.rt] = static_cast<std::uint32_t>(result);
         cpu.m_xer.ca = (result >> CARRY_OFFSET) & 1;
     }
 
