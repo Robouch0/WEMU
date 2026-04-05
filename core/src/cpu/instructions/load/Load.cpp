@@ -17,9 +17,13 @@ namespace Core::Instruction {
      * @param cpu  Interpreter state.
      * @param instr Encoded instruction (fields: rt, ra, si as D).
      */
-    void LWZ(Interpreter &cpu, const EncodedInstruction &instr);
-    // {
-    // }
+    void LWZ(Interpreter &cpu, const EncodedInstruction &instr)
+    {
+        const std::int32_t exts = static_cast<std::int16_t>(instr.d);
+        const std::uint32_t ea = (instr.ra == 0 ? 0 : cpu.m_gpr[instr.ra]) + static_cast<std::uint32_t>(exts);
+
+        cpu.m_gpr[instr.rt] = cpu.m_memory.read<std::uint32_t>(ea);
+    }
 
     /**
      * @brief Load Word and Zero with Update.
