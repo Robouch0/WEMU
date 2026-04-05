@@ -17,10 +17,10 @@ namespace Core::Instruction {
      */
     void SUBFIC(Interpreter &cpu, const EncodedInstruction &instr)
     {
-        const int32_t imm = static_cast<int16_t>(instr.si);
-        const uint64_t result = static_cast<uint64_t>(~cpu.m_gpr[instr.ra]) + static_cast<uint64_t>(static_cast<uint32_t>(imm)) + 1;
+        const std::int32_t imm = static_cast<std::int16_t>(instr.si);
+        const std::uint64_t result = static_cast<std::uint64_t>(~cpu.m_gpr[instr.ra]) + static_cast<std::uint64_t>(static_cast<std::uint32_t>(imm)) + 1;
 
-        cpu.m_gpr[instr.rt] = static_cast<uint32_t>(result);
+        cpu.m_gpr[instr.rt] = static_cast<std::uint32_t>(result);
         cpu.m_xer.ca = (result >> CARRY_OFFSET) & 1;
     }
 
@@ -44,7 +44,7 @@ namespace Core::Instruction {
      */
     void SUBFC(Interpreter &cpu, const EncodedInstruction &instr)
     {
-        const uint64_t result = static_cast<uint64_t>(~cpu.m_gpr[instr.ra]) + static_cast<uint64_t>(cpu.m_gpr[instr.rb]) + 1;
+        const std::uint64_t result = static_cast<std::uint64_t>(~cpu.m_gpr[instr.ra]) + static_cast<std::uint64_t>(cpu.m_gpr[instr.rb]) + 1;
 
         cpu.m_gpr[instr.rt] = static_cast<uint32_t>(result);
         cpu.m_xer.ca = (result >> CARRY_OFFSET) & 1;
@@ -60,9 +60,9 @@ namespace Core::Instruction {
     */
     void SUBFE(Interpreter &cpu, const EncodedInstruction &instr)
     {
-        const uint64_t result = static_cast<uint64_t>(~cpu.m_gpr[instr.ra]) + static_cast<uint64_t>(cpu.m_gpr[instr.rb]) + static_cast<uint64_t>(cpu.m_xer.ca);
+        const std::uint64_t result = static_cast<std::uint64_t>(~cpu.m_gpr[instr.ra]) + static_cast<std::uint64_t>(cpu.m_gpr[instr.rb]) + static_cast<std::uint64_t>(cpu.m_xer.ca);
 
-        cpu.m_gpr[instr.rt] = static_cast<uint32_t>(result);
+        cpu.m_gpr[instr.rt] = static_cast<std::uint32_t>(result);
         cpu.m_xer.ca = (result >> CARRY_OFFSET) & 1;
 
         cpu.updateOverflow(-cpu.m_gprSigned[instr.ra], cpu.m_gprSigned[instr.rb], cpu.m_gprSigned[instr.rt], instr);
@@ -76,11 +76,11 @@ namespace Core::Instruction {
      */
     void SUBFME(Interpreter &cpu, const EncodedInstruction &instr)
     {
-        const uint32_t notRa = ~cpu.m_gpr[instr.ra];
-        const uint32_t oldCarry = cpu.m_xer.ca;
-        const uint64_t result = static_cast<uint64_t>(notRa) + static_cast<uint64_t>(oldCarry) + 0xFFFFFFFFULL;
+        const std::uint32_t notRa = ~cpu.m_gpr[instr.ra];
+        const std::uint32_t oldCarry = cpu.m_xer.ca;
+        const std::uint64_t result = static_cast<std::uint64_t>(notRa) + static_cast<std::uint64_t>(oldCarry) + 0xFFFFFFFFULL;
 
-        cpu.m_gpr[instr.rt] = static_cast<uint32_t>(result);
+        cpu.m_gpr[instr.rt] = static_cast<std::uint32_t>(result);
         cpu.m_xer.ca = (result >> CARRY_OFFSET) & 1;
 
         cpu.updateOverflow(static_cast<int32_t>(notRa), static_cast<int32_t>(oldCarry) - 1, cpu.m_gprSigned[instr.rt], instr);
@@ -94,11 +94,11 @@ namespace Core::Instruction {
      */
     void SUBFZE(Interpreter &cpu, const EncodedInstruction &instr)
     {
-        const uint32_t notRa = ~cpu.m_gpr[instr.ra];
-        const uint32_t oldCarry = cpu.m_xer.ca;
-        const uint64_t result = static_cast<uint64_t>(notRa) + static_cast<uint64_t>(oldCarry);
+        const std::uint32_t notRa = ~cpu.m_gpr[instr.ra];
+        const std::uint32_t oldCarry = cpu.m_xer.ca;
+        const std::uint64_t result = static_cast<std::uint64_t>(notRa) + static_cast<std::uint64_t>(oldCarry);
 
-        cpu.m_gpr[instr.rt] = static_cast<uint32_t>(result);
+        cpu.m_gpr[instr.rt] = static_cast<std::uint32_t>(result);
         cpu.m_xer.ca = (result >> CARRY_OFFSET) & 1;
 
         cpu.updateOverflow(static_cast<int32_t>(notRa), static_cast<int32_t>(oldCarry), cpu.m_gprSigned[instr.rt], instr);
