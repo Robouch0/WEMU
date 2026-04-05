@@ -81,6 +81,11 @@ union EncodedInstruction {
     };
 
     struct {
+        std::uint32_t d: 16;
+        std::uint32_t : 16;
+    };
+
+    struct {
         std::uint32_t rc: 1;
         std::uint32_t : 31;
     };

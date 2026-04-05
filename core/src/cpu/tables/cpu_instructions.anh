@@ -45,6 +45,10 @@ INSTR(NAND, OPCD(31), XO10(476))
 //INSTR(STW, OPCD(36))
 //INSTR(STWU, OPCD(37))
 
+// Load Memory
+INSTR(LWZ, OPCD(32))
+
+
 // Branching
 INSTR(B, OPCD(18), AA(0), LK(0))
 INSTR(BA, OPCD(18), AA(1), LK(0))
