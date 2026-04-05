@@ -56,7 +56,7 @@ namespace Core::Instruction {
      */
     void LHA(Interpreter &cpu, const EncodedInstruction &instr)
     {
-        const std::uint32_t ea = (instr.ra == 0 ? 0 : cpu.m_gpr[instr.ra]) + static_cast<std::int16_t>(instr.si);
+        const std::uint32_t ea = (instr.ra == 0 ? 0 : cpu.m_gpr[instr.ra]) + static_cast<std::int16_t>(instr.d);
 
         cpu.m_gpr[instr.rt] = static_cast<std::int16_t>(cpu.m_memory.read<std::uint16_t>(ea));
     }
