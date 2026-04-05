@@ -19,8 +19,8 @@ namespace Core::Instruction {
      */
     void LWZ(Interpreter &cpu, const EncodedInstruction &instr)
     {
-        const int32_t exts = static_cast<int16_t>(instr.si);
-        const uint64_t ea = (instr.ra == 0 ? 0 : cpu.m_gpr[instr.ra]) + static_cast<int64_t>(exts);
+        const int32_t exts = static_cast<int16_t>(instr.d);
+        const uint32_t ea = (instr.ra == 0 ? 0 : cpu.m_gpr[instr.ra]) + static_cast<uint32_t>(exts);
 
         cpu.m_gpr[instr.rt] = cpu.m_memory.read<uint32_t>(ea);
     }
