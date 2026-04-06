@@ -51,6 +51,7 @@ INSTR(LHA, OPCD(42))
 // Load Memory
 INSTR(LWZ, OPCD(32))
 INSTR(LWZU, OPCD(33))
+INSTR(LWZX, OPCD(31), XO10(23))
 
 // Branching
 INSTR(B, OPCD(18), AA(0), LK(0))

@@ -48,9 +48,12 @@ namespace Core::Instruction {
      * @param cpu  Interpreter state.
      * @param instr Encoded instruction (fields: rt, ra, rb).
      */
-    void LWZX(Interpreter &cpu, const EncodedInstruction &instr);
-    // {
-    // }
+    void LWZX(Interpreter &cpu, const EncodedInstruction &instr)
+    {
+        const std::uint32_t ea = (instr.ra == 0 ? 0 : cpu.m_gpr[instr.ra]) + cpu.m_gpr[instr.rb];
+
+        cpu.m_gpr[instr.rt] = cpu.m_memory.read<std::uint32_t>(ea);
+    }
 
     /**
      * @brief Load Halfword Algebraic.
