@@ -42,6 +42,7 @@ INSTR(ANDC, OPCD(31), XO10(60))
 INSTR(NAND, OPCD(31), XO10(476))
 
 // Load Integer
+INSTR(LBZ, OPCD(34))
 INSTR(LHA, OPCD(42))
 
 // Memory
