@@ -74,8 +74,8 @@ namespace Core::Instruction {
      * @param instr Encoded instruction (fields: rs, ra, si as D).
      */
     void STB(Interpreter &cpu, const EncodedInstruction &instr);
-    // {
-    // }
+    {
+    }
 
     /**
      * @brief Store Halfword.

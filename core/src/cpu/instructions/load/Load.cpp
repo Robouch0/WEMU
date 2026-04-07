@@ -11,21 +11,6 @@
 namespace Core::Instruction {
 
     /**
-     * @brief Load Byte and Zero.
-     *        EA = (RA|0) + EXTS(D). RT = MEM(EA, 1).
-     *        If RA = 0, base address is 0 (not r0).
-     * @param cpu  Interpreter state.
-     * @param instr Encoded instruction (fields: rt, ra, si as D).
-     */
-    void LBZ(Interpreter &cpu, const EncodedInstruction &instr)
-    {
-        const std::uint32_t exts = static_cast<std::int16_t>(instr.d);
-        const std::uint32_t ea = (instr.ra == 0 ? 0 : cpu.m_gpr[instr.ra]) + exts;
-
-        cpu.m_gpr[instr.rt] = cpu.m_memory.read<uint8_t>(ea);
-    }
-
-    /**
      * @brief Load Word and Zero.
      *        EA = (RA|0) + EXTS(D). RT = MEM(EA, 4).
      *        If RA = 0, base address is 0 (not r0).
@@ -123,8 +108,12 @@ namespace Core::Instruction {
      * @param instr Encoded instruction (fields: rt, ra, si as D).
      */
     void LBZ(Interpreter &cpu, const EncodedInstruction &instr);
-    // {
-    // }
+    {
+        const std::uint32_t exts = static_cast<std::int16_t>(instr.d);
+        const std::uint32_t ea = (instr.ra == 0 ? 0 : cpu.m_gpr[instr.ra]) + exts;
+
+        cpu.m_gpr[instr.rt] = cpu.m_memory.read<uint8_t>(ea);
+    }
 
     /**
      * @brief Load Halfword and Zero.
