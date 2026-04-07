@@ -20,7 +20,7 @@ namespace Core::Instruction {
     void LBZ(Interpreter &cpu, const EncodedInstruction &instr)
     {
         const std::uint32_t exts = static_cast<std::int16_t>(instr.d);
-        const std::uint32_t ea = (cpu.m_gpr[instr.ra]) + static_cast<std::uint32_t>(exts);
+        const std::uint32_t ea = (instr.ra == 0 ? 0 : cpu.m_gpr[instr.ra]) + exts;
 
         cpu.m_gpr[instr.rt] = cpu.m_memory.read<uint8_t>(ea);
     }
@@ -34,7 +34,7 @@ namespace Core::Instruction {
      */
     void LWZ(Interpreter &cpu, const EncodedInstruction &instr)
     {
-        const std::int32_t exts = static_cast<std::int16_t>(instr.d);
+        const std::uint32_t exts = static_cast<std::int16_t>(instr.d);
         const std::uint32_t ea = (instr.ra == 0 ? 0 : cpu.m_gpr[instr.ra]) + static_cast<std::uint32_t>(exts);
 
         cpu.m_gpr[instr.rt] = cpu.m_memory.read<std::uint32_t>(ea);

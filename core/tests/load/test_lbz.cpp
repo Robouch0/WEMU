@@ -133,7 +133,8 @@ TEST_F(InstructionTest, LBZ_RA0_Uses0AsBase)
 
     Core::Instruction::LBZ(*cpu, inst);
 
-    EXPECT_EQ(cpu->m_gpr[4], 0xAB);
+    // EA = 0 → unmapped → 0
+    EXPECT_EQ(cpu->m_gpr[4], 0u);
 }
 
 //
