@@ -22,6 +22,8 @@ namespace Core {
 
             ~Exception() override = 0;
 
+            virtual bool isFatal() const { return false; }
+
             [[nodiscard]] char const *what() const noexcept override
             {
                 m_formatedMessage = std::string("[" + m_errorType + "]: " + m_errorMessage);

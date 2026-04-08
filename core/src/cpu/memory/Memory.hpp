@@ -20,6 +20,8 @@ namespace Core {
                 "MemoryException", errorMessage) {}
 
             ~MemoryException() override = default;
+
+            bool isFatal() const override { return true; }
     };
 
     class Memory {
