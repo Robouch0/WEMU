@@ -18,6 +18,7 @@
 #include "cpu/memory/Memory.hpp"
 #include "cpu/types/EncodedInstruction.hpp"
 #include "cpu/types/Instruction.hpp"
+#include "utils/BeDecoder.hpp"
 
 namespace Core {
     static constexpr std::uint32_t INSTR_SIZE = sizeof(std::uint32_t);
@@ -44,6 +45,8 @@ namespace Core {
 
             template<typename T>
             T readArgs(size_t index) { return m_gpr[3 + index]; }
+
+            void writeReturnValue(const std::uint32_t val) { m_gpr[3] = val; }
 
             void debugDumpGPR() const
             {
@@ -78,7 +81,8 @@ namespace Core {
             }
 
         private:
-        public:
+            bool step(Utils::BeDecoder &decoder, const std::uint32_t ppc_pc);
+
             void initInstructionMap();
 
             void updateCR(Core::ConditionRegister::Register &cr, const std::int32_t &result,

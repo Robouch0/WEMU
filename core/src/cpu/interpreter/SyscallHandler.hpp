@@ -30,7 +30,7 @@ namespace Core {
                 func(cpu.readArgs<typename Traits::template Arg<I>>(I)...);
             } else {
                 ReturnType ret = func(cpu.readArgs<typename Traits::template Arg<I>>(I)...);
-                cpu.m_gpr[3] = ret;
+                cpu.writeReturnValue(ret);
             }
         }
 

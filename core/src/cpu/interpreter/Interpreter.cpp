@@ -10,29 +10,40 @@
 #include <utility>
 
 #include "Interpreter.hpp"
-#include "utils/BeDecoder.hpp"
 
 Core::Interpreter::Interpreter(Core::Binary binary) : m_binary(std::move(binary)) { initInstructionMap(); }
+
+bool Core::Interpreter::step(Utils::BeDecoder &decoder, const std::uint32_t ppc_pc)
+{
+    decoder.seek(m_pc);
+    const EncodedInstruction encodedInstruction(decoder.extractSwap<uint32_t>());
+    std::cout << std::format("[PC=0x{:08X}]\t", ppc_pc) << std::bitset<32>(encodedInstruction.raw) << "\t";
+    m_nextPc = m_pc + Core::INSTR_SIZE;
+    try {
+        executeInstruction(encodedInstruction);
+        debugDumpGPR();
+    } catch (Core::Exception &e) {
+        std::cout << std::format("[PC=0x{:08X}] {}", ppc_pc, e.what()) << std::endl;
+        if (e.isFatal())
+            return false;
+    }
+    return true;
+}
 
 void Core::Interpreter::run()
 {
     auto instructionDecoder = Utils::BeDecoder(m_binary.m_memory.getMemory());
+    std::uint32_t ppc_pc = m_binary.header.e_entry;
 
-    m_pc = m_binary.header.e_entry - Core::Memory::MemoryMap::ApplicationCode;
-    std::cout << "Starting at entrypoint 0x" << m_pc + Core::Memory::MemoryMap::ApplicationCode << std::endl;
+    m_pc = ppc_pc - Core::Memory::MemoryMap::ApplicationCode;
+    std::cout << std::format("[EMU] Starting at entrypoint 0x{:08X}", ppc_pc) << std::endl;
     while (true) {
-        instructionDecoder.seek(m_pc);
-        const EncodedInstruction encodedInstruction(instructionDecoder.extractSwap<uint32_t>());
-        std::cout << " 0x" << std::hex << m_pc + Core::Memory::MemoryMap::ApplicationCode << std::dec << "\t" << std::bitset<sizeof(uint32_t) * 8>(encodedInstruction.raw) << "\t";
-        m_nextPc = m_pc + Core::INSTR_SIZE;
-        try {
-            executeInstruction(encodedInstruction);
-            debugDumpGPR();
-        } catch (Core::Exception &e) {
-            std::cout << e.what() << std::endl;
-        }
+        ppc_pc = m_pc + Core::Memory::MemoryMap::ApplicationCode;
+        if (!step(instructionDecoder, ppc_pc))
+            break;
         m_pc = m_nextPc;
     }
+    std::cout << std::format("[EMU] Exited. PC=0x{:08X}", ppc_pc) << std::endl;
 }
 
 InstructionID Core::Interpreter::findInstructionID(const EncodedInstruction &instr)
