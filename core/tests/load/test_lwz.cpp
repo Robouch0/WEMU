@@ -46,10 +46,8 @@ TEST_F(InstructionTest, LWZ_RA0_Uses0NotR0)
     inst.ra = 0; // RA=0 → EA = 0 + EXTS(D)
     inst.si = 0;
 
-    Core::Instruction::LWZ(*cpu, inst);
-
-    // EA = 0, which is unmapped → should yield 0, not what's at TEST_ADDR
-    EXPECT_EQ(cpu->m_gpr[4], 0u);
+    // EA = 0, which is unmapped → DSI exception
+    EXPECT_THROW(Core::Instruction::LWZ(*cpu, inst), Core::MemoryException);
 }
 
 //
@@ -253,15 +251,15 @@ TEST_F(InstructionTest, LWZ_DoesNotUpdateRA)
 
 TEST_F(InstructionTest, LWZ_MaxPositiveSI)
 {
-    cpu->m_memory.write<uint32_t>(TEST_ADDR + 0x7FFF, 0xBEEFCAFE);
+    cpu->m_memory.write<uint32_t>(TEST_ADDR + 0x7FFC, 0xBEEFCAFE); // 0x7FFC aligned on 4
     cpu->m_gpr[1] = TEST_ADDR;
 
     EncodedInstruction inst(0);
     inst.rt = 5;
     inst.ra = 1;
-    inst.si = 0x7FFF;
+    inst.si = 0x7FFC; // même offset
 
-    Core::Instruction::LWZ(*cpu, inst);
-
+    // EA = TEST_ADDR + 0x7FFC, mapped → read succeeds
+    EXPECT_NO_THROW(Core::Instruction::LWZ(*cpu, inst));
     EXPECT_EQ(cpu->m_gpr[5], 0xBEEFCAFEu);
 }

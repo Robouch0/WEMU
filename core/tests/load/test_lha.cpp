@@ -194,10 +194,8 @@ TEST_F(InstructionTest, LHA_RA0_Uses0AsBase)
     inst.ra = 0;
     inst.si = 0;
 
-    Core::Instruction::LHA(*cpu, inst);
-
-    // EA = 0 → unmapped → 0, sign-extended 0 = 0
-    EXPECT_EQ(cpu->m_gpr[4], 0u);
+    // EA = 0, which is unmapped → DSI exception
+    EXPECT_THROW(Core::Instruction::LHA(*cpu, inst), Core::MemoryException);
 }
 
 //
