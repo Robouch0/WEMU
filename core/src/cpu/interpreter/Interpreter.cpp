@@ -28,7 +28,7 @@ void Core::Interpreter::run()
         try {
             executeInstruction(encodedInstruction);
             debugDumpGPR();
-        } catch (Core::InterpreterException &e) {
+        } catch (Core::Exception &e) {
             std::cout << e.what() << std::endl;
         }
         m_pc = m_nextPc;
