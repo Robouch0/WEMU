@@ -46,7 +46,7 @@ INSTR(LHA, OPCD(42))
 
 // Memory
 INSTR(STW, OPCD(36))
-//INSTR(STWU, OPCD(37))
+INSTR(STWU, OPCD(37))
 
 // Load Memory
 INSTR(LWZ, OPCD(32))
