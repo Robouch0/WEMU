@@ -22,7 +22,7 @@
 //     cpu->m_gpr[4] = 0x0000ABCD;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 4;
+//     inst.rs = 4;
 //     inst.ra = 1;
 //     inst.rb = 2;
 //
@@ -44,7 +44,7 @@
 //     cpu->m_gpr[4] = 0xFFFF1234; // high 16 bits must be ignored
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 4;
+//     inst.rs = 4;
 //     inst.ra = 1;
 //     inst.rb = 2;
 //
@@ -66,7 +66,7 @@
 //     cpu->m_gpr[4] = 0x0000FFFF;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 4;
+//     inst.rs = 4;
 //     inst.ra = 1;
 //     inst.rb = 2;
 //
@@ -89,7 +89,7 @@
 //     cpu->m_gpr[4] = 0x00000000;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 4;
+//     inst.rs = 4;
 //     inst.ra = 1;
 //     inst.rb = 2;
 //
@@ -111,7 +111,7 @@
 //     cpu->m_gpr[4] = 0x00008000;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 4;
+//     inst.rs = 4;
 //     inst.ra = 1;
 //     inst.rb = 2;
 //
@@ -133,7 +133,7 @@
 //     cpu->m_gpr[4] = 0x00007FFF;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 4;
+//     inst.rs = 4;
 //     inst.ra = 1;
 //     inst.rb = 2;
 //
@@ -155,7 +155,7 @@
 //     cpu->m_gpr[4] = 0x0000BEEF;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 4;
+//     inst.rs = 4;
 //     inst.ra = 0;
 //     inst.rb = 2;
 //
@@ -177,7 +177,7 @@
 //     cpu->m_gpr[4] = 0x00001234;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 4;
+//     inst.rs = 4;
 //     inst.ra = 1;
 //     inst.rb = 2;
 //
@@ -199,7 +199,7 @@
 //     cpu->m_gpr[4] = 0x00005678;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 4;
+//     inst.rs = 4;
 //     inst.ra = 1;
 //     inst.rb = 2;
 //
@@ -221,7 +221,7 @@
 //     cpu->m_gpr[10] = 0x0000CAFE;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 10;
+//     inst.rs = 10;
 //     inst.ra = 5;
 //     inst.rb = 6;
 //

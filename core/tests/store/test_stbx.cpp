@@ -22,7 +22,7 @@
 //     cpu->m_gpr[4] = 0x00000042;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 4;
+//     inst.rs = 4;
 //     inst.ra = 1;
 //     inst.rb = 2;
 //
@@ -44,7 +44,7 @@
 //     cpu->m_gpr[4] = 0xABCDEF42; // only 0x42 should be stored
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 4;
+//     inst.rs = 4;
 //     inst.ra = 1;
 //     inst.rb = 2;
 //
@@ -66,7 +66,7 @@
 //     cpu->m_gpr[4] = 0x000000FF;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 4;
+//     inst.rs = 4;
 //     inst.ra = 1;
 //     inst.rb = 2;
 //
@@ -89,7 +89,7 @@
 //     cpu->m_gpr[4] = 0x00000000;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 4;
+//     inst.rs = 4;
 //     inst.ra = 1;
 //     inst.rb = 2;
 //
@@ -111,7 +111,7 @@
 //     cpu->m_gpr[4] = 0x000000AB;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 4;
+//     inst.rs = 4;
 //     inst.ra = 0;
 //     inst.rb = 2;
 //
@@ -133,7 +133,7 @@
 //     cpu->m_gpr[4] = 0x00000055;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 4;
+//     inst.rs = 4;
 //     inst.ra = 1;
 //     inst.rb = 2;
 //
@@ -155,7 +155,7 @@
 //     cpu->m_gpr[4] = 0x00000077;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 4;
+//     inst.rs = 4;
 //     inst.ra = 1;
 //     inst.rb = 2;
 //
@@ -177,7 +177,7 @@
 //     cpu->m_gpr[4] = 0x00000080;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 4;
+//     inst.rs = 4;
 //     inst.ra = 1;
 //     inst.rb = 2;
 //
@@ -199,7 +199,7 @@
 //     cpu->m_gpr[10] = 0x000000CC;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 10;
+//     inst.rs = 10;
 //     inst.ra = 5;
 //     inst.rb = 6;
 //
@@ -221,7 +221,7 @@
 //     cpu->m_gpr[4] = 0x00000001;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 4;
+//     inst.rs = 4;
 //     inst.ra = 1;
 //     inst.rb = 2;
 //
@@ -243,13 +243,13 @@
 //     cpu->m_gpr[5] = 0x000000BB;
 //
 //     EncodedInstruction inst1(0);
-//     inst1.rt = 4; inst1.ra = 1;
+//     inst1.rs = 4; inst1.ra = 1;
 //     cpu->m_gpr[2] = 0;
 //     inst1.rb = 2;
 //     Core::Instruction::STBX(*cpu, inst1);
 //
 //     EncodedInstruction inst2(0);
-//     inst2.rt = 5; inst2.ra = 1;
+//     inst2.rs = 5; inst2.ra = 1;
 //     cpu->m_gpr[2] = 1;
 //     inst2.rb = 2;
 //     Core::Instruction::STBX(*cpu, inst2);

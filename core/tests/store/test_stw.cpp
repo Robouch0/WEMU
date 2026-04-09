@@ -21,7 +21,7 @@
 //     cpu->m_gpr[4] = 0xDEADBEEF;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 4; // RS uses same bits as RT
+//     inst.rs = 4; // RS uses same bits as RT
 //     inst.ra = 1;
 //     inst.si = 0;
 //
@@ -42,7 +42,7 @@
 //     cpu->m_gpr[4] = 0x12345678;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 4;
+//     inst.rs = 4;
 //     inst.ra = 0; // EA = 0 + EXTS(D) = 0 (unmapped)
 //     inst.si = 0;
 //
@@ -64,7 +64,7 @@
 //     cpu->m_gpr[4] = 0xCAFEBABE;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 4;
+//     inst.rs = 4;
 //     inst.ra = 1;
 //     inst.si = 8;
 //
@@ -85,7 +85,7 @@
 //     cpu->m_gpr[4] = 0xABCD1234;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 4;
+//     inst.rs = 4;
 //     inst.ra = 1;
 //     inst.si = static_cast<uint16_t>(static_cast<int16_t>(-16));
 //
@@ -107,7 +107,7 @@
 //     cpu->m_gpr[4] = 0x00000000;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 4;
+//     inst.rs = 4;
 //     inst.ra = 1;
 //     inst.si = 0;
 //
@@ -128,7 +128,7 @@
 //     cpu->m_gpr[4] = 0xFFFFFFFF;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 4;
+//     inst.rs = 4;
 //     inst.ra = 1;
 //     inst.si = 0;
 //
@@ -149,7 +149,7 @@
 //     cpu->m_gpr[4] = 0x80000000;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 4;
+//     inst.rs = 4;
 //     inst.ra = 1;
 //     inst.si = 0;
 //
@@ -170,7 +170,7 @@
 //     cpu->m_gpr[4] = 0x7FFFFFFF;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 4;
+//     inst.rs = 4;
 //     inst.ra = 1;
 //     inst.si = 0;
 //
@@ -191,7 +191,7 @@
 //     cpu->m_gpr[4] = 0x11223344;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 4;
+//     inst.rs = 4;
 //     inst.ra = 1;
 //     inst.si = 0;
 //
@@ -213,11 +213,11 @@
 //     cpu->m_gpr[5] = 0xBBBBBBBB;
 //
 //     EncodedInstruction inst1(0);
-//     inst1.rt = 4; inst1.ra = 1; inst1.si = 0;
+//     inst1.rs = 4; inst1.ra = 1; inst1.si = 0;
 //     Core::Instruction::STW(*cpu, inst1);
 //
 //     EncodedInstruction inst2(0);
-//     inst2.rt = 5; inst2.ra = 1; inst2.si = 4;
+//     inst2.rs = 5; inst2.ra = 1; inst2.si = 4;
 //     Core::Instruction::STW(*cpu, inst2);
 //
 //     EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR),     0xAAAAAAAAu);
@@ -236,7 +236,7 @@
 //     cpu->m_gpr[1] = TEST_ADDR;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 0; // RS = r0
+//     inst.rs = 0; // RS = r0
 //     inst.ra = 1;
 //     inst.si = 0;
 //

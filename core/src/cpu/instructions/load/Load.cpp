@@ -107,7 +107,7 @@ namespace Core::Instruction {
      * @param cpu  Interpreter state.
      * @param instr Encoded instruction (fields: rt, ra, si as D).
      */
-    void LBZ(Interpreter &cpu, const EncodedInstruction &instr);
+    void LBZ(Interpreter &cpu, const EncodedInstruction &instr)
     {
         const std::uint32_t exts = static_cast<std::int16_t>(instr.d);
         const std::uint32_t ea = (instr.ra == 0 ? 0 : cpu.m_gpr[instr.ra]) + exts;

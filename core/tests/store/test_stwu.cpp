@@ -21,7 +21,7 @@
 //     cpu->m_gpr[4] = 0xDEADBEEF;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 4;
+//     inst.rs = 4;
 //     inst.ra = 1;
 //     inst.si = 4;
 //
@@ -43,7 +43,7 @@
 //     cpu->m_gpr[5] = 0x12345678;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 5;
+//     inst.rs = 5;
 //     inst.ra = 2;
 //     inst.si = 8;
 //
@@ -64,7 +64,7 @@
 //     cpu->m_gpr[4] = 0xCAFEBABE;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 4;
+//     inst.rs = 4;
 //     inst.ra = 1;
 //     inst.si = static_cast<uint16_t>(static_cast<int16_t>(-16));
 //
@@ -87,7 +87,7 @@
 //     cpu->m_gpr[4] = 0x00000000;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 4;
+//     inst.rs = 4;
 //     inst.ra = 1;
 //     inst.si = 4;
 //
@@ -109,7 +109,7 @@
 //     cpu->m_gpr[4] = 0xFFFFFFFF;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 4;
+//     inst.rs = 4;
 //     inst.ra = 1;
 //     inst.si = 4;
 //
@@ -131,7 +131,7 @@
 //     cpu->m_gpr[4] = 0xABCDEF01;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 4;
+//     inst.rs = 4;
 //     inst.ra = 1;
 //     inst.si = 0;
 //
@@ -154,12 +154,12 @@
 //     cpu->m_gpr[5] = 0xBBBBBBBB;
 //
 //     EncodedInstruction inst1(0);
-//     inst1.rt = 4; inst1.ra = 1; inst1.si = 4;
+//     inst1.rs = 4; inst1.ra = 1; inst1.si = 4;
 //     Core::Instruction::STWU(*cpu, inst1);
 //
 //     // r1 = TEST_ADDR + 4
 //     EncodedInstruction inst2(0);
-//     inst2.rt = 5; inst2.ra = 1; inst2.si = 4;
+//     inst2.rs = 5; inst2.ra = 1; inst2.si = 4;
 //     Core::Instruction::STWU(*cpu, inst2);
 //
 //     EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR + 4), 0xAAAAAAAAu);
@@ -179,7 +179,7 @@
 //     cpu->m_gpr[4] = 0x80000000;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 4;
+//     inst.rs = 4;
 //     inst.ra = 1;
 //     inst.si = 4;
 //
@@ -201,7 +201,7 @@
 //     cpu->m_gpr[4] = 0x55667788;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 4;
+//     inst.rs = 4;
 //     inst.ra = 1;
 //     inst.si = static_cast<uint16_t>(static_cast<int16_t>(-0x100));
 //
@@ -223,7 +223,7 @@
 //     cpu->m_gpr[7] = 0x99AABBCC;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 7;
+//     inst.rs = 7;
 //     inst.ra = 3;
 //     inst.si = 4;
 //
