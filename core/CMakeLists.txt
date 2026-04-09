@@ -59,7 +59,7 @@ target_include_directories(core PUBLIC
 
 target_link_libraries(core PRIVATE ${ZLIB_LIBRARIES})
 
-target_compile_features(core PUBLIC cxx_std_20)
+target_compile_features(core PUBLIC cxx_std_23)
 
 # Log level: 0=Trace 1=Debug 2=Info 3=Warning 4=Error 5=None (default: 4)
 set(WEMU_LOG_LEVEL "4" CACHE STRING "Compile-time log level (0=Trace, 1=Debug, 2=Info, 3=Warning, 4=Error, 5=None)")
