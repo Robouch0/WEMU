@@ -17,9 +17,13 @@ namespace Core::Instruction {
      * @param cpu  Interpreter state.
      * @param instr Encoded instruction (fields: rs, ra, si as D).
      */
-    void STW(Interpreter &cpu, const EncodedInstruction &instr);
-    // {
-    // }
+    void STW(Interpreter &cpu, const EncodedInstruction &instr)
+    {
+        const std::int32_t exts = static_cast<std::int16_t>(instr.d);
+        const std::uint32_t ea = (instr.ra == 0 ? 0 : cpu.m_gpr[instr.ra]) + static_cast<std::uint32_t>(exts);
+
+        cpu.m_memory.write<std::uint32_t>(ea, cpu.m_gpr[instr.rs]);
+    }
 
     /**
      * @brief Store Word with Update.
@@ -28,9 +32,14 @@ namespace Core::Instruction {
      * @param cpu  Interpreter state.
      * @param instr Encoded instruction (fields: rs, ra, si as D).
      */
-    void STWU(Interpreter &cpu, const EncodedInstruction &instr);
-    // {
-    // }
+    void STWU(Interpreter &cpu, const EncodedInstruction &instr)
+    {
+        const std::int32_t exts = static_cast<std::int16_t>(instr.d);
+        const std::uint32_t ea = cpu.m_gpr[instr.ra] + static_cast<std::uint32_t>(exts);
+
+        cpu.m_memory.write<std::uint32_t>(ea, cpu.m_gpr[instr.rs]);
+        cpu.m_gpr[instr.ra] = ea;
+    }
 
     /**
      * @brief Store Word Indexed.
