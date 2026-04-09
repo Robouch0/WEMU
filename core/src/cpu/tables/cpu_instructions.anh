@@ -48,6 +48,7 @@ INSTR(LHA, OPCD(42))
 
 // Store Integer
 INSTR(STB, OPCD(38))
+INSTR(STH, OPCD(44))
 
 // Memory
 INSTR(STW, OPCD(36))
