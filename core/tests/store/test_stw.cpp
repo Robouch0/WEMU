@@ -46,10 +46,8 @@ TEST_F(InstructionTest, STW_RA0_Uses0NotR0)
     inst.ra = 0; // EA = 0 + EXTS(D) = 0 (unmapped)
     inst.si = 0;
 
-    Core::Instruction::STW(*cpu, inst);
-
-    // Nothing should have been written to TEST_ADDR
-    EXPECT_NE(cpu->m_memory.read<uint32_t>(TEST_ADDR), 0x12345678u);
+    // EA = 0, which is unmapped → DSI exception, TEST_ADDR untouched
+    EXPECT_THROW(Core::Instruction::STW(*cpu, inst), Core::MemoryException);
 }
 
 //

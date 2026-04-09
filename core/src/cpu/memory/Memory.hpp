@@ -7,8 +7,24 @@
 #include <bit>
 #include <iomanip>
 #include <iostream>
+#include <format>
+#include <sstream>
+#include <stdexcept>
+
+#include "exception/Exception.hpp"
 
 namespace Core {
+
+    class MemoryException final : public Core::Exception {
+        public:
+            explicit MemoryException(const std::string &errorMessage) : Core::Exception(
+                "MemoryException", errorMessage) {}
+
+            ~MemoryException() override = default;
+
+            [[nodiscard]] bool isFatal() const override { return true; }
+    };
+
     class Memory {
         public:
             enum MemoryMap : size_t
@@ -18,16 +34,22 @@ namespace Core {
                 ApplicationMemoryEnd = 0x42000000,
                 GraphicsResources = 0xF4000000,
                 GraphicsResourcesEnd = 0xF6000000
-             };
+            };
 
-            static constexpr uint32_t STACK_BASE   = 0xC0FF0000;
-            static constexpr uint32_t STACK_SIZE   = 0x100000;   // 1 MB
-            static constexpr uint32_t HEAP_BASE    = 0x28000000;
+            static constexpr uint32_t STACK_BASE = 0xC0FF0000;
+            static constexpr uint32_t STACK_SIZE = 0x100000;   // 1 MB
+            static constexpr uint32_t HEAP_BASE = 0x28000000;
+            static constexpr uint32_t MIN_HEAP_ALIGN = 4;
 
-            explicit Memory(const std::size_t &size = 0x40000000) : m_memory(),  m_virtAddress(ApplicationCode), m_memSize(size)
+            explicit Memory(const std::size_t &size = 0x40000000) : m_memory(), m_virtAddress(ApplicationCode), m_memSize(size)
             {
                 m_memory.resize(size);
                 m_stack.resize(STACK_SIZE);
+            }
+
+            [[nodiscard]] static constexpr std::uint32_t alignUp(std::uint32_t value, std::uint32_t align) noexcept
+            {
+                return (value + align - 1) & ~(align - 1);
             }
 
             [[nodiscard]] std::uint8_t *hostPtr(const std::uint32_t address) noexcept
@@ -36,45 +58,46 @@ namespace Core {
                     return reinterpret_cast<std::uint8_t*>(m_stack.data() + (address - STACK_BASE));
                 if (address >= m_virtAddress) {
                     const std::size_t offset = address - m_virtAddress;
-                    if (address + offset < m_memory.size())
+                    if (offset < m_memory.size())
                         return reinterpret_cast<std::uint8_t*>(m_memory.data() + offset);
                 }
                 return nullptr;
             }
 
             template<typename T>
-            [[nodiscard]] T read(const std::uint32_t address) noexcept
+            [[nodiscard]] T read(const std::uint32_t address)
             {
+                if (address & (alignof(T) - 1))
+                    throw MemoryException(std::format("Unaligned read<{}> @ 0x{:08X}", sizeof(T), address));
+
                 T *ptr = reinterpret_cast<T*>(this->hostPtr(address));
 
-                if (ptr == nullptr) {
-                    std::cerr << "[MEM] Unmapped read @ 0x"
-                      << std::hex << std::uppercase << std::setw(0) << std::setfill('0')
-                      << address << std::endl;
-                    return 0;
-                }
+                if (ptr == nullptr)
+                    throw MemoryException(std::format("Unmapped read<{}> @ 0x{:08X}", sizeof(T), address));
                 return std::byteswap(ptr[0]);
             }
 
             template<typename T>
             void write(const std::uint32_t address, const T value)
             {
+                if (address & (alignof(T) - 1))
+                    throw MemoryException(std::format("Unaligned write<{}> @ 0x{:08X}", sizeof(T), address));
+
                 T *ptr = reinterpret_cast<T*>(this->hostPtr(address));
 
-                if (ptr == nullptr) {
-                    std::cerr << "[MEM] Unmapped write @ 0x"
-                        << std::hex << std::uppercase << std::setw(0) << std::setfill('0')
-                        << address << std::endl;
-                    return;
-                }
+                if (ptr == nullptr)
+                    throw MemoryException(std::format("Unmapped write<{}> @ 0x{:08X}", sizeof(T), address));
                 ptr[0] = std::byteswap(value);
             }
 
             [[nodiscard]] std::uint32_t heapAllocate(const std::uint32_t size, std::uint32_t align)
             {
-                if (align < 4)
-                    align = 4;
-                m_heapPtr = (m_heapPtr + align -1) & ~(align - 1);
+                align = std::max(align, MIN_HEAP_ALIGN);
+
+                if (align & (align - 1))
+                    throw MemoryException(std::format("[MEM] Heap alignment not a power of two: {}", align));
+
+                m_heapPtr = alignUp(m_heapPtr, align);
                 m_heapPtr += size;
                 return m_heapPtr - size;
             }
