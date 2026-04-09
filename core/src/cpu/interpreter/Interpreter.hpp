@@ -8,9 +8,9 @@
 #pragma once
 
 #include <cstdint>
+#include <format>
+#include <iostream>
 #include <map>
-#include <print>
-#include <stdfloat>
 #include <vector>
 
 #include "Registers.hpp"
@@ -52,10 +52,10 @@ namespace Core {
             void debugDumpGPR() const
             {
                 if constexpr (Utils::Log::kLevel <= Utils::Log::Level::Trace) {
-                    std::println("==== GPR Dump ====");
+                    std::cout << "==== GPR Dump ====" << std::endl;
                     for (int i = 0; i < 32; ++i)
-                        std::println("r{:02d} : 0x{:08X}  ({})", i, m_gpr[i], m_gprSigned[i]);
-                    std::println("==================");
+                        std::cout << std::format("r{:02d} : 0x{:08X}  ({})", i, m_gpr[i], m_gprSigned[i]) << std::endl;
+                    std::cout << "==================" << std::endl;
                 }
             }
 
@@ -120,7 +120,7 @@ namespace Core {
                 std::int32_t m_gprSigned[32];
             }; // General Purpose Registers (unsigned/signed)
             Core::FixedPointExceptionRegister m_xer{};
-            std::float32_t m_fpr[32]{}; // Fixed-Point Registers
+            float m_fpr[32]{}; // Fixed-Point Registers
             Core::FloatingPointStatusAndControlRegister m_fpscr{};
 
             std::map<std::uint32_t, std::vector<InstructionInfo> > m_instructionMap{};

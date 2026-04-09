@@ -8,7 +8,7 @@
 #pragma once
 
 #include <format>
-#include <print>
+#include <iostream>
 #include <string_view>
 
 namespace Utils::Log {
@@ -46,10 +46,11 @@ template<Level L, typename... Args>
 inline void log(std::format_string<Args...> fmt, Args&&... args)
 {
     if constexpr (L >= kLevel) {
+        auto msg = std::format("{}{}", detail::prefix(L), std::format(fmt, std::forward<Args>(args)...));
         if constexpr (L >= Level::Warning)
-            std::println(stderr, "{}{}", detail::prefix(L), std::format(fmt, std::forward<Args>(args)...));
+            std::cerr << msg << std::endl;
         else
-            std::println("{}{}", detail::prefix(L), std::format(fmt, std::forward<Args>(args)...));
+            std::cout << msg << std::endl;
     }
 }
 
