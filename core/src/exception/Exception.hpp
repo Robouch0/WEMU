@@ -22,7 +22,7 @@ namespace Core {
 
             ~Exception() override = 0;
 
-            virtual bool isFatal() const { return false; }
+            [[nodiscard]] virtual bool isFatal() const { return false; }
 
             [[nodiscard]] char const *what() const noexcept override
             {

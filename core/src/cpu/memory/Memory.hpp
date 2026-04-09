@@ -22,7 +22,7 @@ namespace Core {
 
             ~MemoryException() override = default;
 
-            bool isFatal() const override { return true; }
+            [[nodiscard]] bool isFatal() const override { return true; }
     };
 
     class Memory {
