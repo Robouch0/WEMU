@@ -16,7 +16,7 @@ Core::Interpreter::Interpreter(Core::Binary binary) : m_binary(std::move(binary)
 [[nodiscard]] bool Core::Interpreter::step(Utils::BeDecoder &decoder, const std::uint32_t ppc_pc)
 {
     decoder.seek(m_pc);
-    const EncodedInstruction encodedInstruction(decoder.extractSwap<uint32_t>());
+    const EncodedInstruction encodedInstruction(decoder.extractSwap<std::uint32_t>());
     std::cout << std::format("[PC=0x{:08X}]\t", ppc_pc) << std::bitset<32>(encodedInstruction.raw) << "\t";
     m_nextPc = m_pc + Core::INSTR_SIZE;
     try {
