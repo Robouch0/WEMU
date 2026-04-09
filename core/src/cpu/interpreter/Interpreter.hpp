@@ -81,7 +81,7 @@ namespace Core {
             }
 
         private:
-            bool step(Utils::BeDecoder &decoder, const std::uint32_t ppc_pc);
+            [[nodiscard]] bool step(Utils::BeDecoder &decoder, const std::uint32_t ppc_pc);
 
             void initInstructionMap();
 

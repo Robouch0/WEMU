@@ -13,7 +13,7 @@
 
 Core::Interpreter::Interpreter(Core::Binary binary) : m_binary(std::move(binary)) { initInstructionMap(); }
 
-bool Core::Interpreter::step(Utils::BeDecoder &decoder, const std::uint32_t ppc_pc)
+[[nodiscard]] bool Core::Interpreter::step(Utils::BeDecoder &decoder, const std::uint32_t ppc_pc)
 {
     decoder.seek(m_pc);
     const EncodedInstruction encodedInstruction(decoder.extractSwap<uint32_t>());
