@@ -8,8 +8,8 @@
 #pragma once
 
 #include <cstdint>
-#include <iomanip>
 #include <map>
+#include <print>
 #include <stdfloat>
 #include <vector>
 
@@ -19,6 +19,7 @@
 #include "cpu/types/EncodedInstruction.hpp"
 #include "cpu/types/Instruction.hpp"
 #include "utils/BeDecoder.hpp"
+#include "utils/Logger.hpp"
 
 namespace Core {
     static constexpr std::uint32_t INSTR_SIZE = sizeof(std::uint32_t);
@@ -50,21 +51,12 @@ namespace Core {
 
             void debugDumpGPR() const
             {
-                std::ios oldState(nullptr);
-                oldState.copyfmt(std::cout);
-
-                std::cout << "==== GPR Dump ====\n";
-
-                for (int i = 0; i < 32; ++i) {
-                    std::cout
-                        << "r" << std::setw(2) << std::setfill('0') << i << " : "
-                        << "0x" << std::hex << std::setw(8) << std::setfill('0') << m_gpr[i]
-                        << "  (" << std::dec << m_gprSigned[i] << ")\n";
+                if constexpr (Utils::Log::kLevel <= Utils::Log::Level::Trace) {
+                    std::println("==== GPR Dump ====");
+                    for (int i = 0; i < 32; ++i)
+                        std::println("r{:02d} : 0x{:08X}  ({})", i, m_gpr[i], m_gprSigned[i]);
+                    std::println("==================");
                 }
-
-                std::cout << "==================\n";
-
-                std::cout.copyfmt(oldState);
             }
 
             void reset()

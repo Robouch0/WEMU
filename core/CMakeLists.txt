@@ -23,6 +23,7 @@ option(ENABLE_COVERAGE "Enable coverage reporting" OFF)
 add_library(core STATIC
         src/binary/Binary.hpp
         src/utils/BeDecoder.hpp
+        src/utils/Logger.hpp
         src/exception/Exception.hpp
         src/exception/Exception.cpp
         src/binary/Loader.hpp
@@ -59,6 +60,10 @@ target_include_directories(core PUBLIC
 target_link_libraries(core PRIVATE ${ZLIB_LIBRARIES})
 
 target_compile_features(core PUBLIC cxx_std_20)
+
+# Log level: 0=Trace 1=Debug 2=Info 3=Warning 4=Error 5=None (default: 4)
+set(WEMU_LOG_LEVEL "4" CACHE STRING "Compile-time log level (0=Trace, 1=Debug, 2=Info, 3=Warning, 4=Error, 5=None)")
+target_compile_definitions(core PUBLIC WEMU_LOG_LEVEL=${WEMU_LOG_LEVEL})
 
 if(ENABLE_COVERAGE)
     target_compile_options(core PRIVATE --coverage -O0 -g)
