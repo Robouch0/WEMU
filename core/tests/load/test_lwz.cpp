@@ -257,7 +257,7 @@ TEST_F(InstructionTest, LWZ_MaxPositiveSI)
     EncodedInstruction inst(0);
     inst.rt = 5;
     inst.ra = 1;
-    inst.si = 0x7FFC; // même offset
+    inst.si = 0x7FFC; // same offset
 
     // EA = TEST_ADDR + 0x7FFC, mapped → read succeeds
     EXPECT_NO_THROW(Core::Instruction::LWZ(*cpu, inst));
