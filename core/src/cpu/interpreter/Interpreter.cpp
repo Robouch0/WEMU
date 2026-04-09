@@ -10,6 +10,7 @@
 #include <utility>
 
 #include "Interpreter.hpp"
+#include "utils/Logger.hpp"
 
 Core::Interpreter::Interpreter(Core::Binary binary) : m_binary(std::move(binary)) { initInstructionMap(); }
 
@@ -17,13 +18,13 @@ Core::Interpreter::Interpreter(Core::Binary binary) : m_binary(std::move(binary)
 {
     decoder.seek(m_pc);
     const EncodedInstruction encodedInstruction(decoder.extractSwap<std::uint32_t>());
-    std::cout << std::format("[PC=0x{:08X}]\t", ppc_pc) << std::bitset<32>(encodedInstruction.raw) << "\t";
+    Utils::Log::trace("[PC=0x{:08X}]\t{}", ppc_pc, std::bitset<32>(encodedInstruction.raw).to_string());
     m_nextPc = m_pc + Core::INSTR_SIZE;
     try {
         executeInstruction(encodedInstruction);
         debugDumpGPR();
     } catch (Core::Exception &e) {
-        std::cout << std::format("[PC=0x{:08X}] {}", ppc_pc, e.what()) << std::endl;
+        Utils::Log::error("[PC=0x{:08X}] {}", ppc_pc, e.what());
         if (e.isFatal())
             return false;
     }
@@ -36,14 +37,14 @@ void Core::Interpreter::run()
     std::uint32_t ppc_pc = m_binary.header.e_entry;
 
     m_pc = ppc_pc - Core::Memory::MemoryMap::ApplicationCode;
-    std::cout << std::format("[EMU] Starting at entrypoint 0x{:08X}", ppc_pc) << std::endl;
+    Utils::Log::info("[EMU] Starting at entrypoint 0x{:08X}", ppc_pc);
     while (true) {
         ppc_pc = m_pc + Core::Memory::MemoryMap::ApplicationCode;
         if (!step(instructionDecoder, ppc_pc))
             break;
         m_pc = m_nextPc;
     }
-    std::cout << std::format("[EMU] Exited. PC=0x{:08X}", ppc_pc) << std::endl;
+    Utils::Log::info("[EMU] Exited. PC=0x{:08X}", ppc_pc);
 }
 
 InstructionID Core::Interpreter::findInstructionID(const EncodedInstruction &instr)
@@ -80,7 +81,7 @@ void Core::Interpreter::executeInstruction(const EncodedInstruction &instr)
 {
     InstructionID id = findInstructionID(instr);
 
-    std::cout << instructionIDToString(id) << std::endl;
+    Utils::Log::trace("{}", instructionIDToString(id));
     INSTRUCTIONARRAY[id].function(*this, instr);
 }
 
