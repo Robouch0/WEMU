@@ -95,7 +95,7 @@ namespace Core {
                 align = std::max(align, MIN_HEAP_ALIGN);
 
                 if (align & (align - 1))
-                    throw MemoryException("[MEM] Heap alignment not a power of two: " + align);
+                    throw MemoryException(std::format("[MEM] Heap alignment not a power of two: {}", align));
 
                 m_heapPtr = alignUp(m_heapPtr, align);
                 m_heapPtr += size;
