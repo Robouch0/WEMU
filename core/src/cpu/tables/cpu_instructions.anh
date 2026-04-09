@@ -43,6 +43,7 @@ INSTR(NAND, OPCD(31), XO10(476))
 
 // Load Integer
 INSTR(LBZ, OPCD(34))
+INSTR(LHZ, OPCD(40))
 INSTR(LHA, OPCD(42))
 
 // Store Integer
