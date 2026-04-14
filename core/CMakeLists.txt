@@ -49,6 +49,16 @@ add_library(core STATIC
         src/cpu/instructions/arithmetic/Neg.cpp
         src/cpu/instructions/load/Load.cpp
         src/cpu/instructions/store/Store.cpp
+        src/cpu/instructions/spr/Spr.cpp
+        src/cpu/instructions/spr/Cache.cpp
+        src/cpu/instructions/shift/Shift.cpp
+        src/cpu/instructions/shift/Rotate.cpp
+        src/cpu/instructions/shift/Extend.cpp
+        src/cpu/instructions/float/FloatLoad.cpp
+        src/cpu/instructions/float/FloatStore.cpp
+        src/cpu/instructions/float/FloatMove.cpp
+        src/cpu/instructions/float/FloatConvert.cpp
+        src/cpu/instructions/float/FloatCompare.cpp
 )
 
 target_include_directories(core PUBLIC
