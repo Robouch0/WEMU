@@ -48,9 +48,7 @@ TEST_F(InstructionTest, LWZX_RA0_Uses0NotR0)
     inst.ra = 0;
     inst.rb = 2;
 
-    Core::Instruction::LWZX(*cpu, inst);
-
-    EXPECT_EQ(cpu->m_gpr[4], 0u); // unmapped → 0
+    EXPECT_THROW(Core::Instruction::LWZX(*cpu, inst), Core::MemoryException);
 }
 
 //

@@ -63,3 +63,6 @@ INSTR(BLA, OPCD(18), AA(1), LK(1))
 
 // System Linkage
 INSTR(SC, OPCD(17))
+
+// Float
+INSTR(FNEG, OPCD(63), XO10(40))
