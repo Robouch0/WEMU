@@ -108,6 +108,16 @@ void Core::Interpreter::updateCR(Core::ConditionRegister::Register &cr, const st
     }
 }
 
+void Core::Interpreter::updateCR1(const EncodedInstruction &instr) noexcept
+{
+    if (instr.rc) {
+        m_cr.cr1.lt = m_fpscr.fx;
+        m_cr.cr1.gt = m_fpscr.fex;
+        m_cr.cr1.eq = m_fpscr.vx;
+        m_cr.cr1.so = m_fpscr.ox;
+    }
+}
+
 void Core::Interpreter::updateOverflow(const bool overflow, const EncodedInstruction &instr)
 {
     if (!instr.oe)
