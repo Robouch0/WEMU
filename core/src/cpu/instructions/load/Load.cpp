@@ -19,8 +19,8 @@ namespace Core::Instruction {
      */
     void LWZ(Interpreter &cpu, const EncodedInstruction &instr)
     {
-        const std::int32_t exts = static_cast<std::int16_t>(instr.d);
-        const std::uint32_t ea = (instr.ra == 0 ? 0 : cpu.m_gpr[instr.ra]) + static_cast<std::uint32_t>(exts);
+        const std::uint32_t exts = static_cast<std::int16_t>(instr.d);
+        const std::uint32_t ea = (instr.ra == 0 ? 0 : cpu.m_gpr[instr.ra]) + exts;
 
         cpu.m_gpr[instr.rt] = cpu.m_memory.read<std::uint32_t>(ea);
     }
@@ -113,9 +113,13 @@ namespace Core::Instruction {
      * @param cpu  Interpreter state.
      * @param instr Encoded instruction (fields: rt, ra, si as D).
      */
-    void LBZ(Interpreter &cpu, const EncodedInstruction &instr);
-    // {
-    // }
+    void LBZ(Interpreter &cpu, const EncodedInstruction &instr)
+    {
+        const std::uint32_t exts = static_cast<std::int16_t>(instr.d);
+        const std::uint32_t ea = (instr.ra == 0 ? 0 : cpu.m_gpr[instr.ra]) + exts;
+
+        cpu.m_gpr[instr.rt] = cpu.m_memory.read<std::uint8_t>(ea);
+    }
 
     /**
      * @brief Load Halfword and Zero.
@@ -124,9 +128,13 @@ namespace Core::Instruction {
      * @param cpu  Interpreter state.
      * @param instr Encoded instruction (fields: rt, ra, si as D).
      */
-    void LHZ(Interpreter &cpu, const EncodedInstruction &instr);
-    // {
-    // }
+    void LHZ(Interpreter &cpu, const EncodedInstruction &instr)
+    {
+        const std::uint32_t exts = static_cast<std::int16_t>(instr.d);
+        const std::uint32_t ea = (instr.ra == 0 ? 0 : cpu.m_gpr[instr.ra]) + exts;
+
+        cpu.m_gpr[instr.rt] = cpu.m_memory.read<std::uint16_t>(ea);
+    }
 
     /**
      * @brief Load Byte and Zero Indexed.
@@ -135,8 +143,11 @@ namespace Core::Instruction {
      * @param cpu  Interpreter state.
      * @param instr Encoded instruction (fields: rt, ra, rb).
      */
-    void LBZX(Interpreter &cpu, const EncodedInstruction &instr);
-    // {
-    // }
+    void LBZX(Interpreter &cpu, const EncodedInstruction &instr)
+    {
+        const std::uint32_t ea = (instr.ra == 0 ? 0 : cpu.m_gpr[instr.ra]) + cpu.m_gpr[instr.rb];
+
+        cpu.m_gpr[instr.rt] = cpu.m_memory.read<std::uint8_t>(ea);
+    }
 
 } // namespace Core::Instruction

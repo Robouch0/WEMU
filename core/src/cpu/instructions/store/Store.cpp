@@ -82,9 +82,13 @@ namespace Core::Instruction {
      * @param cpu  Interpreter state.
      * @param instr Encoded instruction (fields: rs, ra, si as D).
      */
-    void STB(Interpreter &cpu, const EncodedInstruction &instr);
-    // {
-    // }
+    void STB(Interpreter &cpu, const EncodedInstruction &instr)
+    {
+        const std::uint32_t exts = static_cast<std::int16_t>(instr.d);
+        const std::uint32_t ea = (instr.ra == 0 ? 0 : cpu.m_gpr[instr.ra]) + exts;
+
+        cpu.m_memory.write<uint8_t>(ea, static_cast<std::uint8_t>(cpu.m_gpr[instr.rs]));
+    }
 
     /**
      * @brief Store Halfword.
@@ -93,9 +97,13 @@ namespace Core::Instruction {
      * @param cpu  Interpreter state.
      * @param instr Encoded instruction (fields: rs, ra, si as D).
      */
-    void STH(Interpreter &cpu, const EncodedInstruction &instr);
-    // {
-    // }
+    void STH(Interpreter &cpu, const EncodedInstruction &instr)
+    {
+        const std::uint32_t exts = static_cast<std::int16_t>(instr.d);
+        const std::uint32_t ea = (instr.ra == 0 ? 0 : cpu.m_gpr[instr.ra]) + exts;
+
+        cpu.m_memory.write<uint16_t>(ea, static_cast<std::uint16_t>(cpu.m_gpr[instr.rs]));
+    }
 
     /**
      * @brief Store Byte Indexed.
@@ -104,8 +112,11 @@ namespace Core::Instruction {
      * @param cpu  Interpreter state.
      * @param instr Encoded instruction (fields: rs, ra, rb).
      */
-    void STBX(Interpreter &cpu, const EncodedInstruction &instr);
-    // {
-    // }
+    void STBX(Interpreter &cpu, const EncodedInstruction &instr)
+    {
+        const std::uint32_t ea = (instr.ra == 0 ? 0 : cpu.m_gpr[instr.ra]) + cpu.m_gpr[instr.rb];
+
+        cpu.m_memory.write<uint8_t>(ea, static_cast<std::uint8_t>(cpu.m_gpr[instr.rs]));
+    }
 
 } // namespace Core::Instruction

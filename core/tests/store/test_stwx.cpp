@@ -22,7 +22,7 @@
 //     cpu->m_gpr[4] = 0xDEADBEEF;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 4;
+//     inst.rs = 4;
 //     inst.ra = 1;
 //     inst.rb = 2;
 //
@@ -44,7 +44,7 @@
 //     cpu->m_gpr[4] = 0x12345678;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 4;
+//     inst.rs = 4;
 //     inst.ra = 0;
 //     inst.rb = 2;
 //
@@ -67,7 +67,7 @@
 //     cpu->m_gpr[4] = 0xCAFEBABE;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 4;
+//     inst.rs = 4;
 //     inst.ra = 0;
 //     inst.rb = 2;
 //
@@ -89,7 +89,7 @@
 //     cpu->m_gpr[4] = 0xABCD1234;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 4;
+//     inst.rs = 4;
 //     inst.ra = 1;
 //     inst.rb = 2;
 //
@@ -111,7 +111,7 @@
 //     cpu->m_gpr[4] = 0xFFFFFFFF;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 4;
+//     inst.rs = 4;
 //     inst.ra = 1;
 //     inst.rb = 2;
 //
@@ -133,7 +133,7 @@
 //     cpu->m_gpr[4] = 0x80000000;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 4;
+//     inst.rs = 4;
 //     inst.ra = 1;
 //     inst.rb = 2;
 //
@@ -156,7 +156,7 @@
 //     cpu->m_gpr[4] = 0x00000000;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 4;
+//     inst.rs = 4;
 //     inst.ra = 1;
 //     inst.rb = 2;
 //
@@ -178,7 +178,7 @@
 //     cpu->m_gpr[4] = 0x11223344;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 4;
+//     inst.rs = 4;
 //     inst.ra = 1;
 //     inst.rb = 2;
 //
@@ -200,7 +200,7 @@
 //     cpu->m_gpr[10] = 0x55443322;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 10;
+//     inst.rs = 10;
 //     inst.ra = 5;
 //     inst.rb = 6;
 //
@@ -222,7 +222,7 @@
 //     cpu->m_gpr[4] = 0xBEEFCAFE;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 4;
+//     inst.rs = 4;
 //     inst.ra = 1;
 //     inst.rb = 2;
 //

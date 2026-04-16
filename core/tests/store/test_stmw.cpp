@@ -21,7 +21,7 @@
 //     cpu->m_gpr[31] = 0xDEADBEEF;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 31;
+//     inst.rs = 31;
 //     inst.ra = 1;
 //     inst.si = 0;
 //
@@ -43,7 +43,7 @@
 //     cpu->m_gpr[31] = 0x22222222;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 30;
+//     inst.rs = 30;
 //     inst.ra = 1;
 //     inst.si = 0;
 //
@@ -68,7 +68,7 @@
 //     cpu->m_gpr[31] = 0xDDDDDDDD;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 28;
+//     inst.rs = 28;
 //     inst.ra = 1;
 //     inst.si = 0;
 //
@@ -95,7 +95,7 @@
 //     cpu->m_gpr[31] = 0x40000000;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 28;
+//     inst.rs = 28;
 //     inst.ra = 1;
 //     inst.si = 0;
 //
@@ -120,7 +120,7 @@
 //     cpu->m_gpr[31] = 0xC0FFEE00;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 30;
+//     inst.rs = 30;
 //     inst.ra = 1;
 //     inst.si = 8;
 //
@@ -143,7 +143,7 @@
 //     cpu->m_gpr[31] = 0x9ABCDEF0;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 30;
+//     inst.rs = 30;
 //     inst.ra = 1;
 //     inst.si = static_cast<uint16_t>(static_cast<int16_t>(-8));
 //
@@ -165,7 +165,7 @@
 //     cpu->m_gpr[31] = 0x55555555;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 31;
+//     inst.rs = 31;
 //     inst.ra = 0;
 //     inst.si = 0;
 //
@@ -190,7 +190,7 @@
 //     cpu->m_gpr[31] = 0;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 30;
+//     inst.rs = 30;
 //     inst.ra = 1;
 //     inst.si = 0;
 //
@@ -214,7 +214,7 @@
 //     cpu->m_gpr[31] = 0x2A2B2C2D;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 29;
+//     inst.rs = 29;
 //     inst.ra = 1;
 //     inst.si = 0;
 //
@@ -237,7 +237,7 @@
 //     cpu->m_gpr[31] = 0x77777777;
 //
 //     EncodedInstruction inst(0);
-//     inst.rt = 31;
+//     inst.rs = 31;
 //     inst.ra = 2;
 //     inst.si = 0;
 //
