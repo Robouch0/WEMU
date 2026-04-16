@@ -19,6 +19,8 @@ namespace Core::Instruction {
      */
     void SYNC(Interpreter &cpu, const EncodedInstruction &instr) {} // TODO
 
+    void ISYNC(Interpreter &cpu, const EncodedInstruction &instr) {} // TODO
+
     /**
      * @brief Enforce In-Order Execution of I/O.
      *        Memory barrier for I/O operations.
@@ -26,7 +28,7 @@ namespace Core::Instruction {
      * @param cpu   Interpreter state.
      * @param instr Encoded instruction (no significant fields).
      */
-    void EIEIO(Interpreter &cpu, const EncodedInstruction &instr) {} // TODO
+    void EIEIO(Interpreter &cpu, const EncodedInstruction &instr) {} // TODOF
 
     /**
      * @brief Data Cache Block Store.
