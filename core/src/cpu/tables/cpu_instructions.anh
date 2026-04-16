@@ -74,5 +74,8 @@ INSTR(BL, OPCD(18), AA(0), LK(1))
 INSTR(BLA, OPCD(18), AA(1), LK(1))
 //INSTR(BC, OPCD(16))
 
+// SPR & System Registers
+INSTR(MTSPR, OPCD(31), XO10(467))
+
 // System Linkage
 INSTR(SC, OPCD(17))
