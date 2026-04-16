@@ -20,4 +20,18 @@ namespace Core::Instruction {
 
         cpu.updateCR(cpu.m_cr.cr0, cpu.m_gprSigned[instr.ra], instr);
     }
+
+    void SRAWI(Core::Interpreter &cpu, const EncodedInstruction &instr)
+    {
+        const std::uint8_t n = instr.sh;
+        const std::uint32_t r = cpu.m_gpr[instr.rs] << (32 - n) | cpu.m_gpr[instr.rs] >> n;
+        const std::uint32_t m = 0XFFFFFFFF >> n;
+        const std::uint32_t s = cpu.m_gpr[instr.rs] >> 31;
+
+        cpu.m_gpr[instr.ra] = r & m | (s ? 0xFFFFFFFF : s) & ~m;
+        cpu.m_xer.ca = s & ((r & ~m) != 0);
+
+        cpu.updateCR(cpu.m_cr.cr0, cpu.m_gprSigned[instr.ra], instr);
+    }
+
 }

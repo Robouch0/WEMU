@@ -218,7 +218,7 @@ TEST_F(InstructionTest, SRAW_DoesNotModifyRS)
 
 TEST_F(InstructionTest, SRAW_CA_Set)
 {
-    cpu->m_gpr[3] = 0xFFFFFFF1; // négatif with 1 in last position
+    cpu->m_gpr[3] = 0xFFFFFFF1; // negative with 1 in last position
     cpu->m_gpr[5] = 3;
 
     EncodedInstruction inst(0);

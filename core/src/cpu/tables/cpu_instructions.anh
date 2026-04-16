@@ -64,6 +64,7 @@ INSTR(LWZX, OPCD(31), XO10(23))
 
 // Rotate and shift
 INSTR(SRAW, OPCD(31), XO10(792))
+INSTR(SRAWI, OPCD(31), XO10(824))
 
 // Branching
 INSTR(B, OPCD(18), AA(0), LK(0))
