@@ -59,6 +59,7 @@ add_library(core STATIC
         src/cpu/instructions/float/FloatMove.cpp
         src/cpu/instructions/float/FloatConvert.cpp
         src/cpu/instructions/float/FloatCompare.cpp
+        src/cpu/instructions/rotateshift/Shift.cpp
 )
 
 target_include_directories(core PUBLIC
