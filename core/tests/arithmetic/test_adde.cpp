@@ -24,7 +24,7 @@ TEST_F(InstructionTest, ADDE_NoOE_NoRc_NoCarry)
     EXPECT_EQ(cpu->m_gpr[5], 42u);
     EXPECT_EQ(cpu->m_xer.ov, 0);
     EXPECT_EQ(cpu->m_xer.so, 0);
-    EXPECT_EQ(cpu->m_cr.cr0.eq, 0);
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Zero) ? 1 : 0), 0);
 }
 
 //
@@ -51,7 +51,7 @@ TEST_F(InstructionTest, ADDE_NoOE_NoRc_WithCarry)
     EXPECT_EQ(cpu->m_gpr[5], 43u);
     EXPECT_EQ(cpu->m_xer.ov, 0);
     EXPECT_EQ(cpu->m_xer.so, 0);
-    EXPECT_EQ(cpu->m_cr.cr0.eq, 0);
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Zero) ? 1 : 0), 0);
 }
 
 //
@@ -75,9 +75,9 @@ TEST_F(InstructionTest, ADDE_WithRc_UpdateCR)
     Core::Instruction::ADDE(*cpu, inst);
 
     EXPECT_EQ(cpu->m_gprSigned[8], 5);
-    EXPECT_EQ(cpu->m_cr.cr0.lt, 0);
-    EXPECT_EQ(cpu->m_cr.cr0.gt, 1);
-    EXPECT_EQ(cpu->m_cr.cr0.eq, 0);
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Negative) ? 1 : 0), 0);
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Positive) ? 1 : 0), 1);
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Zero) ? 1 : 0), 0);
     EXPECT_EQ(cpu->m_xer.ov, 0);
     EXPECT_EQ(cpu->m_xer.so, 0);
 }
@@ -105,7 +105,7 @@ TEST_F(InstructionTest, ADDEO_WithOverflow_SetsOVandSO)
     EXPECT_EQ(cpu->m_gpr[2], 0x80000000u);
     EXPECT_EQ(cpu->m_xer.ov, 1);
     EXPECT_EQ(cpu->m_xer.so, 1);
-    EXPECT_EQ(cpu->m_cr.cr0.eq, 0);
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Zero) ? 1 : 0), 0);
 }
 
 //
@@ -132,8 +132,8 @@ TEST_F(InstructionTest, ADDEO_WithOE_And_Rc)
     EXPECT_EQ(cpu->m_xer.so, 1);
 
     if (cpu->m_gprSigned[9] < 0) {
-        EXPECT_EQ(cpu->m_cr.cr0.lt, 1);
-        EXPECT_EQ(cpu->m_cr.cr0.gt, 0);
-        EXPECT_EQ(cpu->m_cr.cr0.eq, 0);
+        EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Negative) ? 1 : 0), 1);
+        EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Positive) ? 1 : 0), 0);
+        EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Zero) ? 1 : 0), 0);
     }
 }

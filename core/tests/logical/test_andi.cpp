@@ -19,9 +19,9 @@ TEST_F(InstructionTest, ANDI_Greater)
     Core::Instruction::ANDI(*cpu, inst);
 
     EXPECT_EQ(cpu->m_gpr[5], 1);
-    EXPECT_EQ(cpu->m_cr.cr0.lt, 0);
-    EXPECT_EQ(cpu->m_cr.cr0.gt, 1);
-    EXPECT_EQ(cpu->m_cr.cr0.eq, 0);
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Negative) ? 1 : 0), 0);
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Positive) ? 1 : 0), 1);
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Zero) ? 1 : 0), 0);
 }
 
 TEST_F(InstructionTest, ANDI_Zero)
@@ -36,9 +36,9 @@ TEST_F(InstructionTest, ANDI_Zero)
     Core::Instruction::ANDI(*cpu, inst);
 
     EXPECT_EQ(cpu->m_gpr[5], 0);
-    EXPECT_EQ(cpu->m_cr.cr0.lt, 0);
-    EXPECT_EQ(cpu->m_cr.cr0.gt, 0);
-    EXPECT_EQ(cpu->m_cr.cr0.eq, 1);
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Negative) ? 1 : 0), 0);
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Positive) ? 1 : 0), 0);
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Zero) ? 1 : 0), 1);
 }
 
 // as ui is a 16 bit unsigned int, negative result is impossible

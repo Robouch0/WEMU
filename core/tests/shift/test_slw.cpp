@@ -176,9 +176,9 @@
 //     Core::Instruction::SLW(*cpu, inst);
 // 
 //     EXPECT_EQ(cpu->m_gpr[4], 2u);
-//     EXPECT_EQ(cpu->m_cr.cr0.lt, 0u);
-//     EXPECT_EQ(cpu->m_cr.cr0.gt, 1u);
-//     EXPECT_EQ(cpu->m_cr.cr0.eq, 0u);
+//     EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Negative) ? 1 : 0), 0u);
+//     EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Positive) ? 1 : 0), 1u);
+//     EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Zero) ? 1 : 0), 0u);
 // }
 // 
 // //
@@ -201,9 +201,9 @@
 //     Core::Instruction::SLW(*cpu, inst);
 // 
 //     EXPECT_EQ(cpu->m_gpr[4], 0x80000000u);
-//     EXPECT_EQ(cpu->m_cr.cr0.lt, 1u); // high bit set → negative
-//     EXPECT_EQ(cpu->m_cr.cr0.gt, 0u);
-//     EXPECT_EQ(cpu->m_cr.cr0.eq, 0u);
+//     EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Negative) ? 1 : 0), 1u); // high bit set → negative
+//     EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Positive) ? 1 : 0), 0u);
+//     EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Zero) ? 1 : 0), 0u);
 // }
 // 
 // //
