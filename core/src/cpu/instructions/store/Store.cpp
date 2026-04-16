@@ -60,9 +60,15 @@ namespace Core::Instruction {
      * @param cpu  Interpreter state.
      * @param instr Encoded instruction (fields: rs, ra, si as D).
      */
-    void STMW(Interpreter &cpu, const EncodedInstruction &instr);
-    // {
-    // }
+    void STMW(Interpreter &cpu, const EncodedInstruction &instr)
+    {
+        std::uint32_t ea = (instr.ra == 0 ? 0 : cpu.m_gpr[instr.ra]) + static_cast<std::int16_t>(instr.d);
+
+        for (std::uint32_t r = instr.rs; r <= std::size(cpu.m_gpr) - 1; r++) {
+            cpu.m_memory.write<std::uint32_t>(ea, cpu.m_gpr[r]);
+            ea += sizeof(std::uint32_t);
+        }
+    }
 
     /**
      * @brief Store Halfword Indexed.
