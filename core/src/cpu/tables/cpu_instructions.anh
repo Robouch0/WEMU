@@ -74,5 +74,8 @@ INSTR(BL, OPCD(18), AA(0), LK(1))
 INSTR(BLA, OPCD(18), AA(1), LK(1))
 //INSTR(BC, OPCD(16))
 
+// Rotate and Shift
+INSTR(SLW, OPCD(31), XO10(24))
+
 // System Linkage
 INSTR(SC, OPCD(17))
