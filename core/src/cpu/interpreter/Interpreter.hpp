@@ -80,6 +80,8 @@ namespace Core {
             void updateCR(Core::ConditionRegister::Register &cr, const std::int32_t &result,
                           const EncodedInstruction &instr, bool forceUpdate = false) const;
 
+            void updateCR1(const EncodedInstruction &instr) noexcept;
+
             /**
              * @brief Updates XER overflow bits based on a precomputed overflow condition.
              *        Use this overload for instructions with custom overflow logic (e.g. DIVW, DIVWU).

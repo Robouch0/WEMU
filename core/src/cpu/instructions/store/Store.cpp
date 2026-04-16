@@ -48,9 +48,12 @@ namespace Core::Instruction {
      * @param cpu  Interpreter state.
      * @param instr Encoded instruction (fields: rs, ra, rb).
      */
-    void STWX(Interpreter &cpu, const EncodedInstruction &instr);
-    // {
-    // }
+    void STWX(Interpreter &cpu, const EncodedInstruction &instr)
+    {
+        const std::uint32_t ea = (instr.ra == 0 ? 0 : cpu.m_gpr[instr.ra]) + cpu.m_gpr[instr.rb];
+
+        cpu.m_memory.write<std::uint32_t>(ea, cpu.m_gpr[instr.rs]);
+    }
 
     /**
      * @brief Store Multiple Word.
