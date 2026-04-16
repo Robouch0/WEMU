@@ -28,7 +28,7 @@ namespace Core::Instruction {
      * @param cpu   Interpreter state.
      * @param instr Encoded instruction (no significant fields).
      */
-    void EIEIO(Interpreter &cpu, const EncodedInstruction &instr) {} // TODOF
+    void EIEIO(Interpreter &cpu, const EncodedInstruction &instr) {} // TODO
 
     /**
      * @brief Data Cache Block Store.
