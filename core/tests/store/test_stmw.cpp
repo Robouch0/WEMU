@@ -21,9 +21,9 @@ TEST_F(InstructionTest, STMW_SingleRegister)
     cpu->m_gpr[31] = 0xDEADBEEF;
 
     EncodedInstruction inst(0);
-    inst.rt = 31;
+    inst.rs = 31;
     inst.ra = 1;
-    inst.si = 0;
+    inst.d = 0;
 
     Core::Instruction::STMW(*cpu, inst);
 
@@ -43,9 +43,9 @@ TEST_F(InstructionTest, STMW_TwoRegisters)
     cpu->m_gpr[31] = 0x22222222;
 
     EncodedInstruction inst(0);
-    inst.rt = 30;
+    inst.rs = 30;
     inst.ra = 1;
-    inst.si = 0;
+    inst.d = 0;
 
     Core::Instruction::STMW(*cpu, inst);
 
@@ -68,9 +68,9 @@ TEST_F(InstructionTest, STMW_FourRegisters)
     cpu->m_gpr[31] = 0xDDDDDDDD;
 
     EncodedInstruction inst(0);
-    inst.rt = 28;
+    inst.rs = 28;
     inst.ra = 1;
-    inst.si = 0;
+    inst.d = 0;
 
     Core::Instruction::STMW(*cpu, inst);
 
@@ -95,9 +95,9 @@ TEST_F(InstructionTest, STMW_SequentialOrder)
     cpu->m_gpr[31] = 0x40000000;
 
     EncodedInstruction inst(0);
-    inst.rt = 28;
+    inst.rs = 28;
     inst.ra = 1;
-    inst.si = 0;
+    inst.d = 0;
 
     Core::Instruction::STMW(*cpu, inst);
 
@@ -120,9 +120,9 @@ TEST_F(InstructionTest, STMW_PositiveDisplacement)
     cpu->m_gpr[31] = 0xC0FFEE00;
 
     EncodedInstruction inst(0);
-    inst.rt = 30;
+    inst.rs = 30;
     inst.ra = 1;
-    inst.si = 8;
+    inst.d = 8;
 
     Core::Instruction::STMW(*cpu, inst);
 
@@ -143,9 +143,9 @@ TEST_F(InstructionTest, STMW_NegativeDisplacement)
     cpu->m_gpr[31] = 0x9ABCDEF0;
 
     EncodedInstruction inst(0);
-    inst.rt = 30;
+    inst.rs = 30;
     inst.ra = 1;
-    inst.si = static_cast<uint16_t>(static_cast<int16_t>(-8));
+    inst.d = static_cast<uint16_t>(static_cast<int16_t>(-8));
 
     Core::Instruction::STMW(*cpu, inst);
 
@@ -165,9 +165,9 @@ TEST_F(InstructionTest, STMW_RA0_Uses0AsBase)
     cpu->m_gpr[31] = 0x55555555;
 
     EncodedInstruction inst(0);
-    inst.rt = 31;
+    inst.rs = 31;
     inst.ra = 0;
-    inst.si = 0;
+    inst.d = 0;
 
     // EA = 0, which is unmapped → DSI exception
     EXPECT_THROW(Core::Instruction::STMW(*cpu, inst), Core::MemoryException);
@@ -188,9 +188,9 @@ TEST_F(InstructionTest, STMW_StoreZeros)
     cpu->m_gpr[31] = 0;
 
     EncodedInstruction inst(0);
-    inst.rt = 30;
+    inst.rs = 30;
     inst.ra = 1;
-    inst.si = 0;
+    inst.d = 0;
 
     Core::Instruction::STMW(*cpu, inst);
 
@@ -212,9 +212,9 @@ TEST_F(InstructionTest, STMW_ThreeRegisters)
     cpu->m_gpr[31] = 0x2A2B2C2D;
 
     EncodedInstruction inst(0);
-    inst.rt = 29;
+    inst.rs = 29;
     inst.ra = 1;
-    inst.si = 0;
+    inst.d = 0;
 
     Core::Instruction::STMW(*cpu, inst);
 
@@ -235,9 +235,9 @@ TEST_F(InstructionTest, STMW_DoesNotUpdateRA)
     cpu->m_gpr[31] = 0x77777777;
 
     EncodedInstruction inst(0);
-    inst.rt = 31;
+    inst.rs = 31;
     inst.ra = 2;
-    inst.si = 0;
+    inst.d = 0;
 
     Core::Instruction::STMW(*cpu, inst);
 
