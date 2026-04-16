@@ -2,230 +2,187 @@
 // ** EPITECH PROJECT, 2025
 // ** core
 // ** File description:
-// ** test_sthx
+// ** test_extsh
 // */
-//
+// 
 // #include "TestFixture.hpp"
-//
-// static constexpr uint32_t TEST_ADDR = 0x02000200;
-//
+// 
+// // EXTSH: rA = EXTS(rS[16:31])  — sign-extend the low 16 bits of rS to 32 bits
+// // Fields: inst.rt=RS(source), inst.ra=RA(dest)
+// 
 // //
 // // ─────────────────────────────────────────────────────────────────────────────
-// //  STHX — basic store: low 16 bits of RS
+// //  EXTSH — positive small value: sign bit clear, no extension
 // // ─────────────────────────────────────────────────────────────────────────────
 // //
-//
-// TEST_F(InstructionTest, STHX_BasicStore)
+// 
+// TEST_F(InstructionTest, EXTSH_PositiveSmall)
 // {
-//     cpu->m_gpr[1] = TEST_ADDR;
-//     cpu->m_gpr[2] = 4;
-//     cpu->m_gpr[4] = 0x0000ABCD;
-//
+//     cpu->m_gpr[3] = 0x00000001;
+// 
 //     EncodedInstruction inst(0);
-//     inst.rs = 4;
-//     inst.ra = 1;
-//     inst.rb = 2;
-//
-//     Core::Instruction::STHX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint16_t>(TEST_ADDR + 4), 0xABCDu);
+//     inst.rt = 3;
+//     inst.ra = 4;
+// 
+//     Core::Instruction::EXTSH(*cpu, inst);
+// 
+//     EXPECT_EQ(cpu->m_gpr[4], 0x00000001u);
 // }
-//
+// 
 // //
 // // ─────────────────────────────────────────────────────────────────────────────
-// //  STHX — high bits of RS are ignored
+// //  EXTSH — max positive halfword: 0x7FFF → 0x00007FFF
 // // ─────────────────────────────────────────────────────────────────────────────
 // //
-//
-// TEST_F(InstructionTest, STHX_HighBitsOfRSIgnored)
+// 
+// TEST_F(InstructionTest, EXTSH_MaxPositive)
 // {
-//     cpu->m_gpr[1] = TEST_ADDR;
-//     cpu->m_gpr[2] = 0;
-//     cpu->m_gpr[4] = 0xFFFF1234; // high 16 bits must be ignored
-//
+//     cpu->m_gpr[3] = 0x00007FFF;
+// 
 //     EncodedInstruction inst(0);
-//     inst.rs = 4;
-//     inst.ra = 1;
-//     inst.rb = 2;
-//
-//     Core::Instruction::STHX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint16_t>(TEST_ADDR), 0x1234u);
+//     inst.rt = 3;
+//     inst.ra = 4;
+// 
+//     Core::Instruction::EXTSH(*cpu, inst);
+// 
+//     EXPECT_EQ(cpu->m_gpr[4], 0x00007FFFu);
 // }
-//
+// 
 // //
 // // ─────────────────────────────────────────────────────────────────────────────
-// //  STHX — store 0xFFFF
+// //  EXTSH — min negative halfword: 0x8000 → 0xFFFF8000
 // // ─────────────────────────────────────────────────────────────────────────────
 // //
-//
-// TEST_F(InstructionTest, STHX_StoreAllOnes)
+// 
+// TEST_F(InstructionTest, EXTSH_MinNegative)
 // {
-//     cpu->m_gpr[1] = TEST_ADDR;
-//     cpu->m_gpr[2] = 0;
-//     cpu->m_gpr[4] = 0x0000FFFF;
-//
+//     cpu->m_gpr[3] = 0x00008000;
+// 
 //     EncodedInstruction inst(0);
-//     inst.rs = 4;
-//     inst.ra = 1;
-//     inst.rb = 2;
-//
-//     Core::Instruction::STHX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint16_t>(TEST_ADDR), 0xFFFFu);
+//     inst.rt = 3;
+//     inst.ra = 4;
+// 
+//     Core::Instruction::EXTSH(*cpu, inst);
+// 
+//     EXPECT_EQ(cpu->m_gpr[4], 0xFFFF8000u);
+//     EXPECT_EQ(cpu->m_gprSigned[4], -32768);
 // }
-//
+// 
 // //
 // // ─────────────────────────────────────────────────────────────────────────────
-// //  STHX — store 0x0000
+// //  EXTSH — all halfword bits set: 0xFFFF → 0xFFFFFFFF (-1)
 // // ─────────────────────────────────────────────────────────────────────────────
 // //
-//
-// TEST_F(InstructionTest, STHX_StoreZero)
+// 
+// TEST_F(InstructionTest, EXTSH_AllOnes)
 // {
-//     cpu->m_memory.write<uint16_t>(TEST_ADDR, 0xFFFF);
-//     cpu->m_gpr[1] = TEST_ADDR;
-//     cpu->m_gpr[2] = 0;
-//     cpu->m_gpr[4] = 0x00000000;
-//
+//     cpu->m_gpr[3] = 0x0000FFFF;
+// 
 //     EncodedInstruction inst(0);
-//     inst.rs = 4;
-//     inst.ra = 1;
-//     inst.rb = 2;
-//
-//     Core::Instruction::STHX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint16_t>(TEST_ADDR), 0u);
+//     inst.rt = 3;
+//     inst.ra = 4;
+// 
+//     Core::Instruction::EXTSH(*cpu, inst);
+// 
+//     EXPECT_EQ(cpu->m_gpr[4], 0xFFFFFFFFu);
+//     EXPECT_EQ(cpu->m_gprSigned[4], -1);
 // }
-//
+// 
 // //
 // // ─────────────────────────────────────────────────────────────────────────────
-// //  STHX — store 0x8000
+// //  EXTSH — zero: stays zero
 // // ─────────────────────────────────────────────────────────────────────────────
 // //
-//
-// TEST_F(InstructionTest, STHX_StoreHighHalfBit)
+// 
+// TEST_F(InstructionTest, EXTSH_Zero)
 // {
-//     cpu->m_gpr[1] = TEST_ADDR;
-//     cpu->m_gpr[2] = 0;
-//     cpu->m_gpr[4] = 0x00008000;
-//
+//     cpu->m_gpr[3] = 0x00000000;
+// 
 //     EncodedInstruction inst(0);
-//     inst.rs = 4;
-//     inst.ra = 1;
-//     inst.rb = 2;
-//
-//     Core::Instruction::STHX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint16_t>(TEST_ADDR), 0x8000u);
+//     inst.rt = 3;
+//     inst.ra = 4;
+// 
+//     Core::Instruction::EXTSH(*cpu, inst);
+// 
+//     EXPECT_EQ(cpu->m_gpr[4], 0u);
 // }
-//
+// 
 // //
 // // ─────────────────────────────────────────────────────────────────────────────
-// //  STHX — store 0x7FFF
+// //  EXTSH — high 16 bits of rS are ignored
 // // ─────────────────────────────────────────────────────────────────────────────
 // //
-//
-// TEST_F(InstructionTest, STHX_Store0x7FFF)
+// 
+// TEST_F(InstructionTest, EXTSH_HighBitsIgnored)
 // {
-//     cpu->m_gpr[1] = TEST_ADDR;
-//     cpu->m_gpr[2] = 2;
-//     cpu->m_gpr[4] = 0x00007FFF;
-//
+//     cpu->m_gpr[3] = 0xABCD1234; // high 16 bits must be ignored; low 16 = 0x1234
+// 
 //     EncodedInstruction inst(0);
-//     inst.rs = 4;
-//     inst.ra = 1;
-//     inst.rb = 2;
-//
-//     Core::Instruction::STHX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint16_t>(TEST_ADDR + 2), 0x7FFFu);
+//     inst.rt = 3;
+//     inst.ra = 4;
+// 
+//     Core::Instruction::EXTSH(*cpu, inst);
+// 
+//     EXPECT_EQ(cpu->m_gpr[4], 0x00001234u); // 0x1234 is positive, no sign extension
 // }
-//
+// 
 // //
 // // ─────────────────────────────────────────────────────────────────────────────
-// //  STHX — RA=0: RB provides full address
+// //  EXTSH — high bits ignored even when low halfword is negative
 // // ─────────────────────────────────────────────────────────────────────────────
 // //
-//
-// TEST_F(InstructionTest, STHX_RA0_RBProvidesAddress)
+// 
+// TEST_F(InstructionTest, EXTSH_HighBitsIgnored_NegativeLowHalf)
 // {
-//     cpu->m_gpr[0] = 0xDEAD0000; // ignored
-//     cpu->m_gpr[2] = TEST_ADDR;
-//     cpu->m_gpr[4] = 0x0000BEEF;
-//
+//     cpu->m_gpr[3] = 0x00008001; // low 16 = 0x8001 → negative
+// 
 //     EncodedInstruction inst(0);
-//     inst.rs = 4;
-//     inst.ra = 0;
-//     inst.rb = 2;
-//
-//     Core::Instruction::STHX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint16_t>(TEST_ADDR), 0xBEEFu);
+//     inst.rt = 3;
+//     inst.ra = 4;
+// 
+//     Core::Instruction::EXTSH(*cpu, inst);
+// 
+//     EXPECT_EQ(cpu->m_gpr[4], 0xFFFF8001u);
 // }
-//
+// 
 // //
 // // ─────────────────────────────────────────────────────────────────────────────
-// //  STHX — RB=0: EA = RA
+// //  EXTSH — RC=1 updates CR0
 // // ─────────────────────────────────────────────────────────────────────────────
 // //
-//
-// TEST_F(InstructionTest, STHX_RB0_EAEqualsRA)
+// 
+// TEST_F(InstructionTest, EXTSH_RC_UpdatesCR0_Negative)
 // {
-//     cpu->m_gpr[1] = TEST_ADDR;
-//     cpu->m_gpr[2] = 0;
-//     cpu->m_gpr[4] = 0x00001234;
-//
+//     cpu->m_gpr[3] = 0x0000FFFF; // sign-extends to -1
+// 
 //     EncodedInstruction inst(0);
-//     inst.rs = 4;
-//     inst.ra = 1;
-//     inst.rb = 2;
-//
-//     Core::Instruction::STHX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint16_t>(TEST_ADDR), 0x1234u);
+//     inst.rt = 3;
+//     inst.ra = 4;
+//     inst.rc = 1;
+// 
+//     Core::Instruction::EXTSH(*cpu, inst);
+// 
+//     EXPECT_EQ(cpu->m_gpr[4], 0xFFFFFFFFu);
+//     EXPECT_EQ(cpu->m_cr.cr0.lt, 1u);
+//     EXPECT_EQ(cpu->m_cr.cr0.gt, 0u);
+//     EXPECT_EQ(cpu->m_cr.cr0.eq, 0u);
 // }
-//
+// 
 // //
 // // ─────────────────────────────────────────────────────────────────────────────
-// //  STHX — does not update RA
+// //  EXTSH — RS is not modified
 // // ─────────────────────────────────────────────────────────────────────────────
 // //
-//
-// TEST_F(InstructionTest, STHX_DoesNotUpdateRA)
+// 
+// TEST_F(InstructionTest, EXTSH_DoesNotModifyRS)
 // {
-//     cpu->m_gpr[1] = TEST_ADDR;
-//     cpu->m_gpr[2] = 4;
-//     cpu->m_gpr[4] = 0x00005678;
-//
+//     cpu->m_gpr[3] = 0x0000ABCD;
+// 
 //     EncodedInstruction inst(0);
-//     inst.rs = 4;
-//     inst.ra = 1;
-//     inst.rb = 2;
-//
-//     Core::Instruction::STHX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_gpr[1], TEST_ADDR);
-// }
-//
-// //
-// // ─────────────────────────────────────────────────────────────────────────────
-// //  STHX — different RS, RA, RB registers
-// // ─────────────────────────────────────────────────────────────────────────────
-// //
-//
-// TEST_F(InstructionTest, STHX_DifferentRegisters)
-// {
-//     cpu->m_gpr[5]  = TEST_ADDR;
-//     cpu->m_gpr[6]  = 6;
-//     cpu->m_gpr[10] = 0x0000CAFE;
-//
-//     EncodedInstruction inst(0);
-//     inst.rs = 10;
-//     inst.ra = 5;
-//     inst.rb = 6;
-//
-//     Core::Instruction::STHX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint16_t>(TEST_ADDR + 6), 0xCAFEu);
+//     inst.rt = 3;
+//     inst.ra = 4;
+// 
+//     Core::Instruction::EXTSH(*cpu, inst);
+// 
+//     EXPECT_EQ(cpu->m_gpr[3], 0x0000ABCDu); // RS unchanged
 // }

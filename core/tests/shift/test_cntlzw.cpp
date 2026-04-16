@@ -2,230 +2,185 @@
 // ** EPITECH PROJECT, 2025
 // ** core
 // ** File description:
-// ** test_sthx
+// ** test_cntlzw
 // */
-//
+// 
 // #include "TestFixture.hpp"
-//
-// static constexpr uint32_t TEST_ADDR = 0x02000200;
-//
+// 
+// // CNTLZW: rA = count of leading zeros in rS (32-bit word)
+// // Fields: inst.rt=RS(source), inst.ra=RA(dest)
+// 
 // //
 // // ─────────────────────────────────────────────────────────────────────────────
-// //  STHX — basic store: low 16 bits of RS
+// //  CNTLZW — all zeros: result is 32
 // // ─────────────────────────────────────────────────────────────────────────────
 // //
-//
-// TEST_F(InstructionTest, STHX_BasicStore)
+// 
+// TEST_F(InstructionTest, CNTLZW_AllZeros)
 // {
-//     cpu->m_gpr[1] = TEST_ADDR;
-//     cpu->m_gpr[2] = 4;
-//     cpu->m_gpr[4] = 0x0000ABCD;
-//
+//     cpu->m_gpr[3] = 0x00000000;
+// 
 //     EncodedInstruction inst(0);
-//     inst.rs = 4;
-//     inst.ra = 1;
-//     inst.rb = 2;
-//
-//     Core::Instruction::STHX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint16_t>(TEST_ADDR + 4), 0xABCDu);
+//     inst.rt = 3;
+//     inst.ra = 4;
+// 
+//     Core::Instruction::CNTLZW(*cpu, inst);
+// 
+//     EXPECT_EQ(cpu->m_gpr[4], 32u);
 // }
-//
+// 
 // //
 // // ─────────────────────────────────────────────────────────────────────────────
-// //  STHX — high bits of RS are ignored
+// //  CNTLZW — all ones: result is 0
 // // ─────────────────────────────────────────────────────────────────────────────
 // //
-//
-// TEST_F(InstructionTest, STHX_HighBitsOfRSIgnored)
+// 
+// TEST_F(InstructionTest, CNTLZW_AllOnes)
 // {
-//     cpu->m_gpr[1] = TEST_ADDR;
-//     cpu->m_gpr[2] = 0;
-//     cpu->m_gpr[4] = 0xFFFF1234; // high 16 bits must be ignored
-//
+//     cpu->m_gpr[3] = 0xFFFFFFFF;
+// 
 //     EncodedInstruction inst(0);
-//     inst.rs = 4;
-//     inst.ra = 1;
-//     inst.rb = 2;
-//
-//     Core::Instruction::STHX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint16_t>(TEST_ADDR), 0x1234u);
+//     inst.rt = 3;
+//     inst.ra = 4;
+// 
+//     Core::Instruction::CNTLZW(*cpu, inst);
+// 
+//     EXPECT_EQ(cpu->m_gpr[4], 0u);
 // }
-//
+// 
 // //
 // // ─────────────────────────────────────────────────────────────────────────────
-// //  STHX — store 0xFFFF
+// //  CNTLZW — MSB set: result is 0
 // // ─────────────────────────────────────────────────────────────────────────────
 // //
-//
-// TEST_F(InstructionTest, STHX_StoreAllOnes)
+// 
+// TEST_F(InstructionTest, CNTLZW_MSBSet)
 // {
-//     cpu->m_gpr[1] = TEST_ADDR;
-//     cpu->m_gpr[2] = 0;
-//     cpu->m_gpr[4] = 0x0000FFFF;
-//
+//     cpu->m_gpr[3] = 0x80000000;
+// 
 //     EncodedInstruction inst(0);
-//     inst.rs = 4;
-//     inst.ra = 1;
-//     inst.rb = 2;
-//
-//     Core::Instruction::STHX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint16_t>(TEST_ADDR), 0xFFFFu);
+//     inst.rt = 3;
+//     inst.ra = 4;
+// 
+//     Core::Instruction::CNTLZW(*cpu, inst);
+// 
+//     EXPECT_EQ(cpu->m_gpr[4], 0u);
 // }
-//
+// 
 // //
 // // ─────────────────────────────────────────────────────────────────────────────
-// //  STHX — store 0x0000
+// //  CNTLZW — bit 30 set (second bit): result is 1
 // // ─────────────────────────────────────────────────────────────────────────────
 // //
-//
-// TEST_F(InstructionTest, STHX_StoreZero)
+// 
+// TEST_F(InstructionTest, CNTLZW_Bit30Set)
 // {
-//     cpu->m_memory.write<uint16_t>(TEST_ADDR, 0xFFFF);
-//     cpu->m_gpr[1] = TEST_ADDR;
-//     cpu->m_gpr[2] = 0;
-//     cpu->m_gpr[4] = 0x00000000;
-//
+//     cpu->m_gpr[3] = 0x40000000; // bit 30 in PPC notation (2nd from MSB)
+// 
 //     EncodedInstruction inst(0);
-//     inst.rs = 4;
-//     inst.ra = 1;
-//     inst.rb = 2;
-//
-//     Core::Instruction::STHX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint16_t>(TEST_ADDR), 0u);
+//     inst.rt = 3;
+//     inst.ra = 4;
+// 
+//     Core::Instruction::CNTLZW(*cpu, inst);
+// 
+//     EXPECT_EQ(cpu->m_gpr[4], 1u);
 // }
-//
+// 
 // //
 // // ─────────────────────────────────────────────────────────────────────────────
-// //  STHX — store 0x8000
+// //  CNTLZW — only LSB set: result is 31
 // // ─────────────────────────────────────────────────────────────────────────────
 // //
-//
-// TEST_F(InstructionTest, STHX_StoreHighHalfBit)
+// 
+// TEST_F(InstructionTest, CNTLZW_OnlyLSBSet)
 // {
-//     cpu->m_gpr[1] = TEST_ADDR;
-//     cpu->m_gpr[2] = 0;
-//     cpu->m_gpr[4] = 0x00008000;
-//
+//     cpu->m_gpr[3] = 0x00000001;
+// 
 //     EncodedInstruction inst(0);
-//     inst.rs = 4;
-//     inst.ra = 1;
-//     inst.rb = 2;
-//
-//     Core::Instruction::STHX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint16_t>(TEST_ADDR), 0x8000u);
+//     inst.rt = 3;
+//     inst.ra = 4;
+// 
+//     Core::Instruction::CNTLZW(*cpu, inst);
+// 
+//     EXPECT_EQ(cpu->m_gpr[4], 31u);
 // }
-//
+// 
 // //
 // // ─────────────────────────────────────────────────────────────────────────────
-// //  STHX — store 0x7FFF
+// //  CNTLZW — bit 16 set (mid-point): result is 15
 // // ─────────────────────────────────────────────────────────────────────────────
 // //
-//
-// TEST_F(InstructionTest, STHX_Store0x7FFF)
+// 
+// TEST_F(InstructionTest, CNTLZW_Bit16Set)
 // {
-//     cpu->m_gpr[1] = TEST_ADDR;
-//     cpu->m_gpr[2] = 2;
-//     cpu->m_gpr[4] = 0x00007FFF;
-//
+//     cpu->m_gpr[3] = 0x00010000; // bit 16 from MSB
+// 
 //     EncodedInstruction inst(0);
-//     inst.rs = 4;
-//     inst.ra = 1;
-//     inst.rb = 2;
-//
-//     Core::Instruction::STHX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint16_t>(TEST_ADDR + 2), 0x7FFFu);
+//     inst.rt = 3;
+//     inst.ra = 4;
+// 
+//     Core::Instruction::CNTLZW(*cpu, inst);
+// 
+//     EXPECT_EQ(cpu->m_gpr[4], 15u);
 // }
-//
+// 
 // //
 // // ─────────────────────────────────────────────────────────────────────────────
-// //  STHX — RA=0: RB provides full address
+// //  CNTLZW — 0x00FFFFFF: 8 leading zeros
 // // ─────────────────────────────────────────────────────────────────────────────
 // //
-//
-// TEST_F(InstructionTest, STHX_RA0_RBProvidesAddress)
+// 
+// TEST_F(InstructionTest, CNTLZW_8LeadingZeros)
 // {
-//     cpu->m_gpr[0] = 0xDEAD0000; // ignored
-//     cpu->m_gpr[2] = TEST_ADDR;
-//     cpu->m_gpr[4] = 0x0000BEEF;
-//
+//     cpu->m_gpr[3] = 0x00FFFFFF;
+// 
 //     EncodedInstruction inst(0);
-//     inst.rs = 4;
-//     inst.ra = 0;
-//     inst.rb = 2;
-//
-//     Core::Instruction::STHX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint16_t>(TEST_ADDR), 0xBEEFu);
+//     inst.rt = 3;
+//     inst.ra = 4;
+// 
+//     Core::Instruction::CNTLZW(*cpu, inst);
+// 
+//     EXPECT_EQ(cpu->m_gpr[4], 8u);
 // }
-//
+// 
 // //
 // // ─────────────────────────────────────────────────────────────────────────────
-// //  STHX — RB=0: EA = RA
+// //  CNTLZW — RC=1 updates CR0
 // // ─────────────────────────────────────────────────────────────────────────────
 // //
-//
-// TEST_F(InstructionTest, STHX_RB0_EAEqualsRA)
+// 
+// TEST_F(InstructionTest, CNTLZW_RC_UpdatesCR0)
 // {
-//     cpu->m_gpr[1] = TEST_ADDR;
-//     cpu->m_gpr[2] = 0;
-//     cpu->m_gpr[4] = 0x00001234;
-//
+//     cpu->m_gpr[3] = 0x00000000; // result will be 32
+// 
 //     EncodedInstruction inst(0);
-//     inst.rs = 4;
-//     inst.ra = 1;
-//     inst.rb = 2;
-//
-//     Core::Instruction::STHX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint16_t>(TEST_ADDR), 0x1234u);
+//     inst.rt = 3;
+//     inst.ra = 4;
+//     inst.rc = 1;
+// 
+//     Core::Instruction::CNTLZW(*cpu, inst);
+// 
+//     EXPECT_EQ(cpu->m_gpr[4], 32u);
+//     EXPECT_EQ(cpu->m_cr.cr0.lt, 0u); // 32 is positive
+//     EXPECT_EQ(cpu->m_cr.cr0.gt, 1u);
+//     EXPECT_EQ(cpu->m_cr.cr0.eq, 0u);
 // }
-//
+// 
 // //
 // // ─────────────────────────────────────────────────────────────────────────────
-// //  STHX — does not update RA
+// //  CNTLZW — RS is not modified
 // // ─────────────────────────────────────────────────────────────────────────────
 // //
-//
-// TEST_F(InstructionTest, STHX_DoesNotUpdateRA)
+// 
+// TEST_F(InstructionTest, CNTLZW_DoesNotModifyRS)
 // {
-//     cpu->m_gpr[1] = TEST_ADDR;
-//     cpu->m_gpr[2] = 4;
-//     cpu->m_gpr[4] = 0x00005678;
-//
+//     cpu->m_gpr[3] = 0x00FF0000;
+// 
 //     EncodedInstruction inst(0);
-//     inst.rs = 4;
-//     inst.ra = 1;
-//     inst.rb = 2;
-//
-//     Core::Instruction::STHX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_gpr[1], TEST_ADDR);
-// }
-//
-// //
-// // ─────────────────────────────────────────────────────────────────────────────
-// //  STHX — different RS, RA, RB registers
-// // ─────────────────────────────────────────────────────────────────────────────
-// //
-//
-// TEST_F(InstructionTest, STHX_DifferentRegisters)
-// {
-//     cpu->m_gpr[5]  = TEST_ADDR;
-//     cpu->m_gpr[6]  = 6;
-//     cpu->m_gpr[10] = 0x0000CAFE;
-//
-//     EncodedInstruction inst(0);
-//     inst.rs = 10;
-//     inst.ra = 5;
-//     inst.rb = 6;
-//
-//     Core::Instruction::STHX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint16_t>(TEST_ADDR + 6), 0xCAFEu);
+//     inst.rt = 3;
+//     inst.ra = 4;
+// 
+//     Core::Instruction::CNTLZW(*cpu, inst);
+// 
+//     EXPECT_EQ(cpu->m_gpr[3], 0x00FF0000u); // RS unchanged
 // }

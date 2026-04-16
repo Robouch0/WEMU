@@ -2,230 +2,200 @@
 // ** EPITECH PROJECT, 2025
 // ** core
 // ** File description:
-// ** test_sthx
+// ** test_srawi
 // */
-//
+// 
 // #include "TestFixture.hpp"
-//
-// static constexpr uint32_t TEST_ADDR = 0x02000200;
-//
+// 
+// // SRAWI: rA = rS >>signed SH  (arithmetic right shift, immediate shift amount)
+// // SH is a 5-bit immediate field at inst.rb (C++ bits 11-15).
+// // Also sets XER[CA] if rS is negative and any 1-bits are shifted out.
+// // Fields: inst.rt=RS, inst.ra=RA(dest), inst.rb=SH(immediate)
+// 
 // //
 // // ─────────────────────────────────────────────────────────────────────────────
-// //  STHX — basic store: low 16 bits of RS
+// //  SRAWI — basic: shift positive value by 1
 // // ─────────────────────────────────────────────────────────────────────────────
 // //
-//
-// TEST_F(InstructionTest, STHX_BasicStore)
+// 
+// TEST_F(InstructionTest, SRAWI_BasicShift)
 // {
-//     cpu->m_gpr[1] = TEST_ADDR;
-//     cpu->m_gpr[2] = 4;
-//     cpu->m_gpr[4] = 0x0000ABCD;
-//
+//     cpu->m_gpr[3] = 0x00000010; // +16
+// 
 //     EncodedInstruction inst(0);
-//     inst.rs = 4;
-//     inst.ra = 1;
-//     inst.rb = 2;
-//
-//     Core::Instruction::STHX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint16_t>(TEST_ADDR + 4), 0xABCDu);
+//     inst.rt = 3;
+//     inst.ra = 4;
+//     inst.rb = 1; // SH=1
+// 
+//     Core::Instruction::SRAWI(*cpu, inst);
+// 
+//     EXPECT_EQ(cpu->m_gpr[4], 0x00000008u);
+//     EXPECT_EQ(cpu->m_xer.ca, 0u);
 // }
-//
+// 
 // //
 // // ─────────────────────────────────────────────────────────────────────────────
-// //  STHX — high bits of RS are ignored
+// //  SRAWI — shift negative value: sign-extended
 // // ─────────────────────────────────────────────────────────────────────────────
 // //
-//
-// TEST_F(InstructionTest, STHX_HighBitsOfRSIgnored)
+// 
+// TEST_F(InstructionTest, SRAWI_ShiftNegative_SignExtend)
 // {
-//     cpu->m_gpr[1] = TEST_ADDR;
-//     cpu->m_gpr[2] = 0;
-//     cpu->m_gpr[4] = 0xFFFF1234; // high 16 bits must be ignored
-//
+//     cpu->m_gpr[3] = 0xFFFFFFFF; // -1
+// 
 //     EncodedInstruction inst(0);
-//     inst.rs = 4;
-//     inst.ra = 1;
-//     inst.rb = 2;
-//
-//     Core::Instruction::STHX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint16_t>(TEST_ADDR), 0x1234u);
+//     inst.rt = 3;
+//     inst.ra = 4;
+//     inst.rb = 1; // SH=1
+// 
+//     Core::Instruction::SRAWI(*cpu, inst);
+// 
+//     EXPECT_EQ(cpu->m_gpr[4], 0xFFFFFFFFu); // -1 >>s 1 = -1
 // }
-//
+// 
 // //
 // // ─────────────────────────────────────────────────────────────────────────────
-// //  STHX — store 0xFFFF
+// //  SRAWI — CA=1 when negative with 1-bits shifted out
 // // ─────────────────────────────────────────────────────────────────────────────
 // //
-//
-// TEST_F(InstructionTest, STHX_StoreAllOnes)
+// 
+// TEST_F(InstructionTest, SRAWI_CA_Set)
 // {
-//     cpu->m_gpr[1] = TEST_ADDR;
-//     cpu->m_gpr[2] = 0;
-//     cpu->m_gpr[4] = 0x0000FFFF;
-//
+//     cpu->m_gpr[3] = 0x80000003; // negative, bits 0 and 1 set
+// 
 //     EncodedInstruction inst(0);
-//     inst.rs = 4;
-//     inst.ra = 1;
-//     inst.rb = 2;
-//
-//     Core::Instruction::STHX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint16_t>(TEST_ADDR), 0xFFFFu);
+//     inst.rt = 3;
+//     inst.ra = 4;
+//     inst.rb = 2; // SH=2 — shifts out bits 0 and 1
+// 
+//     Core::Instruction::SRAWI(*cpu, inst);
+// 
+//     EXPECT_EQ(cpu->m_xer.ca, 1u);
 // }
-//
+// 
 // //
 // // ─────────────────────────────────────────────────────────────────────────────
-// //  STHX — store 0x0000
+// //  SRAWI — CA=0 when negative but no 1-bits shifted out
 // // ─────────────────────────────────────────────────────────────────────────────
 // //
-//
-// TEST_F(InstructionTest, STHX_StoreZero)
+// 
+// TEST_F(InstructionTest, SRAWI_CA_Clear_NegativeNoLowOnes)
 // {
-//     cpu->m_memory.write<uint16_t>(TEST_ADDR, 0xFFFF);
-//     cpu->m_gpr[1] = TEST_ADDR;
-//     cpu->m_gpr[2] = 0;
-//     cpu->m_gpr[4] = 0x00000000;
-//
+//     cpu->m_gpr[3] = 0xFFFFFFF0; // negative, low 4 bits all 0
+// 
 //     EncodedInstruction inst(0);
-//     inst.rs = 4;
-//     inst.ra = 1;
-//     inst.rb = 2;
-//
-//     Core::Instruction::STHX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint16_t>(TEST_ADDR), 0u);
+//     inst.rt = 3;
+//     inst.ra = 4;
+//     inst.rb = 4; // SH=4 — shifts out 4 zero bits
+// 
+//     Core::Instruction::SRAWI(*cpu, inst);
+// 
+//     EXPECT_EQ(cpu->m_xer.ca, 0u);
 // }
-//
+// 
 // //
 // // ─────────────────────────────────────────────────────────────────────────────
-// //  STHX — store 0x8000
+// //  SRAWI — SH=0: value unchanged, CA=0
 // // ─────────────────────────────────────────────────────────────────────────────
 // //
-//
-// TEST_F(InstructionTest, STHX_StoreHighHalfBit)
+// 
+// TEST_F(InstructionTest, SRAWI_SH0_NoChange)
 // {
-//     cpu->m_gpr[1] = TEST_ADDR;
-//     cpu->m_gpr[2] = 0;
-//     cpu->m_gpr[4] = 0x00008000;
-//
+//     cpu->m_gpr[3] = 0xDEADBEEF;
+// 
 //     EncodedInstruction inst(0);
-//     inst.rs = 4;
-//     inst.ra = 1;
-//     inst.rb = 2;
-//
-//     Core::Instruction::STHX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint16_t>(TEST_ADDR), 0x8000u);
+//     inst.rt = 3;
+//     inst.ra = 4;
+//     inst.rb = 0; // SH=0
+// 
+//     Core::Instruction::SRAWI(*cpu, inst);
+// 
+//     EXPECT_EQ(cpu->m_gpr[4], 0xDEADBEEFu);
+//     EXPECT_EQ(cpu->m_xer.ca, 0u);
 // }
-//
+// 
 // //
 // // ─────────────────────────────────────────────────────────────────────────────
-// //  STHX — store 0x7FFF
+// //  SRAWI — SH=31: shift fills with sign bit
 // // ─────────────────────────────────────────────────────────────────────────────
 // //
-//
-// TEST_F(InstructionTest, STHX_Store0x7FFF)
+// 
+// TEST_F(InstructionTest, SRAWI_SH31_Negative)
 // {
-//     cpu->m_gpr[1] = TEST_ADDR;
-//     cpu->m_gpr[2] = 2;
-//     cpu->m_gpr[4] = 0x00007FFF;
-//
+//     cpu->m_gpr[3] = 0x80000000; // most-negative
+// 
 //     EncodedInstruction inst(0);
-//     inst.rs = 4;
-//     inst.ra = 1;
-//     inst.rb = 2;
-//
-//     Core::Instruction::STHX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint16_t>(TEST_ADDR + 2), 0x7FFFu);
+//     inst.rt = 3;
+//     inst.ra = 4;
+//     inst.rb = 31; // SH=31
+// 
+//     Core::Instruction::SRAWI(*cpu, inst);
+// 
+//     EXPECT_EQ(cpu->m_gpr[4], 0xFFFFFFFFu);
+//     EXPECT_EQ(cpu->m_xer.ca, 1u);
 // }
-//
+// 
 // //
 // // ─────────────────────────────────────────────────────────────────────────────
-// //  STHX — RA=0: RB provides full address
+// //  SRAWI — SH=31: positive value becomes 0 or 1
 // // ─────────────────────────────────────────────────────────────────────────────
 // //
-//
-// TEST_F(InstructionTest, STHX_RA0_RBProvidesAddress)
+// 
+// TEST_F(InstructionTest, SRAWI_SH31_Positive)
 // {
-//     cpu->m_gpr[0] = 0xDEAD0000; // ignored
-//     cpu->m_gpr[2] = TEST_ADDR;
-//     cpu->m_gpr[4] = 0x0000BEEF;
-//
+//     cpu->m_gpr[3] = 0x7FFFFFFF; // max positive
+// 
 //     EncodedInstruction inst(0);
-//     inst.rs = 4;
-//     inst.ra = 0;
-//     inst.rb = 2;
-//
-//     Core::Instruction::STHX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint16_t>(TEST_ADDR), 0xBEEFu);
+//     inst.rt = 3;
+//     inst.ra = 4;
+//     inst.rb = 31;
+// 
+//     Core::Instruction::SRAWI(*cpu, inst);
+// 
+//     EXPECT_EQ(cpu->m_gpr[4], 0u); // positive >> 31 = 0
+//     EXPECT_EQ(cpu->m_xer.ca, 0u);
 // }
-//
+// 
 // //
 // // ─────────────────────────────────────────────────────────────────────────────
-// //  STHX — RB=0: EA = RA
+// //  SRAWI — RC=1 updates CR0
 // // ─────────────────────────────────────────────────────────────────────────────
 // //
-//
-// TEST_F(InstructionTest, STHX_RB0_EAEqualsRA)
+// 
+// TEST_F(InstructionTest, SRAWI_RC_UpdatesCR0)
 // {
-//     cpu->m_gpr[1] = TEST_ADDR;
-//     cpu->m_gpr[2] = 0;
-//     cpu->m_gpr[4] = 0x00001234;
-//
+//     cpu->m_gpr[3] = 0xFFFFFFFE; // -2
+// 
 //     EncodedInstruction inst(0);
-//     inst.rs = 4;
-//     inst.ra = 1;
-//     inst.rb = 2;
-//
-//     Core::Instruction::STHX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint16_t>(TEST_ADDR), 0x1234u);
+//     inst.rt = 3;
+//     inst.ra = 4;
+//     inst.rb = 1; // SH=1
+//     inst.rc = 1;
+// 
+//     Core::Instruction::SRAWI(*cpu, inst);
+// 
+//     EXPECT_EQ(cpu->m_gpr[4], 0xFFFFFFFFu); // -1
+//     EXPECT_EQ(cpu->m_cr.cr0.lt, 1u);
+//     EXPECT_EQ(cpu->m_cr.cr0.gt, 0u);
+//     EXPECT_EQ(cpu->m_cr.cr0.eq, 0u);
 // }
-//
+// 
 // //
 // // ─────────────────────────────────────────────────────────────────────────────
-// //  STHX — does not update RA
+// //  SRAWI — RS is not modified
 // // ─────────────────────────────────────────────────────────────────────────────
 // //
-//
-// TEST_F(InstructionTest, STHX_DoesNotUpdateRA)
+// 
+// TEST_F(InstructionTest, SRAWI_DoesNotModifyRS)
 // {
-//     cpu->m_gpr[1] = TEST_ADDR;
-//     cpu->m_gpr[2] = 4;
-//     cpu->m_gpr[4] = 0x00005678;
-//
+//     cpu->m_gpr[3] = 0xCAFEBABE;
+// 
 //     EncodedInstruction inst(0);
-//     inst.rs = 4;
-//     inst.ra = 1;
-//     inst.rb = 2;
-//
-//     Core::Instruction::STHX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_gpr[1], TEST_ADDR);
-// }
-//
-// //
-// // ─────────────────────────────────────────────────────────────────────────────
-// //  STHX — different RS, RA, RB registers
-// // ─────────────────────────────────────────────────────────────────────────────
-// //
-//
-// TEST_F(InstructionTest, STHX_DifferentRegisters)
-// {
-//     cpu->m_gpr[5]  = TEST_ADDR;
-//     cpu->m_gpr[6]  = 6;
-//     cpu->m_gpr[10] = 0x0000CAFE;
-//
-//     EncodedInstruction inst(0);
-//     inst.rs = 10;
-//     inst.ra = 5;
-//     inst.rb = 6;
-//
-//     Core::Instruction::STHX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint16_t>(TEST_ADDR + 6), 0xCAFEu);
+//     inst.rt = 3;
+//     inst.ra = 4;
+//     inst.rb = 4;
+// 
+//     Core::Instruction::SRAWI(*cpu, inst);
+// 
+//     EXPECT_EQ(cpu->m_gpr[3], 0xCAFEBABEu);
 // }

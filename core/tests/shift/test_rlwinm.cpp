@@ -2,230 +2,220 @@
 // ** EPITECH PROJECT, 2025
 // ** core
 // ** File description:
-// ** test_sthx
+// ** test_rlwinm
 // */
-//
+// 
 // #include "TestFixture.hpp"
-//
-// static constexpr uint32_t TEST_ADDR = 0x02000200;
-//
-// //
-// // ─────────────────────────────────────────────────────────────────────────────
-// //  STHX — basic store: low 16 bits of RS
-// // ─────────────────────────────────────────────────────────────────────────────
-// //
-//
-// TEST_F(InstructionTest, STHX_BasicStore)
+// 
+// // RLWINM: rA = ROTL32(rS, SH) & MASK(MB, ME)
+// // SH is a 5-bit immediate at inst.rb (C++ bits 11-15).
+// // MB at C++ raw bits [6:10]: inst.raw |= (mb << 6)
+// // ME at C++ raw bits [1:5]:  inst.raw |= (me << 1)
+// 
+// static uint32_t rotl32_i(uint32_t val, uint32_t sh)
 // {
-//     cpu->m_gpr[1] = TEST_ADDR;
-//     cpu->m_gpr[2] = 4;
-//     cpu->m_gpr[4] = 0x0000ABCD;
-//
-//     EncodedInstruction inst(0);
-//     inst.rs = 4;
-//     inst.ra = 1;
-//     inst.rb = 2;
-//
-//     Core::Instruction::STHX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint16_t>(TEST_ADDR + 4), 0xABCDu);
+//     sh &= 31;
+//     return (sh == 0) ? val : ((val << sh) | (val >> (32 - sh)));
 // }
-//
-// //
-// // ─────────────────────────────────────────────────────────────────────────────
-// //  STHX — high bits of RS are ignored
-// // ─────────────────────────────────────────────────────────────────────────────
-// //
-//
-// TEST_F(InstructionTest, STHX_HighBitsOfRSIgnored)
+// 
+// static uint32_t ppcMask_i(uint32_t mb, uint32_t me)
 // {
-//     cpu->m_gpr[1] = TEST_ADDR;
-//     cpu->m_gpr[2] = 0;
-//     cpu->m_gpr[4] = 0xFFFF1234; // high 16 bits must be ignored
-//
-//     EncodedInstruction inst(0);
-//     inst.rs = 4;
-//     inst.ra = 1;
-//     inst.rb = 2;
-//
-//     Core::Instruction::STHX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint16_t>(TEST_ADDR), 0x1234u);
+//     if (mb <= me)
+//         return ((0xFFFFFFFFu >> mb) & (0xFFFFFFFFu << (31 - me)));
+//     return ~ppcMask_i(me + 1, mb - 1);
 // }
-//
+// 
 // //
 // // ─────────────────────────────────────────────────────────────────────────────
-// //  STHX — store 0xFFFF
+// //  RLWINM — basic: rotate by 8 with full mask (logical shift left by 8)
 // // ─────────────────────────────────────────────────────────────────────────────
 // //
-//
-// TEST_F(InstructionTest, STHX_StoreAllOnes)
+// 
+// TEST_F(InstructionTest, RLWINM_BasicRotate)
 // {
-//     cpu->m_gpr[1] = TEST_ADDR;
-//     cpu->m_gpr[2] = 0;
-//     cpu->m_gpr[4] = 0x0000FFFF;
-//
+//     cpu->m_gpr[3] = 0xFF000000;
+// 
 //     EncodedInstruction inst(0);
-//     inst.rs = 4;
-//     inst.ra = 1;
-//     inst.rb = 2;
-//
-//     Core::Instruction::STHX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint16_t>(TEST_ADDR), 0xFFFFu);
+//     inst.rt = 3;
+//     inst.ra = 4;
+//     inst.rb = 8; // SH=8
+//     inst.raw |= (0 << 6) | (31 << 1); // MB=0, ME=31
+// 
+//     Core::Instruction::RLWINM(*cpu, inst);
+// 
+//     EXPECT_EQ(cpu->m_gpr[4], 0x00FF0000u);
 // }
-//
+// 
 // //
 // // ─────────────────────────────────────────────────────────────────────────────
-// //  STHX — store 0x0000
+// //  RLWINM — SH=0: no rotation, only mask applied
 // // ─────────────────────────────────────────────────────────────────────────────
 // //
-//
-// TEST_F(InstructionTest, STHX_StoreZero)
+// 
+// TEST_F(InstructionTest, RLWINM_SH0_JustMask)
 // {
-//     cpu->m_memory.write<uint16_t>(TEST_ADDR, 0xFFFF);
-//     cpu->m_gpr[1] = TEST_ADDR;
-//     cpu->m_gpr[2] = 0;
-//     cpu->m_gpr[4] = 0x00000000;
-//
+//     cpu->m_gpr[3] = 0xFFFFFFFF;
+// 
 //     EncodedInstruction inst(0);
-//     inst.rs = 4;
-//     inst.ra = 1;
-//     inst.rb = 2;
-//
-//     Core::Instruction::STHX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint16_t>(TEST_ADDR), 0u);
+//     inst.rt = 3;
+//     inst.ra = 4;
+//     inst.rb = 0; // SH=0
+//     // MB=8, ME=23 → keep bits [8:23] (middle two bytes)
+//     inst.raw |= (8 << 6) | (23 << 1);
+// 
+//     Core::Instruction::RLWINM(*cpu, inst);
+// 
+//     EXPECT_EQ(cpu->m_gpr[4], ppcMask_i(8, 23));
 // }
-//
+// 
 // //
 // // ─────────────────────────────────────────────────────────────────────────────
-// //  STHX — store 0x8000
+// //  RLWINM — extract high byte: SH=0, MB=0, ME=7
 // // ─────────────────────────────────────────────────────────────────────────────
 // //
-//
-// TEST_F(InstructionTest, STHX_StoreHighHalfBit)
+// 
+// TEST_F(InstructionTest, RLWINM_ExtractHighByte)
 // {
-//     cpu->m_gpr[1] = TEST_ADDR;
-//     cpu->m_gpr[2] = 0;
-//     cpu->m_gpr[4] = 0x00008000;
-//
+//     cpu->m_gpr[3] = 0xABCDEF12;
+// 
 //     EncodedInstruction inst(0);
-//     inst.rs = 4;
-//     inst.ra = 1;
-//     inst.rb = 2;
-//
-//     Core::Instruction::STHX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint16_t>(TEST_ADDR), 0x8000u);
+//     inst.rt = 3;
+//     inst.ra = 4;
+//     inst.rb = 0; // SH=0
+//     inst.raw |= (0 << 6) | (7 << 1); // MB=0, ME=7
+// 
+//     Core::Instruction::RLWINM(*cpu, inst);
+// 
+//     EXPECT_EQ(cpu->m_gpr[4], 0xAB000000u);
 // }
-//
+// 
 // //
 // // ─────────────────────────────────────────────────────────────────────────────
-// //  STHX — store 0x7FFF
+// //  RLWINM — shift left 16 (SH=16, MB=0, ME=15)
 // // ─────────────────────────────────────────────────────────────────────────────
 // //
-//
-// TEST_F(InstructionTest, STHX_Store0x7FFF)
+// 
+// TEST_F(InstructionTest, RLWINM_ShiftLeft16)
 // {
-//     cpu->m_gpr[1] = TEST_ADDR;
-//     cpu->m_gpr[2] = 2;
-//     cpu->m_gpr[4] = 0x00007FFF;
-//
+//     cpu->m_gpr[3] = 0x0000ABCD;
+// 
 //     EncodedInstruction inst(0);
-//     inst.rs = 4;
-//     inst.ra = 1;
-//     inst.rb = 2;
-//
-//     Core::Instruction::STHX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint16_t>(TEST_ADDR + 2), 0x7FFFu);
+//     inst.rt = 3;
+//     inst.ra = 4;
+//     inst.rb = 16; // SH=16
+//     inst.raw |= (0 << 6) | (15 << 1); // MB=0, ME=15
+// 
+//     Core::Instruction::RLWINM(*cpu, inst);
+// 
+//     EXPECT_EQ(cpu->m_gpr[4], 0xABCD0000u);
 // }
-//
+// 
 // //
 // // ─────────────────────────────────────────────────────────────────────────────
-// //  STHX — RA=0: RB provides full address
+// //  RLWINM — SH=31: rotate right by 1 equivalent
 // // ─────────────────────────────────────────────────────────────────────────────
 // //
-//
-// TEST_F(InstructionTest, STHX_RA0_RBProvidesAddress)
+// 
+// TEST_F(InstructionTest, RLWINM_SH31_RotateRight1)
 // {
-//     cpu->m_gpr[0] = 0xDEAD0000; // ignored
-//     cpu->m_gpr[2] = TEST_ADDR;
-//     cpu->m_gpr[4] = 0x0000BEEF;
-//
+//     cpu->m_gpr[3] = 0x00000001;
+// 
 //     EncodedInstruction inst(0);
-//     inst.rs = 4;
-//     inst.ra = 0;
-//     inst.rb = 2;
-//
-//     Core::Instruction::STHX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint16_t>(TEST_ADDR), 0xBEEFu);
+//     inst.rt = 3;
+//     inst.ra = 4;
+//     inst.rb = 31; // SH=31 → rotl by 31 = rotr by 1
+//     inst.raw |= (0 << 6) | (31 << 1); // full mask
+// 
+//     Core::Instruction::RLWINM(*cpu, inst);
+// 
+//     EXPECT_EQ(cpu->m_gpr[4], 0x80000000u);
 // }
-//
+// 
 // //
 // // ─────────────────────────────────────────────────────────────────────────────
-// //  STHX — RB=0: EA = RA
+// //  RLWINM — shift right 16 logical (SH=16, MB=16, ME=31)
 // // ─────────────────────────────────────────────────────────────────────────────
 // //
-//
-// TEST_F(InstructionTest, STHX_RB0_EAEqualsRA)
+// 
+// TEST_F(InstructionTest, RLWINM_ShiftRight16_Logical)
 // {
-//     cpu->m_gpr[1] = TEST_ADDR;
-//     cpu->m_gpr[2] = 0;
-//     cpu->m_gpr[4] = 0x00001234;
-//
+//     cpu->m_gpr[3] = 0xABCD0000;
+// 
 //     EncodedInstruction inst(0);
-//     inst.rs = 4;
-//     inst.ra = 1;
-//     inst.rb = 2;
-//
-//     Core::Instruction::STHX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint16_t>(TEST_ADDR), 0x1234u);
+//     inst.rt = 3;
+//     inst.ra = 4;
+//     inst.rb = 16; // SH=16
+//     // After rotl by 16: 0x0000ABCD; MB=16, ME=31 keeps low 16 bits
+//     inst.raw |= (16 << 6) | (31 << 1);
+// 
+//     Core::Instruction::RLWINM(*cpu, inst);
+// 
+//     EXPECT_EQ(cpu->m_gpr[4], 0x0000ABCDu);
 // }
-//
+// 
 // //
 // // ─────────────────────────────────────────────────────────────────────────────
-// //  STHX — does not update RA
+// //  RLWINM — full mask (MB=0, ME=31): result equals pure rotation
 // // ─────────────────────────────────────────────────────────────────────────────
 // //
-//
-// TEST_F(InstructionTest, STHX_DoesNotUpdateRA)
+// 
+// TEST_F(InstructionTest, RLWINM_FullMask_PureRotation)
 // {
-//     cpu->m_gpr[1] = TEST_ADDR;
-//     cpu->m_gpr[2] = 4;
-//     cpu->m_gpr[4] = 0x00005678;
-//
+//     cpu->m_gpr[3] = 0x12345678;
+// 
 //     EncodedInstruction inst(0);
-//     inst.rs = 4;
-//     inst.ra = 1;
-//     inst.rb = 2;
-//
-//     Core::Instruction::STHX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_gpr[1], TEST_ADDR);
+//     inst.rt = 3;
+//     inst.ra = 4;
+//     inst.rb = 12; // SH=12
+//     inst.raw |= (0 << 6) | (31 << 1);
+// 
+//     Core::Instruction::RLWINM(*cpu, inst);
+// 
+//     EXPECT_EQ(cpu->m_gpr[4], rotl32_i(0x12345678, 12));
 // }
-//
+// 
 // //
 // // ─────────────────────────────────────────────────────────────────────────────
-// //  STHX — different RS, RA, RB registers
+// //  RLWINM — RC=1 updates CR0
 // // ─────────────────────────────────────────────────────────────────────────────
 // //
-//
-// TEST_F(InstructionTest, STHX_DifferentRegisters)
+// 
+// TEST_F(InstructionTest, RLWINM_RC_UpdatesCR0_Zero)
 // {
-//     cpu->m_gpr[5]  = TEST_ADDR;
-//     cpu->m_gpr[6]  = 6;
-//     cpu->m_gpr[10] = 0x0000CAFE;
-//
+//     cpu->m_gpr[3] = 0x00000000;
+// 
 //     EncodedInstruction inst(0);
-//     inst.rs = 10;
-//     inst.ra = 5;
-//     inst.rb = 6;
-//
-//     Core::Instruction::STHX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint16_t>(TEST_ADDR + 6), 0xCAFEu);
+//     inst.rt = 3;
+//     inst.ra = 4;
+//     inst.rb = 4;
+//     inst.raw |= (0 << 6) | (31 << 1);
+//     inst.rc = 1;
+// 
+//     Core::Instruction::RLWINM(*cpu, inst);
+// 
+//     EXPECT_EQ(cpu->m_gpr[4], 0u);
+//     EXPECT_EQ(cpu->m_cr.cr0.eq, 1u);
+//     EXPECT_EQ(cpu->m_cr.cr0.lt, 0u);
+//     EXPECT_EQ(cpu->m_cr.cr0.gt, 0u);
+// }
+// 
+// //
+// // ─────────────────────────────────────────────────────────────────────────────
+// //  RLWINM — RS is not modified
+// // ─────────────────────────────────────────────────────────────────────────────
+// //
+// 
+// TEST_F(InstructionTest, RLWINM_DoesNotModifyRS)
+// {
+//     cpu->m_gpr[3] = 0xDEADBEEF;
+// 
+//     EncodedInstruction inst(0);
+//     inst.rt = 3;
+//     inst.ra = 4;
+//     inst.rb = 8;
+//     inst.raw |= (0 << 6) | (31 << 1);
+// 
+//     Core::Instruction::RLWINM(*cpu, inst);
+// 
+//     EXPECT_EQ(cpu->m_gpr[3], 0xDEADBEEFu);
 // }

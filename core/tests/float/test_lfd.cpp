@@ -2,246 +2,237 @@
 // ** EPITECH PROJECT, 2025
 // ** core
 // ** File description:
-// ** test_stmw
+// ** test_lfd
 // */
-//
+// 
 // #include "TestFixture.hpp"
-//
+// #include <cstring>
+// 
 // static constexpr uint32_t TEST_ADDR = 0x02000200;
-//
-// //
-// // ─────────────────────────────────────────────────────────────────────────────
-// //  STMW — store single register (RS=31)
-// // ─────────────────────────────────────────────────────────────────────────────
-// //
-//
-// TEST_F(InstructionTest, STMW_SingleRegister)
+// 
+// // LFD: FRT = double loaded from EA (64-bit IEEE 754).
+// // EA = (RA|0) + EXTS(D). RA=0 means base is 0 (not r0).
+// // Note: m_fpr is float[], so LFD stores the value at float precision.
+// // Fields: inst.rt=FRT, inst.ra=RA, inst.si=D
+// 
+// static void writeDouble(Core::Interpreter *cpu, uint32_t addr, float val)
 // {
-//     cpu->m_gpr[1]  = TEST_ADDR;
-//     cpu->m_gpr[31] = 0xDEADBEEF;
-//
+//     // Write a float value as 8 bytes (double representation) for LFD
+//     // For testing purposes, we write a value that is exactly representable
+//     // in both float and double to keep assertions simple.
+//     uint32_t hi, lo;
+//     // Convert float → double bit pattern and write high/low 32-bit words
+//     double d = static_cast<double>(val);
+//     uint64_t bits;
+//     std::memcpy(&bits, &d, sizeof(bits));
+//     hi = static_cast<uint32_t>(bits >> 32);
+//     lo = static_cast<uint32_t>(bits & 0xFFFFFFFF);
+//     cpu->m_memory.write<uint32_t>(addr,     hi);
+//     cpu->m_memory.write<uint32_t>(addr + 4, lo);
+// }
+// 
+// //
+// // ─────────────────────────────────────────────────────────────────────────────
+// //  LFD — basic load of 1.0
+// // ─────────────────────────────────────────────────────────────────────────────
+// //
+// 
+// TEST_F(InstructionTest, LFD_BasicLoad_One)
+// {
+//     writeDouble(cpu, TEST_ADDR, 1.0f);
+//     cpu->m_gpr[1] = TEST_ADDR;
+// 
 //     EncodedInstruction inst(0);
-//     inst.rs = 31;
+//     inst.rt = 4;
 //     inst.ra = 1;
 //     inst.si = 0;
-//
-//     Core::Instruction::STMW(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR), 0xDEADBEEFu);
+// 
+//     Core::Instruction::LFD(*cpu, inst);
+// 
+//     EXPECT_FLOAT_EQ(cpu->m_fpr[4], 1.0f);
 // }
-//
+// 
 // //
 // // ─────────────────────────────────────────────────────────────────────────────
-// //  STMW — store 2 registers (RS=30): r30, r31
+// //  LFD — load -1.0
 // // ─────────────────────────────────────────────────────────────────────────────
 // //
-//
-// TEST_F(InstructionTest, STMW_TwoRegisters)
+// 
+// TEST_F(InstructionTest, LFD_LoadNegativeOne)
 // {
-//     cpu->m_gpr[1]  = TEST_ADDR;
-//     cpu->m_gpr[30] = 0x11111111;
-//     cpu->m_gpr[31] = 0x22222222;
-//
+//     writeDouble(cpu, TEST_ADDR, -1.0f);
+//     cpu->m_gpr[1] = TEST_ADDR;
+// 
 //     EncodedInstruction inst(0);
-//     inst.rs = 30;
+//     inst.rt = 4;
 //     inst.ra = 1;
 //     inst.si = 0;
-//
-//     Core::Instruction::STMW(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR),     0x11111111u);
-//     EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR + 4), 0x22222222u);
+// 
+//     Core::Instruction::LFD(*cpu, inst);
+// 
+//     EXPECT_FLOAT_EQ(cpu->m_fpr[4], -1.0f);
 // }
-//
+// 
 // //
 // // ─────────────────────────────────────────────────────────────────────────────
-// //  STMW — store 4 registers (RS=28): r28..r31
+// //  LFD — load 0.0
 // // ─────────────────────────────────────────────────────────────────────────────
 // //
-//
-// TEST_F(InstructionTest, STMW_FourRegisters)
+// 
+// TEST_F(InstructionTest, LFD_LoadZero)
 // {
-//     cpu->m_gpr[1]  = TEST_ADDR;
-//     cpu->m_gpr[28] = 0xAAAAAAAA;
-//     cpu->m_gpr[29] = 0xBBBBBBBB;
-//     cpu->m_gpr[30] = 0xCCCCCCCC;
-//     cpu->m_gpr[31] = 0xDDDDDDDD;
-//
+//     writeDouble(cpu, TEST_ADDR, 0.0f);
+//     cpu->m_gpr[1] = TEST_ADDR;
+// 
 //     EncodedInstruction inst(0);
-//     inst.rs = 28;
+//     inst.rt = 4;
 //     inst.ra = 1;
 //     inst.si = 0;
-//
-//     Core::Instruction::STMW(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR),      0xAAAAAAAAu);
-//     EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR + 4),  0xBBBBBBBBu);
-//     EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR + 8),  0xCCCCCCCCu);
-//     EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR + 12), 0xDDDDDDDDu);
+// 
+//     Core::Instruction::LFD(*cpu, inst);
+// 
+//     EXPECT_FLOAT_EQ(cpu->m_fpr[4], 0.0f);
 // }
-//
+// 
 // //
 // // ─────────────────────────────────────────────────────────────────────────────
-// //  STMW — registers stored in sequential order (RS, RS+1, ..., r31)
+// //  LFD — positive displacement
 // // ─────────────────────────────────────────────────────────────────────────────
 // //
-//
-// TEST_F(InstructionTest, STMW_SequentialOrder)
+// 
+// TEST_F(InstructionTest, LFD_PositiveDisplacement)
 // {
-//     cpu->m_gpr[1]  = TEST_ADDR;
-//     cpu->m_gpr[28] = 0x10000000;
-//     cpu->m_gpr[29] = 0x20000000;
-//     cpu->m_gpr[30] = 0x30000000;
-//     cpu->m_gpr[31] = 0x40000000;
-//
+//     writeDouble(cpu, TEST_ADDR + 8, 2.0f);
+//     cpu->m_gpr[1] = TEST_ADDR;
+// 
 //     EncodedInstruction inst(0);
-//     inst.rs = 28;
-//     inst.ra = 1;
-//     inst.si = 0;
-//
-//     Core::Instruction::STMW(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR),      0x10000000u);
-//     EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR + 4),  0x20000000u);
-//     EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR + 8),  0x30000000u);
-//     EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR + 12), 0x40000000u);
-// }
-//
-// //
-// // ─────────────────────────────────────────────────────────────────────────────
-// //  STMW — positive displacement
-// // ─────────────────────────────────────────────────────────────────────────────
-// //
-//
-// TEST_F(InstructionTest, STMW_PositiveDisplacement)
-// {
-//     cpu->m_gpr[1]  = TEST_ADDR;
-//     cpu->m_gpr[30] = 0xFEEDFACE;
-//     cpu->m_gpr[31] = 0xC0FFEE00;
-//
-//     EncodedInstruction inst(0);
-//     inst.rs = 30;
+//     inst.rt = 4;
 //     inst.ra = 1;
 //     inst.si = 8;
-//
-//     Core::Instruction::STMW(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR + 8),  0xFEEDFACEu);
-//     EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR + 12), 0xC0FFEE00u);
+// 
+//     Core::Instruction::LFD(*cpu, inst);
+// 
+//     EXPECT_FLOAT_EQ(cpu->m_fpr[4], 2.0f);
 // }
-//
+// 
 // //
 // // ─────────────────────────────────────────────────────────────────────────────
-// //  STMW — negative displacement
+// //  LFD — RA=0 uses 0 as base → exception
 // // ─────────────────────────────────────────────────────────────────────────────
 // //
-//
-// TEST_F(InstructionTest, STMW_NegativeDisplacement)
+// 
+// TEST_F(InstructionTest, LFD_RA0_Uses0NotR0)
 // {
-//     cpu->m_gpr[1]  = TEST_ADDR + 8;
-//     cpu->m_gpr[30] = 0x12345678;
-//     cpu->m_gpr[31] = 0x9ABCDEF0;
-//
+//     cpu->m_gpr[0] = TEST_ADDR; // r0 must be ignored
+// 
 //     EncodedInstruction inst(0);
-//     inst.rs = 30;
-//     inst.ra = 1;
-//     inst.si = static_cast<uint16_t>(static_cast<int16_t>(-8));
-//
-//     Core::Instruction::STMW(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR),     0x12345678u);
-//     EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR + 4), 0x9ABCDEF0u);
-// }
-//
-// //
-// // ─────────────────────────────────────────────────────────────────────────────
-// //  STMW — RA=0 uses 0 as base
-// // ─────────────────────────────────────────────────────────────────────────────
-// //
-//
-// TEST_F(InstructionTest, STMW_RA0_Uses0AsBase)
-// {
-//     cpu->m_gpr[0]  = TEST_ADDR; // r0 ignored
-//     cpu->m_gpr[31] = 0x55555555;
-//
-//     EncodedInstruction inst(0);
-//     inst.rs = 31;
+//     inst.rt = 4;
 //     inst.ra = 0;
 //     inst.si = 0;
-//
-//     Core::Instruction::STMW(*cpu, inst);
-//
-//     // EA = 0 → unmapped, TEST_ADDR untouched
-//     EXPECT_NE(cpu->m_memory.read<uint32_t>(TEST_ADDR), 0x55555555u);
+// 
+//     EXPECT_THROW(Core::Instruction::LFD(*cpu, inst), Core::MemoryException);
 // }
-//
+// 
 // //
 // // ─────────────────────────────────────────────────────────────────────────────
-// //  STMW — store zeros
+// //  LFD — does not update RA
 // // ─────────────────────────────────────────────────────────────────────────────
 // //
-//
-// TEST_F(InstructionTest, STMW_StoreZeros)
+// 
+// TEST_F(InstructionTest, LFD_DoesNotUpdateRA)
 // {
-//     cpu->m_memory.write<uint32_t>(TEST_ADDR,     0xFFFFFFFF);
-//     cpu->m_memory.write<uint32_t>(TEST_ADDR + 4, 0xFFFFFFFF);
-//     cpu->m_gpr[1]  = TEST_ADDR;
-//     cpu->m_gpr[30] = 0;
-//     cpu->m_gpr[31] = 0;
-//
+//     writeDouble(cpu, TEST_ADDR, 1.0f);
+//     cpu->m_gpr[1] = TEST_ADDR;
+// 
 //     EncodedInstruction inst(0);
-//     inst.rs = 30;
+//     inst.rt = 4;
 //     inst.ra = 1;
 //     inst.si = 0;
-//
-//     Core::Instruction::STMW(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR),     0u);
-//     EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR + 4), 0u);
+// 
+//     Core::Instruction::LFD(*cpu, inst);
+// 
+//     EXPECT_EQ(cpu->m_gpr[1], TEST_ADDR);
 // }
-//
+// 
 // //
 // // ─────────────────────────────────────────────────────────────────────────────
-// //  STMW — 3 registers (RS=29)
+// //  LFD — load -2.5
 // // ─────────────────────────────────────────────────────────────────────────────
 // //
-//
-// TEST_F(InstructionTest, STMW_ThreeRegisters)
+// 
+// TEST_F(InstructionTest, LFD_LoadNegative)
 // {
-//     cpu->m_gpr[1]  = TEST_ADDR;
-//     cpu->m_gpr[29] = 0x0A0B0C0D;
-//     cpu->m_gpr[30] = 0x1A1B1C1D;
-//     cpu->m_gpr[31] = 0x2A2B2C2D;
-//
+//     writeDouble(cpu, TEST_ADDR, -2.5f);
+//     cpu->m_gpr[1] = TEST_ADDR;
+// 
 //     EncodedInstruction inst(0);
-//     inst.rs = 29;
+//     inst.rt = 4;
 //     inst.ra = 1;
 //     inst.si = 0;
-//
-//     Core::Instruction::STMW(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR),     0x0A0B0C0Du);
-//     EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR + 4), 0x1A1B1C1Du);
-//     EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR + 8), 0x2A2B2C2Du);
+// 
+//     Core::Instruction::LFD(*cpu, inst);
+// 
+//     EXPECT_FLOAT_EQ(cpu->m_fpr[4], -2.5f);
 // }
-//
+// 
 // //
 // // ─────────────────────────────────────────────────────────────────────────────
-// //  STMW — does not update RA
+// //  LFD — FRT=f0 is allowed
 // // ─────────────────────────────────────────────────────────────────────────────
 // //
-//
-// TEST_F(InstructionTest, STMW_DoesNotUpdateRA)
+// 
+// TEST_F(InstructionTest, LFD_FRT0_Allowed)
 // {
-//     cpu->m_gpr[2]  = TEST_ADDR;
-//     cpu->m_gpr[31] = 0x77777777;
-//
+//     writeDouble(cpu, TEST_ADDR, 2.0f);
+//     cpu->m_gpr[1] = TEST_ADDR;
+// 
 //     EncodedInstruction inst(0);
-//     inst.rs = 31;
-//     inst.ra = 2;
+//     inst.rt = 0;
+//     inst.ra = 1;
 //     inst.si = 0;
-//
-//     Core::Instruction::STMW(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_gpr[2], TEST_ADDR);
+// 
+//     Core::Instruction::LFD(*cpu, inst);
+// 
+//     EXPECT_FLOAT_EQ(cpu->m_fpr[0], 2.0f);
+// }
+// 
+// //
+// // ─────────────────────────────────────────────────────────────────────────────
+// //  LFD — maximum positive displacement (0x7FF8, 8-byte aligned): no throw
+// // ─────────────────────────────────────────────────────────────────────────────
+// //
+// 
+// TEST_F(InstructionTest, LFD_MaxPositiveSI)
+// {
+//     writeDouble(cpu, TEST_ADDR + 0x7FF8, 1.0f);
+//     cpu->m_gpr[1] = TEST_ADDR;
+// 
+//     EncodedInstruction inst(0);
+//     inst.rt = 5;
+//     inst.ra = 1;
+//     inst.si = 0x7FF8; // largest 8-byte-aligned positive displacement
+// 
+//     EXPECT_NO_THROW(Core::Instruction::LFD(*cpu, inst));
+//     EXPECT_FLOAT_EQ(cpu->m_fpr[5], 1.0f);
+// }
+// 
+// //
+// // ─────────────────────────────────────────────────────────────────────────────
+// //  LFD — negative displacement
+// // ─────────────────────────────────────────────────────────────────────────────
+// //
+// 
+// TEST_F(InstructionTest, LFD_NegativeDisplacement)
+// {
+//     writeDouble(cpu, TEST_ADDR, 3.0f);
+//     cpu->m_gpr[1] = TEST_ADDR + 16;
+// 
+//     EncodedInstruction inst(0);
+//     inst.rt = 4;
+//     inst.ra = 1;
+//     inst.si = static_cast<uint16_t>(static_cast<int16_t>(-16));
+// 
+//     Core::Instruction::LFD(*cpu, inst);
+// 
+//     EXPECT_FLOAT_EQ(cpu->m_fpr[4], 3.0f);
 // }
