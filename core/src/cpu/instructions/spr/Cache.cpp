@@ -17,7 +17,7 @@ namespace Core::Instruction {
      * @param cpu   Interpreter state.
      * @param instr Encoded instruction (no significant fields).
      */
-    void SYNC(Interpreter &cpu, const EncodedInstruction &instr) {}
+    void SYNC(Interpreter &cpu, const EncodedInstruction &instr) {} // TODO
 
     /**
      * @brief Enforce In-Order Execution of I/O.
@@ -26,7 +26,7 @@ namespace Core::Instruction {
      * @param cpu   Interpreter state.
      * @param instr Encoded instruction (no significant fields).
      */
-    void EIEIO(Interpreter &cpu, const EncodedInstruction &instr) {}
+    void EIEIO(Interpreter &cpu, const EncodedInstruction &instr) {} // TODO
 
     /**
      * @brief Data Cache Block Store.
@@ -35,7 +35,7 @@ namespace Core::Instruction {
      * @param cpu   Interpreter state.
      * @param instr Encoded instruction (fields: ra, rb).
      */
-    void DCBST(Interpreter &cpu, const EncodedInstruction &instr) {}
+    void DCBST(Interpreter &cpu, const EncodedInstruction &instr) {} // TODO
 
     /**
      * @brief Data Cache Block Flush.
@@ -44,7 +44,7 @@ namespace Core::Instruction {
      * @param cpu   Interpreter state.
      * @param instr Encoded instruction (fields: ra, rb).
      */
-    void DCBF(Interpreter &cpu, const EncodedInstruction &instr) {}
+    void DCBF(Interpreter &cpu, const EncodedInstruction &instr) {} // TODO
 
     /**
      * @brief Data Cache Block Touch.
@@ -53,7 +53,7 @@ namespace Core::Instruction {
      * @param cpu   Interpreter state.
      * @param instr Encoded instruction (fields: ra, rb).
      */
-    void DCBT(Interpreter &cpu, const EncodedInstruction &instr) {}
+    void DCBT(Interpreter &cpu, const EncodedInstruction &instr) {} // TODO
 
     /**
      * @brief Instruction Cache Block Invalidate.
@@ -62,6 +62,6 @@ namespace Core::Instruction {
      * @param cpu   Interpreter state.
      * @param instr Encoded instruction (fields: ra, rb).
      */
-    void ICBI(Interpreter &cpu, const EncodedInstruction &instr) {}
+    void ICBI(Interpreter &cpu, const EncodedInstruction &instr) {} // TODO
 
 } // namespace Core::Instruction
