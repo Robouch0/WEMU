@@ -48,6 +48,7 @@ TEST_F(InstructionTest, LWZX_RA0_Uses0NotR0)
     inst.ra = 0;
     inst.rb = 2;
 
+    // EA = 0, which is unmapped → DSI exception
     EXPECT_THROW(Core::Instruction::LWZX(*cpu, inst), Core::MemoryException);
 }
 
