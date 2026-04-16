@@ -129,9 +129,7 @@ TEST_F(InstructionTest, LHZ_RA0_Uses0AsBase)
     inst.ra = 0;
     inst.si = 0;
 
-    Core::Instruction::LHZ(*cpu, inst);
-
-    EXPECT_EQ(cpu->m_gpr[4], 0u); // unmapped
+    EXPECT_THROW(Core::Instruction::LHZ(*cpu, inst), Core::MemoryException);
 }
 
 //
