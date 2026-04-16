@@ -2,231 +2,233 @@
 // ** EPITECH PROJECT, 2025
 // ** core
 // ** File description:
-// ** test_stwx
+// ** test_stfd
 // */
-//
+// 
 // #include "TestFixture.hpp"
-//
+// #include <cstring>
+// 
 // static constexpr uint32_t TEST_ADDR = 0x02000200;
-//
-// //
-// // ─────────────────────────────────────────────────────────────────────────────
-// //  STWX — basic: EA = RA + RB
-// // ─────────────────────────────────────────────────────────────────────────────
-// //
-//
-// TEST_F(InstructionTest, STWX_BasicStore)
+// 
+// // STFD: stores FRS as 64-bit double to EA.
+// // EA = (RA|0) + EXTS(D). RA=0 means base is 0.
+// // Note: m_fpr is float[], so STFD promotes float to double before storing.
+// // Fields: inst.rt=FRS, inst.ra=RA, inst.si=D
+// 
+// static float readDoubleAsFloat(Core::Interpreter *cpu, uint32_t addr)
 // {
-//     cpu->m_gpr[1] = TEST_ADDR;
-//     cpu->m_gpr[2] = 8;
-//     cpu->m_gpr[4] = 0xDEADBEEF;
-//
-//     EncodedInstruction inst(0);
-//     inst.rs = 4;
-//     inst.ra = 1;
-//     inst.rb = 2;
-//
-//     Core::Instruction::STWX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR + 8), 0xDEADBEEFu);
+//     // Read the 8-byte double and convert back to float for comparison
+//     uint32_t hi = cpu->m_memory.read<uint32_t>(addr);
+//     uint32_t lo = cpu->m_memory.read<uint32_t>(addr + 4);
+//     uint64_t bits = (static_cast<uint64_t>(hi) << 32) | lo;
+//     double d;
+//     std::memcpy(&d, &bits, sizeof(d));
+//     return static_cast<float>(d);
 // }
-//
+// 
 // //
 // // ─────────────────────────────────────────────────────────────────────────────
-// //  STWX — RA=0 uses 0 as base, not r0
+// //  STFD — basic store of 1.0
 // // ─────────────────────────────────────────────────────────────────────────────
 // //
-//
-// TEST_F(InstructionTest, STWX_RA0_Uses0NotR0)
+// 
+// TEST_F(InstructionTest, STFD_BasicStore_One)
 // {
-//     cpu->m_gpr[0] = TEST_ADDR; // r0 ignored
-//     cpu->m_gpr[2] = 0;         // RB=0 → EA = 0
-//     cpu->m_gpr[4] = 0x12345678;
-//
+//     cpu->m_fpr[4] = 1.0f;
+//     cpu->m_gpr[1] = TEST_ADDR;
+// 
 //     EncodedInstruction inst(0);
-//     inst.rs = 4;
+//     inst.rt = 4;
+//     inst.ra = 1;
+//     inst.si = 0;
+// 
+//     Core::Instruction::STFD(*cpu, inst);
+// 
+//     EXPECT_FLOAT_EQ(readDoubleAsFloat(cpu, TEST_ADDR), 1.0f);
+// }
+// 
+// //
+// // ─────────────────────────────────────────────────────────────────────────────
+// //  STFD — store -1.0
+// // ─────────────────────────────────────────────────────────────────────────────
+// //
+// 
+// TEST_F(InstructionTest, STFD_StoreNegativeOne)
+// {
+//     cpu->m_fpr[4] = -1.0f;
+//     cpu->m_gpr[1] = TEST_ADDR;
+// 
+//     EncodedInstruction inst(0);
+//     inst.rt = 4;
+//     inst.ra = 1;
+//     inst.si = 0;
+// 
+//     Core::Instruction::STFD(*cpu, inst);
+// 
+//     EXPECT_FLOAT_EQ(readDoubleAsFloat(cpu, TEST_ADDR), -1.0f);
+// }
+// 
+// //
+// // ─────────────────────────────────────────────────────────────────────────────
+// //  STFD — store 0.0
+// // ─────────────────────────────────────────────────────────────────────────────
+// //
+// 
+// TEST_F(InstructionTest, STFD_StoreZero)
+// {
+//     cpu->m_fpr[4] = 0.0f;
+//     cpu->m_gpr[1] = TEST_ADDR;
+// 
+//     EncodedInstruction inst(0);
+//     inst.rt = 4;
+//     inst.ra = 1;
+//     inst.si = 0;
+// 
+//     Core::Instruction::STFD(*cpu, inst);
+// 
+//     EXPECT_FLOAT_EQ(readDoubleAsFloat(cpu, TEST_ADDR), 0.0f);
+// }
+// 
+// //
+// // ─────────────────────────────────────────────────────────────────────────────
+// //  STFD — positive displacement
+// // ─────────────────────────────────────────────────────────────────────────────
+// //
+// 
+// TEST_F(InstructionTest, STFD_PositiveDisplacement)
+// {
+//     cpu->m_fpr[4] = 2.5f;
+//     cpu->m_gpr[1] = TEST_ADDR;
+// 
+//     EncodedInstruction inst(0);
+//     inst.rt = 4;
+//     inst.ra = 1;
+//     inst.si = 8;
+// 
+//     Core::Instruction::STFD(*cpu, inst);
+// 
+//     EXPECT_FLOAT_EQ(readDoubleAsFloat(cpu, TEST_ADDR + 8), 2.5f);
+// }
+// 
+// //
+// // ─────────────────────────────────────────────────────────────────────────────
+// //  STFD — RA=0 uses 0 as base → exception
+// // ─────────────────────────────────────────────────────────────────────────────
+// //
+// 
+// TEST_F(InstructionTest, STFD_RA0_Uses0NotR0)
+// {
+//     cpu->m_fpr[4] = 1.0f;
+//     cpu->m_gpr[0] = TEST_ADDR;
+// 
+//     EncodedInstruction inst(0);
+//     inst.rt = 4;
 //     inst.ra = 0;
-//     inst.rb = 2;
-//
-//     Core::Instruction::STWX(*cpu, inst);
-//
-//     // EA = 0 → unmapped, nothing written to TEST_ADDR
-//     EXPECT_NE(cpu->m_memory.read<uint32_t>(TEST_ADDR), 0x12345678u);
+//     inst.si = 0;
+// 
+//     EXPECT_THROW(Core::Instruction::STFD(*cpu, inst), Core::MemoryException);
 // }
-//
+// 
 // //
 // // ─────────────────────────────────────────────────────────────────────────────
-// //  STWX — RA=0: RB provides full address
+// //  STFD — does not update RA
 // // ─────────────────────────────────────────────────────────────────────────────
 // //
-//
-// TEST_F(InstructionTest, STWX_RA0_RBProvidesAddress)
+// 
+// TEST_F(InstructionTest, STFD_DoesNotUpdateRA)
 // {
-//     cpu->m_gpr[0] = 0xDEAD0000; // r0 ignored
-//     cpu->m_gpr[2] = TEST_ADDR;
-//     cpu->m_gpr[4] = 0xCAFEBABE;
-//
-//     EncodedInstruction inst(0);
-//     inst.rs = 4;
-//     inst.ra = 0;
-//     inst.rb = 2;
-//
-//     Core::Instruction::STWX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR), 0xCAFEBABEu);
-// }
-//
-// //
-// // ─────────────────────────────────────────────────────────────────────────────
-// //  STWX — RB=0: EA = RA
-// // ─────────────────────────────────────────────────────────────────────────────
-// //
-//
-// TEST_F(InstructionTest, STWX_RB0_EAEqualsRA)
-// {
+//     cpu->m_fpr[4] = 1.0f;
 //     cpu->m_gpr[1] = TEST_ADDR;
-//     cpu->m_gpr[2] = 0;
-//     cpu->m_gpr[4] = 0xABCD1234;
-//
+// 
 //     EncodedInstruction inst(0);
-//     inst.rs = 4;
+//     inst.rt = 4;
 //     inst.ra = 1;
-//     inst.rb = 2;
-//
-//     Core::Instruction::STWX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR), 0xABCD1234u);
-// }
-//
-// //
-// // ─────────────────────────────────────────────────────────────────────────────
-// //  STWX — store 0xFFFFFFFF
-// // ─────────────────────────────────────────────────────────────────────────────
-// //
-//
-// TEST_F(InstructionTest, STWX_StoreAllOnes)
-// {
-//     cpu->m_gpr[1] = TEST_ADDR;
-//     cpu->m_gpr[2] = 4;
-//     cpu->m_gpr[4] = 0xFFFFFFFF;
-//
-//     EncodedInstruction inst(0);
-//     inst.rs = 4;
-//     inst.ra = 1;
-//     inst.rb = 2;
-//
-//     Core::Instruction::STWX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR + 4), 0xFFFFFFFFu);
-// }
-//
-// //
-// // ─────────────────────────────────────────────────────────────────────────────
-// //  STWX — store 0x80000000
-// // ─────────────────────────────────────────────────────────────────────────────
-// //
-//
-// TEST_F(InstructionTest, STWX_StoreHighBit)
-// {
-//     cpu->m_gpr[1] = TEST_ADDR;
-//     cpu->m_gpr[2] = 0;
-//     cpu->m_gpr[4] = 0x80000000;
-//
-//     EncodedInstruction inst(0);
-//     inst.rs = 4;
-//     inst.ra = 1;
-//     inst.rb = 2;
-//
-//     Core::Instruction::STWX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR), 0x80000000u);
-// }
-//
-// //
-// // ─────────────────────────────────────────────────────────────────────────────
-// //  STWX — store zero
-// // ─────────────────────────────────────────────────────────────────────────────
-// //
-//
-// TEST_F(InstructionTest, STWX_StoreZero)
-// {
-//     cpu->m_memory.write<uint32_t>(TEST_ADDR, 0xFFFFFFFF);
-//     cpu->m_gpr[1] = TEST_ADDR;
-//     cpu->m_gpr[2] = 0;
-//     cpu->m_gpr[4] = 0x00000000;
-//
-//     EncodedInstruction inst(0);
-//     inst.rs = 4;
-//     inst.ra = 1;
-//     inst.rb = 2;
-//
-//     Core::Instruction::STWX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR), 0u);
-// }
-//
-// //
-// // ─────────────────────────────────────────────────────────────────────────────
-// //  STWX — does not update RA
-// // ─────────────────────────────────────────────────────────────────────────────
-// //
-//
-// TEST_F(InstructionTest, STWX_DoesNotUpdateRA)
-// {
-//     cpu->m_gpr[1] = TEST_ADDR;
-//     cpu->m_gpr[2] = 4;
-//     cpu->m_gpr[4] = 0x11223344;
-//
-//     EncodedInstruction inst(0);
-//     inst.rs = 4;
-//     inst.ra = 1;
-//     inst.rb = 2;
-//
-//     Core::Instruction::STWX(*cpu, inst);
-//
+//     inst.si = 0;
+// 
+//     Core::Instruction::STFD(*cpu, inst);
+// 
 //     EXPECT_EQ(cpu->m_gpr[1], TEST_ADDR);
 // }
-//
+// 
 // //
 // // ─────────────────────────────────────────────────────────────────────────────
-// //  STWX — different RS, RA, RB registers
+// //  STFD — FPR source is not modified
 // // ─────────────────────────────────────────────────────────────────────────────
 // //
-//
-// TEST_F(InstructionTest, STWX_DifferentRegisters)
+// 
+// TEST_F(InstructionTest, STFD_DoesNotModifyFPR)
 // {
-//     cpu->m_gpr[5] = TEST_ADDR;
-//     cpu->m_gpr[6] = 8;
-//     cpu->m_gpr[10] = 0x55443322;
-//
-//     EncodedInstruction inst(0);
-//     inst.rs = 10;
-//     inst.ra = 5;
-//     inst.rb = 6;
-//
-//     Core::Instruction::STWX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR + 8), 0x55443322u);
-// }
-//
-// //
-// // ─────────────────────────────────────────────────────────────────────────────
-// //  STWX — large RB offset
-// // ─────────────────────────────────────────────────────────────────────────────
-// //
-//
-// TEST_F(InstructionTest, STWX_LargeRBOffset)
-// {
+//     cpu->m_fpr[4] = -2.5f;
 //     cpu->m_gpr[1] = TEST_ADDR;
-//     cpu->m_gpr[2] = 0x100;
-//     cpu->m_gpr[4] = 0xBEEFCAFE;
-//
+// 
 //     EncodedInstruction inst(0);
-//     inst.rs = 4;
+//     inst.rt = 4;
 //     inst.ra = 1;
-//     inst.rb = 2;
-//
-//     Core::Instruction::STWX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR + 0x100), 0xBEEFCAFEu);
+//     inst.si = 0;
+// 
+//     Core::Instruction::STFD(*cpu, inst);
+// 
+//     EXPECT_FLOAT_EQ(cpu->m_fpr[4], -2.5f);
+// }
+// 
+// //
+// // ─────────────────────────────────────────────────────────────────────────────
+// //  STFD — FRS=f0 is allowed as source
+// // ─────────────────────────────────────────────────────────────────────────────
+// //
+// 
+// TEST_F(InstructionTest, STFD_FRS0_Allowed)
+// {
+//     cpu->m_fpr[0] = 5.0f;
+//     cpu->m_gpr[1] = TEST_ADDR;
+// 
+//     EncodedInstruction inst(0);
+//     inst.rt = 0;
+//     inst.ra = 1;
+//     inst.si = 0;
+// 
+//     Core::Instruction::STFD(*cpu, inst);
+// 
+//     EXPECT_FLOAT_EQ(readDoubleAsFloat(cpu, TEST_ADDR), 5.0f);
+// }
+// 
+// //
+// // ─────────────────────────────────────────────────────────────────────────────
+// //  STFD — maximum positive displacement (0x7FF8, 8-byte aligned): no throw
+// // ─────────────────────────────────────────────────────────────────────────────
+// //
+// 
+// TEST_F(InstructionTest, STFD_MaxPositiveSI)
+// {
+//     cpu->m_fpr[4] = 2.0f;
+//     cpu->m_gpr[1] = TEST_ADDR;
+// 
+//     EncodedInstruction inst(0);
+//     inst.rt = 4;
+//     inst.ra = 1;
+//     inst.si = 0x7FF8;
+// 
+//     EXPECT_NO_THROW(Core::Instruction::STFD(*cpu, inst));
+//     EXPECT_FLOAT_EQ(readDoubleAsFloat(cpu, TEST_ADDR + 0x7FF8), 2.0f);
+// }
+// 
+// //
+// // ─────────────────────────────────────────────────────────────────────────────
+// //  STFD — negative displacement
+// // ─────────────────────────────────────────────────────────────────────────────
+// //
+// 
+// TEST_F(InstructionTest, STFD_NegativeDisplacement)
+// {
+//     cpu->m_fpr[4] = -4.0f;
+//     cpu->m_gpr[1] = TEST_ADDR + 16;
+// 
+//     EncodedInstruction inst(0);
+//     inst.rt = 4;
+//     inst.ra = 1;
+//     inst.si = static_cast<uint16_t>(static_cast<int16_t>(-16));
+// 
+//     Core::Instruction::STFD(*cpu, inst);
+// 
+//     EXPECT_FLOAT_EQ(readDoubleAsFloat(cpu, TEST_ADDR), -4.0f);
 // }

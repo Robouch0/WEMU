@@ -2,231 +2,224 @@
 // ** EPITECH PROJECT, 2025
 // ** core
 // ** File description:
-// ** test_stwx
+// ** test_fcmpu
 // */
-//
+// 
 // #include "TestFixture.hpp"
-//
-// static constexpr uint32_t TEST_ADDR = 0x02000200;
-//
+// #include <cmath>
+// #include <limits>
+// 
+// // FCMPU: unordered float compare — sets a CR field (crfd=BF) with FL/FG/FE/FU
+// //   FL (less than)    → CR.lt
+// //   FG (greater than) → CR.gt
+// //   FE (equal)        → CR.eq
+// //   FU (unordered)    → CR.so  (set when either operand is NaN)
+// //
+// // BF field (3 bits) selects CR0–CR7. BF is at C++ raw bits [23:25]:
+// //   inst.raw |= (bf << 23)
+// // Fields: inst.ra=FRA, inst.rb=FRB
+// 
 // //
 // // ─────────────────────────────────────────────────────────────────────────────
-// //  STWX — basic: EA = RA + RB
+// //  FCMPU — FRA < FRB: FL=1, FG=0, FE=0, FU=0
 // // ─────────────────────────────────────────────────────────────────────────────
 // //
-//
-// TEST_F(InstructionTest, STWX_BasicStore)
+// 
+// TEST_F(InstructionTest, FCMPU_LessThan)
 // {
-//     cpu->m_gpr[1] = TEST_ADDR;
-//     cpu->m_gpr[2] = 8;
-//     cpu->m_gpr[4] = 0xDEADBEEF;
-//
+//     cpu->m_fpr[2] = 1.0f; // FRA
+//     cpu->m_fpr[3] = 2.0f; // FRB
+// 
 //     EncodedInstruction inst(0);
-//     inst.rs = 4;
-//     inst.ra = 1;
-//     inst.rb = 2;
-//
-//     Core::Instruction::STWX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR + 8), 0xDEADBEEFu);
+//     inst.raw |= (0 << 23); // BF=0 → CR0
+//     inst.ra = 2;
+//     inst.rb = 3;
+// 
+//     Core::Instruction::FCMPU(*cpu, inst);
+// 
+//     EXPECT_EQ(cpu->m_cr.cr0.lt, 1u); // less than
+//     EXPECT_EQ(cpu->m_cr.cr0.gt, 0u);
+//     EXPECT_EQ(cpu->m_cr.cr0.eq, 0u);
+//     EXPECT_EQ(cpu->m_cr.cr0.so, 0u); // not unordered
 // }
-//
+// 
 // //
 // // ─────────────────────────────────────────────────────────────────────────────
-// //  STWX — RA=0 uses 0 as base, not r0
+// //  FCMPU — FRA > FRB: FL=0, FG=1, FE=0, FU=0
 // // ─────────────────────────────────────────────────────────────────────────────
 // //
-//
-// TEST_F(InstructionTest, STWX_RA0_Uses0NotR0)
+// 
+// TEST_F(InstructionTest, FCMPU_GreaterThan)
 // {
-//     cpu->m_gpr[0] = TEST_ADDR; // r0 ignored
-//     cpu->m_gpr[2] = 0;         // RB=0 → EA = 0
-//     cpu->m_gpr[4] = 0x12345678;
-//
+//     cpu->m_fpr[2] = 3.0f; // FRA
+//     cpu->m_fpr[3] = 1.0f; // FRB
+// 
 //     EncodedInstruction inst(0);
-//     inst.rs = 4;
-//     inst.ra = 0;
-//     inst.rb = 2;
-//
-//     Core::Instruction::STWX(*cpu, inst);
-//
-//     // EA = 0 → unmapped, nothing written to TEST_ADDR
-//     EXPECT_NE(cpu->m_memory.read<uint32_t>(TEST_ADDR), 0x12345678u);
+//     inst.raw |= (0 << 23);
+//     inst.ra = 2;
+//     inst.rb = 3;
+// 
+//     Core::Instruction::FCMPU(*cpu, inst);
+// 
+//     EXPECT_EQ(cpu->m_cr.cr0.lt, 0u);
+//     EXPECT_EQ(cpu->m_cr.cr0.gt, 1u); // greater than
+//     EXPECT_EQ(cpu->m_cr.cr0.eq, 0u);
+//     EXPECT_EQ(cpu->m_cr.cr0.so, 0u);
 // }
-//
+// 
 // //
 // // ─────────────────────────────────────────────────────────────────────────────
-// //  STWX — RA=0: RB provides full address
+// //  FCMPU — FRA == FRB: FL=0, FG=0, FE=1, FU=0
 // // ─────────────────────────────────────────────────────────────────────────────
 // //
-//
-// TEST_F(InstructionTest, STWX_RA0_RBProvidesAddress)
+// 
+// TEST_F(InstructionTest, FCMPU_Equal)
 // {
-//     cpu->m_gpr[0] = 0xDEAD0000; // r0 ignored
-//     cpu->m_gpr[2] = TEST_ADDR;
-//     cpu->m_gpr[4] = 0xCAFEBABE;
-//
+//     cpu->m_fpr[2] = 2.5f;
+//     cpu->m_fpr[3] = 2.5f;
+// 
 //     EncodedInstruction inst(0);
-//     inst.rs = 4;
-//     inst.ra = 0;
-//     inst.rb = 2;
-//
-//     Core::Instruction::STWX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR), 0xCAFEBABEu);
+//     inst.raw |= (0 << 23);
+//     inst.ra = 2;
+//     inst.rb = 3;
+// 
+//     Core::Instruction::FCMPU(*cpu, inst);
+// 
+//     EXPECT_EQ(cpu->m_cr.cr0.lt, 0u);
+//     EXPECT_EQ(cpu->m_cr.cr0.gt, 0u);
+//     EXPECT_EQ(cpu->m_cr.cr0.eq, 1u); // equal
+//     EXPECT_EQ(cpu->m_cr.cr0.so, 0u);
 // }
-//
+// 
 // //
 // // ─────────────────────────────────────────────────────────────────────────────
-// //  STWX — RB=0: EA = RA
+// //  FCMPU — NaN operand: FU=1 (unordered), all others 0
 // // ─────────────────────────────────────────────────────────────────────────────
 // //
-//
-// TEST_F(InstructionTest, STWX_RB0_EAEqualsRA)
+// 
+// TEST_F(InstructionTest, FCMPU_NaN_Unordered)
 // {
-//     cpu->m_gpr[1] = TEST_ADDR;
-//     cpu->m_gpr[2] = 0;
-//     cpu->m_gpr[4] = 0xABCD1234;
-//
+//     cpu->m_fpr[2] = std::numeric_limits<float>::quiet_NaN();
+//     cpu->m_fpr[3] = 1.0f;
+// 
 //     EncodedInstruction inst(0);
-//     inst.rs = 4;
-//     inst.ra = 1;
-//     inst.rb = 2;
-//
-//     Core::Instruction::STWX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR), 0xABCD1234u);
+//     inst.raw |= (0 << 23);
+//     inst.ra = 2;
+//     inst.rb = 3;
+// 
+//     Core::Instruction::FCMPU(*cpu, inst);
+// 
+//     EXPECT_EQ(cpu->m_cr.cr0.lt, 0u);
+//     EXPECT_EQ(cpu->m_cr.cr0.gt, 0u);
+//     EXPECT_EQ(cpu->m_cr.cr0.eq, 0u);
+//     EXPECT_EQ(cpu->m_cr.cr0.so, 1u); // unordered
 // }
-//
+// 
 // //
 // // ─────────────────────────────────────────────────────────────────────────────
-// //  STWX — store 0xFFFFFFFF
+// //  FCMPU — both NaN: FU=1
 // // ─────────────────────────────────────────────────────────────────────────────
 // //
-//
-// TEST_F(InstructionTest, STWX_StoreAllOnes)
+// 
+// TEST_F(InstructionTest, FCMPU_BothNaN_Unordered)
 // {
-//     cpu->m_gpr[1] = TEST_ADDR;
-//     cpu->m_gpr[2] = 4;
-//     cpu->m_gpr[4] = 0xFFFFFFFF;
-//
+//     cpu->m_fpr[2] = std::numeric_limits<float>::quiet_NaN();
+//     cpu->m_fpr[3] = std::numeric_limits<float>::quiet_NaN();
+// 
 //     EncodedInstruction inst(0);
-//     inst.rs = 4;
-//     inst.ra = 1;
-//     inst.rb = 2;
-//
-//     Core::Instruction::STWX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR + 4), 0xFFFFFFFFu);
+//     inst.raw |= (0 << 23);
+//     inst.ra = 2;
+//     inst.rb = 3;
+// 
+//     Core::Instruction::FCMPU(*cpu, inst);
+// 
+//     EXPECT_EQ(cpu->m_cr.cr0.so, 1u); // unordered
 // }
-//
+// 
 // //
 // // ─────────────────────────────────────────────────────────────────────────────
-// //  STWX — store 0x80000000
+// //  FCMPU — +0.0 == -0.0: equal
 // // ─────────────────────────────────────────────────────────────────────────────
 // //
-//
-// TEST_F(InstructionTest, STWX_StoreHighBit)
+// 
+// TEST_F(InstructionTest, FCMPU_PositiveZero_EqualTo_NegativeZero)
 // {
-//     cpu->m_gpr[1] = TEST_ADDR;
-//     cpu->m_gpr[2] = 0;
-//     cpu->m_gpr[4] = 0x80000000;
-//
+//     cpu->m_fpr[2] = 0.0f;
+//     cpu->m_fpr[3] = -0.0f;
+// 
 //     EncodedInstruction inst(0);
-//     inst.rs = 4;
-//     inst.ra = 1;
-//     inst.rb = 2;
-//
-//     Core::Instruction::STWX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR), 0x80000000u);
+//     inst.raw |= (0 << 23);
+//     inst.ra = 2;
+//     inst.rb = 3;
+// 
+//     Core::Instruction::FCMPU(*cpu, inst);
+// 
+//     EXPECT_EQ(cpu->m_cr.cr0.eq, 1u);
+//     EXPECT_EQ(cpu->m_cr.cr0.so, 0u);
 // }
-//
+// 
 // //
 // // ─────────────────────────────────────────────────────────────────────────────
-// //  STWX — store zero
+// //  FCMPU — BF=1: result written to CR1, not CR0
 // // ─────────────────────────────────────────────────────────────────────────────
 // //
-//
-// TEST_F(InstructionTest, STWX_StoreZero)
+// 
+// TEST_F(InstructionTest, FCMPU_BF1_WritesCR1)
 // {
-//     cpu->m_memory.write<uint32_t>(TEST_ADDR, 0xFFFFFFFF);
-//     cpu->m_gpr[1] = TEST_ADDR;
-//     cpu->m_gpr[2] = 0;
-//     cpu->m_gpr[4] = 0x00000000;
-//
+//     cpu->m_fpr[2] = 1.0f;
+//     cpu->m_fpr[3] = 2.0f;
+// 
 //     EncodedInstruction inst(0);
-//     inst.rs = 4;
-//     inst.ra = 1;
-//     inst.rb = 2;
-//
-//     Core::Instruction::STWX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR), 0u);
+//     inst.raw |= (1 << 23); // BF=1 → CR1
+//     inst.ra = 2;
+//     inst.rb = 3;
+// 
+//     Core::Instruction::FCMPU(*cpu, inst);
+// 
+//     EXPECT_EQ(cpu->m_cr.cr1.lt, 1u); // less than in CR1
+//     EXPECT_EQ(cpu->m_cr.cr0.lt, 0u); // CR0 untouched
 // }
-//
+// 
 // //
 // // ─────────────────────────────────────────────────────────────────────────────
-// //  STWX — does not update RA
+// //  FCMPU — negative vs positive: FRA < FRB
 // // ─────────────────────────────────────────────────────────────────────────────
 // //
-//
-// TEST_F(InstructionTest, STWX_DoesNotUpdateRA)
+// 
+// TEST_F(InstructionTest, FCMPU_NegativeVsPositive)
 // {
-//     cpu->m_gpr[1] = TEST_ADDR;
-//     cpu->m_gpr[2] = 4;
-//     cpu->m_gpr[4] = 0x11223344;
-//
+//     cpu->m_fpr[2] = -1.0f;
+//     cpu->m_fpr[3] =  1.0f;
+// 
 //     EncodedInstruction inst(0);
-//     inst.rs = 4;
-//     inst.ra = 1;
-//     inst.rb = 2;
-//
-//     Core::Instruction::STWX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_gpr[1], TEST_ADDR);
+//     inst.raw |= (0 << 23);
+//     inst.ra = 2;
+//     inst.rb = 3;
+// 
+//     Core::Instruction::FCMPU(*cpu, inst);
+// 
+//     EXPECT_EQ(cpu->m_cr.cr0.lt, 1u);
+//     EXPECT_EQ(cpu->m_cr.cr0.so, 0u);
 // }
-//
+// 
 // //
 // // ─────────────────────────────────────────────────────────────────────────────
-// //  STWX — different RS, RA, RB registers
+// //  FCMPU — FPRs are not modified
 // // ─────────────────────────────────────────────────────────────────────────────
 // //
-//
-// TEST_F(InstructionTest, STWX_DifferentRegisters)
+// 
+// TEST_F(InstructionTest, FCMPU_DoesNotModifyFPRs)
 // {
-//     cpu->m_gpr[5] = TEST_ADDR;
-//     cpu->m_gpr[6] = 8;
-//     cpu->m_gpr[10] = 0x55443322;
-//
+//     cpu->m_fpr[2] = 1.0f;
+//     cpu->m_fpr[3] = 2.0f;
+// 
 //     EncodedInstruction inst(0);
-//     inst.rs = 10;
-//     inst.ra = 5;
-//     inst.rb = 6;
-//
-//     Core::Instruction::STWX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR + 8), 0x55443322u);
-// }
-//
-// //
-// // ─────────────────────────────────────────────────────────────────────────────
-// //  STWX — large RB offset
-// // ─────────────────────────────────────────────────────────────────────────────
-// //
-//
-// TEST_F(InstructionTest, STWX_LargeRBOffset)
-// {
-//     cpu->m_gpr[1] = TEST_ADDR;
-//     cpu->m_gpr[2] = 0x100;
-//     cpu->m_gpr[4] = 0xBEEFCAFE;
-//
-//     EncodedInstruction inst(0);
-//     inst.rs = 4;
-//     inst.ra = 1;
-//     inst.rb = 2;
-//
-//     Core::Instruction::STWX(*cpu, inst);
-//
-//     EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR + 0x100), 0xBEEFCAFEu);
+//     inst.raw |= (0 << 23);
+//     inst.ra = 2;
+//     inst.rb = 3;
+// 
+//     Core::Instruction::FCMPU(*cpu, inst);
+// 
+//     EXPECT_FLOAT_EQ(cpu->m_fpr[2], 1.0f);
+//     EXPECT_FLOAT_EQ(cpu->m_fpr[3], 2.0f);
 // }
