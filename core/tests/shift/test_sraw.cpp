@@ -182,9 +182,9 @@
 //     Core::Instruction::SRAW(*cpu, inst);
 // 
 //     EXPECT_EQ(cpu->m_gpr[4], 0xFFFFFFFFu);
-//     EXPECT_EQ(cpu->m_cr.cr0.lt, 1u); // result is negative
-//     EXPECT_EQ(cpu->m_cr.cr0.gt, 0u);
-//     EXPECT_EQ(cpu->m_cr.cr0.eq, 0u);
+//     EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Negative) ? 1 : 0), 1u); // result is negative
+//     EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Positive) ? 1 : 0), 0u);
+//     EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Zero) ? 1 : 0), 0u);
 // }
 // 
 // //

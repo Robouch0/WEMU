@@ -107,7 +107,7 @@
 // {
 //     // Set CR0: LT=1, GT=0, EQ=0, SO=0 — and clear everything else
 //     cpu->m_cr.raw = 0;
-//     cpu->m_cr.cr0.lt = 1;
+//     ((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Negative) ? 1 : 0) = 1;
 // 
 //     EncodedInstruction inst(0);
 //     inst.rt = 4;

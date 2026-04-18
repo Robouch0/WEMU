@@ -37,10 +37,10 @@
 // 
 //     Core::Instruction::FCMPU(*cpu, inst);
 // 
-//     EXPECT_EQ(cpu->m_cr.cr0.lt, 1u); // less than
-//     EXPECT_EQ(cpu->m_cr.cr0.gt, 0u);
-//     EXPECT_EQ(cpu->m_cr.cr0.eq, 0u);
-//     EXPECT_EQ(cpu->m_cr.cr0.so, 0u); // not unordered
+//     EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Negative) ? 1 : 0), 1u); // less than
+//     EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Positive) ? 1 : 0), 0u);
+//     EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Zero) ? 1 : 0), 0u);
+//     EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::SummaryOverflow) ? 1 : 0), 0u); // not unordered
 // }
 // 
 // //
@@ -61,10 +61,10 @@
 // 
 //     Core::Instruction::FCMPU(*cpu, inst);
 // 
-//     EXPECT_EQ(cpu->m_cr.cr0.lt, 0u);
-//     EXPECT_EQ(cpu->m_cr.cr0.gt, 1u); // greater than
-//     EXPECT_EQ(cpu->m_cr.cr0.eq, 0u);
-//     EXPECT_EQ(cpu->m_cr.cr0.so, 0u);
+//     EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Negative) ? 1 : 0), 0u);
+//     EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Positive) ? 1 : 0), 1u); // greater than
+//     EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Zero) ? 1 : 0), 0u);
+//     EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::SummaryOverflow) ? 1 : 0), 0u);
 // }
 // 
 // //
@@ -85,10 +85,10 @@
 // 
 //     Core::Instruction::FCMPU(*cpu, inst);
 // 
-//     EXPECT_EQ(cpu->m_cr.cr0.lt, 0u);
-//     EXPECT_EQ(cpu->m_cr.cr0.gt, 0u);
-//     EXPECT_EQ(cpu->m_cr.cr0.eq, 1u); // equal
-//     EXPECT_EQ(cpu->m_cr.cr0.so, 0u);
+//     EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Negative) ? 1 : 0), 0u);
+//     EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Positive) ? 1 : 0), 0u);
+//     EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Zero) ? 1 : 0), 1u); // equal
+//     EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::SummaryOverflow) ? 1 : 0), 0u);
 // }
 // 
 // //
@@ -109,10 +109,10 @@
 // 
 //     Core::Instruction::FCMPU(*cpu, inst);
 // 
-//     EXPECT_EQ(cpu->m_cr.cr0.lt, 0u);
-//     EXPECT_EQ(cpu->m_cr.cr0.gt, 0u);
-//     EXPECT_EQ(cpu->m_cr.cr0.eq, 0u);
-//     EXPECT_EQ(cpu->m_cr.cr0.so, 1u); // unordered
+//     EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Negative) ? 1 : 0), 0u);
+//     EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Positive) ? 1 : 0), 0u);
+//     EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Zero) ? 1 : 0), 0u);
+//     EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::SummaryOverflow) ? 1 : 0), 1u); // unordered
 // }
 // 
 // //
@@ -133,7 +133,7 @@
 // 
 //     Core::Instruction::FCMPU(*cpu, inst);
 // 
-//     EXPECT_EQ(cpu->m_cr.cr0.so, 1u); // unordered
+//     EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::SummaryOverflow) ? 1 : 0), 1u); // unordered
 // }
 // 
 // //
@@ -154,8 +154,8 @@
 // 
 //     Core::Instruction::FCMPU(*cpu, inst);
 // 
-//     EXPECT_EQ(cpu->m_cr.cr0.eq, 1u);
-//     EXPECT_EQ(cpu->m_cr.cr0.so, 0u);
+//     EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Zero) ? 1 : 0), 1u);
+//     EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::SummaryOverflow) ? 1 : 0), 0u);
 // }
 // 
 // //
@@ -176,8 +176,8 @@
 // 
 //     Core::Instruction::FCMPU(*cpu, inst);
 // 
-//     EXPECT_EQ(cpu->m_cr.cr1.lt, 1u); // less than in CR1
-//     EXPECT_EQ(cpu->m_cr.cr0.lt, 0u); // CR0 untouched
+//     EXPECT_EQ(((cpu->m_cr.cr1 & Core::ConditionRegisterFlag::Negative) ? 1 : 0), 1u); // less than in CR1
+//     EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Negative) ? 1 : 0), 0u); // CR0 untouched
 // }
 // 
 // //
@@ -198,8 +198,8 @@
 // 
 //     Core::Instruction::FCMPU(*cpu, inst);
 // 
-//     EXPECT_EQ(cpu->m_cr.cr0.lt, 1u);
-//     EXPECT_EQ(cpu->m_cr.cr0.so, 0u);
+//     EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Negative) ? 1 : 0), 1u);
+//     EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::SummaryOverflow) ? 1 : 0), 0u);
 // }
 // 
 // //
