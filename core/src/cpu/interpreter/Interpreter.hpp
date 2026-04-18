@@ -77,8 +77,7 @@ namespace Core {
 
             void initInstructionMap();
 
-            void updateCR(Core::ConditionRegister::Register &cr, const std::int32_t &result,
-                          const EncodedInstruction &instr, bool forceUpdate = false) const;
+            void updateCR0(const std::int32_t &result, const EncodedInstruction &instr, const bool forceUpdate = false);
 
             void updateCR1(const EncodedInstruction &instr) noexcept;
 

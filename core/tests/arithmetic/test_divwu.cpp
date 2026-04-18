@@ -61,9 +61,9 @@ TEST_F(InstructionTest, DIVWU_NoOe_WithRc_Greater)
     Core::Instruction::DIVWU(*cpu, inst);
 
     EXPECT_EQ(cpu->m_gpr[5], 5);
-    EXPECT_EQ(cpu->m_cr.cr0.lt, 0);
-    EXPECT_EQ(cpu->m_cr.cr0.gt, 1);
-    EXPECT_EQ(cpu->m_cr.cr0.eq, 0);
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Negative) ? 1 : 0), 0);
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Positive) ? 1 : 0), 1);
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Zero) ? 1 : 0), 0);
 }
 
 TEST_F(InstructionTest, DIVWU_NoOe_WithRc_Zero)
@@ -81,9 +81,9 @@ TEST_F(InstructionTest, DIVWU_NoOe_WithRc_Zero)
     Core::Instruction::DIVWU(*cpu, inst);
 
     EXPECT_EQ(cpu->m_gpr[5], 0);
-    EXPECT_EQ(cpu->m_cr.cr0.lt, 0);
-    EXPECT_EQ(cpu->m_cr.cr0.gt, 0);
-    EXPECT_EQ(cpu->m_cr.cr0.eq, 1);
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Negative) ? 1 : 0), 0);
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Positive) ? 1 : 0), 0);
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Zero) ? 1 : 0), 1);
 }
 
 TEST_F(InstructionTest, DIVWU_NoOe_WithRc_Less)
@@ -101,9 +101,9 @@ TEST_F(InstructionTest, DIVWU_NoOe_WithRc_Less)
     Core::Instruction::DIVWU(*cpu, inst);
 
     EXPECT_EQ(cpu->m_gpr[5], 0x80000000);
-    EXPECT_EQ(cpu->m_cr.cr0.lt, 1);
-    EXPECT_EQ(cpu->m_cr.cr0.gt, 0);
-    EXPECT_EQ(cpu->m_cr.cr0.eq, 0);
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Negative) ? 1 : 0), 1);
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Positive) ? 1 : 0), 0);
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Zero) ? 1 : 0), 0);
 }
 
 //
@@ -172,10 +172,10 @@ TEST_F(InstructionTest, DIVWU_WithOe_WithRc_NoError)
     EXPECT_EQ(cpu->m_gpr[5], 33);
     EXPECT_EQ(cpu->m_xer.ov, 0);
     EXPECT_EQ(cpu->m_xer.so, 0);
-    EXPECT_EQ(cpu->m_cr.cr0.lt, 0);
-    EXPECT_EQ(cpu->m_cr.cr0.gt, 1);
-    EXPECT_EQ(cpu->m_cr.cr0.eq, 0);
-    EXPECT_EQ(cpu->m_cr.cr0.so, 0);
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Negative) ? 1 : 0), 0);
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Positive) ? 1 : 0), 1);
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Zero) ? 1 : 0), 0);
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::SummaryOverflow) ? 1 : 0), 0);
 }
 
 TEST_F(InstructionTest, DIVWU_WithOe_WithRc_ImpossibleDivisionByZero)
@@ -194,5 +194,5 @@ TEST_F(InstructionTest, DIVWU_WithOe_WithRc_ImpossibleDivisionByZero)
 
     EXPECT_EQ(cpu->m_xer.ov, 1);
     EXPECT_EQ(cpu->m_xer.so, 1);
-    EXPECT_EQ(cpu->m_cr.cr0.so, 1);
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::SummaryOverflow) ? 1 : 0), 1);
 }
