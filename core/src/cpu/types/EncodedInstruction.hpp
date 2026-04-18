@@ -106,7 +106,7 @@ union EncodedInstruction {
         std::uint32_t oe : 1;
         std::uint32_t : 21;
     };
-
+  
     struct {
         std::uint32_t : 11;
         std::uint32_t spr : 10;

@@ -121,7 +121,7 @@ namespace Core {
                 std::int32_t m_gprSigned[32];
             }; // General Purpose Registers (unsigned/signed)
             Core::FixedPointExceptionRegister m_xer{};
-            float m_fpr[32]{}; // Fixed-Point Registers
+            double m_fpr[32]{}; // Fixed-Point Registers
             Core::FloatingPointStatusAndControlRegister m_fpscr{};
 
             std::map<std::uint32_t, std::vector<InstructionInfo> > m_instructionMap{};
