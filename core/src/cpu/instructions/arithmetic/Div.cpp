@@ -26,7 +26,7 @@ namespace Core::Instruction {
         if (!isOverflow)
             cpu.m_gprSigned[instr.rt] = ra / rb;
 
-        cpu.updateCR(cpu.m_cr.cr0, cpu.m_gprSigned[instr.rt], instr);
+        cpu.updateCR0(cpu.m_gprSigned[instr.rt], instr);
     }
 
     /**
@@ -45,6 +45,6 @@ namespace Core::Instruction {
         if (!isOverflow)
             cpu.m_gpr[instr.rt] = ra / rb;
 
-        cpu.updateCR(cpu.m_cr.cr0, cpu.m_gprSigned[instr.rt], instr);
+        cpu.updateCR0(cpu.m_gprSigned[instr.rt], instr);
     }
 };

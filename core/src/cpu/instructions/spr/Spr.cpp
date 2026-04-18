@@ -28,9 +28,16 @@ namespace Core::Instruction {
      * @param cpu   Interpreter state.
      * @param instr Encoded instruction (fields: rt as RS, ra, rb).
      */
-    void MTSPR(Interpreter &cpu, const EncodedInstruction &instr);
-    // {
-    // }
+    void MTSPR(Interpreter &cpu, const EncodedInstruction &instr)
+    {
+        switch (instr.spr) {
+            case 0b00001'00000: cpu.m_xer.raw = cpu.m_gpr[instr.rs]; break;
+            case 0b01000'00000: cpu.m_lr = cpu.m_gpr[instr.rs]; break;
+            case 0b01001'00000: cpu.m_ctr = cpu.m_gpr[instr.rs]; break;
+            default:
+                break;
+        }
+    }
 
     /**
      * @brief Move From Condition Register.

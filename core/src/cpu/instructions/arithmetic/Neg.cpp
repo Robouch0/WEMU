@@ -16,7 +16,7 @@ namespace Core::Instruction {
 
         cpu.m_gprSigned[instr.rt] = -cpu.m_gprSigned[instr.ra];
         cpu.updateOverflow(isOverflow, instr);
-        cpu.updateCR(cpu.m_cr.cr0, cpu.m_gprSigned[instr.rt], instr);
+        cpu.updateCR0(cpu.m_gprSigned[instr.rt], instr);
     }
 
 }
