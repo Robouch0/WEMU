@@ -118,7 +118,17 @@ void Core::Interpreter::updateCR1(const EncodedInstruction &instr) noexcept
 {
     if (!instr.rc)
         return;
-    m_cr.cr1 = (m_fpscr.raw >> 28) & 0xF;
+    std::uint32_t flags = 0;
+
+    if (m_fpscr.fx)
+        flags |= ConditionRegisterFlag::Negative;
+    if (m_fpscr.fex)
+        flags |= ConditionRegisterFlag::Positive;
+    if (m_fpscr.vx)
+        flags |= ConditionRegisterFlag::Zero;
+    if (m_fpscr.ox)
+        flags |= ConditionRegisterFlag::SummaryOverflow;
+    m_cr.cr1 = flags;
 }
 
 void Core::Interpreter::updateOverflow(const bool overflow, const EncodedInstruction &instr)
