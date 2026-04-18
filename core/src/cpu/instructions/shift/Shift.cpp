@@ -18,9 +18,13 @@ namespace Core::Instruction {
      * @param cpu   Interpreter state.
      * @param instr Encoded instruction (fields: rt as RS, ra as RA dest, rb, rc).
      */
-    void SLW(Interpreter &cpu, const EncodedInstruction &instr);
-    // {
-    // }
+    void SLW(Interpreter &cpu, const EncodedInstruction &instr)
+    {
+        const std::uint32_t shift = cpu.m_gpr[instr.rb] & 0b111111;
+
+        cpu.m_gpr[instr.ra] = shift >= 32 ? 0 : cpu.m_gpr[instr.rs] << shift;
+        cpu.updateCR0(cpu.m_gprSigned[instr.ra], instr);
+    }
 
     /**
      * @brief Shift Right Word.
