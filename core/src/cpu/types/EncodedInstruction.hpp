@@ -108,6 +108,12 @@ union EncodedInstruction {
     };
 
     struct {
+        std::uint32_t : 11;
+        std::uint32_t spr : 10;
+        std::uint32_t : 11;
+    };
+
+    struct {
         std::uint32_t : 21;
         std::uint32_t frt: 5;
         std::uint32_t : 6;
