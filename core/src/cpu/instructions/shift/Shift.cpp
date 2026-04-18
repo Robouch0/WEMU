@@ -23,7 +23,7 @@ namespace Core::Instruction {
         const std::uint32_t shift = cpu.m_gpr[instr.rb] & 0b111111;
 
         cpu.m_gpr[instr.ra] = shift >= 32 ? 0 : cpu.m_gpr[instr.rs] << shift;
-        cpu.updateCR(cpu.m_cr.cr0, cpu.m_gprSigned[instr.ra], instr);
+        cpu.updateCR0(cpu.m_gprSigned[instr.ra], instr);
     }
 
     /**
