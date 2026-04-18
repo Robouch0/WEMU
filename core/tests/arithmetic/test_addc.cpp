@@ -24,8 +24,6 @@ TEST_F(InstructionTest, ADDC_NoOE_NoRc_NoCarry)
     EXPECT_EQ(cpu->m_xer.ca, 0);
     EXPECT_EQ(cpu->m_xer.ov, 0);
     EXPECT_EQ(cpu->m_xer.so, 0);
-    std::cout << "cr.raw = " << cpu->m_cr.raw << std::endl;
-    std::cout << "cr0.lt = " << ((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Negative) ? 1 : 0) << std::endl;
     EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Negative) ? 1 : 0), 0);
     EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Positive) ? 1 : 0), 0);
     EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Zero) ? 1 : 0), 0);
