@@ -156,9 +156,9 @@ TEST_F(InstructionTest, SRW_RC_ResultPositive)
     Core::Instruction::SRW(*cpu, inst);
 
     EXPECT_EQ(cpu->m_gpr[4], 0x00000008u);
-    EXPECT_EQ(cpu->m_cr.cr0.lt, 0u);
-    EXPECT_EQ(cpu->m_cr.cr0.gt, 1u);
-    EXPECT_EQ(cpu->m_cr.cr0.eq, 0u);
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Negative) ? 1 : 0), 0u);
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Positive) ? 1 : 0), 1u);
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Zero) ? 1 : 0), 0u);
 }
 
 //
@@ -181,9 +181,9 @@ TEST_F(InstructionTest, SRW_RC_ResultZero)
     Core::Instruction::SRW(*cpu, inst);
 
     EXPECT_EQ(cpu->m_gpr[4], 0u);
-    EXPECT_EQ(cpu->m_cr.cr0.lt, 0u);
-    EXPECT_EQ(cpu->m_cr.cr0.gt, 0u);
-    EXPECT_EQ(cpu->m_cr.cr0.eq, 1u);
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Negative) ? 1 : 0), 0u);
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Positive) ? 1 : 0), 0u);
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Zero) ? 1 : 0), 1u);
 }
 
 //
