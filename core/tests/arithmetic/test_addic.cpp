@@ -85,9 +85,9 @@ TEST_F(InstructionTest, ADDIC__PositiveResult)
 
     EXPECT_EQ(cpu->m_gpr[4], 150u);
     EXPECT_EQ(cpu->m_xer.ca, 0);
-    EXPECT_EQ(cpu->m_cr.cr0.gt, 1);
-    EXPECT_EQ(cpu->m_cr.cr0.lt, 0);
-    EXPECT_EQ(cpu->m_cr.cr0.eq, 0);
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Positive) ? 1 : 0), 1);
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Negative) ? 1 : 0), 0);
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Zero) ? 1 : 0), 0);
 }
 
 TEST_F(InstructionTest, ADDIC__NegativeResult)
@@ -103,9 +103,9 @@ TEST_F(InstructionTest, ADDIC__NegativeResult)
 
     EXPECT_EQ(cpu->m_gpr[4], 0xFFFFFFFFu);
     EXPECT_EQ(cpu->m_xer.ca, 0);
-    EXPECT_EQ(cpu->m_cr.cr0.gt, 0);
-    EXPECT_EQ(cpu->m_cr.cr0.lt, 1);
-    EXPECT_EQ(cpu->m_cr.cr0.eq, 0);
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Positive) ? 1 : 0), 0);
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Negative) ? 1 : 0), 1);
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Zero) ? 1 : 0), 0);
 }
 
 TEST_F(InstructionTest, ADDIC__ZeroResult)
@@ -121,9 +121,9 @@ TEST_F(InstructionTest, ADDIC__ZeroResult)
 
     EXPECT_EQ(cpu->m_gpr[4], 0u);
     EXPECT_EQ(cpu->m_xer.ca, 1);
-    EXPECT_EQ(cpu->m_cr.cr0.gt, 0);
-    EXPECT_EQ(cpu->m_cr.cr0.lt, 0);
-    EXPECT_EQ(cpu->m_cr.cr0.eq, 1);
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Positive) ? 1 : 0), 0);
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Negative) ? 1 : 0), 0);
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Zero) ? 1 : 0), 1);
 }
 
 TEST_F(InstructionTest, ADDIC__WithCarry)
@@ -139,7 +139,7 @@ TEST_F(InstructionTest, ADDIC__WithCarry)
 
     EXPECT_EQ(cpu->m_gpr[4], 50u);
     EXPECT_EQ(cpu->m_xer.ca, 1);
-    EXPECT_EQ(cpu->m_cr.cr0.gt, 1);
-    EXPECT_EQ(cpu->m_cr.cr0.lt, 0);
-    EXPECT_EQ(cpu->m_cr.cr0.eq, 0);
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Positive) ? 1 : 0), 1);
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Negative) ? 1 : 0), 0);
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Zero) ? 1 : 0), 0);
 }
