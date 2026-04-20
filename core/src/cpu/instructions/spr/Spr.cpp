@@ -52,9 +52,10 @@ namespace Core::Instruction {
      * @param cpu   Interpreter state.
      * @param instr Encoded instruction (fields: rt).
      */
-    void MFCR(Interpreter &cpu, const EncodedInstruction &instr);
-    // {
-    // }
+    void MFCR(Interpreter &cpu, const EncodedInstruction &instr)
+    {
+        cpu.m_gpr[instr.rt] = cpu.m_cr.value;
+    }
 
     /**
      * @brief Move To Condition Register Fields.
