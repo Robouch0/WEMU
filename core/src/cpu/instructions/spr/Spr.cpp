@@ -54,7 +54,7 @@ namespace Core::Instruction {
      */
     void MFCR(Interpreter &cpu, const EncodedInstruction &instr)
     {
-        cpu.m_gpr[instr.rt] = cpu.m_cr.value;
+        cpu.m_gpr[instr.rt] = cpu.m_cr.raw;
     }
 
     /**
