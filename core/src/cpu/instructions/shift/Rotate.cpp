@@ -8,6 +8,16 @@
 #include "cpu/interpreter/Interpreter.hpp"
 #include "cpu/types/EncodedInstruction.hpp"
 
+static std::uint32_t rotlMask(const std::uint32_t mb, const std::uint32_t me)
+{
+    std::uint32_t mask = 0;
+
+    for (std::uint32_t i = mb; i != me; i = (i + 1) % 32)
+        mask |= 1u << (31 - i);
+    mask |= 1u << (31 - me);
+    return mask;
+}
+
 namespace Core::Instruction {
 
     /**
@@ -36,9 +46,10 @@ namespace Core::Instruction {
      * @param instr Encoded instruction (fields: rt as RS, ra as RA dest, rb as SH, rc;
      *              MB at raw[6:10], ME at raw[1:5]).
      */
-    void RLWINM(Interpreter &cpu, const EncodedInstruction &instr);
-    // {
-    // }
+    void RLWINM(Interpreter &cpu, const EncodedInstruction &instr)
+    {
+        const std::uint32_t rotated = std::rotl(cpu.m_gpr[instr.rs], instr.sh);
+    }
 
     /**
      * @brief Rotate Left Word Immediate then Mask Insert.
