@@ -66,8 +66,12 @@ namespace Core::Instruction {
      * @param instr Encoded instruction (fields: rt as RS, ra as RA dest/src, rb as SH, rc;
      *              MB at raw[6:10], ME at raw[1:5]).
      */
-    void RLWIMI(Interpreter &cpu, const EncodedInstruction &instr);
-    // {
-    // }
+    void RLWIMI(Interpreter &cpu, const EncodedInstruction &instr)
+    {
+        const std::uint32_t rotated = std::rotl(cpu.m_gpr[instr.rs], instr.sh);
+        const std::uint32_t mask = rotlMask(instr.mb, instr.me);
 
+        cpu.m_gpr[instr.ra] = rotated & mask | cpu.m_gpr[instr.ra] & ~mask;
+        cpu.updateCR0(cpu.m_gprSigned[instr.ra], instr);
+    }
 } // namespace Core::Instruction
