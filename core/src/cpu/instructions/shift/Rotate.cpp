@@ -49,6 +49,10 @@ namespace Core::Instruction {
     void RLWINM(Interpreter &cpu, const EncodedInstruction &instr)
     {
         const std::uint32_t rotated = std::rotl(cpu.m_gpr[instr.rs], instr.sh);
+        const std::uint32_t mask = rotlMask(instr.mb, instr.me);
+
+        cpu.m_gpr[instr.ra] = rotated & mask;
+        cpu.updateCR0(cpu.m_gprSigned[instr.ra], instr);
     }
 
     /**
