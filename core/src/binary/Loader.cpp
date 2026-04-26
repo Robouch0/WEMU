@@ -247,13 +247,6 @@ void Core::Loader::resolveSymbols()
         if (section.raw.header.sh_flags & SHF_EXECINSTR) {
             if (symbol.meta.type == STT_FUNC)
                 writeFunctionThunk(symbol, section);
-        } else {
-            const std::uint32_t slot_addr = symbol.raw.header.st_value;
-            if (slot_addr >= Core::Memory::DIMPORT_BASE &&
-                slot_addr < Core::Memory::DIMPORT_BASE + Core::Memory::DIMPORT_SIZE)
-            {
-                m_bin.m_memory.write(slot_addr, slot_addr);
-            }
         }
     }
 }
