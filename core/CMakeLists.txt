@@ -11,6 +11,7 @@ project(WemuEmulator)
 set(CMAKE_CXX_STANDARD 23)
 
 find_package(ZLIB REQUIRED)
+find_package(SDL2 REQUIRED)
 
 # ------------------------------------------------------------
 # 1. OPTIONS
@@ -59,15 +60,25 @@ add_library(core STATIC
         src/cpu/instructions/float/FloatMove.cpp
         src/cpu/instructions/float/FloatConvert.cpp
         src/cpu/instructions/float/FloatCompare.cpp
+        src/cpu/instructions/BranchExtra.cpp
+        src/cpu/instructions/Cmp.cpp
+        src/hle/Coreinit.hpp
+        src/hle/Coreinit.cpp
+        src/hle/Libc.hpp
+        src/hle/Libc.cpp
+        src/hle/Whb.hpp
+        src/hle/Whb.cpp
+        src/gfx/Renderer.cpp
 )
 
 target_include_directories(core PUBLIC
         "${CMAKE_CURRENT_SOURCE_DIR}/src"
         "${CMAKE_CURRENT_SOURCE_DIR}/include"
         ${ZLIB_INCLUDE_DIRS}
+        ${SDL2_INCLUDE_DIRS}
 )
 
-target_link_libraries(core PRIVATE ${ZLIB_LIBRARIES})
+target_link_libraries(core PRIVATE ${ZLIB_LIBRARIES} ${SDL2_LIBRARIES})
 
 target_compile_features(core PUBLIC cxx_std_23)
 

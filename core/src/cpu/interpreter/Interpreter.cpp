@@ -12,7 +12,11 @@
 #include "Interpreter.hpp"
 #include "utils/Logger.hpp"
 
-Core::Interpreter::Interpreter(Core::Binary binary) : m_binary(std::move(binary)) { initInstructionMap(); }
+Core::Interpreter::Interpreter(Core::Binary binary) : m_binary(std::move(binary))
+{
+    m_memory = m_binary.m_memory;
+    initInstructionMap();
+}
 
 [[nodiscard]] bool Core::Interpreter::step(Utils::BeDecoder &decoder, const std::uint32_t ppc_pc)
 {
@@ -35,11 +39,24 @@ void Core::Interpreter::run()
 {
     auto instructionDecoder = Utils::BeDecoder(m_binary.m_memory.getMemory());
     std::uint32_t ppc_pc = m_binary.header.e_entry;
+    m_hooks_min = 0xFFFFFFFFu;
+    m_hooks_max = 0u;
+    for (const auto &[addr, _] : m_hooks) {
+        if (addr < m_hooks_min) m_hooks_min = addr;
+        if (addr > m_hooks_max) m_hooks_max = addr;
+    }
 
     m_pc = ppc_pc - Core::Memory::MemoryMap::ApplicationCode;
     Utils::Log::info("[EMU] Starting at entrypoint 0x{:08X}", ppc_pc);
-    while (true) {
+    while (m_running) {
         ppc_pc = m_pc + Core::Memory::MemoryMap::ApplicationCode;
+        if (ppc_pc >= m_hooks_min && ppc_pc <= m_hooks_max) {
+            if (auto it = m_hooks.find(ppc_pc); it != m_hooks.end()) {
+                it->second(*this);
+                m_pc = m_lr;
+                continue;
+            }
+        }
         if (!step(instructionDecoder, ppc_pc))
             break;
         m_pc = m_nextPc;

@@ -22,6 +22,9 @@ namespace Core::Instruction {
         const std::uint32_t exts = static_cast<std::int16_t>(instr.d);
         const std::uint32_t ea = (instr.ra == 0 ? 0 : cpu.m_gpr[instr.ra]) + exts;
 
+        std::uint32_t data = cpu.m_memory.read<std::uint32_t>(ea);
+
+        Utils::Log::debug("rt -> {}, ea -> {}, data -> {}", instr.rt, ea, data);
         cpu.m_gpr[instr.rt] = cpu.m_memory.read<std::uint32_t>(ea);
     }
 

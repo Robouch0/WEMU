@@ -27,6 +27,7 @@ Core::Loader::Loader(const std::string &filepath) : m_bin({}), m_beDecoder(filep
     loadSections();
     loadSymbols();
     loadSectionsInMemory();
+    std::cout << "FINAL 268437924 MEM -> " << std::hex << this->m_bin.m_memory.read<uint32_t>(268437924) << std::dec << std::endl;
 }
 
 void Core::Loader::loadHeader()
@@ -167,6 +168,8 @@ void Core::Loader::loadSectionsMeta()
 
 void Core::Loader::loadSectionsInMemory()
 {
+    int frerot = 0;
+
     for (auto &section : m_bin.sections) {
         if (!(section.raw.header.sh_flags & SHF_ALLOC))
             continue;
@@ -180,8 +183,14 @@ void Core::Loader::loadSectionsInMemory()
             const std::size_t ptr = m_bin.m_memory.allocate(section.meta.virtAddress, section.meta.size);
 
             if (ptr) {
+                char *veritableptr = section.raw.data.data();
+                fprintf(stdout, "Writing %llu {", section.meta.virtAddress);
+                fprintf(stdout, "} Writing\n");
                 memcpy(reinterpret_cast<void *>(ptr), section.raw.data.data(), section.meta.size);
+            } else {
+                fprintf(stdout, "\n %d Euuuhh j'suis où frérot ?\n", frerot++);
             }
+            std::cout << "268437924 MEM -> " << std::hex << this->m_bin.m_memory.read<uint32_t>(268437924) << std::dec << std::endl;
         }
     }
 }
@@ -233,8 +242,19 @@ void Core::Loader::resolveSymbols()
         if (symbol.raw.header.st_shndx >= m_bin.sections.size())
             continue;
         auto &section = m_bin.sections[symbol.raw.header.st_shndx];
-        if (symbol.meta.type == STT_FUNC && section.raw.header.sh_flags & SHF_EXECINSTR)
-            writeFunctionThunk(symbol, section);
+        if (section.meta.type != SHT_RPL_IMPORTS)
+            continue;
+        if (section.raw.header.sh_flags & SHF_EXECINSTR) {
+            if (symbol.meta.type == STT_FUNC)
+                writeFunctionThunk(symbol, section);
+        } else {
+            const std::uint32_t slot_addr = symbol.raw.header.st_value;
+            if (slot_addr >= Core::Memory::DIMPORT_BASE &&
+                slot_addr < Core::Memory::DIMPORT_BASE + Core::Memory::DIMPORT_SIZE)
+            {
+                m_bin.m_memory.write(slot_addr, slot_addr);
+            }
+        }
     }
 }
 
