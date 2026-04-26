@@ -64,8 +64,15 @@ namespace Core::Instruction {
      * @param cpu   Interpreter state.
      * @param instr Encoded instruction (fields: rt as RS; FXM at raw bits [12:19]).
      */
-    void MTCRF(Interpreter &cpu, const EncodedInstruction &instr);
-    // {
-    // }
+    void MTCRF(Interpreter &cpu, const EncodedInstruction &instr)
+    {
+        std::uint32_t mask = 0;
+
+        for (std::size_t bit = 0; bit < 8; bit++) {
+            if ((instr.fxm >> bit) & 1)
+                mask |= 0b1111 << (bit * 4);
+        }
+        cpu.m_cr.raw = (cpu.m_gpr[instr.rs] & mask) | (cpu.m_cr.raw & ~mask);
+    }
 
 } // namespace Core::Instruction
