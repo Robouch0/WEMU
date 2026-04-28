@@ -161,9 +161,11 @@ TEST_F(InstructionTest, CNTLZW_RC_UpdatesCR0)
     Core::Instruction::CNTLZW(*cpu, inst);
 
     EXPECT_EQ(cpu->m_gpr[4], 32u);
-    EXPECT_EQ(cpu->m_cr.cr0.lt, 0u); // 32 is positive
-    EXPECT_EQ(cpu->m_cr.cr0.gt, 1u);
-    EXPECT_EQ(cpu->m_cr.cr0.eq, 0u);
+    // 32 is positive so GT flag should be set
+    EXPECT_EQ(cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Negative, 0u); // lt
+    EXPECT_EQ(cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Positive,
+              Core::ConditionRegisterFlag::Positive);                       // gt
+    EXPECT_EQ(cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Zero, 0u);      // eq
 }
 
 //

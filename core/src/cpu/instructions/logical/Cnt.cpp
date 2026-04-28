@@ -17,8 +17,7 @@ namespace Core::Instruction {
         }
 
         cpu.m_gpr[instr.ra] = n;
-
-        cpu.updateCR(cpu.m_cr.cr0, cpu.m_gprSigned[instr.ra], instr);
+        cpu.updateCR0(cpu.m_gprSigned[instr.ra], instr);
     }
 
 }
