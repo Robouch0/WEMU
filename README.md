@@ -5,6 +5,7 @@
 ![Language](https://img.shields.io/github/languages/top/Robouch0/WEMU)
 ![C++23](https://img.shields.io/badge/C%2B%2B-23-blue?logo=cplusplus)
 ![Platform](https://img.shields.io/badge/platform-Linux-lightgrey?logo=linux)
+![GitHub Actions Status](https://img.shields.io/github/actions/workflow/status/Robouch0/WEMU/wemu-checks.yml?branch=dev&label=Build)
 
 # WEMU — Wii U Emulator
 
