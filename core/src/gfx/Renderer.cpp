@@ -17,14 +17,14 @@
 #include <stdexcept>
 
 // VPAD button bitmasks (same as wut header vpad/input.h)
-static constexpr uint32_t BTN_UP    = 0x0200;
-static constexpr uint32_t BTN_DOWN  = 0x0100;
-static constexpr uint32_t BTN_LEFT  = 0x0800;
-static constexpr uint32_t BTN_RIGHT = 0x0400;
-static constexpr uint32_t BTN_A     = 0x8000;
-static constexpr uint32_t BTN_B     = 0x4000;
-static constexpr uint32_t BTN_PLUS  = 0x0008;
-static constexpr uint32_t BTN_MINUS = 0x0004;
+static constexpr std::uint32_t BTN_UP    = 0x0200;
+static constexpr std::uint32_t BTN_DOWN  = 0x0100;
+static constexpr std::uint32_t BTN_LEFT  = 0x0800;
+static constexpr std::uint32_t BTN_RIGHT = 0x0400;
+static constexpr std::uint32_t BTN_A     = 0x8000;
+static constexpr std::uint32_t BTN_B     = 0x4000;
+static constexpr std::uint32_t BTN_PLUS  = 0x0008;
+static constexpr std::uint32_t BTN_MINUS = 0x0004;
 
 Renderer::Renderer()
 {
@@ -60,22 +60,22 @@ Renderer::~Renderer()
 }
 
 // Copy RGBX framebuffer to ABGR8888 texture (same memory layout) and present.
-void Renderer::flip_tv(const uint8_t* rgbx, uint32_t w, uint32_t h)
+void Renderer::flip_tv(const std::uint8_t* rgbx, std::uint32_t w, std::uint32_t h)
 {
     void* pixels; int pitch;
     if (SDL_LockTexture(m_texture, nullptr, &pixels, &pitch) != 0) return;
 
-    const uint32_t cols = (w < (uint32_t)TV_W) ? w : TV_W;
-    const uint32_t rows = (h < (uint32_t)TV_H) ? h : TV_H;
+    const std::uint32_t cols = (w < (std::uint32_t)TV_W) ? w : TV_W;
+    const std::uint32_t rows = (h < (std::uint32_t)TV_H) ? h : TV_H;
 
-    auto* dst32 = static_cast<uint32_t*>(pixels);
-    const auto* src32 = reinterpret_cast<const uint32_t*>(rgbx);
-    const uint32_t stride32 = pitch / 4;
+    auto* dst32 = static_cast<std::uint32_t*>(pixels);
+    const auto* src32 = reinterpret_cast<const std::uint32_t*>(rgbx);
+    const std::uint32_t stride32 = pitch / 4;
 
-    for (uint32_t y = 0; y < rows; ++y) {
-        const uint32_t* srow = src32 + y * w;
-        uint32_t*       drow = dst32 + y * stride32;
-        for (uint32_t x = 0; x < cols; ++x)
+    for (std::uint32_t y = 0; y < rows; ++y) {
+        const std::uint32_t* srow = src32 + y * w;
+        std::uint32_t*       drow = dst32 + y * stride32;
+        for (std::uint32_t x = 0; x < cols; ++x)
             drow[x] = srow[x];
     }
 
@@ -84,8 +84,8 @@ void Renderer::flip_tv(const uint8_t* rgbx, uint32_t w, uint32_t h)
     SDL_RenderCopy(m_sdl_rend, m_texture, nullptr, nullptr);
 
     // Cap to 60fps (real WiiU framerate), regardless of monitor refresh rate
-    static uint64_t s_last_flip = 0;
-    uint64_t now = SDL_GetTicks64();
+    static std::uint64_t s_last_flip = 0;
+    std::uint64_t now = SDL_GetTicks64();
     if (s_last_flip && now - s_last_flip < 16)
         SDL_Delay(16 - (now - s_last_flip));
     s_last_flip = SDL_GetTicks64();
@@ -105,10 +105,10 @@ bool Renderer::poll_events()
     return m_open;
 }
 
-uint32_t Renderer::get_buttons()
+std::uint32_t Renderer::get_buttons()
 {
-    const uint8_t* keys = SDL_GetKeyboardState(nullptr);
-    uint32_t btns = 0;
+    const std::uint8_t* keys = SDL_GetKeyboardState(nullptr);
+    std::uint32_t btns = 0;
     if (keys[SDL_SCANCODE_UP]    || keys[SDL_SCANCODE_W]) btns |= BTN_UP;
     if (keys[SDL_SCANCODE_DOWN]  || keys[SDL_SCANCODE_S]) btns |= BTN_DOWN;
     if (keys[SDL_SCANCODE_LEFT]  || keys[SDL_SCANCODE_A]) btns |= BTN_LEFT;

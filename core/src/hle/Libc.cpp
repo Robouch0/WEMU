@@ -14,8 +14,9 @@
 
 static void hle_memalign(Core::Interpreter& cpu)
 {
-    uint32_t align = cpu.m_gpr[3];
-    uint32_t size  = cpu.m_gpr[4];
+    const std::uint32_t align = cpu.m_gpr[3];
+    const std::uint32_t size  = cpu.m_gpr[4];
+
     cpu.m_gpr[3] = cpu.m_memory.heapAllocate(size, align ? align : 8);
 }
 
@@ -26,11 +27,11 @@ static void hle_malloc(Core::Interpreter& cpu)
 
 static void hle_calloc(Core::Interpreter& cpu)
 {
-    uint32_t n    = cpu.m_gpr[3];
-    uint32_t size = cpu.m_gpr[4];
-    uint32_t addr = cpu.m_memory.heapAllocate(n * size, 8);
+    const std::uint32_t n    = cpu.m_gpr[3];
+    const std::uint32_t size = cpu.m_gpr[4];
+    const std::uint32_t addr = cpu.m_memory.heapAllocate(n * size, 8);
     if (addr) {
-        uint8_t* p = cpu.m_memory.hostPtr(addr);
+        std::uint8_t* p = cpu.m_memory.hostPtr(addr);
         if (p) std::memset(p, 0, n * size);
     }
     cpu.m_gpr[3] = addr;
@@ -46,12 +47,13 @@ static void hle_free(Core::Interpreter& cpu) { (void)cpu; }
 
 static void hle_memcpy(Core::Interpreter& cpu)
 {
-    uint32_t dst = cpu.m_gpr[3];
-    uint32_t src = cpu.m_gpr[4];
-    uint32_t n   = cpu.m_gpr[5];
+    const std::uint32_t dst = cpu.m_gpr[3];
+    const std::uint32_t src = cpu.m_gpr[4];
+    std::uint32_t n   = cpu.m_gpr[5];
+
     if (dst && src && n) {
-        uint8_t* d       = cpu.m_memory.hostPtr(dst);
-        const uint8_t* s = cpu.m_memory.hostPtr(src);
+        std::uint8_t* d       = cpu.m_memory.hostPtr(dst);
+        const std::uint8_t* s = cpu.m_memory.hostPtr(src);
         if (d && s) std::memcpy(d, s, n);
     }
     // r3 stays = dst
@@ -59,22 +61,23 @@ static void hle_memcpy(Core::Interpreter& cpu)
 
 static void hle_memset(Core::Interpreter& cpu)
 {
-    uint32_t dst = cpu.m_gpr[3];
-    uint32_t val = cpu.m_gpr[4];
-    uint32_t n   = cpu.m_gpr[5];
+    const std::uint32_t dst = cpu.m_gpr[3];
+    const std::uint32_t val = cpu.m_gpr[4];
+    std::uint32_t n   = cpu.m_gpr[5];
+
     if (dst && n) {
-        uint8_t* d = cpu.m_memory.hostPtr(dst);
+        std::uint8_t* d = cpu.m_memory.hostPtr(dst);
         if (d) std::memset(d, (int)val, n);
     }
     // r3 stays = dst
 }
 
-static void hle_rand(Core::Interpreter& cpu)  { cpu.m_gpr[3] = (uint32_t)std::rand(); }
+static void hle_rand(Core::Interpreter& cpu) { cpu.m_gpr[3] = static_cast<std::uint32_t>(std::rand()); }
 static void hle_srand(Core::Interpreter& cpu) { std::srand(cpu.m_gpr[3]); cpu.m_gpr[3] = 0; }
 
 static void hle_exit(Core::Interpreter& cpu)
 {
-    fprintf(stderr, "[HLE] exit(%d) called\n", (int)cpu.m_gpr[3]);
+    fprintf(stderr, "[HLE] exit(%d) called\n", static_cast<int>(cpu.m_gpr[3]));
     cpu.m_running = false;
     cpu.m_gpr[3] = 0;
 }

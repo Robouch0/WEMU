@@ -18,13 +18,13 @@ public:
 
     // Blit 1280×720 RGBX (big-endian, 4 bytes/pixel) to the window.
     // Called from OSScreenFlipBuffersEx.
-    void flip_tv(const uint8_t* rgbx, uint32_t w, uint32_t h);
+    void flip_tv(const std::uint8_t* rgbx, std::uint32_t w, std::uint32_t h);
 
     // Poll SDL events; returns false if the user closed the window.
     bool poll_events();
 
     // Keyboard state → VPAD button bitmask.
-    uint32_t get_buttons();
+    std::uint32_t get_buttons();
 
     bool is_open() const { return m_open; }
 

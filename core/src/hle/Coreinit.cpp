@@ -15,11 +15,11 @@
 
 // ── Framebuffer addresses (TV=0, DRC=1) ──────────────────────────────────────
 
-static uint32_t s_fb_addr[2] = {0, 0};
+static std::uint32_t s_fb_addr[2] = {0, 0};
 
 // ── 8x16 bitmap font (public domain, IBM PC style) ────────────────────────────
 
-static const uint8_t FONT8x16[128][16] = {
+static const std::uint8_t FONT8x16[128][16] = {
     #define BLK {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0}
     BLK,BLK,BLK,BLK,BLK,BLK,BLK,BLK,BLK,BLK,BLK,BLK,BLK,BLK,BLK,BLK,
     BLK,BLK,BLK,BLK,BLK,BLK,BLK,BLK,BLK,BLK,BLK,BLK,BLK,BLK,BLK,BLK,
@@ -123,14 +123,14 @@ static const uint8_t FONT8x16[128][16] = {
 
 // ── Font blit helper ──────────────────────────────────────────────────────────
 
-static void blit_char(uint8_t* fb, uint32_t stride_px, int col_px, int row_px,
-                      char ch, uint32_t fg_color)
+static void blit_char(std::uint8_t* fb, std::uint32_t stride_px, int col_px, int row_px,
+                      char ch, std::uint32_t fg_color)
 {
     if ((unsigned char)ch >= 128) ch = '?';
-    const uint8_t* glyph = FONT8x16[(uint8_t)ch];
-    uint8_t r = (fg_color >> 24) & 0xFF;
-    uint8_t g = (fg_color >> 16) & 0xFF;
-    uint8_t b = (fg_color >>  8) & 0xFF;
+    const std::uint8_t* glyph = FONT8x16[(std::uint8_t)ch];
+    std::uint8_t r = (fg_color >> 24) & 0xFF;
+    std::uint8_t g = (fg_color >> 16) & 0xFF;
+    std::uint8_t b = (fg_color >>  8) & 0xFF;
 
     for (int y = 0; y < 16; y++) {
         for (int x = 0; x < 8; x++) {
@@ -138,7 +138,7 @@ static void blit_char(uint8_t* fb, uint32_t stride_px, int col_px, int row_px,
                 int px = col_px + x;
                 int py = row_px + y;
                 if (px < (int)stride_px) {
-                    uint8_t* dst = fb + (py * (int)stride_px + px) * 4;
+                    std::uint8_t* dst = fb + (py * (int)stride_px + px) * 4;
                     dst[0] = r; dst[1] = g; dst[2] = b; dst[3] = 0xFF;
                 }
             }
@@ -148,7 +148,7 @@ static void blit_char(uint8_t* fb, uint32_t stride_px, int col_px, int row_px,
 
 // ── Thread-local storage (single-thread emulation, 64 keys max) ───────────────
 
-static uint32_t s_tls[64] = {};
+static std::uint32_t s_tls[64] = {};
 
 // ── HLE implementations ───────────────────────────────────────────────────────
 
@@ -159,14 +159,16 @@ static void hle_OSScreenShutdown(Core::Interpreter& cpu) { cpu.m_gpr[3] = 0; }
 
 static void hle_OSScreenGetBufferSizeEx(Core::Interpreter& cpu)
 {
-    uint32_t id = cpu.m_gpr[3];
+    std::uint32_t id = cpu.m_gpr[3];
+
     cpu.m_gpr[3] = (id == 0) ? (1280 * 720 * 4) : (854 * 480 * 4);
 }
 
 static void hle_OSScreenSetBufferEx(Core::Interpreter& cpu)
 {
-    uint32_t id       = cpu.m_gpr[3];
-    uint32_t ppc_addr = cpu.m_gpr[4];
+    std::uint32_t id       = cpu.m_gpr[3];
+    std::uint32_t ppc_addr = cpu.m_gpr[4];
+
     if (id < 2)
         s_fb_addr[id] = ppc_addr;
     cpu.m_gpr[3] = 0;
@@ -176,24 +178,24 @@ static void hle_OSScreenEnableEx(Core::Interpreter& cpu) { cpu.m_gpr[3] = 0; }
 
 static void hle_OSScreenClearBufferEx(Core::Interpreter& cpu)
 {
-    uint32_t id    = cpu.m_gpr[3];
-    uint32_t color = cpu.m_gpr[4];
+    std::uint32_t id    = cpu.m_gpr[3];
+    std::uint32_t color = cpu.m_gpr[4];
     if (id >= 2) return;
 
-    uint32_t fb_addr = s_fb_addr[id];
+    std::uint32_t fb_addr = s_fb_addr[id];
     if (!fb_addr) return;
 
-    uint32_t width  = (id == 0) ? 1280u : 854u;
-    uint32_t height = (id == 0) ?  720u : 480u;
-    uint8_t* fb = cpu.m_memory.hostPtr(fb_addr);
+    std::uint32_t width  = (id == 0) ? 1280u : 854u;
+    std::uint32_t height = (id == 0) ?  720u : 480u;
+    std::uint8_t* fb = cpu.m_memory.hostPtr(fb_addr);
     if (!fb) return;
 
-    uint8_t rv = (color >> 24) & 0xFF;
-    uint8_t gv = (color >> 16) & 0xFF;
-    uint8_t bv = (color >>  8) & 0xFF;
-    uint8_t xv =  color        & 0xFF; // low byte (X / padding, not alpha)
+    std::uint8_t rv = (color >> 24) & 0xFF;
+    std::uint8_t gv = (color >> 16) & 0xFF;
+    std::uint8_t bv = (color >>  8) & 0xFF;
+    std::uint8_t xv =  color        & 0xFF; // low byte (X / padding, not alpha)
 
-    for (uint32_t i = 0; i < width * height; i++) {
+    for (std::uint32_t i = 0; i < width * height; i++) {
         fb[i*4+0] = rv; fb[i*4+1] = gv; fb[i*4+2] = bv; fb[i*4+3] = xv;
     }
     cpu.m_gpr[3] = 0;
@@ -201,24 +203,24 @@ static void hle_OSScreenClearBufferEx(Core::Interpreter& cpu)
 
 static void hle_OSScreenPutFontEx(Core::Interpreter& cpu)
 {
-    uint32_t id       = cpu.m_gpr[3];
-    uint32_t col      = cpu.m_gpr[4];
-    uint32_t row      = cpu.m_gpr[5];
-    uint32_t str_addr = cpu.m_gpr[6];
+    std::uint32_t id       = cpu.m_gpr[3];
+    std::uint32_t col      = cpu.m_gpr[4];
+    std::uint32_t row      = cpu.m_gpr[5];
+    std::uint32_t str_addr = cpu.m_gpr[6];
     if (id >= 2) return;
 
-    uint32_t fb_addr = s_fb_addr[id];
+    std::uint32_t fb_addr = s_fb_addr[id];
     if (!fb_addr) return;
 
-    uint8_t* fb = cpu.m_memory.hostPtr(fb_addr);
+    std::uint8_t* fb = cpu.m_memory.hostPtr(fb_addr);
     if (!fb) return;
 
-    uint32_t width = (id == 0) ? 1280u : 854u;
+    std::uint32_t width = (id == 0) ? 1280u : 854u;
     int x_px = (int)(col * 8);
     int y_px = (int)(row * 16);
 
     while (true) {
-        uint8_t ch = cpu.m_memory.read<std::uint8_t>(str_addr++);
+        std::uint8_t ch = cpu.m_memory.read<std::uint8_t>(str_addr++);
         if (!ch) break;
         blit_char(fb, width, x_px, y_px, (char)ch, 0xFFFFFF00u);
         x_px += 8;
@@ -228,22 +230,22 @@ static void hle_OSScreenPutFontEx(Core::Interpreter& cpu)
 
 static void hle_OSScreenFlipBuffersEx(Core::Interpreter& cpu)
 {
-    uint32_t id = cpu.m_gpr[3];
+    std::uint32_t id = cpu.m_gpr[3];
     if (id != 0 || !cpu.m_renderer) return;
 
-    uint32_t fb_addr = s_fb_addr[0];
+    std::uint32_t fb_addr = s_fb_addr[0];
     if (!fb_addr) return;
 
-    uint8_t* fb = cpu.m_memory.hostPtr(fb_addr);
+    std::uint8_t* fb = cpu.m_memory.hostPtr(fb_addr);
     if (!fb) return;
 
     cpu.m_renderer->flip_tv(fb, 1280, 720);
 
     // FPS counter
-    static uint32_t frames = 0;
-    static uint64_t last_ms = SDL_GetTicks64();
+    static std::uint32_t frames = 0;
+    static std::uint64_t last_ms = SDL_GetTicks64();
     ++frames;
-    uint64_t now = SDL_GetTicks64();
+    std::uint64_t now = SDL_GetTicks64();
     if (now - last_ms >= 1000) {
         fprintf(stderr, "[FPS] %u\n", frames);
         frames = 0;
@@ -267,10 +269,11 @@ static void hle_OSEnableHomeButtonMenu(Core::Interpreter& cpu) { cpu.m_gpr[3] = 
 
 static void hle_OSCompareAndSwapAtomic(Core::Interpreter& cpu)
 {
-    const uint32_t addr     = cpu.m_gpr[3];
-    const uint32_t expected = cpu.m_gpr[4];
-    const uint32_t newval   = cpu.m_gpr[5];
-    const uint32_t cur = cpu.m_memory.read<std::uint32_t>(addr);
+    const std::uint32_t addr     = cpu.m_gpr[3];
+    const std::uint32_t expected = cpu.m_gpr[4];
+    const std::uint32_t newval   = cpu.m_gpr[5];
+    const std::uint32_t cur = cpu.m_memory.read<std::uint32_t>(addr);
+
     if (cur == expected) {
         cpu.m_memory.write<std::uint32_t>(addr, newval);
         cpu.m_gpr[3] = 1;
@@ -281,10 +284,11 @@ static void hle_OSCompareAndSwapAtomic(Core::Interpreter& cpu)
 
 static void hle_OSCompareAndSwapAtomicEx(Core::Interpreter& cpu)
 {
-    const uint32_t addr     = cpu.m_gpr[3];
-    const uint32_t expected = cpu.m_gpr[4];
-    const uint32_t newval   = cpu.m_gpr[5];
-    const uint32_t cur = cpu.m_memory.read<std::uint32_t>(addr);
+    const std::uint32_t addr     = cpu.m_gpr[3];
+    const std::uint32_t expected = cpu.m_gpr[4];
+    const std::uint32_t newval   = cpu.m_gpr[5];
+    const std::uint32_t cur = cpu.m_memory.read<std::uint32_t>(addr);
+
     if (cpu.m_gpr[6])
         cpu.m_memory.write<std::uint32_t>(cpu.m_gpr[6], cur);
     if (cur == expected) {
@@ -297,14 +301,16 @@ static void hle_OSCompareAndSwapAtomicEx(Core::Interpreter& cpu)
 
 static void hle_OSReport(Core::Interpreter& cpu)
 {
-    const uint8_t* p = cpu.m_memory.hostPtr(cpu.m_gpr[3]);
+    const std::uint8_t* p = cpu.m_memory.hostPtr(cpu.m_gpr[3]);
+
     if (p) fprintf(stderr, "[OSReport] %s\n", (const char*)p);
     cpu.m_gpr[3] = 0;
 }
 
 static void hle_OSFatal(Core::Interpreter& cpu)
 {
-    const uint8_t* p = cpu.m_memory.hostPtr(cpu.m_gpr[3]);
+    const std::uint8_t* p = cpu.m_memory.hostPtr(cpu.m_gpr[3]);
+
     if (p) fprintf(stderr, "[OSFatal] %s\n", (const char*)p);
     else   fprintf(stderr, "[OSFatal] <unmapped>\n");
     cpu.m_gpr[3] = 0;
@@ -314,8 +320,9 @@ static void hle_os_snprintf(Core::Interpreter& cpu)
 {
     uint32_t buf  = cpu.m_gpr[3];
     uint32_t size = cpu.m_gpr[4];
+
     if (buf && size) {
-        uint8_t* p = cpu.m_memory.hostPtr(buf);
+        std::uint8_t* p = cpu.m_memory.hostPtr(buf);
         if (p) p[0] = 0;
     }
     cpu.m_gpr[3] = 0;
@@ -343,13 +350,15 @@ static void hle_OSSetThreadAffinity(Core::Interpreter& cpu){ cpu.m_gpr[3] = 1; }
 
 static void hle_wut_get_thread_specific(Core::Interpreter& cpu)
 {
-    uint32_t key = cpu.m_gpr[3];
+    std::uint32_t key = cpu.m_gpr[3];
+
     cpu.m_gpr[3] = (key < 64) ? s_tls[key] : 0;
 }
 
 static void hle_wut_set_thread_specific(Core::Interpreter& cpu)
 {
-    uint32_t key = cpu.m_gpr[3], val = cpu.m_gpr[4];
+    std::uint32_t key = cpu.m_gpr[3], val = cpu.m_gpr[4];
+
     if (key < 64) s_tls[key] = val;
     cpu.m_gpr[3] = 0;
 }
@@ -363,8 +372,9 @@ static void hle_MEMAllocFromDefaultHeap(Core::Interpreter& cpu)
 
 static void hle_MEMAllocFromDefaultHeapEx(Core::Interpreter& cpu)
 {
-    uint32_t size  = cpu.m_gpr[3];
-    uint32_t align = cpu.m_gpr[4];
+    std::uint32_t size  = cpu.m_gpr[3];
+    std::uint32_t align = cpu.m_gpr[4];
+
     cpu.m_gpr[3] = cpu.m_memory.heapAllocate(size, align ? align : 8);
 }
 
@@ -377,8 +387,9 @@ static void hle_MEMGetAllocatableSizeForExpHeapEx(Core::Interpreter& cpu) { cpu.
 
 static void hle_MEMAllocFromExpHeapEx(Core::Interpreter& cpu)
 {
-    uint32_t size  = cpu.m_gpr[4];
-    uint32_t align = cpu.m_gpr[5];
+    std::uint32_t size  = cpu.m_gpr[4];
+    std::uint32_t align = cpu.m_gpr[5];
+
     cpu.m_gpr[3] = cpu.m_memory.heapAllocate(size, align ? align : 8);
 }
 
@@ -445,17 +456,17 @@ static void hle_VPADSetAccParam(Core::Interpreter& cpu) { cpu.m_gpr[3] = 0; }
 
 static void hle_VPADRead(Core::Interpreter& cpu)
 {
-    uint32_t buf_addr = cpu.m_gpr[4];
-    uint32_t err_addr = cpu.m_gpr[6];
+    std::uint32_t buf_addr = cpu.m_gpr[4];
+    std::uint32_t err_addr = cpu.m_gpr[6];
 
     if (!cpu.m_renderer) { cpu.m_gpr[3] = 0; return; }
 
     cpu.m_renderer->poll_events();
-    uint32_t hold = cpu.m_renderer->get_buttons();
+    std::uint32_t hold = cpu.m_renderer->get_buttons();
 
-    static uint32_t s_prev_hold = 0;
-    uint32_t trigger  = hold & ~s_prev_hold;
-    uint32_t released = s_prev_hold & ~hold;
+    static std::uint32_t s_prev_hold = 0;
+    std::uint32_t trigger  = hold & ~s_prev_hold;
+    std::uint32_t released = s_prev_hold & ~hold;
     s_prev_hold = hold;
 
     cpu.m_memory.write<std::uint32_t>(buf_addr + 0, hold);
