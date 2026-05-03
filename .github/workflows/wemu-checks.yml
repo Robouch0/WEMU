@@ -2,14 +2,9 @@ name: Build and Check WEMU
 
 on:
   pull_request:
-    branches:
-      - dev
-      - main
+    branches: [dev, main]
   push:
-    branches:
-      - 249-upgrade-the-github-ci-to-check-unit-tests-clang-format-clang-tidy
-      - dev
-      - main
+    branches: [dev, main]
 
 jobs:
   build:
