@@ -1,4 +1,4 @@
-name: Build WEMU Project
+name: Build and Check WEMU
 
 on:
   pull_request:
@@ -7,32 +7,88 @@ on:
       - main
   push:
     branches:
-      - 29-github-action-ci-checking-the-cmake-project-itself-is-still-building-as-it-should
+      - 249-upgrade-the-github-ci-to-check-unit-tests-clang-format-clang-tidy
       - dev
       - main
 
 jobs:
   build:
+    name: Full Build (core + gui)
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Qt6 and dependencies
+      - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y qt6-base-dev qt6-tools-dev cmake build-essential qt6-declarative-dev qt6-base-dev-tools libxkbcommon-dev libsdl2-dev
-
-      - name: Create build directory
-        run: mkdir -p build
+          sudo apt-get install -y qt6-base-dev qt6-tools-dev cmake build-essential \
+            qt6-declarative-dev qt6-base-dev-tools libxkbcommon-dev libsdl2-dev
 
       - name: Configure project with CMake
-        run: |
-          cd build
-          cmake ..
+        run: cmake -S . -B build
 
-      - name: Build the project
+      - name: Build project
+        run: cmake --build build --parallel 2
+
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
         run: |
-          cd build
-          cmake --build .
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential zlib1g-dev
+
+      - name: Configure core with CMake
+        run: cmake -S core -B core/build
+
+      - name: Build core
+        run: cmake --build core/build --parallel 2
+
+      - name: Run tests
+        run: ctest --test-dir core/build --output-on-failure
+
+  clang-format:
+    name: clang-format
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install clang-format
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-format
+
+      - name: Check formatting
+        run: |
+          find core/src core/tests \( -name "*.cpp" -o -name "*.hpp" \) | \
+            xargs clang-format --dry-run --Werror
+
+  clang-tidy:
+    name: clang-tidy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential zlib1g-dev clang-tidy
+
+      - name: Configure core (generate compile_commands.json)
+        run: cmake -S core -B core/build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+
+      - name: Run clang-tidy
+        run: |
+          find core/src -name "*.cpp" | \
+            xargs clang-tidy -p core/build/
