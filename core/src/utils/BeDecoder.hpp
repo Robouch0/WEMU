@@ -19,8 +19,7 @@
 namespace Utils {
     class BeDecoderException final : public Core::Exception {
         public:
-            explicit BeDecoderException(const std::string &errorMessage) : Core::Exception(
-                "BeDecoderException", errorMessage) {}
+            explicit BeDecoderException(const std::string &errorMessage) : Core::Exception("BeDecoderException", errorMessage) {}
 
             ~BeDecoderException() override = default;
     };

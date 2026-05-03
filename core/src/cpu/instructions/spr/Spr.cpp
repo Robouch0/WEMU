@@ -20,9 +20,15 @@ namespace Core::Instruction {
     void MFSPR(Interpreter &cpu, const EncodedInstruction &instr)
     {
         switch (instr.spr) {
-            case 0b00001'00000: cpu.m_gpr[instr.rt] = cpu.m_xer.raw; break;
-            case 0b01000'00000: cpu.m_gpr[instr.rt] = cpu.m_lr;      break;
-            case 0b01001'00000: cpu.m_gpr[instr.rt] = cpu.m_ctr;     break;
+            case 0b00001'00000:
+                cpu.m_gpr[instr.rt] = cpu.m_xer.raw;
+                break;
+            case 0b01000'00000:
+                cpu.m_gpr[instr.rt] = cpu.m_lr;
+                break;
+            case 0b01001'00000:
+                cpu.m_gpr[instr.rt] = cpu.m_ctr;
+                break;
             default:
                 break;
         }
@@ -38,9 +44,15 @@ namespace Core::Instruction {
     void MTSPR(Interpreter &cpu, const EncodedInstruction &instr)
     {
         switch (instr.spr) {
-            case 0b00001'00000: cpu.m_xer.raw = cpu.m_gpr[instr.rs]; break;
-            case 0b01000'00000: cpu.m_lr = cpu.m_gpr[instr.rs]; break;
-            case 0b01001'00000: cpu.m_ctr = cpu.m_gpr[instr.rs]; break;
+            case 0b00001'00000:
+                cpu.m_xer.raw = cpu.m_gpr[instr.rs];
+                break;
+            case 0b01000'00000:
+                cpu.m_lr = cpu.m_gpr[instr.rs];
+                break;
+            case 0b01001'00000:
+                cpu.m_ctr = cpu.m_gpr[instr.rs];
+                break;
             default:
                 break;
         }
@@ -52,10 +64,7 @@ namespace Core::Instruction {
      * @param cpu   Interpreter state.
      * @param instr Encoded instruction (fields: rt).
      */
-    void MFCR(Interpreter &cpu, const EncodedInstruction &instr)
-    {
-        cpu.m_gpr[instr.rt] = cpu.m_cr.raw;
-    }
+    void MFCR(Interpreter &cpu, const EncodedInstruction &instr) { cpu.m_gpr[instr.rt] = cpu.m_cr.raw; }
 
     /**
      * @brief Move To Condition Register Fields.

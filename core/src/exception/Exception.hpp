@@ -17,8 +17,7 @@
 namespace Core {
     class Exception : public std::exception {
         public:
-            Exception(std::string errorType, std::string errorMessage) : m_errorType(std::move(errorType)),
-                                                                         m_errorMessage(std::move(errorMessage)) {}
+            Exception(std::string errorType, std::string errorMessage) : m_errorType(std::move(errorType)), m_errorMessage(std::move(errorMessage)) {}
 
             ~Exception() override = 0;
 

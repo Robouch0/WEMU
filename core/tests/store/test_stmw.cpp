@@ -17,7 +17,7 @@ static constexpr uint32_t TEST_ADDR = 0x02000200;
 
 TEST_F(InstructionTest, STMW_SingleRegister)
 {
-    cpu->m_gpr[1]  = TEST_ADDR;
+    cpu->m_gpr[1] = TEST_ADDR;
     cpu->m_gpr[31] = 0xDEADBEEF;
 
     EncodedInstruction inst(0);
@@ -38,7 +38,7 @@ TEST_F(InstructionTest, STMW_SingleRegister)
 
 TEST_F(InstructionTest, STMW_TwoRegisters)
 {
-    cpu->m_gpr[1]  = TEST_ADDR;
+    cpu->m_gpr[1] = TEST_ADDR;
     cpu->m_gpr[30] = 0x11111111;
     cpu->m_gpr[31] = 0x22222222;
 
@@ -49,7 +49,7 @@ TEST_F(InstructionTest, STMW_TwoRegisters)
 
     Core::Instruction::STMW(*cpu, inst);
 
-    EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR),     0x11111111u);
+    EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR), 0x11111111u);
     EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR + 4), 0x22222222u);
 }
 
@@ -61,7 +61,7 @@ TEST_F(InstructionTest, STMW_TwoRegisters)
 
 TEST_F(InstructionTest, STMW_FourRegisters)
 {
-    cpu->m_gpr[1]  = TEST_ADDR;
+    cpu->m_gpr[1] = TEST_ADDR;
     cpu->m_gpr[28] = 0xAAAAAAAA;
     cpu->m_gpr[29] = 0xBBBBBBBB;
     cpu->m_gpr[30] = 0xCCCCCCCC;
@@ -74,9 +74,9 @@ TEST_F(InstructionTest, STMW_FourRegisters)
 
     Core::Instruction::STMW(*cpu, inst);
 
-    EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR),      0xAAAAAAAAu);
-    EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR + 4),  0xBBBBBBBBu);
-    EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR + 8),  0xCCCCCCCCu);
+    EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR), 0xAAAAAAAAu);
+    EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR + 4), 0xBBBBBBBBu);
+    EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR + 8), 0xCCCCCCCCu);
     EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR + 12), 0xDDDDDDDDu);
 }
 
@@ -88,7 +88,7 @@ TEST_F(InstructionTest, STMW_FourRegisters)
 
 TEST_F(InstructionTest, STMW_SequentialOrder)
 {
-    cpu->m_gpr[1]  = TEST_ADDR;
+    cpu->m_gpr[1] = TEST_ADDR;
     cpu->m_gpr[28] = 0x10000000;
     cpu->m_gpr[29] = 0x20000000;
     cpu->m_gpr[30] = 0x30000000;
@@ -101,9 +101,9 @@ TEST_F(InstructionTest, STMW_SequentialOrder)
 
     Core::Instruction::STMW(*cpu, inst);
 
-    EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR),      0x10000000u);
-    EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR + 4),  0x20000000u);
-    EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR + 8),  0x30000000u);
+    EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR), 0x10000000u);
+    EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR + 4), 0x20000000u);
+    EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR + 8), 0x30000000u);
     EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR + 12), 0x40000000u);
 }
 
@@ -115,7 +115,7 @@ TEST_F(InstructionTest, STMW_SequentialOrder)
 
 TEST_F(InstructionTest, STMW_PositiveDisplacement)
 {
-    cpu->m_gpr[1]  = TEST_ADDR;
+    cpu->m_gpr[1] = TEST_ADDR;
     cpu->m_gpr[30] = 0xFEEDFACE;
     cpu->m_gpr[31] = 0xC0FFEE00;
 
@@ -126,7 +126,7 @@ TEST_F(InstructionTest, STMW_PositiveDisplacement)
 
     Core::Instruction::STMW(*cpu, inst);
 
-    EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR + 8),  0xFEEDFACEu);
+    EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR + 8), 0xFEEDFACEu);
     EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR + 12), 0xC0FFEE00u);
 }
 
@@ -138,7 +138,7 @@ TEST_F(InstructionTest, STMW_PositiveDisplacement)
 
 TEST_F(InstructionTest, STMW_NegativeDisplacement)
 {
-    cpu->m_gpr[1]  = TEST_ADDR + 8;
+    cpu->m_gpr[1] = TEST_ADDR + 8;
     cpu->m_gpr[30] = 0x12345678;
     cpu->m_gpr[31] = 0x9ABCDEF0;
 
@@ -149,7 +149,7 @@ TEST_F(InstructionTest, STMW_NegativeDisplacement)
 
     Core::Instruction::STMW(*cpu, inst);
 
-    EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR),     0x12345678u);
+    EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR), 0x12345678u);
     EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR + 4), 0x9ABCDEF0u);
 }
 
@@ -161,7 +161,7 @@ TEST_F(InstructionTest, STMW_NegativeDisplacement)
 
 TEST_F(InstructionTest, STMW_RA0_Uses0AsBase)
 {
-    cpu->m_gpr[0]  = TEST_ADDR; // r0 ignored
+    cpu->m_gpr[0] = TEST_ADDR; // r0 ignored
     cpu->m_gpr[31] = 0x55555555;
 
     EncodedInstruction inst(0);
@@ -181,9 +181,9 @@ TEST_F(InstructionTest, STMW_RA0_Uses0AsBase)
 
 TEST_F(InstructionTest, STMW_StoreZeros)
 {
-    cpu->m_memory.write<uint32_t>(TEST_ADDR,     0xFFFFFFFF);
+    cpu->m_memory.write<uint32_t>(TEST_ADDR, 0xFFFFFFFF);
     cpu->m_memory.write<uint32_t>(TEST_ADDR + 4, 0xFFFFFFFF);
-    cpu->m_gpr[1]  = TEST_ADDR;
+    cpu->m_gpr[1] = TEST_ADDR;
     cpu->m_gpr[30] = 0;
     cpu->m_gpr[31] = 0;
 
@@ -194,7 +194,7 @@ TEST_F(InstructionTest, STMW_StoreZeros)
 
     Core::Instruction::STMW(*cpu, inst);
 
-    EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR),     0u);
+    EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR), 0u);
     EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR + 4), 0u);
 }
 
@@ -206,7 +206,7 @@ TEST_F(InstructionTest, STMW_StoreZeros)
 
 TEST_F(InstructionTest, STMW_ThreeRegisters)
 {
-    cpu->m_gpr[1]  = TEST_ADDR;
+    cpu->m_gpr[1] = TEST_ADDR;
     cpu->m_gpr[29] = 0x0A0B0C0D;
     cpu->m_gpr[30] = 0x1A1B1C1D;
     cpu->m_gpr[31] = 0x2A2B2C2D;
@@ -218,7 +218,7 @@ TEST_F(InstructionTest, STMW_ThreeRegisters)
 
     Core::Instruction::STMW(*cpu, inst);
 
-    EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR),     0x0A0B0C0Du);
+    EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR), 0x0A0B0C0Du);
     EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR + 4), 0x1A1B1C1Du);
     EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR + 8), 0x2A2B2C2Du);
 }
@@ -231,7 +231,7 @@ TEST_F(InstructionTest, STMW_ThreeRegisters)
 
 TEST_F(InstructionTest, STMW_DoesNotUpdateRA)
 {
-    cpu->m_gpr[2]  = TEST_ADDR;
+    cpu->m_gpr[2] = TEST_ADDR;
     cpu->m_gpr[31] = 0x77777777;
 
     EncodedInstruction inst(0);

@@ -5,8 +5,9 @@
 // ** test_fneg
 // */
 
-#include "TestFixture.hpp"
 #include <cmath>
+
+#include "TestFixture.hpp"
 
 // FNEG: FRT = -FRB  (flip sign bit, no rounding)
 // Fields: inst.rt=FRT(dest), inst.rb=FRB(source)

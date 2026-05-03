@@ -40,7 +40,7 @@ TEST_F(InstructionTest, STWX_BasicStore)
 TEST_F(InstructionTest, STWX_RA0_Uses0NotR0)
 {
     cpu->m_gpr[0] = TEST_ADDR; // r0 ignored
-    cpu->m_gpr[2] = 0;         // RB=0 → EA = 0
+    cpu->m_gpr[2] = 0; // RB=0 → EA = 0
     cpu->m_gpr[4] = 0x12345678;
 
     EncodedInstruction inst(0);

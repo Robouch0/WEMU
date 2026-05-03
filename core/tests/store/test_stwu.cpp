@@ -154,12 +154,16 @@ TEST_F(InstructionTest, STWU_ChainedStores)
     cpu->m_gpr[5] = 0xBBBBBBBB;
 
     EncodedInstruction inst1(0);
-    inst1.rs = 4; inst1.ra = 1; inst1.si = 4;
+    inst1.rs = 4;
+    inst1.ra = 1;
+    inst1.si = 4;
     Core::Instruction::STWU(*cpu, inst1);
 
     // r1 = TEST_ADDR + 4
     EncodedInstruction inst2(0);
-    inst2.rs = 5; inst2.ra = 1; inst2.si = 4;
+    inst2.rs = 5;
+    inst2.ra = 1;
+    inst2.si = 4;
     Core::Instruction::STWU(*cpu, inst2);
 
     EXPECT_EQ(cpu->m_memory.read<uint32_t>(TEST_ADDR + 4), 0xAAAAAAAAu);

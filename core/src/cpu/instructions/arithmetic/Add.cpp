@@ -30,7 +30,8 @@ namespace Core::Instruction {
      */
     void ADDE(Core::Interpreter &cpu, const EncodedInstruction &instr)
     {
-        const std::uint64_t result = static_cast<std::uint64_t>(cpu.m_gpr[instr.ra]) + static_cast<std::uint64_t>(cpu.m_gpr[instr.rb]) + static_cast<std::uint64_t>(cpu.m_xer.ca);
+        const std::uint64_t result = static_cast<std::uint64_t>(cpu.m_gpr[instr.ra]) + static_cast<std::uint64_t>(cpu.m_gpr[instr.rb]) +
+                                     static_cast<std::uint64_t>(cpu.m_xer.ca);
 
         cpu.m_gpr[instr.rt] = static_cast<std::uint32_t>(result);
         cpu.m_xer.ca = (result >> CARRY_OFFSET) & 1;
@@ -46,7 +47,8 @@ namespace Core::Instruction {
      */
     void ADDME(Interpreter &cpu, const EncodedInstruction &instr)
     {
-        const std::uint64_t addMESubtractor = static_cast<std::uint64_t>(cpu.m_xer.ca) + static_cast<std::uint32_t>(-1); // will never cause an overflow as ca is either equal to 0 or 1
+        const std::uint64_t addMESubtractor = static_cast<std::uint64_t>(cpu.m_xer.ca) +
+                                              static_cast<std::uint32_t>(-1); // will never cause an overflow as ca is either equal to 0 or 1
         const std::uint64_t result = static_cast<std::uint64_t>(cpu.m_gpr[instr.ra]) + addMESubtractor;
 
         cpu.m_gpr[instr.rt] = static_cast<std::uint32_t>(result);

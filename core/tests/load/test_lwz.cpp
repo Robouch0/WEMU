@@ -205,16 +205,20 @@ TEST_F(InstructionTest, LWZ_RT0_Allowed)
 
 TEST_F(InstructionTest, LWZ_SuccessiveLoads)
 {
-    cpu->m_memory.write<uint32_t>(TEST_ADDR,     0xAABBCCDD);
+    cpu->m_memory.write<uint32_t>(TEST_ADDR, 0xAABBCCDD);
     cpu->m_memory.write<uint32_t>(TEST_ADDR + 4, 0x11223344);
     cpu->m_gpr[1] = TEST_ADDR;
 
     EncodedInstruction inst1(0);
-    inst1.rt = 3; inst1.ra = 1; inst1.si = 0;
+    inst1.rt = 3;
+    inst1.ra = 1;
+    inst1.si = 0;
     Core::Instruction::LWZ(*cpu, inst1);
 
     EncodedInstruction inst2(0);
-    inst2.rt = 4; inst2.ra = 1; inst2.si = 4;
+    inst2.rt = 4;
+    inst2.ra = 1;
+    inst2.si = 4;
     Core::Instruction::LWZ(*cpu, inst2);
 
     EXPECT_EQ(cpu->m_gpr[3], 0xAABBCCDDu);

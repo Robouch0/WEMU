@@ -2,14 +2,14 @@
 
 #pragma once
 
-#include <vector>
-#include <cinttypes>
 #include <bit>
+#include <cinttypes>
+#include <format>
 #include <iomanip>
 #include <iostream>
-#include <format>
 #include <sstream>
 #include <stdexcept>
+#include <vector>
 
 #include "exception/Exception.hpp"
 
@@ -17,8 +17,7 @@ namespace Core {
 
     class MemoryException final : public Core::Exception {
         public:
-            explicit MemoryException(const std::string &errorMessage) : Core::Exception(
-                "MemoryException", errorMessage) {}
+            explicit MemoryException(const std::string &errorMessage) : Core::Exception("MemoryException", errorMessage) {}
 
             ~MemoryException() override = default;
 
@@ -27,8 +26,7 @@ namespace Core {
 
     class Memory {
         public:
-            enum MemoryMap : size_t
-            {
+            enum MemoryMap : std::uint32_t {
                 ApplicationCode = 0x02000000,
                 ApplicationData = 0x10000000,
                 ApplicationMemoryEnd = 0x42000000,
@@ -37,7 +35,7 @@ namespace Core {
             };
 
             static constexpr uint32_t STACK_BASE = 0xC0FF0000;
-            static constexpr uint32_t STACK_SIZE = 0x100000;   // 1 MB
+            static constexpr uint32_t STACK_SIZE = 0x100000; // 1 MB
             static constexpr uint32_t HEAP_BASE = 0x28000000;
             static constexpr uint32_t MIN_HEAP_ALIGN = 4;
 
@@ -55,11 +53,11 @@ namespace Core {
             [[nodiscard]] std::uint8_t *hostPtr(const std::uint32_t address) noexcept
             {
                 if (address >= STACK_BASE && address < STACK_BASE + STACK_SIZE)
-                    return reinterpret_cast<std::uint8_t*>(m_stack.data() + (address - STACK_BASE));
+                    return reinterpret_cast<std::uint8_t *>(m_stack.data() + (address - STACK_BASE));
                 if (address >= m_virtAddress) {
                     const std::size_t offset = address - m_virtAddress;
                     if (offset < m_memory.size())
-                        return reinterpret_cast<std::uint8_t*>(m_memory.data() + offset);
+                        return reinterpret_cast<std::uint8_t *>(m_memory.data() + offset);
                 }
                 return nullptr;
             }
@@ -70,7 +68,7 @@ namespace Core {
                 if (address & (alignof(T) - 1))
                     throw MemoryException(std::format("Unaligned read<{}> @ 0x{:08X}", sizeof(T), address));
 
-                T *ptr = reinterpret_cast<T*>(this->hostPtr(address));
+                T *ptr = reinterpret_cast<T *>(this->hostPtr(address));
 
                 if (ptr == nullptr)
                     throw MemoryException(std::format("Unmapped read<{}> @ 0x{:08X}", sizeof(T), address));
@@ -83,7 +81,7 @@ namespace Core {
                 if (address & (alignof(T) - 1))
                     throw MemoryException(std::format("Unaligned write<{}> @ 0x{:08X}", sizeof(T), address));
 
-                T *ptr = reinterpret_cast<T*>(this->hostPtr(address));
+                T *ptr = reinterpret_cast<T *>(this->hostPtr(address));
 
                 if (ptr == nullptr)
                     throw MemoryException(std::format("Unmapped write<{}> @ 0x{:08X}", sizeof(T), address));
@@ -111,10 +109,7 @@ namespace Core {
                 return reinterpret_cast<std::size_t>(m_memory.data() + (address - m_virtAddress));
             }
 
-            [[nodiscard]] std::size_t allocate(const std::size_t &address, const std::size_t &size) const
-            {
-                return translate(address);
-            }
+            [[nodiscard]] std::size_t allocate(const std::size_t &address, const std::size_t &size) const { return translate(address); }
 
         private:
             std::vector<char> m_memory;
@@ -123,4 +118,4 @@ namespace Core {
             std::size_t m_virtAddress;
             std::size_t m_memSize;
     };
-}
+} // namespace Core

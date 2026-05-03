@@ -5,8 +5,9 @@
 // ** test_fmr
 // */
 
-#include "TestFixture.hpp"
 #include <cmath>
+
+#include "TestFixture.hpp"
 
 // FMR: FRT = FRB  (copy FPR, preserving sign bit of all values including ±0)
 // Fields: inst.rt=FRT(dest), inst.rb=FRB(source)

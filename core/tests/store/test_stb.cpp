@@ -231,13 +231,17 @@ TEST_F(InstructionTest, STB_SuccessiveAdjacentStores)
     cpu->m_gpr[5] = 0x00000022;
 
     EncodedInstruction inst1(0);
-    inst1.rs = 4; inst1.ra = 1; inst1.si = 0;
+    inst1.rs = 4;
+    inst1.ra = 1;
+    inst1.si = 0;
     Core::Instruction::STB(*cpu, inst1);
 
     EncodedInstruction inst2(0);
-    inst2.rs = 5; inst2.ra = 1; inst2.si = 1;
+    inst2.rs = 5;
+    inst2.ra = 1;
+    inst2.si = 1;
     Core::Instruction::STB(*cpu, inst2);
 
-    EXPECT_EQ(cpu->m_memory.read<uint8_t>(TEST_ADDR),     0x11u);
+    EXPECT_EQ(cpu->m_memory.read<uint8_t>(TEST_ADDR), 0x11u);
     EXPECT_EQ(cpu->m_memory.read<uint8_t>(TEST_ADDR + 1), 0x22u);
 }

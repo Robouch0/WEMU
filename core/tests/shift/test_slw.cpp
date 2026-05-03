@@ -124,7 +124,7 @@ TEST_F(InstructionTest, SLW_ShiftBy16)
 TEST_F(InstructionTest, SLW_ShiftProducesZero)
 {
     cpu->m_gpr[3] = 0x00000002; // bit 1 set
-    cpu->m_gpr[5] = 31;         // << 31 → bit 1 goes past bit 31, result = 0
+    cpu->m_gpr[5] = 31; // << 31 → bit 1 goes past bit 31, result = 0
 
     EncodedInstruction inst(0);
     inst.rt = 3;

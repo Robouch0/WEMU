@@ -13,10 +13,7 @@ namespace Core::Instruction {
         cpu.updateCR0(cpu.m_gprSigned[instr.ra], instr);
     }
 
-    void XORI(Core::Interpreter &cpu, const EncodedInstruction &instr)
-    {
-        cpu.m_gpr[instr.ra] = cpu.m_gpr[instr.rs] ^ instr.ui;
-    }
+    void XORI(Core::Interpreter &cpu, const EncodedInstruction &instr) { cpu.m_gpr[instr.ra] = cpu.m_gpr[instr.rs] ^ instr.ui; }
 
     void XORIS(Core::Interpreter &cpu, const EncodedInstruction &instr)
     {
@@ -29,4 +26,4 @@ namespace Core::Instruction {
         cpu.m_gpr[instr.ra] = ~(cpu.m_gpr[instr.rs] ^ cpu.m_gpr[instr.rb]);
         cpu.updateCR0(cpu.m_gprSigned[instr.ra], instr);
     }
-}
+} // namespace Core::Instruction

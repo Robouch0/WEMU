@@ -38,7 +38,7 @@ TEST_F(InstructionTest, LMW_SingleRegister)
 
 TEST_F(InstructionTest, LMW_TwoRegisters)
 {
-    cpu->m_memory.write<uint32_t>(TEST_ADDR,     0x11111111);
+    cpu->m_memory.write<uint32_t>(TEST_ADDR, 0x11111111);
     cpu->m_memory.write<uint32_t>(TEST_ADDR + 4, 0x22222222);
     cpu->m_gpr[1] = TEST_ADDR;
 
@@ -61,9 +61,9 @@ TEST_F(InstructionTest, LMW_TwoRegisters)
 
 TEST_F(InstructionTest, LMW_FourRegisters)
 {
-    cpu->m_memory.write<uint32_t>(TEST_ADDR,      0xAAAAAAAA);
-    cpu->m_memory.write<uint32_t>(TEST_ADDR + 4,  0xBBBBBBBB);
-    cpu->m_memory.write<uint32_t>(TEST_ADDR + 8,  0xCCCCCCCC);
+    cpu->m_memory.write<uint32_t>(TEST_ADDR, 0xAAAAAAAA);
+    cpu->m_memory.write<uint32_t>(TEST_ADDR + 4, 0xBBBBBBBB);
+    cpu->m_memory.write<uint32_t>(TEST_ADDR + 8, 0xCCCCCCCC);
     cpu->m_memory.write<uint32_t>(TEST_ADDR + 12, 0xDDDDDDDD);
     cpu->m_gpr[1] = TEST_ADDR;
 
@@ -136,7 +136,7 @@ TEST_F(InstructionTest, LMW_PositiveDisplacement)
 
 TEST_F(InstructionTest, LMW_NegativeDisplacement)
 {
-    cpu->m_memory.write<uint32_t>(TEST_ADDR,     0x12345678);
+    cpu->m_memory.write<uint32_t>(TEST_ADDR, 0x12345678);
     cpu->m_memory.write<uint32_t>(TEST_ADDR + 4, 0x9ABCDEF0);
     cpu->m_gpr[1] = TEST_ADDR + 8;
 
@@ -178,7 +178,7 @@ TEST_F(InstructionTest, LMW_RA0_Uses0AsBase)
 
 TEST_F(InstructionTest, LMW_LoadZeros)
 {
-    cpu->m_memory.write<uint32_t>(TEST_ADDR,     0x00000000);
+    cpu->m_memory.write<uint32_t>(TEST_ADDR, 0x00000000);
     cpu->m_memory.write<uint32_t>(TEST_ADDR + 4, 0x00000000);
     cpu->m_gpr[1] = TEST_ADDR;
 
@@ -201,7 +201,7 @@ TEST_F(InstructionTest, LMW_LoadZeros)
 
 TEST_F(InstructionTest, LMW_ThreeRegisters)
 {
-    cpu->m_memory.write<uint32_t>(TEST_ADDR,     0x0A0B0C0D);
+    cpu->m_memory.write<uint32_t>(TEST_ADDR, 0x0A0B0C0D);
     cpu->m_memory.write<uint32_t>(TEST_ADDR + 4, 0x1A1B1C1D);
     cpu->m_memory.write<uint32_t>(TEST_ADDR + 8, 0x2A2B2C2D);
     cpu->m_gpr[1] = TEST_ADDR;

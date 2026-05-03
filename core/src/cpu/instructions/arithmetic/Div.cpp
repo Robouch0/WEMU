@@ -47,4 +47,4 @@ namespace Core::Instruction {
 
         cpu.updateCR0(cpu.m_gprSigned[instr.rt], instr);
     }
-};
+}; // namespace Core::Instruction

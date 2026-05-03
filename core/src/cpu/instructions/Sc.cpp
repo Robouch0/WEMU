@@ -20,4 +20,4 @@ namespace Core::Instruction {
             handler(cpu);
         }
     }
-}
+} // namespace Core::Instruction

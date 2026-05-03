@@ -12,7 +12,7 @@ static std::uint32_t rotlMask(const std::uint32_t mb, const std::uint32_t me)
 {
     std::uint32_t mask = 0;
 
-    for (std::uint32_t i = mb; i != me; i = (i + 1) % 32)
+    for (std::uint32_t i = mb; i != me; i = (i + 1) % 32) // NOLINT(bugprone-infinite-loop)
         mask |= 1u << (31 - i);
     mask |= 1u << (31 - me);
     return mask;

@@ -5,11 +5,12 @@
 ** Interpreter
 */
 
+#include "Interpreter.hpp"
+
 #include <algorithm>
 #include <bitset>
 #include <utility>
 
-#include "Interpreter.hpp"
 #include "utils/Logger.hpp"
 
 Core::Interpreter::Interpreter(Core::Binary binary) : m_binary(std::move(binary)) { initInstructionMap(); }
@@ -73,8 +74,7 @@ InstructionID Core::Interpreter::findInstructionID(const EncodedInstruction &ins
         if (found)
             return id;
     }
-    throw Core::InterpreterException("No instruction found with this fields. (opcode == " + std::to_string(instr.opcd) +
-                                     ")");
+    throw Core::InterpreterException("No instruction found with this fields. (opcode == " + std::to_string(instr.opcd) + ")");
 }
 
 void Core::Interpreter::executeInstruction(const EncodedInstruction &instr)
@@ -141,8 +141,7 @@ void Core::Interpreter::updateOverflow(const bool overflow, const EncodedInstruc
         m_xer.so = true;
 }
 
-void Core::Interpreter::updateOverflow(const std::int32_t &a, const std::int32_t &b, const std::int32_t &result,
-                                       const EncodedInstruction &instr)
+void Core::Interpreter::updateOverflow(const std::int32_t &a, const std::int32_t &b, const std::int32_t &result, const EncodedInstruction &instr)
 {
     const bool aSign = a < 0;
     const bool bSign = b < 0;

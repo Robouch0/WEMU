@@ -9,13 +9,13 @@
 
 #include <bitset>
 #include <cassert>
-#include <iostream>
 #include <cpu/types/InstructionID.hpp>
+#include <iostream>
 
-#include "zlib.h"
-#include "elf.h"
 #include "cpu/types/EncodedInstruction.hpp"
 #include "cpu/types/Instruction.hpp"
+#include "elf.h"
+#include "zlib.h"
 
 namespace Core {
     class InterpreterException;
@@ -122,7 +122,7 @@ void Core::Loader::loadAndDecompressSectionData(Section &section)
 
 void Core::Loader::loadAddressRangeProgram(const Section &section, const std::size_t start, const unsigned long end)
 {
-    if (section.raw.header.sh_flags & SHF_EXECINSTR) {
+    if (section.raw.header.sh_flags & SHF_EXECINSTR) { // NOLINT(bugprone-branch-clone)
         if (codeAddressRange.first == 0 || start < codeAddressRange.first)
             codeAddressRange.first = start;
         if (codeAddressRange.second == 0 || end > codeAddressRange.second)
@@ -137,7 +137,7 @@ void Core::Loader::loadAddressRangeProgram(const Section &section, const std::si
 
 void Core::Loader::loadAddressRangeImports(Core::Section &section, const unsigned long end)
 {
-    if (section.raw.header.sh_flags & SHF_EXECINSTR) {
+    if (section.raw.header.sh_flags & SHF_EXECINSTR) { // NOLINT(bugprone-branch-clone)
         section.meta.virtAddress = (codeAddressRange.second + section.raw.header.sh_addralign) & ~section.raw.header.sh_addralign;
         codeAddressRange.second = end;
     } else {
@@ -167,20 +167,20 @@ void Core::Loader::loadSectionsMeta()
 
 void Core::Loader::loadSectionsInMemory()
 {
-    for (auto &section : m_bin.sections) {
+    for (auto &section: m_bin.sections) {
         if (!(section.raw.header.sh_flags & SHF_ALLOC))
             continue;
         if (section.meta.type == SHT_NOBITS) {
             const std::size_t ptr = m_bin.m_memory.allocate(section.meta.virtAddress, section.meta.size);
 
             if (ptr) {
-                memset(reinterpret_cast<void *>(ptr), 0, section.meta.size);
+                memset(reinterpret_cast<void *>(ptr), 0, section.meta.size); // NOLINT(performance-no-int-to-ptr)
             }
         } else {
             const std::size_t ptr = m_bin.m_memory.allocate(section.meta.virtAddress, section.meta.size);
 
             if (ptr) {
-                memcpy(reinterpret_cast<void *>(ptr), section.raw.data.data(), section.meta.size);
+                memcpy(reinterpret_cast<void *>(ptr), section.raw.data.data(), section.meta.size); // NOLINT(performance-no-int-to-ptr)
             }
         }
     }
@@ -205,7 +205,7 @@ void Core::Loader::loadSymbolHeader(Utils::BeDecoder &symDecoder, Core::Symbol &
 
 void Core::Loader::loadSymbolsMeta()
 {
-    for (auto &symbol : m_bin.symbols) {
+    for (auto &symbol: m_bin.symbols) {
         symbol.meta.type = ELF32_ST_TYPE(symbol.raw.header.st_info);
         if (symbol.raw.header.st_shndx >= m_bin.sections.size())
             continue;
@@ -229,7 +229,7 @@ void Core::Loader::writeFunctionThunk(Core::Symbol &symbol, Core::Section &secti
 
 void Core::Loader::resolveSymbols()
 {
-    for (auto &symbol : m_bin.symbols) {
+    for (auto &symbol: m_bin.symbols) {
         if (symbol.raw.header.st_shndx >= m_bin.sections.size())
             continue;
         auto &section = m_bin.sections[symbol.raw.header.st_shndx];
@@ -265,7 +265,7 @@ void Core::Loader::loadSymbolsName()
     const Section &symStr = m_bin.findSection(".strtab");
     char const *symbolNames = symStr.raw.data.data();
 
-    for (auto &symbol : m_bin.symbols) {
+    for (auto &symbol: m_bin.symbols) {
         if (symbol.raw.header.st_name > 0 && symbol.raw.header.st_name < symStr.raw.data.size()) {
             symbol.name = symbolNames + symbol.raw.header.st_name;
         }

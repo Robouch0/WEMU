@@ -194,8 +194,8 @@ TEST_F(InstructionTest, STBX_Store0x80)
 
 TEST_F(InstructionTest, STBX_DifferentRegisters)
 {
-    cpu->m_gpr[5]  = TEST_ADDR;
-    cpu->m_gpr[6]  = 7;
+    cpu->m_gpr[5] = TEST_ADDR;
+    cpu->m_gpr[6] = 7;
     cpu->m_gpr[10] = 0x000000CC;
 
     EncodedInstruction inst(0);
@@ -243,17 +243,19 @@ TEST_F(InstructionTest, STBX_SuccessiveAdjacentStores)
     cpu->m_gpr[5] = 0x000000BB;
 
     EncodedInstruction inst1(0);
-    inst1.rs = 4; inst1.ra = 1;
+    inst1.rs = 4;
+    inst1.ra = 1;
     cpu->m_gpr[2] = 0;
     inst1.rb = 2;
     Core::Instruction::STBX(*cpu, inst1);
 
     EncodedInstruction inst2(0);
-    inst2.rs = 5; inst2.ra = 1;
+    inst2.rs = 5;
+    inst2.ra = 1;
     cpu->m_gpr[2] = 1;
     inst2.rb = 2;
     Core::Instruction::STBX(*cpu, inst2);
 
-    EXPECT_EQ(cpu->m_memory.read<uint8_t>(TEST_ADDR),     0xAAu);
+    EXPECT_EQ(cpu->m_memory.read<uint8_t>(TEST_ADDR), 0xAAu);
     EXPECT_EQ(cpu->m_memory.read<uint8_t>(TEST_ADDR + 1), 0xBBu);
 }
