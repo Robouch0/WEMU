@@ -131,7 +131,6 @@ TEST_F(InstructionTest, LBZ_RA0_Uses0AsBase)
     inst.si = 0;
     inst.d = 0;
 
-    // EA = 0 → unmapped → 0
     EXPECT_THROW(Core::Instruction::LBZ(*cpu, inst), Core::MemoryException);
 }
 

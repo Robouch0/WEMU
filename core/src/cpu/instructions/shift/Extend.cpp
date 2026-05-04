@@ -43,5 +43,21 @@ namespace Core::Instruction {
     void EXTSB(Interpreter &cpu, const EncodedInstruction &instr);
     // {
     // }
+    void CNTLZW(Core::Interpreter &cpu, const EncodedInstruction &i)
+    {
+        cpu.m_gpr[i.ra] = cpu.m_gpr[i.rt] == 0 ? 32 : std::countl_zero(cpu.m_gpr[i.rt]);
+        cpu.updateCR0(cpu.m_gprSigned[i.ra], i);
+    }
+    void EXTSH(Core::Interpreter &cpu, const EncodedInstruction &i)
+    {
+        cpu.m_gpr[i.ra] = static_cast<std::uint32_t>(static_cast<std::int16_t>(cpu.m_gpr[i.rt]));
+        cpu.updateCR0(cpu.m_gprSigned[i.ra], i);
+    }
+    void EXTSB(Core::Interpreter &cpu, const EncodedInstruction &i)
+    {
+        cpu.m_gpr[i.ra] = static_cast<std::uint32_t>(static_cast<std::int8_t>(cpu.m_gpr[i.rt]));
+        cpu.updateCR0(cpu.m_gprSigned[i.ra], i);
+    }
+
 
 } // namespace Core::Instruction

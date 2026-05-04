@@ -18,9 +18,13 @@ namespace Core::Instruction {
      * @param cpu   Interpreter state.
      * @param instr Encoded instruction (fields: rt as RS, ra as RA dest, rb, rc).
      */
-    void SLW(Interpreter &cpu, const EncodedInstruction &instr);
-    // {
-    // }
+    void SLW(Interpreter &cpu, const EncodedInstruction &instr)
+    {
+        const std::uint32_t shift = cpu.m_gpr[instr.rb] & 0b111111;
+
+        cpu.m_gpr[instr.ra] = shift >= 32 ? 0 : cpu.m_gpr[instr.rs] << shift;
+        cpu.updateCR0(cpu.m_gprSigned[instr.ra], instr);
+    }
 
     /**
      * @brief Shift Right Word.
@@ -31,9 +35,13 @@ namespace Core::Instruction {
      * @param cpu   Interpreter state.
      * @param instr Encoded instruction (fields: rt as RS, ra as RA dest, rb, rc).
      */
-    void SRW(Interpreter &cpu, const EncodedInstruction &instr);
-    // {
-    // }
+    void SRW(Interpreter &cpu, const EncodedInstruction &instr)
+    {
+        const std::uint32_t shift = cpu.m_gpr[instr.rb] & 0b111111;
+
+        cpu.m_gpr[instr.ra] = shift >= 32 ? 0 : cpu.m_gpr[instr.rs] >> shift;
+        cpu.updateCR0(cpu.m_gprSigned[instr.ra], instr);
+    }
 
     /**
      * @brief Shift Right Algebraic Word.
@@ -62,5 +70,31 @@ namespace Core::Instruction {
     void SRAWI(Interpreter &cpu, const EncodedInstruction &instr);
     // {
     // }
+
+    void SRAW(Core::Interpreter &cpu, const EncodedInstruction &i)
+    {
+        const std::uint32_t n = cpu.m_gpr[i.rb] & 63;
+        if (n >= 32) {
+            const bool neg = cpu.m_gprSigned[i.rt] < 0;
+            cpu.m_gpr[i.ra] = neg ? 0xFFFFFFFFu : 0;
+            cpu.m_xer.ca = neg ? 1 : 0;
+        } else {
+            cpu.m_gpr[i.ra] = static_cast<std::uint32_t>(cpu.m_gprSigned[i.rt] >> n);
+            cpu.m_xer.ca = (cpu.m_gprSigned[i.rt] < 0) && (cpu.m_gpr[i.rt] & ((1u << n) - 1)) ? 1 : 0;
+        }
+        cpu.updateCR0(cpu.m_gprSigned[i.ra], i);
+    }
+    void SRAWI(Core::Interpreter &cpu, const EncodedInstruction &i)
+    {
+        const std::uint32_t n = i.rb;  // SH = rb field (0-31)
+        if (n == 0) {
+            cpu.m_gpr[i.ra] = cpu.m_gpr[i.rt];
+            cpu.m_xer.ca = 0;
+        } else {
+            cpu.m_gpr[i.ra] = static_cast<std::uint32_t>(cpu.m_gprSigned[i.rt] >> n);
+            cpu.m_xer.ca = (cpu.m_gprSigned[i.rt] < 0) && (cpu.m_gpr[i.rt] & ((1u << n) - 1)) ? 1 : 0;
+        }
+        cpu.updateCR0(cpu.m_gprSigned[i.ra], i);
+    }
 
 } // namespace Core::Instruction

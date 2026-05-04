@@ -17,9 +17,16 @@ namespace Core::Instruction {
      * @param cpu   Interpreter state.
      * @param instr Encoded instruction (fields: rt, ra, rb).
      */
-    void MFSPR(Interpreter &cpu, const EncodedInstruction &instr);
-    // {
-    // }
+    void MFSPR(Interpreter &cpu, const EncodedInstruction &instr)
+    {
+        switch (instr.spr) {
+            case 0b00001'00000: cpu.m_gpr[instr.rt] = cpu.m_xer.raw; break;
+            case 0b01000'00000: cpu.m_gpr[instr.rt] = cpu.m_lr;      break;
+            case 0b01001'00000: cpu.m_gpr[instr.rt] = cpu.m_ctr;     break;
+            default:
+                break;
+        }
+    }
 
     /**
      * @brief Move To Special Purpose Register.
@@ -28,9 +35,16 @@ namespace Core::Instruction {
      * @param cpu   Interpreter state.
      * @param instr Encoded instruction (fields: rt as RS, ra, rb).
      */
-    void MTSPR(Interpreter &cpu, const EncodedInstruction &instr);
-    // {
-    // }
+    void MTSPR(Interpreter &cpu, const EncodedInstruction &instr)
+    {
+        switch (instr.spr) {
+            case 0b00001'00000: cpu.m_xer.raw = cpu.m_gpr[instr.rs]; break;
+            case 0b01000'00000: cpu.m_lr = cpu.m_gpr[instr.rs]; break;
+            case 0b01001'00000: cpu.m_ctr = cpu.m_gpr[instr.rs]; break;
+            default:
+                break;
+        }
+    }
 
     /**
      * @brief Move From Condition Register.
@@ -38,9 +52,10 @@ namespace Core::Instruction {
      * @param cpu   Interpreter state.
      * @param instr Encoded instruction (fields: rt).
      */
-    void MFCR(Interpreter &cpu, const EncodedInstruction &instr);
-    // {
-    // }
+    void MFCR(Interpreter &cpu, const EncodedInstruction &instr)
+    {
+        cpu.m_gpr[instr.rt] = cpu.m_cr.raw;
+    }
 
     /**
      * @brief Move To Condition Register Fields.
@@ -49,8 +64,15 @@ namespace Core::Instruction {
      * @param cpu   Interpreter state.
      * @param instr Encoded instruction (fields: rt as RS; FXM at raw bits [12:19]).
      */
-    void MTCRF(Interpreter &cpu, const EncodedInstruction &instr);
-    // {
-    // }
+    void MTCRF(Interpreter &cpu, const EncodedInstruction &instr)
+    {
+        std::uint32_t mask = 0;
+
+        for (std::size_t bit = 0; bit < 8; bit++) {
+            if ((instr.fxm >> bit) & 1)
+                mask |= 0b1111 << (bit * 4);
+        }
+        cpu.m_cr.raw = (cpu.m_gpr[instr.rs] & mask) | (cpu.m_cr.raw & ~mask);
+    }
 
 } // namespace Core::Instruction

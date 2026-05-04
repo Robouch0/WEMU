@@ -10,7 +10,7 @@ namespace Core::Instruction {
     void XOR(Core::Interpreter &cpu, const EncodedInstruction &instr)
     {
         cpu.m_gpr[instr.ra] = cpu.m_gpr[instr.rs] ^ cpu.m_gpr[instr.rb];
-        cpu.updateCR(cpu.m_cr.cr0, cpu.m_gprSigned[instr.ra], instr);
+        cpu.updateCR0(cpu.m_gprSigned[instr.ra], instr);
     }
 
     void XORI(Core::Interpreter &cpu, const EncodedInstruction &instr)
@@ -27,6 +27,6 @@ namespace Core::Instruction {
     void EQV(Core::Interpreter &cpu, const EncodedInstruction &instr)
     {
         cpu.m_gpr[instr.ra] = ~(cpu.m_gpr[instr.rs] ^ cpu.m_gpr[instr.rb]);
-        cpu.updateCR(cpu.m_cr.cr0, cpu.m_gprSigned[instr.ra], instr);
+        cpu.updateCR0(cpu.m_gprSigned[instr.ra], instr);
     }
 }

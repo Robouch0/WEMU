@@ -131,7 +131,6 @@ TEST_F(InstructionTest, STH_RA0_Uses0AsBase)
     inst.ra = 0;
     inst.si = 0;
 
-    // EA = 0 → unmapped, TEST_ADDR untouched
     EXPECT_THROW(Core::Instruction::STH(*cpu, inst), Core::MemoryException);
 }
 
