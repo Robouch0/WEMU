@@ -1,3 +1,12 @@
+![License](https://img.shields.io/github/license/Robouch0/WEMU)
+![Stars](https://img.shields.io/github/stars/Robouch0/WEMU?style=social)
+![Issues](https://img.shields.io/github/issues/Robouch0/WEMU)
+![Last Commit](https://img.shields.io/github/last-commit/Robouch0/WEMU/dev)
+![Language](https://img.shields.io/github/languages/top/Robouch0/WEMU)
+![C++23](https://img.shields.io/badge/C%2B%2B-23-blue?logo=cplusplus)
+![Platform](https://img.shields.io/badge/platform-Linux-lightgrey?logo=linux)
+![GitHub Actions Status](https://img.shields.io/github/actions/workflow/status/Robouch0/WEMU/wemu-checks.yml?branch=dev&label=Build)
+
 # WEMU — Wii U Emulator
 
 WEMU is an open-source Wii U emulator for Linux, written in C++23. The project is currently in early development, targeting a public beta in July 2026.
