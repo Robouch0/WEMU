@@ -73,8 +73,8 @@ void Renderer::flip_tv(const std::uint8_t *rgbx, std::uint32_t w, std::uint32_t 
     const std::uint32_t stride32 = pitch / 4;
 
     for (std::uint32_t y = 0; y < rows; ++y) {
-        const std::uint32_t *srow = src32 + y * w;
-        std::uint32_t *drow = dst32 + y * stride32;
+        const std::uint32_t *srow = src32 + static_cast<std::size_t>(y) * w;
+        std::uint32_t *drow = dst32 + static_cast<std::size_t>(y) * stride32;
         for (std::uint32_t x = 0; x < cols; ++x)
             drow[x] = srow[x];
     }

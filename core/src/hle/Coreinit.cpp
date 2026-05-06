@@ -170,7 +170,7 @@ static void blit_char(std::uint8_t *fb, std::uint32_t stride_px, int col_px, int
                 int px = col_px + x;
                 int py = row_px + y;
                 if (px < (int) stride_px) {
-                    std::uint8_t *dst = fb + (py * (int) stride_px + px) * 4;
+                    std::uint8_t *dst = fb + static_cast<std::ptrdiff_t>(py * (int) stride_px + px) * 4;
                     dst[0] = r;
                     dst[1] = g;
                     dst[2] = b;
@@ -467,7 +467,7 @@ static void hle_OSUninterruptibleSpinLock_Release(Core::Interpreter &cpu) { (voi
 
 // ---- WUT runtime ----
 
-static void hle___init_wut(Core::Interpreter &cpu)
+static void hle___init_wut(Core::Interpreter &cpu) // NOLINT(bugprone-reserved-identifier)
 {
     for (const auto &sym: cpu.m_binary.symbols) {
         if (sym.name == "main" && sym.raw.header.st_value >= 0x02000000u && sym.raw.header.st_value < 0x10000000u) {
@@ -481,7 +481,7 @@ static void hle___init_wut(Core::Interpreter &cpu)
     cpu.m_gpr[3] = 0;
 }
 
-static void hle___rplwrap_exit(Core::Interpreter &cpu)
+static void hle___rplwrap_exit(Core::Interpreter &cpu) // NOLINT(bugprone-reserved-identifier)
 {
     fprintf(stderr, "[HLE] __rplwrap_exit — halting\n");
     cpu.m_running = false;

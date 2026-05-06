@@ -137,9 +137,9 @@ namespace Core::Instruction {
                     break;
                 }
             }
-            Utils::Log::debug("[BCTR] symbol name found {}", *sym_name);
             cpu.m_hle_redirected = false;
             if (sym_name && Core::syscallHandler.syscallTable.contains(*sym_name)) {
+                Utils::Log::debug("[BCTR] symbol name found {}", *sym_name);
                 Utils::Log::debug("[HLE] [BCTR] SyscallTable has found symbol {}", *sym_name);
                 Core::syscallHandler.get (*sym_name)(cpu);
             } else {

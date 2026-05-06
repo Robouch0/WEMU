@@ -29,7 +29,7 @@ namespace Core::Instruction {
      */
     void EXTSB(Core::Interpreter &cpu, const EncodedInstruction &instr)
     {
-        cpu.m_gpr[instr.ra] = static_cast<std::uint32_t>(static_cast<std::int8_t>(cpu.m_gpr[instr.rt]));
+        cpu.m_gpr[instr.ra] = static_cast<std::uint32_t>(static_cast<std::int32_t>(static_cast<std::int8_t>(cpu.m_gpr[instr.rt])));
         cpu.updateCR0(cpu.m_gprSigned[instr.ra], instr);
     }
 } // namespace Core::Instruction

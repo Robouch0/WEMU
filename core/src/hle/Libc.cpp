@@ -32,7 +32,7 @@ static void hle_calloc(Core::Interpreter &cpu)
     if (addr) {
         std::uint8_t *p = cpu.m_memory.hostPtr(addr);
         if (p)
-            std::memset(p, 0, n * size);
+            std::memset(p, 0, static_cast<std::size_t>(n) * size);
     }
     cpu.m_gpr[3] = addr;
 }
