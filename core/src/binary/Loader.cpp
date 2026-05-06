@@ -165,7 +165,7 @@ void Core::Loader::loadSectionsMeta()
     }
 }
 
-void Core::Loader::loadSectionsInMemory()
+void Core::Loader::loadSectionsInMemory() const
 {
     for (auto &section: m_bin.sections) {
         if (!(section.raw.header.sh_flags & SHF_ALLOC))
@@ -233,8 +233,12 @@ void Core::Loader::resolveSymbols()
         if (symbol.raw.header.st_shndx >= m_bin.sections.size())
             continue;
         auto &section = m_bin.sections[symbol.raw.header.st_shndx];
-        if (symbol.meta.type == STT_FUNC && section.raw.header.sh_flags & SHF_EXECINSTR)
-            writeFunctionThunk(symbol, section);
+        if (section.meta.type != SHT_RPL_IMPORTS)
+            continue;
+        if (section.raw.header.sh_flags & SHF_EXECINSTR) {
+            if (symbol.meta.type == STT_FUNC)
+                writeFunctionThunk(symbol, section);
+        }
     }
 }
 

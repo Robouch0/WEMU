@@ -22,14 +22,20 @@
 #include "cpu/memory/Memory.hpp"
 #include "lib/coreinit/Coreinint.hpp"
 #include "utils/BeDecoder.hpp"
+#include "cpu/memory/Memory.hpp"
+#include "hle/Coreinit.hpp"
+#include "hle/Libc.hpp"
+#include "hle/Whb.hpp"
 
 
 void print_elf32_ehdr(const Elf32_Ehdr &ehdr)
 {
     dprintf(1, "ELF header:\n");
-    dprintf(1, "e_ident\t\t%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x\n", ehdr.e_ident[0], ehdr.e_ident[1], ehdr.e_ident[2],
-            ehdr.e_ident[3], ehdr.e_ident[4], ehdr.e_ident[5], ehdr.e_ident[6], ehdr.e_ident[7], ehdr.e_ident[8], ehdr.e_ident[9], ehdr.e_ident[10],
-            ehdr.e_ident[11], ehdr.e_ident[12], ehdr.e_ident[13], ehdr.e_ident[14], ehdr.e_ident[15]);
+    dprintf(1, "e_ident\t\t%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x\n",
+        ehdr.e_ident[0], ehdr.e_ident[1], ehdr.e_ident[2], ehdr.e_ident[3],
+        ehdr.e_ident[4], ehdr.e_ident[5], ehdr.e_ident[6], ehdr.e_ident[7],
+        ehdr.e_ident[8], ehdr.e_ident[9], ehdr.e_ident[10], ehdr.e_ident[11],
+        ehdr.e_ident[12], ehdr.e_ident[13], ehdr.e_ident[14], ehdr.e_ident[15]);
     dprintf(1, "e_type\t\t0x%04x [%s]\n", ehdr.e_type, (ehdr.e_type == 0xFE01) ? "RPL" : "UNKNOWN");
     dprintf(1, "e_machine\t0x%04x [%s]\n", ehdr.e_machine, (ehdr.e_machine == 0x0014) ? "PowerPC" : "UNKNOWN");
     dprintf(1, "e_version\t0x%08x\n", ehdr.e_version);
@@ -85,12 +91,55 @@ int main(const int ac, char const *const *av)
     const Core::Loader loader(av[1]);
 
     Core::Binary binary = loader.getBinary();
+    std::cout << "main MEM -> " << std::hex << binary.m_memory.read<uint32_t>(268437924) << std::dec << std::endl;
+
     print_elf32_ehdr(binary.header);
     print_symbols(binary);
 
-    RegisterCoreInitFunctions();
+    RegisterCoreinitFunctions();
+    RegisterLibcFunctions();
+    RegisterWhbFunctions();
 
     Core::Interpreter interpreter(binary);
+
+    std::cout << "CPU 268437924 MEM -> " << std::hex << interpreter.m_memory.read<uint32_t>(268437924) << std::dec << std::endl;
+
+    // 4. Connect renderer to interpreter
+    Renderer renderer;
+    interpreter.m_renderer = &renderer;
+
+    // 5. Register address hooks for compiled-in stdlib (bypasses broken WUT sbrk heap)
+    struct { const char* name; Core::Interpreter::HookFn fn; } stdlib_hooks[] = {
+        {"memalign",      [](Core::Interpreter& cpu) { cpu.m_gpr[3] = cpu.m_memory.heapAllocate(cpu.m_gpr[4], cpu.m_gpr[3] ? cpu.m_gpr[3] : 8); }},
+        {"malloc",        [](Core::Interpreter& cpu) { cpu.m_gpr[3] = cpu.m_memory.heapAllocate(cpu.m_gpr[3], 8); }},
+        {"calloc",        [](Core::Interpreter& cpu) { uint32_t n = cpu.m_gpr[3] * cpu.m_gpr[4]; uint32_t a = cpu.m_memory.heapAllocate(n, 8); if (a) { uint8_t* p = cpu.m_memory.hostPtr(a); if (p) std::memset(p, 0, n); } cpu.m_gpr[3] = a; }},
+        {"realloc",       [](Core::Interpreter& cpu) { cpu.m_gpr[3] = cpu.m_memory.heapAllocate(cpu.m_gpr[4], 8); }},
+        {"free",          [](Core::Interpreter&) {}},
+        {"__wut_sbrk_r",  [](Core::Interpreter& cpu) { cpu.m_gpr[3] = cpu.m_memory.heapAllocate(cpu.m_gpr[4], 4); }},
+        {"_sbrk_r",       [](Core::Interpreter& cpu) { cpu.m_gpr[3] = cpu.m_memory.heapAllocate(cpu.m_gpr[4], 4); }},
+    };
+
+    for (auto& h : stdlib_hooks) {
+        for (const auto& sym : binary.symbols) {
+            if (sym.name == h.name &&
+                sym.raw.header.st_value >= 0x02000000u &&
+                sym.raw.header.st_value <  0x10000000u)
+            {
+                interpreter.m_hooks[sym.raw.header.st_value] = h.fn;
+                fprintf(stderr, "[hook] %s @ 0x%08X\n", h.name, sym.raw.header.st_value);
+            }
+        }
+    }
+
+    // 6. Init CPU state
+    interpreter.m_gpr[1] = 0xC0FFFFF0u;  // r1 = stack top
+    interpreter.m_gpr[2] = 0u;           // r2 = TOC (unused)
+    interpreter.m_gpr[3] = 0u;           // argc
+    interpreter.m_gpr[4] = 0u;           // argv
+
+    // PowerPC back-chain word (ABI requirement)
+    interpreter.m_memory.write<std::uint32_t>(0xC0FFFFF0u, 0);
+
 
     std::cout << "Loaded module!" << std::endl;
     std::cout << "Code: " << std::hex << "0x" << loader.codeAddressRange.first << ":" << "0x" << loader.codeAddressRange.second << std::endl;
