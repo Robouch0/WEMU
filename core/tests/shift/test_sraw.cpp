@@ -184,9 +184,9 @@ TEST_F(InstructionTest, SRAW_RC_UpdatesCR0)
     Core::Instruction::SRAW(*cpu, inst);
 
     EXPECT_EQ(cpu->m_gpr[4], 0xFFFFFFFFu);
-    EXPECT_EQ(cpu->m_cr.cr0.lt, 1u); // result is negative
-    EXPECT_EQ(cpu->m_cr.cr0.gt, 0u);
-    EXPECT_EQ(cpu->m_cr.cr0.eq, 0u);
+    EXPECT_NE(cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Negative, 0u); // lt=1
+    EXPECT_EQ(cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Positive, 0u); // gt=0
+    EXPECT_EQ(cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Zero,     0u); // eq=0
 }
 
 //

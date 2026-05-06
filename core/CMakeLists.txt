@@ -70,7 +70,6 @@ add_library(core STATIC
         src/hle/Whb.cpp
         src/gfx/Renderer.cpp
         src/cpu/instructions/logical/Cnt.cpp
-        src/cpu/instructions/rotateshift/Shift.cpp
 )
 
 target_include_directories(core PUBLIC
