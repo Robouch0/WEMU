@@ -2,250 +2,210 @@
 // ** EPITECH PROJECT, 2025
 // ** core
 // ** File description:
-// ** test_lwzx
+// ** test_extsb
 // */
-//
+
 #include "TestFixture.hpp"
 
-static constexpr uint32_t TEST_ADDR = 0x02000200;
+// EXTSB: rA = EXTS(rS[24:31])  — sign-extend the low 8 bits of rS to 32 bits
+// Fields: inst.rt=RS(source), inst.ra=RA(dest)
 
 //
 // ─────────────────────────────────────────────────────────────────────────────
-//  LWZX — basic: EA = RA + RB
+//  EXTSB — positive small value: 0x01 → 0x00000001
 // ─────────────────────────────────────────────────────────────────────────────
 //
 
-TEST_F(InstructionTest, LWZX_BasicLoad)
+TEST_F(InstructionTest, EXTSB_PositiveSmall)
 {
-    cpu->m_memory.write<uint32_t>(TEST_ADDR + 8, 0xDEADBEEF);
-    cpu->m_gpr[1] = TEST_ADDR;
-    cpu->m_gpr[2] = 8;
+    cpu->m_gpr[3] = 0x00000001;
 
     EncodedInstruction inst(0);
-    inst.rt = 4;
-    inst.ra = 1;
-    inst.rb = 2;
+    inst.rt = 3;
+    inst.ra = 4;
 
-    Core::Instruction::LWZX(*cpu, inst);
+    Core::Instruction::EXTSB(*cpu, inst);
 
-    EXPECT_EQ(cpu->m_gpr[4], 0xDEADBEEFu);
+    EXPECT_EQ(cpu->m_gpr[4], 0x00000001u);
 }
 
 //
 // ─────────────────────────────────────────────────────────────────────────────
-//  LWZX — RA=0: uses 0 as base, not r0
+//  EXTSB — max positive byte: 0x7F → 0x0000007F
 // ─────────────────────────────────────────────────────────────────────────────
 //
 
-TEST_F(InstructionTest, LWZX_RA0_Uses0NotR0)
+TEST_F(InstructionTest, EXTSB_MaxPositive)
 {
-    cpu->m_memory.write<uint32_t>(TEST_ADDR, 0x12345678);
-    cpu->m_gpr[0] = TEST_ADDR; // r0 has valid address but must NOT be used
-    cpu->m_gpr[2] = 0;         // RB = 0 → EA = 0 + 0 = 0 (unmapped)
+    cpu->m_gpr[3] = 0x0000007F;
 
     EncodedInstruction inst(0);
-    inst.rt = 4;
-    inst.ra = 0;
-    inst.rb = 2;
+    inst.rt = 3;
+    inst.ra = 4;
 
-    EXPECT_THROW(Core::Instruction::LWZX(*cpu, inst), Core::MemoryException);
+    Core::Instruction::EXTSB(*cpu, inst);
+
+    EXPECT_EQ(cpu->m_gpr[4], 0x0000007Fu);
 }
 
 //
 // ─────────────────────────────────────────────────────────────────────────────
-//  LWZX — RA=0: RB provides the full address
+//  EXTSB — min negative byte: 0x80 → 0xFFFFFF80
 // ─────────────────────────────────────────────────────────────────────────────
 //
 
-TEST_F(InstructionTest, LWZX_RA0_RBProvidesAddress)
+TEST_F(InstructionTest, EXTSB_MinNegative)
 {
-    cpu->m_memory.write<uint32_t>(TEST_ADDR, 0xCAFEBABE);
-    cpu->m_gpr[0] = 0xDEAD0000; // r0 must be ignored
-    cpu->m_gpr[2] = TEST_ADDR;
+    cpu->m_gpr[3] = 0x00000080;
 
     EncodedInstruction inst(0);
-    inst.rt = 4;
-    inst.ra = 0;
-    inst.rb = 2;
+    inst.rt = 3;
+    inst.ra = 4;
 
-    Core::Instruction::LWZX(*cpu, inst);
+    Core::Instruction::EXTSB(*cpu, inst);
 
-    EXPECT_EQ(cpu->m_gpr[4], 0xCAFEBABEu);
+    EXPECT_EQ(cpu->m_gpr[4], 0xFFFFFF80u);
+    EXPECT_EQ(cpu->m_gprSigned[4], -128);
 }
 
 //
 // ─────────────────────────────────────────────────────────────────────────────
-//  LWZX — RB=0: EA = RA
+//  EXTSB — all byte bits set: 0xFF → 0xFFFFFFFF (-1)
 // ─────────────────────────────────────────────────────────────────────────────
 //
 
-TEST_F(InstructionTest, LWZX_RB0_EAEqualsRA)
+TEST_F(InstructionTest, EXTSB_AllOnes)
 {
-    cpu->m_memory.write<uint32_t>(TEST_ADDR, 0xABCD1234);
-    cpu->m_gpr[1] = TEST_ADDR;
-    cpu->m_gpr[2] = 0;
+    cpu->m_gpr[3] = 0x000000FF;
 
     EncodedInstruction inst(0);
-    inst.rt = 4;
-    inst.ra = 1;
-    inst.rb = 2;
+    inst.rt = 3;
+    inst.ra = 4;
 
-    Core::Instruction::LWZX(*cpu, inst);
-
-    EXPECT_EQ(cpu->m_gpr[4], 0xABCD1234u);
-}
-
-//
-// ─────────────────────────────────────────────────────────────────────────────
-//  LWZX — load 0xFFFFFFFF (no sign extension)
-// ─────────────────────────────────────────────────────────────────────────────
-//
-
-TEST_F(InstructionTest, LWZX_LoadAllOnes)
-{
-    cpu->m_memory.write<uint32_t>(TEST_ADDR + 4, 0xFFFFFFFF);
-    cpu->m_gpr[1] = TEST_ADDR;
-    cpu->m_gpr[2] = 4;
-
-    EncodedInstruction inst(0);
-    inst.rt = 4;
-    inst.ra = 1;
-    inst.rb = 2;
-
-    Core::Instruction::LWZX(*cpu, inst);
+    Core::Instruction::EXTSB(*cpu, inst);
 
     EXPECT_EQ(cpu->m_gpr[4], 0xFFFFFFFFu);
+    EXPECT_EQ(cpu->m_gprSigned[4], -1);
 }
 
 //
 // ─────────────────────────────────────────────────────────────────────────────
-//  LWZX — load 0x80000000 (high bit set, no sign extension)
+//  EXTSB — zero: stays zero
 // ─────────────────────────────────────────────────────────────────────────────
 //
 
-TEST_F(InstructionTest, LWZX_HighBitSet)
+TEST_F(InstructionTest, EXTSB_Zero)
 {
-    cpu->m_memory.write<uint32_t>(TEST_ADDR + 4, 0x80000000);
-    cpu->m_gpr[1] = TEST_ADDR;
-    cpu->m_gpr[2] = 4;
+    cpu->m_gpr[3] = 0x00000000;
 
     EncodedInstruction inst(0);
-    inst.rt = 4;
-    inst.ra = 1;
-    inst.rb = 2;
+    inst.rt = 3;
+    inst.ra = 4;
 
-    Core::Instruction::LWZX(*cpu, inst);
-
-    EXPECT_EQ(cpu->m_gpr[4], 0x80000000u);
-}
-
-//
-// ─────────────────────────────────────────────────────────────────────────────
-//  LWZX — load zero
-// ─────────────────────────────────────────────────────────────────────────────
-//
-
-TEST_F(InstructionTest, LWZX_LoadZero)
-{
-    cpu->m_memory.write<uint32_t>(TEST_ADDR, 0x00000000);
-    cpu->m_gpr[1] = TEST_ADDR;
-    cpu->m_gpr[2] = 0;
-
-    EncodedInstruction inst(0);
-    inst.rt = 4;
-    inst.ra = 1;
-    inst.rb = 2;
-
-    Core::Instruction::LWZX(*cpu, inst);
+    Core::Instruction::EXTSB(*cpu, inst);
 
     EXPECT_EQ(cpu->m_gpr[4], 0u);
 }
 
 //
 // ─────────────────────────────────────────────────────────────────────────────
-//  LWZX — RA and RB both non-zero
+//  EXTSB — high 24 bits of rS are ignored
 // ─────────────────────────────────────────────────────────────────────────────
 //
 
-TEST_F(InstructionTest, LWZX_BothRAAndRBNonZero)
+TEST_F(InstructionTest, EXTSB_HighBitsIgnored)
 {
-    cpu->m_memory.write<uint32_t>(TEST_ADDR + 12, 0x55443322);
-    cpu->m_gpr[1] = TEST_ADDR + 4;
-    cpu->m_gpr[2] = 8;
+    cpu->m_gpr[3] = 0xABCDEF12; // low byte = 0x12 (positive)
 
     EncodedInstruction inst(0);
-    inst.rt = 5;
-    inst.ra = 1;
-    inst.rb = 2;
+    inst.rt = 3;
+    inst.ra = 4;
 
-    Core::Instruction::LWZX(*cpu, inst);
+    Core::Instruction::EXTSB(*cpu, inst);
 
-    EXPECT_EQ(cpu->m_gpr[5], 0x55443322u);
+    EXPECT_EQ(cpu->m_gpr[4], 0x00000012u);
 }
 
 //
 // ─────────────────────────────────────────────────────────────────────────────
-//  LWZX — does not update RA
+//  EXTSB — high bits ignored even when low byte is negative
 // ─────────────────────────────────────────────────────────────────────────────
 //
 
-TEST_F(InstructionTest, LWZX_DoesNotUpdateRA)
+TEST_F(InstructionTest, EXTSB_HighBitsIgnored_NegativeLowByte)
 {
-    cpu->m_memory.write<uint32_t>(TEST_ADDR + 4, 0xFEEDC0DE);
-    cpu->m_gpr[1] = TEST_ADDR;
-    cpu->m_gpr[2] = 4;
+    cpu->m_gpr[3] = 0x00000081; // low byte = 0x81 → negative
 
     EncodedInstruction inst(0);
-    inst.rt = 4;
-    inst.ra = 1;
-    inst.rb = 2;
+    inst.rt = 3;
+    inst.ra = 4;
 
-    Core::Instruction::LWZX(*cpu, inst);
+    Core::Instruction::EXTSB(*cpu, inst);
 
-    EXPECT_EQ(cpu->m_gpr[4], 0xFEEDC0DEu);
-    EXPECT_EQ(cpu->m_gpr[1], TEST_ADDR); // RA unchanged
+    EXPECT_EQ(cpu->m_gpr[4], 0xFFFFFF81u);
 }
 
 //
 // ─────────────────────────────────────────────────────────────────────────────
-//  LWZX — large RB offset
+//  EXTSB — RC=1 updates CR0: negative result
 // ─────────────────────────────────────────────────────────────────────────────
 //
 
-TEST_F(InstructionTest, LWZX_LargeRBOffset)
+TEST_F(InstructionTest, EXTSB_RC_UpdatesCR0_Negative)
 {
-    cpu->m_memory.write<uint32_t>(TEST_ADDR + 0x100, 0xBEEFCAFE);
-    cpu->m_gpr[1] = TEST_ADDR;
-    cpu->m_gpr[2] = 0x100;
+    cpu->m_gpr[3] = 0x000000FF; // sign-extends to -1
 
     EncodedInstruction inst(0);
-    inst.rt = 6;
-    inst.ra = 1;
-    inst.rb = 2;
+    inst.rt = 3;
+    inst.ra = 4;
+    inst.rc = 1;
 
-    Core::Instruction::LWZX(*cpu, inst);
+    Core::Instruction::EXTSB(*cpu, inst);
 
-    EXPECT_EQ(cpu->m_gpr[6], 0xBEEFCAFEu);
+    EXPECT_EQ(cpu->m_gpr[4], 0xFFFFFFFFu);
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Negative) ? 1 : 0), 1u);
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Positive) ? 1 : 0), 0u);
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Zero) ? 1 : 0), 0u);
 }
 
 //
 // ─────────────────────────────────────────────────────────────────────────────
-//  LWZX — RT=0 is allowed
+//  EXTSB — RC=1 updates CR0: positive result
 // ─────────────────────────────────────────────────────────────────────────────
 //
 
-TEST_F(InstructionTest, LWZX_RT0Allowed)
+TEST_F(InstructionTest, EXTSB_RC_UpdatesCR0_Positive)
 {
-    cpu->m_memory.write<uint32_t>(TEST_ADDR, 0x99887766);
-    cpu->m_gpr[1] = TEST_ADDR;
-    cpu->m_gpr[2] = 0;
+    cpu->m_gpr[3] = 0x0000007F;
 
     EncodedInstruction inst(0);
-    inst.rt = 0;
-    inst.ra = 1;
-    inst.rb = 2;
+    inst.rt = 3;
+    inst.ra = 4;
+    inst.rc = 1;
 
-    Core::Instruction::LWZX(*cpu, inst);
+    Core::Instruction::EXTSB(*cpu, inst);
 
-    EXPECT_EQ(cpu->m_gpr[0], 0x99887766u);
+    EXPECT_EQ(cpu->m_gpr[4], 0x0000007Fu);
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Negative) ? 1 : 0), 0u);
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Positive) ? 1 : 0), 1u);
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Zero) ? 1 : 0), 0u);
+}
+
+//
+// ─────────────────────────────────────────────────────────────────────────────
+//  EXTSB — RS is not modified
+// ─────────────────────────────────────────────────────────────────────────────
+//
+
+TEST_F(InstructionTest, EXTSB_DoesNotModifyRS)
+{
+    cpu->m_gpr[3] = 0xABCDEFAB;
+
+    EncodedInstruction inst(0);
+    inst.rt = 3;
+    inst.ra = 4;
+
+    Core::Instruction::EXTSB(*cpu, inst);
+
+    EXPECT_EQ(cpu->m_gpr[3], 0xABCDEFABu); // RS unchanged
 }

@@ -69,6 +69,7 @@ add_library(core STATIC
         src/hle/Whb.hpp
         src/hle/Whb.cpp
         src/gfx/Renderer.cpp
+        src/cpu/instructions/logical/Ext.cpp
         src/cpu/instructions/logical/Cnt.cpp
 )
 
