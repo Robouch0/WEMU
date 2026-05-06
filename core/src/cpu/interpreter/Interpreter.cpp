@@ -42,9 +42,11 @@ void Core::Interpreter::run()
     std::uint32_t ppc_pc = m_binary.header.e_entry;
     m_hooks_min = 0xFFFFFFFFu;
     m_hooks_max = 0u;
-    for (const auto &[addr, _] : m_hooks) {
-        if (addr < m_hooks_min) m_hooks_min = addr;
-        if (addr > m_hooks_max) m_hooks_max = addr;
+    for (const auto &[addr, _]: m_hooks) {
+        if (addr < m_hooks_min)
+            m_hooks_min = addr;
+        if (addr > m_hooks_max)
+            m_hooks_max = addr;
     }
 
     m_pc = ppc_pc - Core::Memory::MemoryMap::ApplicationCode;

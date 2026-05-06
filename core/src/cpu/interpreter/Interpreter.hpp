@@ -13,12 +13,12 @@
 #include <map>
 #include <vector>
 
-#include "gfx/Renderer.hpp"
 #include "Registers.hpp"
 #include "binary/Binary.hpp"
 #include "cpu/memory/Memory.hpp"
 #include "cpu/types/EncodedInstruction.hpp"
 #include "cpu/types/Instruction.hpp"
+#include "gfx/Renderer.hpp"
 #include "utils/BeDecoder.hpp"
 #include "utils/Logger.hpp"
 
@@ -63,12 +63,11 @@ namespace Core {
                     std::cout << "==== CR Dump  ====" << std::endl;
                     for (int i = 0; i < 8; ++i) {
                         const std::uint32_t field = (m_cr.raw >> ((7 - i) * 4)) & 0xF;
-                        std::cout << std::format("cr{} : 0x{:X}  [{}{}{}{}]", i, field,
-                            (field & ConditionRegisterFlag::Negative)        ? "LT " : "   ",
-                            (field & ConditionRegisterFlag::Positive)        ? "GT " : "   ",
-                            (field & ConditionRegisterFlag::Zero)            ? "EQ " : "   ",
-                            (field & ConditionRegisterFlag::SummaryOverflow) ? "SO"  : "  ")
-                            << std::endl;
+                        std::cout << std::format("cr{} : 0x{:X}  [{}{}{}{}]", i, field, (field & ConditionRegisterFlag::Negative) ? "LT " : "   ",
+                                                 (field & ConditionRegisterFlag::Positive) ? "GT " : "   ",
+                                                 (field & ConditionRegisterFlag::Zero) ? "EQ " : "   ",
+                                                 (field & ConditionRegisterFlag::SummaryOverflow) ? "SO" : "  ")
+                                  << std::endl;
                     }
                     std::cout << "==== CTR Dump  ====" << std::endl;
                     std::cout << std::format("ctr {:X}", m_ctr) << std::endl;
@@ -125,14 +124,14 @@ namespace Core {
 #include "cpu/tables/cpu_instructions.anh"
 #undef INSTR
 
-            using HookFn = std::function<void(Interpreter&)>;
+            using HookFn = std::function<void(Interpreter &)>;
 
             bool m_running{true};
             bool m_hle_redirected{false};
 
-            Renderer* m_renderer = nullptr; // SDL window — set after construction
+            Renderer *m_renderer = nullptr; // SDL window — set after construction
             std::unordered_map<std::uint32_t, HookFn> m_hooks; // PPC addr → intercept fn
-            std::uint32_t m_hooks_min{0xFFFFFFFFu};        // Opt C: hook address range
+            std::uint32_t m_hooks_min{0xFFFFFFFFu}; // Opt C: hook address range
             std::uint32_t m_hooks_max{0u};
 
             Core::Binary m_binary;

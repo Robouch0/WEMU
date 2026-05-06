@@ -31,7 +31,7 @@ TEST_F(InstructionTest, SRAW_ShiftPositive)
 
     Core::Instruction::SRAW(*cpu, inst);
 
-    EXPECT_EQ(cpu->m_gpr[4],  0x00000008u);
+    EXPECT_EQ(cpu->m_gpr[4], 0x00000008u);
     EXPECT_EQ(cpu->m_xer.ca, 0u); // no CA for positive
 }
 
@@ -75,7 +75,7 @@ TEST_F(InstructionTest, SRAW_Negative_CA_Set)
     Core::Instruction::SRAW(*cpu, inst);
 
     EXPECT_EQ(cpu->m_gpr[4], 0xC0000000u); // arithmetic shift
-    EXPECT_EQ(cpu->m_xer.ca, 1u);          // 1-bit was shifted out of negative number
+    EXPECT_EQ(cpu->m_xer.ca, 1u); // 1-bit was shifted out of negative number
 }
 
 //
@@ -186,7 +186,7 @@ TEST_F(InstructionTest, SRAW_RC_UpdatesCR0)
     EXPECT_EQ(cpu->m_gpr[4], 0xFFFFFFFFu);
     EXPECT_NE(cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Negative, 0u); // lt=1
     EXPECT_EQ(cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Positive, 0u); // gt=0
-    EXPECT_EQ(cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Zero,     0u); // eq=0
+    EXPECT_EQ(cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Zero, 0u); // eq=0
 }
 
 //

@@ -32,4 +32,4 @@ namespace Core::Instruction {
         cpu.m_gpr[instr.ra] = static_cast<std::uint32_t>(static_cast<std::int8_t>(cpu.m_gpr[instr.rt]));
         cpu.updateCR0(cpu.m_gprSigned[instr.ra], instr);
     }
-}
+} // namespace Core::Instruction

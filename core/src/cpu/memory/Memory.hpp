@@ -39,7 +39,7 @@ namespace Core {
             static constexpr uint32_t HEAP_BASE = 0x28000000;
             static constexpr uint32_t MIN_HEAP_ALIGN = 4;
             static constexpr uint32_t DIMPORT_BASE = 0xC0000000; // dimport slots
-            static constexpr uint32_t DIMPORT_SIZE = 0x4000;     // 16 KB
+            static constexpr uint32_t DIMPORT_SIZE = 0x4000; // 16 KB
 
             explicit Memory(const std::size_t &size = 0x40000000) : m_memory(), m_virtAddress(ApplicationCode), m_memSize(size)
             {
@@ -58,7 +58,7 @@ namespace Core {
                 if (address >= STACK_BASE && address < STACK_BASE + STACK_SIZE)
                     return reinterpret_cast<std::uint8_t *>(m_stack.data() + (address - STACK_BASE));
                 if (address >= DIMPORT_BASE && address < DIMPORT_BASE + DIMPORT_SIZE)
-                    return reinterpret_cast<uint8_t*>(m_dimport.data()) + (address - DIMPORT_BASE);
+                    return reinterpret_cast<uint8_t *>(m_dimport.data()) + (address - DIMPORT_BASE);
                 if (address >= m_virtAddress) {
                     const std::size_t offset = address - m_virtAddress;
                     if (offset < m_memory.size())
