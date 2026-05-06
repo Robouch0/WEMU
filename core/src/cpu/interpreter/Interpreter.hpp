@@ -13,6 +13,7 @@
 #include <map>
 #include <vector>
 
+#include "gfx/Renderer.hpp"
 #include "Registers.hpp"
 #include "binary/Binary.hpp"
 #include "cpu/memory/Memory.hpp"
@@ -49,13 +50,29 @@ namespace Core {
 
             void writeReturnValue(const std::uint32_t val) { m_gpr[3] = val; }
 
-            void debugDumpGPR() const
+            void debugDumpGPR()
             {
                 if constexpr (Utils::Log::kLevel <= Utils::Log::Level::Trace) {
                     std::cout << "==== GPR Dump ====" << std::endl;
                     for (int i = 0; i < 32; ++i)
                         std::cout << std::format("r{:02d} : 0x{:08X}  ({})", i, m_gpr[i], m_gprSigned[i]) << std::endl;
                     std::cout << "==================" << std::endl;
+
+                    std::cout << "==== CR Dump  ====" << std::endl;
+                    for (int i = 0; i < 8; ++i) {
+                        const std::uint32_t field = (m_cr.raw >> ((7 - i) * 4)) & 0xF;
+                        std::cout << std::format("cr{} : 0x{:X}  [{}{}{}{}]", i, field,
+                            (field & ConditionRegisterFlag::Negative)        ? "LT " : "   ",
+                            (field & ConditionRegisterFlag::Positive)        ? "GT " : "   ",
+                            (field & ConditionRegisterFlag::Zero)            ? "EQ " : "   ",
+                            (field & ConditionRegisterFlag::SummaryOverflow) ? "SO"  : "  ")
+                            << std::endl;
+                    }
+                    std::cout << "==== CTR Dump  ====" << std::endl;
+                    std::cout << std::format("ctr {:X}", m_ctr) << std::endl;
+                    std::cout << "==================" << std::endl;
+
+                    std::cout << "268437924 MEM -> " << std::hex << this->m_memory.read<uint32_t>(268437924) << std::dec << std::endl;
                 }
             }
 
@@ -72,7 +89,7 @@ namespace Core {
                 m_fpscr = {};
             }
 
-        private:
+        public:
             [[nodiscard]] bool step(Utils::BeDecoder &decoder, const std::uint32_t ppc_pc);
 
             void initInstructionMap();
@@ -106,6 +123,16 @@ namespace Core {
             #define INSTR(name, ...) friend void Core::Instruction::name(Core::Interpreter &, const EncodedInstruction &);
             #include "cpu/tables/cpu_instructions.anh"
             #undef INSTR
+
+            using HookFn = std::function<void(Interpreter&)>;
+
+            bool m_running{true};
+            bool m_hle_redirected{false};
+
+            Renderer* m_renderer = nullptr; // SDL window — set after construction
+            std::unordered_map<std::uint32_t, HookFn> m_hooks; // PPC addr → intercept fn
+            std::uint32_t m_hooks_min{0xFFFFFFFFu};        // Opt C: hook address range
+            std::uint32_t m_hooks_max{0u};
 
             Core::Binary m_binary;
             Core::Memory m_memory;

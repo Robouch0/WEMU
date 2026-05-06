@@ -148,4 +148,5 @@ union EncodedInstruction {
         std::uint32_t me : 5;
         std::uint32_t : 26;
     };
+
 };

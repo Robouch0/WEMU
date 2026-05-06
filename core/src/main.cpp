@@ -24,6 +24,9 @@
 #include "lib/coreinit/Coreinint.hpp"
 #include "utils/BeDecoder.hpp"
 #include "cpu/memory/Memory.hpp"
+#include "hle/Coreinit.hpp"
+#include "hle/Libc.hpp"
+#include "hle/Whb.hpp"
 
 
 void print_elf32_ehdr(const Elf32_Ehdr &ehdr)
@@ -92,12 +95,55 @@ int main(const int ac, char const *const *av)
     const Core::Loader loader(av[1]);
 
     Core::Binary binary = loader.getBinary();
+    std::cout << "main MEM -> " << std::hex << binary.m_memory.read<uint32_t>(268437924) << std::dec << std::endl;
+
     print_elf32_ehdr(binary.header);
     print_symbols(binary);
 
-    RegisterCoreInitFunctions();
+    RegisterCoreinitFunctions();
+    RegisterLibcFunctions();
+    RegisterWhbFunctions();
 
     Core::Interpreter interpreter(binary);
+
+    std::cout << "CPU 268437924 MEM -> " << std::hex << interpreter.m_memory.read<uint32_t>(268437924) << std::dec << std::endl;
+
+    // 4. Connect renderer to interpreter
+    Renderer renderer;
+    interpreter.m_renderer = &renderer;
+
+    // 5. Register address hooks for compiled-in stdlib (bypasses broken WUT sbrk heap)
+    struct { const char* name; Core::Interpreter::HookFn fn; } stdlib_hooks[] = {
+        {"memalign",      [](Core::Interpreter& cpu) { cpu.m_gpr[3] = cpu.m_memory.heapAllocate(cpu.m_gpr[4], cpu.m_gpr[3] ? cpu.m_gpr[3] : 8); }},
+        {"malloc",        [](Core::Interpreter& cpu) { cpu.m_gpr[3] = cpu.m_memory.heapAllocate(cpu.m_gpr[3], 8); }},
+        {"calloc",        [](Core::Interpreter& cpu) { uint32_t n = cpu.m_gpr[3] * cpu.m_gpr[4]; uint32_t a = cpu.m_memory.heapAllocate(n, 8); if (a) { uint8_t* p = cpu.m_memory.hostPtr(a); if (p) std::memset(p, 0, n); } cpu.m_gpr[3] = a; }},
+        {"realloc",       [](Core::Interpreter& cpu) { cpu.m_gpr[3] = cpu.m_memory.heapAllocate(cpu.m_gpr[4], 8); }},
+        {"free",          [](Core::Interpreter&) {}},
+        {"__wut_sbrk_r",  [](Core::Interpreter& cpu) { cpu.m_gpr[3] = cpu.m_memory.heapAllocate(cpu.m_gpr[4], 4); }},
+        {"_sbrk_r",       [](Core::Interpreter& cpu) { cpu.m_gpr[3] = cpu.m_memory.heapAllocate(cpu.m_gpr[4], 4); }},
+    };
+
+    for (auto& h : stdlib_hooks) {
+        for (const auto& sym : binary.symbols) {
+            if (sym.name == h.name &&
+                sym.raw.header.st_value >= 0x02000000u &&
+                sym.raw.header.st_value <  0x10000000u)
+            {
+                interpreter.m_hooks[sym.raw.header.st_value] = h.fn;
+                fprintf(stderr, "[hook] %s @ 0x%08X\n", h.name, sym.raw.header.st_value);
+            }
+        }
+    }
+
+    // 6. Init CPU state
+    interpreter.m_gpr[1] = 0xC0FFFFF0u;  // r1 = stack top
+    interpreter.m_gpr[2] = 0u;           // r2 = TOC (unused)
+    interpreter.m_gpr[3] = 0u;           // argc
+    interpreter.m_gpr[4] = 0u;           // argv
+
+    // PowerPC back-chain word (ABI requirement)
+    interpreter.m_memory.write<std::uint32_t>(0xC0FFFFF0u, 0);
+
 
     std::cout << "Loaded module!" << std::endl;
     std::cout << "Code: " << std::hex << "0x" << loader.codeAddressRange.first << ":" << "0x" << loader.codeAddressRange.second << std::endl;

@@ -8,17 +8,17 @@
 #include "cpu/interpreter/Interpreter.hpp"
 #include "cpu/types/EncodedInstruction.hpp"
 
-static std::uint32_t rotlMask(const std::uint32_t mb, const std::uint32_t me)
-{
-    std::uint32_t mask = 0;
-
-    for (std::uint32_t i = mb; i != me; i = (i + 1) % 32)
-        mask |= 1u << (31 - i);
-    mask |= 1u << (31 - me);
-    return mask;
-}
-
 namespace Core::Instruction {
+
+    static std::uint32_t rotlMask(const std::uint32_t mb, const std::uint32_t me)
+    {
+        std::uint32_t mask = 0;
+
+        for (std::uint32_t i = mb; i != me; i = (i + 1) % 32)
+            mask |= 1u << (31 - i);
+        mask |= 1u << (31 - me);
+        return mask;
+    }
 
     /**
      * @brief Rotate Left Word then AND with Mask (register shift).
@@ -31,9 +31,15 @@ namespace Core::Instruction {
      * @param instr Encoded instruction (fields: rt as RS, ra as RA dest, rb as shift reg, rc;
      *              MB at raw[6:10], ME at raw[1:5]).
      */
-    void RLWNM(Interpreter &cpu, const EncodedInstruction &instr);
-    // {
-    // }
+    void RLWNM(Interpreter &cpu, const EncodedInstruction &instr)
+    {
+        const std::uint32_t registerShift   = cpu.m_gpr[instr.rb] & 31;
+        const std::uint32_t rotated = std::rotl(cpu.m_gpr[instr.rs], static_cast<std::int32_t>(registerShift));
+        const std::uint32_t mask = rotlMask(instr.mb, instr.me);
+
+        cpu.m_gpr[instr.ra] = rotated & mask;
+        cpu.updateCR0(cpu.m_gprSigned[instr.ra], instr);
+    }
 
     /**
      * @brief Rotate Left Word Immediate then AND with Mask.
@@ -74,4 +80,5 @@ namespace Core::Instruction {
         cpu.m_gpr[instr.ra] = rotated & mask | cpu.m_gpr[instr.ra] & ~mask;
         cpu.updateCR0(cpu.m_gprSigned[instr.ra], instr);
     }
+
 } // namespace Core::Instruction
