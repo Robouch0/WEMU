@@ -14,7 +14,7 @@ namespace Core::Instruction {
     {
         std::uint32_t mask = 0;
 
-        for (std::uint32_t i = mb; i != me; i = (i + 1) % 32)
+        for (std::uint32_t i = mb; i != me; i = (i + 1) % 32) // NOLINT(bugprone-infinite-loop)
             mask |= 1u << (31 - i);
         mask |= 1u << (31 - me);
         return mask;
@@ -33,7 +33,7 @@ namespace Core::Instruction {
      */
     void RLWNM(Interpreter &cpu, const EncodedInstruction &instr)
     {
-        const std::uint32_t registerShift   = cpu.m_gpr[instr.rb] & 31;
+        const std::uint32_t registerShift = cpu.m_gpr[instr.rb] & 31;
         const std::uint32_t rotated = std::rotl(cpu.m_gpr[instr.rs], static_cast<std::int32_t>(registerShift));
         const std::uint32_t mask = rotlMask(instr.mb, instr.me);
 

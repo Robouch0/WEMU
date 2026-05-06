@@ -14,7 +14,7 @@ namespace Core {
 }
 
 struct InstructionInfo {
-    InstructionID id;
-    std::vector<std::pair<Field, uint32_t> > matchFields;
-    std::function<void(Core::Interpreter &, const EncodedInstruction &)> function;
+        InstructionID id;
+        std::vector<std::pair<Field, uint32_t>> matchFields;
+        std::function<void(Core::Interpreter &, const EncodedInstruction &)> function;
 };

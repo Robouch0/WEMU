@@ -5,8 +5,9 @@
 // ** test_lfs
 // */
 
-#include "TestFixture.hpp"
 #include <cstring>
+
+#include "TestFixture.hpp"
 
 static constexpr uint32_t TEST_ADDR = 0x02000200;
 
@@ -173,16 +174,20 @@ TEST_F(InstructionTest, LFS_DoesNotUpdateRA)
 
 TEST_F(InstructionTest, LFS_SuccessiveLoads)
 {
-    writeFloat(cpu, TEST_ADDR,     1.5f);
+    writeFloat(cpu, TEST_ADDR, 1.5f);
     writeFloat(cpu, TEST_ADDR + 4, 2.5f);
     cpu->m_gpr[1] = TEST_ADDR;
 
     EncodedInstruction inst1(0);
-    inst1.rt = 3; inst1.ra = 1; inst1.si = 0;
+    inst1.rt = 3;
+    inst1.ra = 1;
+    inst1.si = 0;
     Core::Instruction::LFS(*cpu, inst1);
 
     EncodedInstruction inst2(0);
-    inst2.rt = 5; inst2.ra = 1; inst2.si = 4;
+    inst2.rt = 5;
+    inst2.ra = 1;
+    inst2.si = 4;
     Core::Instruction::LFS(*cpu, inst2);
 
     EXPECT_FLOAT_EQ(cpu->m_fpr[3], 1.5f);

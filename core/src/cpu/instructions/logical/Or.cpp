@@ -33,17 +33,14 @@ namespace Core::Instruction {
     }
 
     /**
-    * @brief The contents of register RS are ORed with 48 0s || UI and the result is placed into register RA.
+     * @brief The contents of register RS are ORed with 48 0s || UI and the result is placed into register RA.
      * @param cpu
      * @param instr
      */
-    void ORI(Core::Interpreter &cpu, const EncodedInstruction &instr)
-    {
-        cpu.m_gpr[instr.ra] = cpu.m_gpr[instr.rs] | instr.ui;
-    }
+    void ORI(Core::Interpreter &cpu, const EncodedInstruction &instr) { cpu.m_gpr[instr.ra] = cpu.m_gpr[instr.rs] | instr.ui; }
 
     /**
-    * @brief The contents of register RS are ORed with 32 0s || UI || 16 0s and the result is placed into register RA.
+     * @brief The contents of register RS are ORed with 32 0s || UI || 16 0s and the result is placed into register RA.
      * @param cpu
      * @param instr
      */
@@ -52,4 +49,4 @@ namespace Core::Instruction {
         const std::uint32_t rightComparison = instr.ui << 16;
         cpu.m_gpr[instr.ra] = cpu.m_gpr[instr.rs] | rightComparison;
     }
-}
+} // namespace Core::Instruction

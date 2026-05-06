@@ -13,17 +13,18 @@
 */
 
 #include "Renderer.hpp"
+
 #include <cstring>
 #include <stdexcept>
 
 // VPAD button bitmasks (same as wut header vpad/input.h)
-static constexpr std::uint32_t BTN_UP    = 0x0200;
-static constexpr std::uint32_t BTN_DOWN  = 0x0100;
-static constexpr std::uint32_t BTN_LEFT  = 0x0800;
+static constexpr std::uint32_t BTN_UP = 0x0200;
+static constexpr std::uint32_t BTN_DOWN = 0x0100;
+static constexpr std::uint32_t BTN_LEFT = 0x0800;
 static constexpr std::uint32_t BTN_RIGHT = 0x0400;
-static constexpr std::uint32_t BTN_A     = 0x8000;
-static constexpr std::uint32_t BTN_B     = 0x4000;
-static constexpr std::uint32_t BTN_PLUS  = 0x0008;
+static constexpr std::uint32_t BTN_A = 0x8000;
+static constexpr std::uint32_t BTN_B = 0x4000;
+static constexpr std::uint32_t BTN_PLUS = 0x0008;
 static constexpr std::uint32_t BTN_MINUS = 0x0004;
 
 Renderer::Renderer()
@@ -31,50 +32,49 @@ Renderer::Renderer()
     if (SDL_Init(SDL_INIT_VIDEO) != 0)
         throw std::runtime_error(SDL_GetError());
 
-    m_window = SDL_CreateWindow("WEMU — pong",
-        SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-        TV_W, TV_H, SDL_WINDOW_SHOWN);
+    m_window = SDL_CreateWindow("WEMU — pong", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, TV_W, TV_H, SDL_WINDOW_SHOWN);
     if (!m_window)
         throw std::runtime_error(SDL_GetError());
 
-    m_sdl_rend = SDL_CreateRenderer(m_window, -1,
-        SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+    m_sdl_rend = SDL_CreateRenderer(m_window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
     if (!m_sdl_rend)
         throw std::runtime_error(SDL_GetError());
 
     // ABGR8888: on little-endian, memory order is [R, G, B, A] — matches PPC RGBX directly
-    m_texture = SDL_CreateTexture(m_sdl_rend,
-        SDL_PIXELFORMAT_ABGR8888,
-        SDL_TEXTUREACCESS_STREAMING,
-        TV_W, TV_H);
+    m_texture = SDL_CreateTexture(m_sdl_rend, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STREAMING, TV_W, TV_H);
     if (!m_texture)
         throw std::runtime_error(SDL_GetError());
 }
 
 Renderer::~Renderer()
 {
-    if (m_texture)  SDL_DestroyTexture(m_texture);
-    if (m_sdl_rend) SDL_DestroyRenderer(m_sdl_rend);
-    if (m_window)   SDL_DestroyWindow(m_window);
+    if (m_texture)
+        SDL_DestroyTexture(m_texture);
+    if (m_sdl_rend)
+        SDL_DestroyRenderer(m_sdl_rend);
+    if (m_window)
+        SDL_DestroyWindow(m_window);
     SDL_Quit();
 }
 
 // Copy RGBX framebuffer to ABGR8888 texture (same memory layout) and present.
-void Renderer::flip_tv(const std::uint8_t* rgbx, std::uint32_t w, std::uint32_t h)
+void Renderer::flip_tv(const std::uint8_t *rgbx, std::uint32_t w, std::uint32_t h)
 {
-    void* pixels; int pitch;
-    if (SDL_LockTexture(m_texture, nullptr, &pixels, &pitch) != 0) return;
+    void *pixels;
+    int pitch;
+    if (SDL_LockTexture(m_texture, nullptr, &pixels, &pitch) != 0)
+        return;
 
-    const std::uint32_t cols = (w < (std::uint32_t)TV_W) ? w : TV_W;
-    const std::uint32_t rows = (h < (std::uint32_t)TV_H) ? h : TV_H;
+    const std::uint32_t cols = (w < (std::uint32_t) TV_W) ? w : TV_W;
+    const std::uint32_t rows = (h < (std::uint32_t) TV_H) ? h : TV_H;
 
-    auto* dst32 = static_cast<std::uint32_t*>(pixels);
-    const auto* src32 = reinterpret_cast<const std::uint32_t*>(rgbx);
+    auto *dst32 = static_cast<std::uint32_t *>(pixels);
+    const auto *src32 = reinterpret_cast<const std::uint32_t *>(rgbx);
     const std::uint32_t stride32 = pitch / 4;
 
     for (std::uint32_t y = 0; y < rows; ++y) {
-        const std::uint32_t* srow = src32 + y * w;
-        std::uint32_t*       drow = dst32 + y * stride32;
+        const std::uint32_t *srow = src32 + static_cast<std::size_t>(y) * w;
+        std::uint32_t *drow = dst32 + static_cast<std::size_t>(y) * stride32;
         for (std::uint32_t x = 0; x < cols; ++x)
             drow[x] = srow[x];
     }
@@ -97,9 +97,13 @@ bool Renderer::poll_events()
 {
     SDL_Event ev;
     while (SDL_PollEvent(&ev)) {
-        if (ev.type == SDL_QUIT) { m_open = false; return false; }
+        if (ev.type == SDL_QUIT) {
+            m_open = false;
+            return false;
+        }
         if (ev.type == SDL_KEYDOWN && ev.key.keysym.sym == SDLK_ESCAPE) {
-            m_open = false; return false;
+            m_open = false;
+            return false;
         }
     }
     return m_open;
@@ -107,15 +111,23 @@ bool Renderer::poll_events()
 
 std::uint32_t Renderer::get_buttons()
 {
-    const std::uint8_t* keys = SDL_GetKeyboardState(nullptr);
+    const std::uint8_t *keys = SDL_GetKeyboardState(nullptr);
     std::uint32_t btns = 0;
-    if (keys[SDL_SCANCODE_UP]    || keys[SDL_SCANCODE_W]) btns |= BTN_UP;
-    if (keys[SDL_SCANCODE_DOWN]  || keys[SDL_SCANCODE_S]) btns |= BTN_DOWN;
-    if (keys[SDL_SCANCODE_LEFT]  || keys[SDL_SCANCODE_A]) btns |= BTN_LEFT;
-    if (keys[SDL_SCANCODE_RIGHT] || keys[SDL_SCANCODE_D]) btns |= BTN_RIGHT;
-    if (keys[SDL_SCANCODE_RETURN])                         btns |= BTN_A;
-    if (keys[SDL_SCANCODE_BACKSPACE])                      btns |= BTN_B;
-    if (keys[SDL_SCANCODE_P])                              btns |= BTN_PLUS;
-    if (keys[SDL_SCANCODE_M])                              btns |= BTN_MINUS;
+    if (keys[SDL_SCANCODE_UP] || keys[SDL_SCANCODE_W])
+        btns |= BTN_UP;
+    if (keys[SDL_SCANCODE_DOWN] || keys[SDL_SCANCODE_S])
+        btns |= BTN_DOWN;
+    if (keys[SDL_SCANCODE_LEFT] || keys[SDL_SCANCODE_A])
+        btns |= BTN_LEFT;
+    if (keys[SDL_SCANCODE_RIGHT] || keys[SDL_SCANCODE_D])
+        btns |= BTN_RIGHT;
+    if (keys[SDL_SCANCODE_RETURN])
+        btns |= BTN_A;
+    if (keys[SDL_SCANCODE_BACKSPACE])
+        btns |= BTN_B;
+    if (keys[SDL_SCANCODE_P])
+        btns |= BTN_PLUS;
+    if (keys[SDL_SCANCODE_M])
+        btns |= BTN_MINUS;
     return btns;
 }

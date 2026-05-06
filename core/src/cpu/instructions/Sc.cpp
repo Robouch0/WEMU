@@ -25,4 +25,4 @@ namespace Core::Instruction {
         }
         cpu.m_nextPc = cpu.m_lr;
     }
-}
+} // namespace Core::Instruction

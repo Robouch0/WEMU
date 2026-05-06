@@ -152,13 +152,17 @@ TEST_F(InstructionTest, LWZU_ChainedLoads)
     cpu->m_gpr[1] = TEST_ADDR;
 
     EncodedInstruction inst1(0);
-    inst1.rt = 4; inst1.ra = 1; inst1.si = 4;
+    inst1.rt = 4;
+    inst1.ra = 1;
+    inst1.si = 4;
     Core::Instruction::LWZU(*cpu, inst1);
 
     // After first: r1 = TEST_ADDR+4, r4 = 0xAAAAAAAA
 
     EncodedInstruction inst2(0);
-    inst2.rt = 5; inst2.ra = 1; inst2.si = 4;
+    inst2.rt = 5;
+    inst2.ra = 1;
+    inst2.si = 4;
     Core::Instruction::LWZU(*cpu, inst2);
 
     EXPECT_EQ(cpu->m_gpr[4], 0xAAAAAAAAu);

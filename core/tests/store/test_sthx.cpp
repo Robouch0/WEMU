@@ -216,8 +216,8 @@ TEST_F(InstructionTest, STHX_DoesNotUpdateRA)
 
 TEST_F(InstructionTest, STHX_DifferentRegisters)
 {
-    cpu->m_gpr[5]  = TEST_ADDR;
-    cpu->m_gpr[6]  = 6;
+    cpu->m_gpr[5] = TEST_ADDR;
+    cpu->m_gpr[6] = 6;
     cpu->m_gpr[10] = 0x0000CAFE;
 
     EncodedInstruction inst(0);

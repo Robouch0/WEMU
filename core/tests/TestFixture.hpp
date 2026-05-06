@@ -10,21 +10,15 @@
 
 class InstructionTest : public ::testing::Test {
     protected:
-    static Core::Interpreter *cpu;
+        static Core::Interpreter *cpu;
 
-    static void SetUpTestSuite()
-    {
-        cpu = new Core::Interpreter(Core::Binary{});
-    }
+        static void SetUpTestSuite() { cpu = new Core::Interpreter(Core::Binary{}); }
 
-    static void TearDownTestSuite()
-    {
-        delete cpu;
-        cpu = nullptr;
-    }
+        static void TearDownTestSuite()
+        {
+            delete cpu;
+            cpu = nullptr;
+        }
 
-    void SetUp() override
-    {
-        cpu->reset();
-    }
+        void SetUp() override { cpu->reset(); }
 };

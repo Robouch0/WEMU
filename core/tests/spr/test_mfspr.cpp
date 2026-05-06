@@ -118,7 +118,7 @@ TEST_F(InstructionTest, MFSPR_RT0_Allowed)
 
 TEST_F(InstructionTest, MFSPR_DoesNotModifyOtherState)
 {
-    cpu->m_lr  = 0xAABBCCDD;
+    cpu->m_lr = 0xAABBCCDD;
     cpu->m_ctr = 0x11223344;
     cpu->m_gpr[7] = 0xFFFFFFFF;
 
@@ -129,9 +129,9 @@ TEST_F(InstructionTest, MFSPR_DoesNotModifyOtherState)
 
     Core::Instruction::MFSPR(*cpu, inst);
 
-    EXPECT_EQ(cpu->m_lr,      0xAABBCCDDu); // LR unchanged
-    EXPECT_EQ(cpu->m_ctr,     0x11223344u); // CTR unchanged
-    EXPECT_EQ(cpu->m_gpr[7],  0xFFFFFFFFu); // other GPR unchanged
+    EXPECT_EQ(cpu->m_lr, 0xAABBCCDDu); // LR unchanged
+    EXPECT_EQ(cpu->m_ctr, 0x11223344u); // CTR unchanged
+    EXPECT_EQ(cpu->m_gpr[7], 0xFFFFFFFFu); // other GPR unchanged
 }
 
 //

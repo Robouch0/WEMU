@@ -17,14 +17,14 @@
 
 // Define every instructions prototypes
 namespace Core::Instruction {
-    #define INSTR(name, ...) void name(Core::Interpreter &, const EncodedInstruction &);
-    #include "cpu/tables/cpu_instructions.anh"
-    #undef INSTR
+#define INSTR(name, ...) void name(Core::Interpreter &, const EncodedInstruction &);
+#include "cpu/tables/cpu_instructions.anh"
+#undef INSTR
 } // namespace Core::Instruction
 
 #define INSTR(name, ...) {E_##name, {__VA_ARGS__}, Core::Instruction::name},
 static const InstructionInfo INSTRUCTIONARRAY[] = {
-    #include "cpu/tables/cpu_instructions.anh"
+#include "cpu/tables/cpu_instructions.anh"
 };
 #undef INSTR
 
@@ -33,11 +33,11 @@ static const InstructionInfo INSTRUCTIONARRAY[] = {
 inline std::string fieldToString(const Field f)
 {
     switch (f) {
-            #define FIELD(name)                 \
-    case Field::F_##name:                       \
+#define FIELD(name)                                                                                                                                  \
+    case Field::F_##name:                                                                                                                            \
         return #name;
-            #include "cpu/tables/cpu_fields.anh"
-            #undef FIELD
+#include "cpu/tables/cpu_fields.anh"
+#undef FIELD
     }
     return "?";
 }
@@ -45,11 +45,11 @@ inline std::string fieldToString(const Field f)
 inline std::string instructionIDToString(const InstructionID id)
 {
     switch (id) {
-            #define INSTR(name, ...)            \
-    case InstructionID::E_##name:               \
+#define INSTR(name, ...)                                                                                                                             \
+    case InstructionID::E_##name:                                                                                                                    \
         return #name;
-            #include "cpu/tables/cpu_instructions.anh"
-            #undef INSTR
+#include "cpu/tables/cpu_instructions.anh"
+#undef INSTR
     }
     return "?";
 }

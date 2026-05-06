@@ -177,7 +177,7 @@ TEST_F(InstructionTest, SRAWI_RC_UpdatesCR0)
     EXPECT_EQ(cpu->m_gpr[4], 0xFFFFFFFFu); // -1
     EXPECT_NE(cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Negative, 0u); // lt=1
     EXPECT_EQ(cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Positive, 0u); // gt=0
-    EXPECT_EQ(cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Zero,     0u); // eq=0
+    EXPECT_EQ(cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Zero, 0u); // eq=0
 }
 
 //

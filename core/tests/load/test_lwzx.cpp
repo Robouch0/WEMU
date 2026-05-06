@@ -41,7 +41,7 @@ TEST_F(InstructionTest, LWZX_RA0_Uses0NotR0)
 {
     cpu->m_memory.write<uint32_t>(TEST_ADDR, 0x12345678);
     cpu->m_gpr[0] = TEST_ADDR; // r0 has valid address but must NOT be used
-    cpu->m_gpr[2] = 0;         // RB = 0 → EA = 0 + 0 = 0 (unmapped)
+    cpu->m_gpr[2] = 0; // RB = 0 → EA = 0 + 0 = 0 (unmapped)
 
     EncodedInstruction inst(0);
     inst.rt = 4;

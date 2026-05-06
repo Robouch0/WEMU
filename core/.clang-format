@@ -32,7 +32,7 @@ BreakBeforeBraces: Custom
 BreakConstructorInitializers: AfterColon
 BreakConstructorInitializersBeforeComma: false
 
-ColumnLimit: 120
+ColumnLimit: 150
 ConstructorInitializerAllOnOneLineOrOnePerLine: false
 ContinuationIndentWidth: 8
 

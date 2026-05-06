@@ -80,7 +80,7 @@ TEST_F(InstructionTest, MTSPR_WriteXER)
 
 TEST_F(InstructionTest, MTSPR_WriteZeroToLR)
 {
-    cpu->m_lr  = 0xFFFFFFFF; // pre-set
+    cpu->m_lr = 0xFFFFFFFF; // pre-set
     cpu->m_gpr[3] = 0x00000000;
 
     EncodedInstruction inst(0);
@@ -131,7 +131,7 @@ TEST_F(InstructionTest, MTSPR_DoesNotModifySourceGPR)
     Core::Instruction::MTSPR(*cpu, inst);
 
     EXPECT_EQ(cpu->m_gpr[4], 0xAABBCCDDu); // r4 unchanged
-    EXPECT_EQ(cpu->m_lr,     0xAABBCCDDu);
+    EXPECT_EQ(cpu->m_lr, 0xAABBCCDDu);
 }
 
 //
@@ -183,7 +183,7 @@ TEST_F(InstructionTest, MTSPR_RS0_Allowed)
 
 TEST_F(InstructionTest, MTSPR_UnknownSPR_NoEffect)
 {
-    cpu->m_lr  = 0x11111111;
+    cpu->m_lr = 0x11111111;
     cpu->m_ctr = 0x22222222;
     cpu->m_gpr[4] = 0xDEADBEEF;
 
@@ -194,6 +194,6 @@ TEST_F(InstructionTest, MTSPR_UnknownSPR_NoEffect)
 
     Core::Instruction::MTSPR(*cpu, inst);
 
-    EXPECT_EQ(cpu->m_lr,  0x11111111u);
+    EXPECT_EQ(cpu->m_lr, 0x11111111u);
     EXPECT_EQ(cpu->m_ctr, 0x22222222u);
 }

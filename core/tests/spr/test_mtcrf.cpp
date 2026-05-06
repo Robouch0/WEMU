@@ -40,8 +40,8 @@ TEST_F(InstructionTest, MTCRF_AllFields_FXM0xFF)
 
 TEST_F(InstructionTest, MTCRF_NoFields_FXM0x00)
 {
-    cpu->m_cr.raw  = 0x12345678;
-    cpu->m_gpr[4]  = 0xFFFFFFFF;
+    cpu->m_cr.raw = 0x12345678;
+    cpu->m_gpr[4] = 0xFFFFFFFF;
 
     EncodedInstruction inst(0);
     inst.rt = 4;

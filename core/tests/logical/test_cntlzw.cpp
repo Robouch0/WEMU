@@ -164,8 +164,8 @@ TEST_F(InstructionTest, CNTLZW_RC_UpdatesCR0)
     // 32 is positive so GT flag should be set
     EXPECT_EQ(cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Negative, 0u); // lt
     EXPECT_EQ(cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Positive,
-              Core::ConditionRegisterFlag::Positive);                       // gt
-    EXPECT_EQ(cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Zero, 0u);      // eq
+              Core::ConditionRegisterFlag::Positive); // gt
+    EXPECT_EQ(cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Zero, 0u); // eq
 }
 
 //

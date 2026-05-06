@@ -5,8 +5,9 @@
 // ** test_lfd
 // */
 
-#include "TestFixture.hpp"
 #include <cstring>
+
+#include "TestFixture.hpp"
 
 static constexpr uint32_t TEST_ADDR = 0x02000200;
 
@@ -27,7 +28,7 @@ static void writeDouble(Core::Interpreter *cpu, uint32_t addr, float val)
     std::memcpy(&bits, &d, sizeof(bits));
     hi = static_cast<uint32_t>(bits >> 32);
     lo = static_cast<uint32_t>(bits & 0xFFFFFFFF);
-    cpu->m_memory.write<uint32_t>(addr,     hi);
+    cpu->m_memory.write<uint32_t>(addr, hi);
     cpu->m_memory.write<uint32_t>(addr + 4, lo);
 }
 
