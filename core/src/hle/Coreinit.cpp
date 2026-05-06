@@ -21,6 +21,7 @@ static std::uint32_t s_fb_addr[2] = {0, 0};
 
 // ── 8x16 bitmap font (public domain, IBM PC style) ────────────────────────────
 
+// clang-format off
 static const std::uint8_t FONT8x16[128][16] = {
 #define BLK {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
         BLK,
@@ -152,6 +153,7 @@ static const std::uint8_t FONT8x16[128][16] = {
         {0, 0x76, 0xDC, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // ~
 };
 #undef BLK
+// clang-format on
 
 // ── Font blit helper ──────────────────────────────────────────────────────────
 
