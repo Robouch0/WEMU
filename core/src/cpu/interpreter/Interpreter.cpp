@@ -12,7 +12,11 @@
 #include "Interpreter.hpp"
 #include "utils/Logger.hpp"
 
-Core::Interpreter::Interpreter(Core::Binary binary) : m_binary(std::move(binary)) { initInstructionMap(); }
+Core::Interpreter::Interpreter(Core::Binary binary) : m_binary(std::move(binary))
+{
+    m_memory = m_binary.m_memory;
+    initInstructionMap();
+}
 
 [[nodiscard]] bool Core::Interpreter::step(Utils::BeDecoder &decoder, const std::uint32_t ppc_pc)
 {
@@ -35,11 +39,24 @@ void Core::Interpreter::run()
 {
     auto instructionDecoder = Utils::BeDecoder(m_binary.m_memory.getMemory());
     std::uint32_t ppc_pc = m_binary.header.e_entry;
+    m_hooks_min = 0xFFFFFFFFu;
+    m_hooks_max = 0u;
+    for (const auto &[addr, _] : m_hooks) {
+        if (addr < m_hooks_min) m_hooks_min = addr;
+        if (addr > m_hooks_max) m_hooks_max = addr;
+    }
 
     m_pc = ppc_pc - Core::Memory::MemoryMap::ApplicationCode;
     Utils::Log::info("[EMU] Starting at entrypoint 0x{:08X}", ppc_pc);
-    while (true) {
+    while (m_running) {
         ppc_pc = m_pc + Core::Memory::MemoryMap::ApplicationCode;
+        if (ppc_pc >= m_hooks_min && ppc_pc <= m_hooks_max) {
+            if (auto it = m_hooks.find(ppc_pc); it != m_hooks.end()) {
+                it->second(*this);
+                m_pc = m_lr;
+                continue;
+            }
+        }
         if (!step(instructionDecoder, ppc_pc))
             break;
         m_pc = m_nextPc;
@@ -97,15 +114,38 @@ void Core::Interpreter::initInstructionMap()
     }
 }
 
-void Core::Interpreter::updateCR(Core::ConditionRegister::Register &cr, const std::int32_t &result,
-                                 const EncodedInstruction &instr, const bool forceUpdate) const
+void Core::Interpreter::updateCR0(const std::int32_t &result, const EncodedInstruction &instr, const bool forceUpdate)
 {
-    if (instr.rc || forceUpdate) {
-        cr.lt = result < 0;
-        cr.gt = result > 0;
-        cr.eq = result == 0;
-        cr.so = m_xer.so;
-    }
+    if (!instr.rc && !forceUpdate)
+        return;
+    std::uint32_t flags = 0;
+
+    if (result == 0)
+        flags |= ConditionRegisterFlag::Zero;
+    else if (result < 0)
+        flags |= ConditionRegisterFlag::Negative;
+    else
+        flags |= ConditionRegisterFlag::Positive;
+    if (m_xer.so)
+        flags |= ConditionRegisterFlag::SummaryOverflow;
+    m_cr.cr0 = flags;
+}
+
+void Core::Interpreter::updateCR1(const EncodedInstruction &instr) noexcept
+{
+    if (!instr.rc)
+        return;
+    std::uint32_t flags = 0;
+
+    if (m_fpscr.fx)
+        flags |= ConditionRegisterFlag::Negative;
+    if (m_fpscr.fex)
+        flags |= ConditionRegisterFlag::Positive;
+    if (m_fpscr.vx)
+        flags |= ConditionRegisterFlag::Zero;
+    if (m_fpscr.ox)
+        flags |= ConditionRegisterFlag::SummaryOverflow;
+    m_cr.cr1 = flags;
 }
 
 void Core::Interpreter::updateOverflow(const bool overflow, const EncodedInstruction &instr)

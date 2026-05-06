@@ -4,7 +4,7 @@
 // ** File description:
 // ** test_sraw
 // */
-// 
+//
 #include "TestFixture.hpp"
 
 // SRAW: rA = rS >>signed rB[27:31]  (arithmetic right shift, sign-fill)

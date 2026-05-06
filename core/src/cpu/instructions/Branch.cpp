@@ -26,7 +26,13 @@ namespace Core::Instruction {
     {
         const std::int32_t offset = branchOffset(instr);
 
-        cpu.m_nextPc = cpu.m_pc + offset;
+        if (instr.lk)
+            cpu.m_lr = cpu.m_pc + 4;
+
+        if (instr.aa)
+            cpu.m_nextPc = static_cast<std::uint32_t>(offset) - Core::Memory::MemoryMap::ApplicationCode;
+        else
+            cpu.m_nextPc = cpu.m_pc + offset;
     }
 
     /**

@@ -40,11 +40,14 @@ namespace Core {
             static constexpr uint32_t STACK_SIZE = 0x100000;   // 1 MB
             static constexpr uint32_t HEAP_BASE = 0x28000000;
             static constexpr uint32_t MIN_HEAP_ALIGN = 4;
+            static constexpr uint32_t DIMPORT_BASE = 0xC0000000; // dimport slots
+            static constexpr uint32_t DIMPORT_SIZE = 0x4000;     // 16 KB
 
             explicit Memory(const std::size_t &size = 0x40000000) : m_memory(), m_virtAddress(ApplicationCode), m_memSize(size)
             {
                 m_memory.resize(size);
                 m_stack.resize(STACK_SIZE);
+                m_dimport.resize(DIMPORT_SIZE);
             }
 
             [[nodiscard]] static constexpr std::uint32_t alignUp(std::uint32_t value, std::uint32_t align) noexcept
@@ -56,6 +59,8 @@ namespace Core {
             {
                 if (address >= STACK_BASE && address < STACK_BASE + STACK_SIZE)
                     return reinterpret_cast<std::uint8_t*>(m_stack.data() + (address - STACK_BASE));
+                if (address >= DIMPORT_BASE && address < DIMPORT_BASE + DIMPORT_SIZE)
+                    return reinterpret_cast<uint8_t*>(m_dimport.data()) + (address - DIMPORT_BASE);
                 if (address >= m_virtAddress) {
                     const std::size_t offset = address - m_virtAddress;
                     if (offset < m_memory.size())
@@ -67,8 +72,8 @@ namespace Core {
             template<typename T>
             [[nodiscard]] T read(const std::uint32_t address)
             {
-                if (address & (alignof(T) - 1))
-                    throw MemoryException(std::format("Unaligned read<{}> @ 0x{:08X}", sizeof(T), address));
+                // if (address & (alignof(T) - 1))
+                //     throw MemoryException(std::format("Unaligned read<{}> @ 0x{:08X}", sizeof(T), address));
 
                 T *ptr = reinterpret_cast<T*>(this->hostPtr(address));
 
@@ -80,8 +85,8 @@ namespace Core {
             template<typename T>
             void write(const std::uint32_t address, const T value)
             {
-                if (address & (alignof(T) - 1))
-                    throw MemoryException(std::format("Unaligned write<{}> @ 0x{:08X}", sizeof(T), address));
+                // if (address & (alignof(T) - 1))
+                //     throw MemoryException(std::format("Unaligned write<{}> @ 0x{:08X}", sizeof(T), address));
 
                 T *ptr = reinterpret_cast<T*>(this->hostPtr(address));
 
@@ -94,8 +99,8 @@ namespace Core {
             {
                 align = std::max(align, MIN_HEAP_ALIGN);
 
-                if (align & (align - 1))
-                    throw MemoryException(std::format("[MEM] Heap alignment not a power of two: {}", align));
+                // if (align & (align - 1))
+                //     throw MemoryException(std::format("[MEM] Heap alignment not a power of two: {}", align));
 
                 m_heapPtr = alignUp(m_heapPtr, align);
                 m_heapPtr += size;
@@ -119,6 +124,7 @@ namespace Core {
         private:
             std::vector<char> m_memory;
             std::vector<char> m_stack;
+            std::vector<char> m_dimport;
             std::size_t m_heapPtr = HEAP_BASE;
             std::size_t m_virtAddress;
             std::size_t m_memSize;

@@ -91,9 +91,15 @@ namespace Core::Instruction {
      * @param cpu  Interpreter state.
      * @param instr Encoded instruction (fields: rt, ra, si as D).
      */
-    void LMW(Interpreter &cpu, const EncodedInstruction &instr);
-    // {
-    // }
+    void LMW(Interpreter &cpu, const EncodedInstruction &instr)
+    {
+        std::uint32_t ea = (instr.ra == 0 ? 0 : cpu.m_gpr[instr.ra]) + static_cast<std::int16_t>(instr.d);
+
+        for (std::uint32_t r = instr.rt; r <= std::size(cpu.m_gpr) - 1; r++) {
+            cpu.m_gpr[r] = cpu.m_memory.read<std::uint32_t>(ea);
+            ea += sizeof(std::uint32_t);
+        }
+    }
 
     /**
      * @brief Load Halfword and Zero Indexed.
@@ -102,9 +108,12 @@ namespace Core::Instruction {
      * @param cpu  Interpreter state.
      * @param instr Encoded instruction (fields: rt, ra, rb).
      */
-    void LHZX(Interpreter &cpu, const EncodedInstruction &instr);
-    // {
-    // }
+    void LHZX(Interpreter &cpu, const EncodedInstruction &instr)
+    {
+        const std::uint32_t ea = (instr.ra == 0 ? 0 : cpu.m_gpr[instr.ra]) + cpu.m_gpr[instr.rb];
+
+        cpu.m_gpr[instr.rt] = cpu.m_memory.read<std::uint16_t>(ea);
+    }
 
     /**
      * @brief Load Byte and Zero.

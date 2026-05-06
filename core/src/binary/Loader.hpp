@@ -35,7 +35,7 @@ namespace Core {
             void loadSectionsRaw();
             void loadSectionsName();
             void loadSectionsMeta();
-            void loadSectionsInMemory();
+            void loadSectionsInMemory() const;
 
             void loadSectionHeader(Section &section);
             void loadSectionData(Section &section);

@@ -4,7 +4,7 @@
 // ** File description:
 // ** test_srawi
 // */
-// 
+//
 #include "TestFixture.hpp"
 
 // SRAWI: rA = rS >>signed SH  (arithmetic right shift, immediate shift amount)

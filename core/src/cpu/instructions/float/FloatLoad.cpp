@@ -18,9 +18,16 @@ namespace Core::Instruction {
      * @param cpu   Interpreter state.
      * @param instr Encoded instruction (fields: rt as FRT, ra, si as D).
      */
-    void LFS(Interpreter &cpu, const EncodedInstruction &instr);
-    // {
-    // }
+    void LFS(Interpreter &cpu, const EncodedInstruction &instr)
+    {
+        const std::uint32_t exts = static_cast<std::int16_t>(instr.d);
+        const std::uint32_t ea = (instr.ra == 0 ? 0 : cpu.m_gpr[instr.ra]) + exts;
+        float f;
+
+        const auto raw = cpu.m_memory.read<std::uint32_t>(ea);
+        std::memcpy(&f, &raw, sizeof(f));
+        cpu.m_fpr[instr.frt] = static_cast<double>(f);
+    }
 
     /**
      * @brief Load Floating-Point Double.
@@ -30,8 +37,13 @@ namespace Core::Instruction {
      * @param cpu   Interpreter state.
      * @param instr Encoded instruction (fields: rt as FRT, ra, si as D).
      */
-    void LFD(Interpreter &cpu, const EncodedInstruction &instr);
-    // {
-    // }
+    void LFD(Interpreter &cpu, const EncodedInstruction &instr)
+    {
+        const std::uint32_t exts = static_cast<std::int16_t>(instr.d);
+        const std::uint32_t ea = (instr.ra == 0 ? 0 : cpu.m_gpr[instr.ra]) + exts;
+
+        const auto rawDouble = cpu.m_memory.read<std::uint64_t>(ea);
+        std::memcpy(&cpu.m_fpr[instr.frt], &rawDouble, sizeof(double));
+    }
 
 } // namespace Core::Instruction
