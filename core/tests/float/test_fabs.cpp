@@ -5,8 +5,9 @@
 ** test_fabs
 */
 
-#include "TestFixture.hpp"
 #include <cmath>
+
+#include "TestFixture.hpp"
 
 // FABS: FRT = |FRB|  (clear sign bit, no rounding)
 // Fields: inst.rt=FRT(dest), inst.rb=FRB(source)
