@@ -159,4 +159,20 @@ namespace Core::Instruction {
         cpu.m_gpr[instr.rt] = cpu.m_memory.read<std::uint8_t>(ea);
     }
 
+    /**
+     * @brief Load Byte and Zero with Update
+     *        EA = (RA) + EXTS(D). RT = 0x000000 || MEM(EA, 1). RA = EA
+     *        RA must not be 0 and must not equal RT.
+     * @param cpu Interpreter state.
+     * @param instr Encoded instruction (fileds: )
+     */
+    void LBZU(Interpreter &cpu, const EncodedInstruction &instr)
+    {
+        const std::uint32_t exts = static_cast<std::int16_t>(instr.d);
+        const std::uint32_t ea = cpu.m_gpr[instr.ra] + static_cast<std::uint32_t>(exts);
+
+        cpu.m_gpr[instr.rt] = cpu.m_memory.read<std::uint8_t>(ea);
+        cpu.m_gpr[instr.ra] = ea;
+    }
+
 } // namespace Core::Instruction
