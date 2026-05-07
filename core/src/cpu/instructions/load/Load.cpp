@@ -164,7 +164,7 @@ namespace Core::Instruction {
      *        EA = (RA) + EXTS(D). RT = 0x000000 || MEM(EA, 1). RA = EA
      *        RA must not be 0 and must not equal RT.
      * @param cpu Interpreter state.
-     * @param instr Encoded instruction (fileds: )
+     * @param instr Encoded instruction (fileds: rt, ra, si as D)
      */
     void LBZU(Interpreter &cpu, const EncodedInstruction &instr)
     {
