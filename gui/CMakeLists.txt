@@ -21,6 +21,7 @@ qt_add_executable(appgui
     src/input/SDLGamepadInput.cpp
     src/input/InputManager.cpp
     src/input/InputProfileManager.cpp
+    src/library/TitleScanner.cpp
     ${RESOURCES}
 
 )
@@ -32,6 +33,7 @@ target_sources(appgui PRIVATE
         src/input/SDLGamepadInput.hpp
         src/input/InputProfile.hpp
         src/input/InputProfileManager.hpp
+        src/library/TitleScanner.hpp
 )
 
 qt_add_qml_module(appgui
@@ -60,6 +62,7 @@ target_include_directories(appgui
         PRIVATE
         ${CMAKE_SOURCE_DIR}/core/src/
         ${CMAKE_SOURCE_DIR}/gui/src/input
+        ${CMAKE_SOURCE_DIR}/gui/src/library
         ${Qt6Core_INCLUDE_DIRS}
 )
 

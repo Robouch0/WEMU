@@ -2,11 +2,13 @@
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QDebug>
+#include <QDir>
 #include <SDL2/SDL.h>
 #include "input/IInputDevice.hpp"
 #include "input/InputManager.hpp"
 #include "input/InputProfileManager.hpp"
 #include "input/KeyboardInput.hpp"
+#include "library/TitleScanner.hpp"
 
 int main(int argc, char *argv[])
 {
@@ -20,12 +22,17 @@ int main(int argc, char *argv[])
 
     auto inputManager = new InputManager();
     auto keyboard = new KeyboardInput();
+    auto titleScanner = new TitleScanner(&app);
     inputManager->addDevice(keyboard);
 
     auto inputProfileManager = new InputProfileManager();
 
     engine.rootContext()->setContextProperty("InputManager", inputManager);
     engine.rootContext()->setContextProperty("InputProfileManager", inputProfileManager);
+    engine.rootContext()->setContextProperty("TitleScanner", titleScanner);
+
+    const QString gamesPath = QDir::cleanPath(QCoreApplication::applicationDirPath() + "/../../games");
+    titleScanner->scanDirectory(gamesPath);
 
     QObject::connect(&engine, &QQmlApplicationEngine::objectCreationFailed,
                      &app, []() { QCoreApplication::exit(-1); }, Qt::QueuedConnection);
