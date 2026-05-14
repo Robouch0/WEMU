@@ -43,7 +43,7 @@ TEST_F(InstructionTest, FloatDecodeFields_CompareBF)
 TEST_F(InstructionTest, FloatDecodeFields_XO5IgnoresFrcOperandBits)
 {
     cpu->m_instructionMap[59] = {
-        {InstructionID::E_FMR, {OPCD(59), XO5(21)}, Core::Instruction::FMR},
+            {InstructionID::E_FMR, {OPCD(59), XO5(21)}, Core::Instruction::FMR},
     };
 
     EncodedInstruction first(0);
@@ -63,7 +63,7 @@ TEST_F(InstructionTest, FloatDecodeFields_XO5IgnoresFrcOperandBits)
 TEST_F(InstructionTest, FloatDecodeFields_XO5MismatchDoesNotMatch)
 {
     cpu->m_instructionMap[59] = {
-        {InstructionID::E_FMR, {OPCD(59), XO5(21)}, Core::Instruction::FMR},
+            {InstructionID::E_FMR, {OPCD(59), XO5(21)}, Core::Instruction::FMR},
     };
 
     EncodedInstruction inst(0);
