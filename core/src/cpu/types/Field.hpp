@@ -7,6 +7,10 @@
 
 #pragma once
 
+#include <bits/stl_pair.h>
+#include <cstdint>
+
+
 enum Field : std::uint8_t {
 #define FIELD(name) F_##name,
 #include "cpu/tables/cpu_fields.anh"

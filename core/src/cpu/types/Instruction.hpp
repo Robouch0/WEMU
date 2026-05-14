@@ -7,9 +7,7 @@
 
 #pragma once
 
-#include <functional>
 #include <string>
-#include <vector>
 
 #include "Field.hpp"
 #include "cpu/types/InstructionID.hpp"
