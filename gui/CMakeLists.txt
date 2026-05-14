@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.16)
 project(gui VERSION 0.1 LANGUAGES CXX)
 
 
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
@@ -12,7 +12,6 @@ set(CMAKE_AUTOUIC ON)
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Quick QuickControls2)
 
 qt_standard_project_setup(REQUIRES 6.6.2)
-qt_add_resources(RESOURCES resources.qrc)
 find_package(SDL2 REQUIRED)
 
 qt_add_executable(appgui
@@ -22,8 +21,6 @@ qt_add_executable(appgui
     src/input/InputManager.cpp
     src/input/InputProfileManager.cpp
     src/library/TitleScanner.cpp
-    ${RESOURCES}
-
 )
 
 target_sources(appgui PRIVATE
@@ -73,6 +70,7 @@ target_link_libraries(appgui
         Qt6::Gui
         Qt6::QuickControls2
         SDL2::SDL2
+        core
 )
 
 include(GNUInstallDirs)
