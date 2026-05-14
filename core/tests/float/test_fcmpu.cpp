@@ -113,6 +113,7 @@ TEST_F(InstructionTest, FCMPU_NaN_Unordered)
     EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Positive) ? 1 : 0), 0u);
     EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Zero) ? 1 : 0), 0u);
     EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::SummaryOverflow) ? 1 : 0), 1u); // unordered
+    EXPECT_EQ(cpu->m_fpscr.vxsnan, 0u);
 }
 
 //
@@ -134,6 +135,32 @@ TEST_F(InstructionTest, FCMPU_BothNaN_Unordered)
     Core::Instruction::FCMPU(*cpu, inst);
 
     EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::SummaryOverflow) ? 1 : 0), 1u); // unordered
+    EXPECT_EQ(cpu->m_fpscr.vxsnan, 0u);
+}
+
+//
+// ─────────────────────────────────────────────────────────────────────────────
+//  FCMPU — signaling NaN: FU=1 and VXSNAN=1
+// ─────────────────────────────────────────────────────────────────────────────
+//
+
+TEST_F(InstructionTest, FCMPU_SignalingNaN_SetsVXSNAN)
+{
+    cpu->m_fpr[2] = std::numeric_limits<double>::signaling_NaN();
+    cpu->m_fpr[3] = 1.0f;
+
+    EncodedInstruction inst(0);
+    inst.bf = 0;
+    inst.fra = 2;
+    inst.frb = 3;
+
+    Core::Instruction::FCMPU(*cpu, inst);
+
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Negative) ? 1 : 0), 0u);
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Positive) ? 1 : 0), 0u);
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Zero) ? 1 : 0), 0u);
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::SummaryOverflow) ? 1 : 0), 1u); // unordered
+    EXPECT_EQ(cpu->m_fpscr.vxsnan, 1u);
 }
 
 //

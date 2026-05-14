@@ -5,7 +5,9 @@
 ** FloatCompare
 */
 
+#include <bit>
 #include <cmath>
+#include <cstdint>
 
 #include "cpu/interpreter/Interpreter.hpp"
 #include "cpu/types/EncodedInstruction.hpp"
@@ -42,6 +44,26 @@ namespace Core::Instruction {
         }
     }
 
+    static bool isSignalingNaN(const float value)
+    {
+        const std::uint32_t bits = std::bit_cast<std::uint32_t>(value);
+        const std::uint32_t exponent = bits & 0x7F800000u;
+        const std::uint32_t fraction = bits & 0x007FFFFFu;
+        const std::uint32_t quietBit = bits & 0x00400000u;
+
+        return exponent == 0x7F800000u && fraction != 0 && quietBit == 0;
+    }
+
+    static bool isSignalingNaN(const double value)
+    {
+        const std::uint64_t bits = std::bit_cast<std::uint64_t>(value);
+        const std::uint64_t exponent = bits & 0x7FF0000000000000ull;
+        const std::uint64_t fraction = bits & 0x000FFFFFFFFFFFFFull;
+        const std::uint64_t quietBit = bits & 0x0008000000000000ull;
+
+        return exponent == 0x7FF0000000000000ull && fraction != 0 && quietBit == 0;
+    }
+
     /**
      * @brief Floating-Point Compare Unordered.
      *        Compares FRA and FRB and records the result in CR field BF.
@@ -54,12 +76,15 @@ namespace Core::Instruction {
      */
     void FCMPU(Interpreter &cpu, const EncodedInstruction &instr)
     {
+        const double rawA = cpu.m_fpr[instr.fra];
+        const double rawB = cpu.m_fpr[instr.frb];
         const float a = static_cast<float>(cpu.m_fpr[instr.fra]);
         const float b = static_cast<float>(cpu.m_fpr[instr.frb]);
         std::uint32_t condition = Core::ConditionRegisterFlag::Zero;
 
         if (std::isnan(a) || std::isnan(b)) {
             condition = Core::ConditionRegisterFlag::SummaryOverflow;
+            cpu.m_fpscr.vxsnan = isSignalingNaN(rawA) || isSignalingNaN(rawB) || isSignalingNaN(a) || isSignalingNaN(b);
         } else if (a < b) {
             condition = Core::ConditionRegisterFlag::Negative;
         } else if (a > b) {
