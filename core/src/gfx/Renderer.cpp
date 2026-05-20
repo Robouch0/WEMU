@@ -32,7 +32,7 @@ Renderer::Renderer()
     if (SDL_Init(SDL_INIT_VIDEO) != 0)
         throw std::runtime_error(SDL_GetError());
 
-    m_window = SDL_CreateWindow("WEMU — pong", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, TV_W, TV_H, SDL_WINDOW_SHOWN);
+    m_window = SDL_CreateWindow("WEMU — pong", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, TV_W, TV_H, SDL_WINDOW_HIDDEN);
     if (!m_window)
         throw std::runtime_error(SDL_GetError());
 
@@ -54,7 +54,6 @@ Renderer::~Renderer()
         SDL_DestroyRenderer(m_sdl_rend);
     if (m_window)
         SDL_DestroyWindow(m_window);
-    SDL_Quit();
 }
 
 // Copy RGBX framebuffer to ABGR8888 texture (same memory layout) and present.

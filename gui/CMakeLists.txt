@@ -21,6 +21,7 @@ qt_add_executable(appgui
     src/input/InputManager.cpp
     src/input/InputProfileManager.cpp
     src/library/TitleScanner.cpp
+    src/emulator/EmulatorLauncher.cpp
 )
 
 target_sources(appgui PRIVATE
@@ -60,6 +61,7 @@ target_include_directories(appgui
         ${CMAKE_SOURCE_DIR}/core/src/
         ${CMAKE_SOURCE_DIR}/gui/src/input
         ${CMAKE_SOURCE_DIR}/gui/src/library
+        ${CMAKE_SOURCE_DIR}/gui/src/emulator
         ${Qt6Core_INCLUDE_DIRS}
 )
 

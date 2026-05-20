@@ -9,6 +9,7 @@
 #include "input/InputProfileManager.hpp"
 #include "input/KeyboardInput.hpp"
 #include "library/TitleScanner.hpp"
+#include "emulator/EmulatorLauncher.hpp"
 
 int main(int argc, char *argv[])
 {
@@ -30,6 +31,9 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty("InputManager", inputManager);
     engine.rootContext()->setContextProperty("InputProfileManager", inputProfileManager);
     engine.rootContext()->setContextProperty("TitleScanner", titleScanner);
+
+    auto emulatorLauncher = new EmulatorLauncher(&app);
+    engine.rootContext()->setContextProperty("EmulatorLauncher", emulatorLauncher);
 
     const QString gamesPath = QDir::cleanPath(QCoreApplication::applicationDirPath() + "/../../games");
     titleScanner->scanDirectory(gamesPath);

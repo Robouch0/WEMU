@@ -29,10 +29,12 @@ Rectangle {
         model: TitleScanner
 
         delegate: Rectangle {
+            id: delegateRoot
             property string gameName:      model.name
             property string gamePublisher: model.publisher
             property string gameVersion:   model.version
             property string gameRpxPath:   model.rpxPath
+            property bool   isCurrent:     ListView.isCurrentItem
 
             width: 200
             height: 200
@@ -43,6 +45,11 @@ Rectangle {
 
             Behavior on color { ColorAnimation { duration: 150 } }
             Behavior on border.color { ColorAnimation { duration: 150 } }
+
+            MouseArea {
+                anchors.fill: parent
+                onClicked: carousel.currentIndex = index
+            }
 
             Column {
                 anchors.centerIn: parent
@@ -67,11 +74,13 @@ Rectangle {
                     horizontalAlignment: Text.AlignHCenter
                     wrapMode: Text.WordWrap
                 }
-            }
 
-            MouseArea {
-                anchors.fill: parent
-                onClicked: carousel.currentIndex = index
+                Button {
+                    visible: delegateRoot.isCurrent
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    text: "▶  Launch"
+                    onClicked: EmulatorLauncher.launch(delegateRoot.gameRpxPath)
+                }
             }
         }
     }
@@ -95,6 +104,12 @@ Rectangle {
             text: carousel.currentItem ? carousel.currentItem.gamePublisher : ""
             color: "#888899"
             font.pixelSize: 14
+        }
+    }
+    Connections {
+        target: EmulatorLauncher
+        function onStateChanged(running) {
+            rootWindow.visible = !running
         }
     }
 }

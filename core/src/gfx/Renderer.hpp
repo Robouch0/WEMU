@@ -28,6 +28,9 @@ class Renderer {
 
         bool is_open() const { return m_open; }
 
+        void show() { SDL_ShowWindow(m_window); m_open = true; }
+        void hide() { SDL_HideWindow(m_window); }
+
     private:
         SDL_Window *m_window = nullptr;
         SDL_Renderer *m_sdl_rend = nullptr;
