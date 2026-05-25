@@ -2,10 +2,10 @@
 // Created by nicolas on 2/18/26.
 //
 
-#include "headers/wemuEngineVulkan.hpp"
+#include "../Renderer.hpp"
 #include <stdexcept>
 
-void WemuEngineVulkan::createSyncObjects() {
+void Renderer::createSyncObjects() {
     m_imageAvailableSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
     m_renderFinishedSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
     m_inFlightFences.resize(MAX_FRAMES_IN_FLIGHT);

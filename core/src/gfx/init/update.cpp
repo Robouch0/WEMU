@@ -2,8 +2,8 @@
 // Created by nicolas on 2/18/26.
 //
 
-#include "headers/wemuEngineVulkan.hpp"
-#include "headers/vertex.hpp"
+#include "../Renderer.hpp"
+#include "../headers/vertex.hpp"
 #include <chrono>
 #include <cstring>
 #include <stdexcept>
@@ -11,15 +11,15 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
-void WemuEngineVulkan::mainLoop() {
-	while (!glfwWindowShouldClose(m_window)) {
-		glfwPollEvents();
-		drawFrame();
-	}
-	vkDeviceWaitIdle(m_logicalDevice);
-}
+// void Renderer::mainLoop() {
+// 	while (!glfwWindowShouldClose(m_window)) {
+// 		glfwPollEvents();
+// 		drawFrame();
+// 	}
+// 	vkDeviceWaitIdle(m_logicalDevice);
+// }
 
-void WemuEngineVulkan::drawFrame() {
+void Renderer::drawFrame() {
 	vkWaitForFences(m_logicalDevice, 1, &m_inFlightFences[m_currentFrame], VK_TRUE, UINT64_MAX);
 
 	uint32_t imageIndex;
@@ -81,7 +81,7 @@ void WemuEngineVulkan::drawFrame() {
 	m_currentFrame = (m_currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 }
 
-void WemuEngineVulkan::updateUniformBuffer(const uint32_t currentImage) const {
+void Renderer::updateUniformBuffer(const uint32_t currentImage) const {
 	static auto startTime = std::chrono::high_resolution_clock::now();
 
 	const auto currentTime = std::chrono::high_resolution_clock::now();

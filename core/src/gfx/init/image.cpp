@@ -1,9 +1,9 @@
-#include "headers/wemuEngineVulkan.hpp"
 #define STB_IMAGE_IMPLEMENTATION
-#include "headers/stb_image.h"
+#include "../Renderer.hpp"
+#include "../headers/stb_image.h"
 #include <stdexcept>
 
-void WemuEngineVulkan::createImage(const uint32_t width, const uint32_t height, const VkFormat format, const VkImageTiling tiling,
+void Renderer::createImage(const uint32_t width, const uint32_t height, const VkFormat format, const VkImageTiling tiling,
     const VkImageUsageFlags usage, const VkMemoryPropertyFlags properties, VkImage& image, VkDeviceMemory& imageMemory) const {
     VkImageCreateInfo imageInfo{};
     imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -39,7 +39,7 @@ void WemuEngineVulkan::createImage(const uint32_t width, const uint32_t height, 
     vkBindImageMemory(m_logicalDevice, image, imageMemory, 0);
 }
 
-VkImageView WemuEngineVulkan::createImageView(VkImage image, VkFormat format) {
+VkImageView Renderer::createImageView(VkImage image, VkFormat format) {
     VkImageViewCreateInfo viewInfo{};
     viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     viewInfo.image = image;
@@ -59,7 +59,7 @@ VkImageView WemuEngineVulkan::createImageView(VkImage image, VkFormat format) {
     return imageView;
 }
 
-void WemuEngineVulkan::createImageViews() {
+void Renderer::createImageViews() {
     m_swapChainImageViews.resize(m_swapChainImages.size());
 
     for (size_t i = 0; i < m_swapChainImages.size(); i++) {
@@ -67,7 +67,7 @@ void WemuEngineVulkan::createImageViews() {
     }
 }
 
-void WemuEngineVulkan::createTextureImage() {
+void Renderer::createTextureImage() {
     int texWidth, texHeight, texChannels;
     VkBuffer stagingBuffer;
     VkDeviceMemory stagingBufferMemory;
@@ -98,11 +98,11 @@ void WemuEngineVulkan::createTextureImage() {
     vkFreeMemory(m_logicalDevice, stagingBufferMemory, nullptr);
 }
 
-void WemuEngineVulkan::createTextureImageView() {
+void Renderer::createTextureImageView() {
     m_textureImageView = createImageView(m_textureImage, VK_FORMAT_R8G8B8A8_SRGB);
 }
 
-void WemuEngineVulkan::createTextureSampler() {
+void Renderer::createTextureSampler() {
     VkSamplerCreateInfo samplerInfo{};
     samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
     samplerInfo.magFilter = VK_FILTER_LINEAR;
@@ -131,7 +131,7 @@ void WemuEngineVulkan::createTextureSampler() {
 
 }
 
-void WemuEngineVulkan::transitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout) {
+void Renderer::transitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout) {
     const VkCommandBuffer commandBuffer = beginSingleTimeCommands();
 
     VkImageMemoryBarrier barrier{};

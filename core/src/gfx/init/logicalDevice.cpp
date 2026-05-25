@@ -2,11 +2,11 @@
 // Created by nicolas on 2/18/26.
 //
 
-#include "headers/wemuEngineVulkan.hpp"
+#include "../Renderer.hpp"
 #include <set>
 #include <stdexcept>
 
-void WemuEngineVulkan::createLogicalDevice() {
+void Renderer::createLogicalDevice() {
     const auto [graphicsFamily, presentFamily] = findQueueFamilies(m_physicalDevice);
 
     std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;

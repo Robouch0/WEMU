@@ -1,9 +1,9 @@
-#include "headers/wemuEngineVulkan.hpp"
-#include "headers/vertex.hpp"
+#include "../Renderer.hpp"
+#include "../headers/vertex.hpp"
 #include <stdexcept>
 #include <cstring>
 
-void WemuEngineVulkan::createBuffer(const VkDeviceSize size, const VkBufferUsageFlags usage, const VkMemoryPropertyFlags properties, VkBuffer &buffer, VkDeviceMemory &bufferMemory) const {
+void Renderer::createBuffer(const VkDeviceSize size, const VkBufferUsageFlags usage, const VkMemoryPropertyFlags properties, VkBuffer &buffer, VkDeviceMemory &bufferMemory) const {
     VkBufferCreateInfo bufferInfo{};
     bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     bufferInfo.size = size;
@@ -28,7 +28,7 @@ void WemuEngineVulkan::createBuffer(const VkDeviceSize size, const VkBufferUsage
     vkBindBufferMemory(m_logicalDevice, buffer, bufferMemory, 0);
 }
 
-VkCommandBuffer WemuEngineVulkan::beginSingleTimeCommands() const {
+VkCommandBuffer Renderer::beginSingleTimeCommands() const {
     VkCommandBufferAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
@@ -47,7 +47,7 @@ VkCommandBuffer WemuEngineVulkan::beginSingleTimeCommands() const {
     return commandBuffer;
 }
 
-void WemuEngineVulkan::endSingleTimeCommands(const VkCommandBuffer commandBuffer) const {
+void Renderer::endSingleTimeCommands(const VkCommandBuffer commandBuffer) const {
     vkEndCommandBuffer(commandBuffer);
 
     VkSubmitInfo submitInfo{};
@@ -61,7 +61,7 @@ void WemuEngineVulkan::endSingleTimeCommands(const VkCommandBuffer commandBuffer
     vkFreeCommandBuffers(m_logicalDevice, m_commandPool, 1, &commandBuffer);
 }
 
-void WemuEngineVulkan::copyBuffer(const VkBuffer srcBuffer, const VkBuffer dstBuffer, const VkDeviceSize size) const {
+void Renderer::copyBuffer(const VkBuffer srcBuffer, const VkBuffer dstBuffer, const VkDeviceSize size) const {
     const VkCommandBuffer commandBuffer = beginSingleTimeCommands();
 
     VkBufferCopy copyRegion{};
@@ -71,7 +71,7 @@ void WemuEngineVulkan::copyBuffer(const VkBuffer srcBuffer, const VkBuffer dstBu
     endSingleTimeCommands(commandBuffer);
 }
 
-void WemuEngineVulkan::copyBufferToImage(const VkBuffer buffer, const VkImage image, const uint32_t width, const uint32_t height) const {
+void Renderer::copyBufferToImage(const VkBuffer buffer, const VkImage image, const uint32_t width, const uint32_t height) const {
 	VkCommandBuffer commandBuffer = beginSingleTimeCommands();
 
 	VkBufferImageCopy region{};
@@ -96,7 +96,7 @@ void WemuEngineVulkan::copyBufferToImage(const VkBuffer buffer, const VkImage im
 	endSingleTimeCommands(commandBuffer);
 }
 
-void WemuEngineVulkan::createVertexBuffer() {
+void Renderer::createVertexBuffer() {
     const VkDeviceSize bufferSize = sizeof(vertices[0]) * vertices.size();
     VkBuffer stagingBuffer;
     VkDeviceMemory stagingBufferMemory;
@@ -117,7 +117,7 @@ void WemuEngineVulkan::createVertexBuffer() {
     vkFreeMemory(m_logicalDevice, stagingBufferMemory, nullptr);
 }
 
-void WemuEngineVulkan::createIndexBuffer() {
+void Renderer::createIndexBuffer() {
     const VkDeviceSize bufferSize = sizeof(indices[0]) * indices.size();
     VkBuffer stagingBuffer;
     VkDeviceMemory stagingBufferMemory;
@@ -138,7 +138,7 @@ void WemuEngineVulkan::createIndexBuffer() {
     vkFreeMemory(m_logicalDevice, stagingBufferMemory, nullptr);
 }
 
-void WemuEngineVulkan::createUniformBuffers() {
+void Renderer::createUniformBuffers() {
 	m_uniformBuffers.resize(MAX_FRAMES_IN_FLIGHT);
     m_uniformBuffersMemory.resize(MAX_FRAMES_IN_FLIGHT);
     m_uniformBuffersMapped.resize(MAX_FRAMES_IN_FLIGHT);
@@ -151,7 +151,7 @@ void WemuEngineVulkan::createUniformBuffers() {
     }
 }
 
-void WemuEngineVulkan::createCommandBuffers() {
+void Renderer::createCommandBuffers() {
     m_commandBuffers.resize(MAX_FRAMES_IN_FLIGHT);
     VkCommandBufferAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -164,7 +164,7 @@ void WemuEngineVulkan::createCommandBuffers() {
     }
 }
 
-void WemuEngineVulkan::recordCommandBuffer(const VkCommandBuffer commandBuffer, const uint32_t imageIndex) const {
+void Renderer::recordCommandBuffer(const VkCommandBuffer commandBuffer, const uint32_t imageIndex) const {
 		VkCommandBufferBeginInfo beginInfo{};
 		beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
 		beginInfo.flags = 0; // Optional
