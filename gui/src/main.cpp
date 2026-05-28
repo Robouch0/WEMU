@@ -13,7 +13,9 @@
 
 int main(int argc, char *argv[])
 {
-    if (SDL_Init(SDL_INIT_GAMECONTROLLER) != 0) {
+    SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
+
+    if (SDL_Init(SDL_INIT_GAMECONTROLLER | SDL_INIT_VIDEO) != 0) {
         qFatal("SDL_Init failed: %s", SDL_GetError());
     }
 
@@ -33,6 +35,7 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty("TitleScanner", titleScanner);
 
     auto emulatorLauncher = new EmulatorLauncher(&app);
+    emulatorLauncher->connectInput(inputManager, inputProfileManager);
     engine.rootContext()->setContextProperty("EmulatorLauncher", emulatorLauncher);
 
     const QString gamesPath = QDir::cleanPath(QCoreApplication::applicationDirPath() + "/../../games");

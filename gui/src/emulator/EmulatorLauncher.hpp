@@ -7,6 +7,8 @@
 
 namespace Core { class Interpreter; }
 class Renderer;
+class InputManager;
+class InputProfileManager;
 
 
 class GameThread : public QThread {
@@ -14,9 +16,9 @@ class GameThread : public QThread {
 public:
     explicit GameThread(QObject *parent = nullptr);
 
-    void queueGame(const QString &rpxPath);
-
+    void queueGame(const QString &rpxPath, const QString &title);
     void stopGame();
+    void setControllerMask(std::uint32_t mask);
 
 signals:
     void gameFinished();
@@ -29,6 +31,7 @@ private:
     std::atomic<bool>                m_startRequested{false};
     std::atomic<Core::Interpreter *> m_interpreter{nullptr};
     QString                          m_nextPath;
+    QString                          m_nextTitle;
 };
 
 class EmulatorLauncher : public QObject {
@@ -39,8 +42,10 @@ public:
 
     Q_INVOKABLE void setWindowHandle(WId handle);
 
-    Q_INVOKABLE void launch(const QString &rpxPath);
+    Q_INVOKABLE void launch(const QString &rpxPath, const QString &title = QString());
     Q_INVOKABLE void stop();
+
+    void connectInput(InputManager *mgr, InputProfileManager *profileMgr);
 
 signals:
     void stateChanged(bool running);

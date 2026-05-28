@@ -5,7 +5,10 @@
 #include "gfx/Renderer.hpp"
 #include "hle/Coreinit.hpp"
 #include "hle/Libc.hpp"
+#include "hle/StdlibHooks.hpp"
 #include "hle/Whb.hpp"
+#include "InputManager.hpp"
+#include "InputProfileManager.hpp"
 
 #include <QDebug>
 #include <mutex>
@@ -23,16 +26,23 @@ static void registerHleFunctionsOnce()
 
 GameThread::GameThread(QObject *parent) : QThread(parent) {}
 
-void GameThread::queueGame(const QString &rpxPath)
+void GameThread::queueGame(const QString &rpxPath, const QString &title)
 {
     m_nextPath = rpxPath;
-    m_startRequested.store(true, std::memory_order_release);
+    m_nextTitle = title;
+    m_startRequested = true;
 }
 
 void GameThread::stopGame()
 {
-    if (auto *interp = m_interpreter.load(std::memory_order_relaxed))
+    if (auto *interp = m_interpreter.load())
         interp->stop();
+}
+
+void GameThread::setControllerMask(std::uint32_t mask)
+{
+    if (auto *interp = m_interpreter.load())
+        interp->m_controllerMask = mask;
 }
 
 void GameThread::run()
@@ -42,48 +52,27 @@ void GameThread::run()
     std::optional<Renderer> renderer;
 
     while (!isInterruptionRequested()) {
-        if (!m_startRequested.load(std::memory_order_acquire)) {
+        if (!m_startRequested) {
             msleep(10);
             continue;
         }
 
-        QString path = m_nextPath;
-        m_startRequested.store(false, std::memory_order_relaxed);
+        QString path  = m_nextPath;
+        QString title = m_nextTitle;
+        m_startRequested = false;
 
-        // First launch: initialize SDL and create the SDL window (hidden).
         if (!renderer.has_value())
             renderer.emplace();
 
         try {
-            qDebug() << "[Worker] loading" << path;
             const Core::Loader loader(path.toStdString());
             Core::Binary binary = loader.getBinary();
 
-            qDebug() << "[Worker] building interpreter...";
             Core::Interpreter interpreter(binary);
-            m_interpreter.store(&interpreter, std::memory_order_relaxed);
+            m_interpreter = &interpreter;
 
             interpreter.m_renderer = &*renderer;
-
-            // stdlib hooks — bypass broken WUT sbrk heap (mirrors core/src/main.cpp)
-            struct { const char *name; Core::Interpreter::HookFn fn; } hooks[] = {
-                {"memalign",     [](Core::Interpreter &cpu) { cpu.m_gpr[3] = cpu.m_memory.heapAllocate(cpu.m_gpr[4], cpu.m_gpr[3] ? cpu.m_gpr[3] : 8); }},
-                {"malloc",       [](Core::Interpreter &cpu) { cpu.m_gpr[3] = cpu.m_memory.heapAllocate(cpu.m_gpr[3], 8); }},
-                {"calloc",       [](Core::Interpreter &cpu) {
-                    uint32_t n = cpu.m_gpr[3] * cpu.m_gpr[4];
-                    uint32_t a = cpu.m_memory.heapAllocate(n, 8);
-                    if (a) { if (auto *p = cpu.m_memory.hostPtr(a)) std::memset(p, 0, n); }
-                    cpu.m_gpr[3] = a;
-                }},
-                {"realloc",      [](Core::Interpreter &cpu) { cpu.m_gpr[3] = cpu.m_memory.heapAllocate(cpu.m_gpr[4], 8); }},
-                {"free",         [](Core::Interpreter &) {}},
-                {"__wut_sbrk_r", [](Core::Interpreter &cpu) { cpu.m_gpr[3] = cpu.m_memory.heapAllocate(cpu.m_gpr[4], 4); }},
-                {"_sbrk_r",      [](Core::Interpreter &cpu) { cpu.m_gpr[3] = cpu.m_memory.heapAllocate(cpu.m_gpr[4], 4); }},
-            };
-            for (auto &h : hooks)
-                for (const auto &sym : binary.symbols)
-                    if (sym.name == h.name && sym.raw.header.st_value >= 0x02000000u && sym.raw.header.st_value < 0x10000000u)
-                        interpreter.m_hooks[sym.raw.header.st_value] = h.fn;
+            Core::installStdlibHooks(interpreter, binary);
 
             interpreter.m_gpr[1] = 0xC0FFFFF0u;
             interpreter.m_gpr[2] = 0u;
@@ -91,17 +80,16 @@ void GameThread::run()
             interpreter.m_gpr[4] = 0u;
             interpreter.m_memory.write<uint32_t>(0xC0FFFFF0u, 0);
 
+            renderer->set_title(title.isEmpty() ? "WEMU" : title.toStdString());
             renderer->show();
             interpreter.run();
             renderer->hide();
-            qDebug() << "[Worker] interpreter finished.";
 
-            m_interpreter.store(nullptr, std::memory_order_relaxed);
+            m_interpreter = nullptr;
 
         } catch (const std::exception &e) {
             if (renderer.has_value()) renderer->hide();
-            m_interpreter.store(nullptr, std::memory_order_relaxed);
-            qWarning() << "[Worker] exception:" << e.what();
+            m_interpreter = nullptr;
             emit gameError(QString::fromStdString(e.what()));
         }
 
@@ -137,7 +125,7 @@ void EmulatorLauncher::setWindowHandle(WId handle)
     Q_UNUSED(handle)
 }
 
-void EmulatorLauncher::launch(const QString &rpxPath)
+void EmulatorLauncher::launch(const QString &rpxPath, const QString &title)
 {
     if (m_emulating) {
         qWarning() << "[Launcher] Already running, ignoring launch request";
@@ -145,11 +133,52 @@ void EmulatorLauncher::launch(const QString &rpxPath)
     }
 
     m_emulating = true;
-    m_thread->queueGame(rpxPath);
+    m_thread->queueGame(rpxPath, title);
     emit stateChanged(true);
 }
 
 void EmulatorLauncher::stop()
 {
     m_thread->stopGame();
+}
+
+void EmulatorLauncher::connectInput(InputManager *mgr, InputProfileManager *profileMgr)
+{
+    static constexpr std::uint32_t VPAD_UP    = 0x0200;
+    static constexpr std::uint32_t VPAD_DOWN  = 0x0100;
+    static constexpr std::uint32_t VPAD_LEFT  = 0x0800;
+    static constexpr std::uint32_t VPAD_RIGHT = 0x0400;
+    static constexpr std::uint32_t VPAD_A     = 0x8000;
+    static constexpr std::uint32_t VPAD_B     = 0x4000;
+    static constexpr std::uint32_t VPAD_X     = 0x2000;
+    static constexpr std::uint32_t VPAD_Y     = 0x1000;
+    static constexpr std::uint32_t VPAD_L     = 0x0010;
+    static constexpr std::uint32_t VPAD_R     = 0x0020;
+    static constexpr std::uint32_t VPAD_ZL    = 0x0001;
+    static constexpr std::uint32_t VPAD_ZR    = 0x0002;
+    static constexpr std::uint32_t VPAD_PLUS  = 0x0008;
+    static constexpr std::uint32_t VPAD_MINUS = 0x0004;
+
+    connect(mgr, &InputManager::inputUpdated, this, [this, mgr, profileMgr]() {
+        auto pressed = [&](const QString &wiiuAction) {
+            return mgr->isButtonPressed(profileMgr->getBinding(wiiuAction));
+        };
+
+        std::uint32_t mask = 0;
+        if (pressed("DPAD_UP"))    mask |= VPAD_UP;
+        if (pressed("DPAD_DOWN"))  mask |= VPAD_DOWN;
+        if (pressed("DPAD_LEFT"))  mask |= VPAD_LEFT;
+        if (pressed("DPAD_RIGHT")) mask |= VPAD_RIGHT;
+        if (pressed("A"))          mask |= VPAD_A;
+        if (pressed("B"))          mask |= VPAD_B;
+        if (pressed("X"))          mask |= VPAD_X;
+        if (pressed("Y"))          mask |= VPAD_Y;
+        if (pressed("L"))          mask |= VPAD_L;
+        if (pressed("R"))          mask |= VPAD_R;
+        if (pressed("ZL"))         mask |= VPAD_ZL;
+        if (pressed("ZR"))         mask |= VPAD_ZR;
+        if (mgr->isButtonPressed("START")) mask |= VPAD_PLUS;
+        if (mgr->isButtonPressed("BACK"))  mask |= VPAD_MINUS;
+        m_thread->setControllerMask(mask);
+    });
 }

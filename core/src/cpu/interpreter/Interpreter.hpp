@@ -129,7 +129,8 @@ namespace Core {
 
             using HookFn = std::function<void(Interpreter &)>;
 
-            std::atomic<bool> m_running{true};
+            std::atomic<bool>          m_running{true};
+            std::atomic<std::uint32_t> m_controllerMask{0};
             bool m_hle_redirected{false};
 
             Renderer *m_renderer = nullptr; // SDL window — set after construction

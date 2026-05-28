@@ -79,7 +79,7 @@ Rectangle {
                     visible: delegateRoot.isCurrent
                     anchors.horizontalCenter: parent.horizontalCenter
                     text: "▶  Launch"
-                    onClicked: EmulatorLauncher.launch(delegateRoot.gameRpxPath)
+                    onClicked: EmulatorLauncher.launch(delegateRoot.gameRpxPath, delegateRoot.gameName)
                 }
             }
         }

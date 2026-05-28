@@ -68,6 +68,8 @@ add_library(core STATIC
         src/hle/Libc.cpp
         src/hle/Whb.hpp
         src/hle/Whb.cpp
+        src/hle/StdlibHooks.hpp
+        src/hle/StdlibHooks.cpp
         src/gfx/Renderer.cpp
         src/cpu/instructions/logical/Ext.cpp
         src/cpu/instructions/logical/Cnt.cpp

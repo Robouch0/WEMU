@@ -29,10 +29,7 @@ static constexpr std::uint32_t BTN_MINUS = 0x0004;
 
 Renderer::Renderer()
 {
-    if (SDL_Init(SDL_INIT_VIDEO) != 0)
-        throw std::runtime_error(SDL_GetError());
-
-    m_window = SDL_CreateWindow("WEMU — pong", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, TV_W, TV_H, SDL_WINDOW_HIDDEN);
+    m_window = SDL_CreateWindow("WEMU", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, TV_W, TV_H, SDL_WINDOW_HIDDEN);
     if (!m_window)
         throw std::runtime_error(SDL_GetError());
 
@@ -44,16 +41,30 @@ Renderer::Renderer()
     m_texture = SDL_CreateTexture(m_sdl_rend, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STREAMING, TV_W, TV_H);
     if (!m_texture)
         throw std::runtime_error(SDL_GetError());
+
+    SDL_AddEventWatch(onSdlEvent, this);
 }
 
 Renderer::~Renderer()
 {
+    SDL_DelEventWatch(onSdlEvent, this);
     if (m_texture)
         SDL_DestroyTexture(m_texture);
     if (m_sdl_rend)
         SDL_DestroyRenderer(m_sdl_rend);
     if (m_window)
         SDL_DestroyWindow(m_window);
+}
+
+int Renderer::SDLCALL onSdlEvent(void *userdata, SDL_Event *e)
+{
+    auto *self = static_cast<Renderer *>(userdata);
+    if (e->type == SDL_QUIT ||
+        (e->type == SDL_WINDOWEVENT &&
+         e->window.event == SDL_WINDOWEVENT_CLOSE &&
+         e->window.windowID == SDL_GetWindowID(self->m_window)))
+        self->m_open = false;
+    return 1;
 }
 
 // Copy RGBX framebuffer to ABGR8888 texture (same memory layout) and present.
@@ -94,16 +105,10 @@ void Renderer::flip_tv(const std::uint8_t *rgbx, std::uint32_t w, std::uint32_t 
 
 bool Renderer::poll_events()
 {
-    SDL_Event ev;
-    while (SDL_PollEvent(&ev)) {
-        if (ev.type == SDL_QUIT) {
-            m_open = false;
-            return false;
-        }
-        if (ev.type == SDL_KEYDOWN && ev.key.keysym.sym == SDLK_ESCAPE) {
-            m_open = false;
-            return false;
-        }
+    const auto *keys = SDL_GetKeyboardState(nullptr);
+    if (keys[SDL_SCANCODE_ESCAPE]) {
+        m_open = false;
+        return false;
     }
     return m_open;
 }

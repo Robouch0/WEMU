@@ -526,7 +526,7 @@ static void hle_VPADRead(Core::Interpreter &cpu)
     }
 
     cpu.m_renderer->poll_events();
-    std::uint32_t hold = cpu.m_renderer->get_buttons();
+    std::uint32_t hold = cpu.m_renderer->get_buttons() | cpu.m_controllerMask;
 
     static std::uint32_t s_prev_hold = 0;
     std::uint32_t trigger = hold & ~s_prev_hold;

@@ -5,7 +5,9 @@
 ** The TV screen is 1280×720, DRC is 854×480.
 */
 #include <SDL2/SDL.h>
+#include <atomic>
 #include <cstdint>
+#include <string>
 
 class Renderer {
     public:
@@ -26,14 +28,18 @@ class Renderer {
         // Keyboard state → VPAD button bitmask.
         std::uint32_t get_buttons();
 
-        bool is_open() const { return m_open; }
+        bool is_open() const { return m_open.load(); }
 
         void show() { SDL_ShowWindow(m_window); m_open = true; }
         void hide() { SDL_HideWindow(m_window); }
 
+        void set_title(const std::string &title) { SDL_SetWindowTitle(m_window, title.c_str()); }
+
     private:
+        static int SDLCALL onSdlEvent(void *userdata, SDL_Event *e);
+
         SDL_Window *m_window = nullptr;
         SDL_Renderer *m_sdl_rend = nullptr;
         SDL_Texture *m_texture = nullptr;
-        bool m_open = true;
+        std::atomic<bool> m_open{true};
 };

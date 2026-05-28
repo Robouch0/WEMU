@@ -62,7 +62,6 @@ void SDLGamepadInput::update()
         if (m_lastButtons.value(name) != now)
         {
             m_lastButtons[name] = now;
-            qDebug() << name;
             emit buttonStateChanged(name, now);
         }
     }
@@ -89,7 +88,6 @@ void SDLGamepadInput::update()
 
         if (now != last) {
             last = now;
-            qDebug() << name;
             emit buttonStateChanged(name, now);
         }
     };
