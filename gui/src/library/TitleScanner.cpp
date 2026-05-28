@@ -14,6 +14,11 @@ void TitleScanner::scanDirectory(const QString &path)
     beginResetModel();
     m_titles.clear();
 
+    if (m_searchPath != path) {
+        m_searchPath = path;
+        emit searchPathChanged();
+    }
+
     QDir root(path);
     for (const QString &entry : root.entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
         GameTitle title;

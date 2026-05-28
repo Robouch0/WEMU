@@ -5,6 +5,7 @@
 
 class TitleScanner : public QAbstractListModel {
     Q_OBJECT
+    Q_PROPERTY(QString searchPath READ searchPath NOTIFY searchPathChanged)
 
 public:
     struct GameTitle {
@@ -32,6 +33,12 @@ public:
 
     Q_INVOKABLE void scanDirectory(const QString &path);
 
+    [[nodiscard]] QString searchPath() const { return m_searchPath; }
+
+signals:
+    void searchPathChanged();
+
 private:
     QList<GameTitle> m_titles;
+    QString          m_searchPath;
 };
