@@ -1,5 +1,6 @@
 #pragma once
 #include <QAbstractListModel>
+#include <QFileSystemWatcher>
 #include <QString>
 #include <QList>
 
@@ -39,6 +40,7 @@ signals:
     void searchPathChanged();
 
 private:
-    QList<GameTitle> m_titles;
-    QString          m_searchPath;
+    QList<GameTitle>     m_titles;
+    QString              m_searchPath;
+    QFileSystemWatcher  *m_watcher;
 };

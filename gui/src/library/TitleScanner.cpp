@@ -6,7 +6,10 @@
 
 TitleScanner::TitleScanner(QObject *parent)
     : QAbstractListModel(parent)
+    , m_watcher(new QFileSystemWatcher(this))
 {
+    connect(m_watcher, &QFileSystemWatcher::directoryChanged,
+            this, &TitleScanner::scanDirectory);
 }
 
 void TitleScanner::scanDirectory(const QString &path)
@@ -15,6 +18,8 @@ void TitleScanner::scanDirectory(const QString &path)
     m_titles.clear();
 
     if (m_searchPath != path) {
+        if (!m_watcher->directories().isEmpty())
+            m_watcher->removePaths(m_watcher->directories());
         m_searchPath = path;
         emit searchPathChanged();
     }
@@ -54,6 +59,9 @@ void TitleScanner::scanDirectory(const QString &path)
     }
 
     endResetModel();
+
+    if (!m_watcher->directories().contains(path) && root.exists())
+        m_watcher->addPath(path);
 }
 
 
