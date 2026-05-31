@@ -99,7 +99,7 @@ TEST_F(InstructionTest, FCMPU_Equal)
 
 TEST_F(InstructionTest, FCMPU_NaN_Unordered)
 {
-    cpu->m_fpr[2] = std::numeric_limits<float>::quiet_NaN();
+    cpu->m_fpr[2] = std::numeric_limits<double>::quiet_NaN();
     cpu->m_fpr[3] = 1.0f;
 
     EncodedInstruction inst(0);
@@ -124,8 +124,8 @@ TEST_F(InstructionTest, FCMPU_NaN_Unordered)
 
 TEST_F(InstructionTest, FCMPU_BothNaN_Unordered)
 {
-    cpu->m_fpr[2] = std::numeric_limits<float>::quiet_NaN();
-    cpu->m_fpr[3] = std::numeric_limits<float>::quiet_NaN();
+    cpu->m_fpr[2] = std::numeric_limits<double>::quiet_NaN();
+    cpu->m_fpr[3] = std::numeric_limits<double>::quiet_NaN();
 
     EncodedInstruction inst(0);
     inst.bf = 0;
@@ -161,6 +161,30 @@ TEST_F(InstructionTest, FCMPU_SignalingNaN_SetsVXSNAN)
     EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Zero) ? 1 : 0), 0u);
     EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::SummaryOverflow) ? 1 : 0), 1u); // unordered
     EXPECT_EQ(cpu->m_fpscr.vxsnan, 1u);
+}
+
+//
+// ─────────────────────────────────────────────────────────────────────────────
+//  FCMPU — double-only difference is preserved
+// ─────────────────────────────────────────────────────────────────────────────
+//
+
+TEST_F(InstructionTest, FCMPU_UsesDoublePrecision)
+{
+    cpu->m_fpr[2] = std::nextafter(1.0, 2.0);
+    cpu->m_fpr[3] = 1.0;
+
+    EncodedInstruction inst(0);
+    inst.bf = 0;
+    inst.fra = 2;
+    inst.frb = 3;
+
+    Core::Instruction::FCMPU(*cpu, inst);
+
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Negative) ? 1 : 0), 0u);
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Positive) ? 1 : 0), 1u); // greater than
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::Zero) ? 1 : 0), 0u);
+    EXPECT_EQ(((cpu->m_cr.cr0 & Core::ConditionRegisterFlag::SummaryOverflow) ? 1 : 0), 0u);
 }
 
 //

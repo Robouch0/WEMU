@@ -44,16 +44,6 @@ namespace Core::Instruction {
         }
     }
 
-    static bool isSignalingNaN(const float value)
-    {
-        const std::uint32_t bits = std::bit_cast<std::uint32_t>(value);
-        const std::uint32_t exponent = bits & 0x7F800000u;
-        const std::uint32_t fraction = bits & 0x007FFFFFu;
-        const std::uint32_t quietBit = bits & 0x00400000u;
-
-        return exponent == 0x7F800000u && fraction != 0 && quietBit == 0;
-    }
-
     static bool isSignalingNaN(const double value)
     {
         const std::uint64_t bits = std::bit_cast<std::uint64_t>(value);
@@ -76,15 +66,13 @@ namespace Core::Instruction {
      */
     void FCMPU(Interpreter &cpu, const EncodedInstruction &instr)
     {
-        const double rawA = cpu.m_fpr[instr.fra];
-        const double rawB = cpu.m_fpr[instr.frb];
-        const float a = static_cast<float>(cpu.m_fpr[instr.fra]);
-        const float b = static_cast<float>(cpu.m_fpr[instr.frb]);
+        const double a = cpu.m_fpr[instr.fra];
+        const double b = cpu.m_fpr[instr.frb];
         std::uint32_t condition = Core::ConditionRegisterFlag::Zero;
 
         if (std::isnan(a) || std::isnan(b)) {
             condition = Core::ConditionRegisterFlag::SummaryOverflow;
-            cpu.m_fpscr.vxsnan = isSignalingNaN(rawA) || isSignalingNaN(rawB) || isSignalingNaN(a) || isSignalingNaN(b);
+            cpu.m_fpscr.vxsnan = isSignalingNaN(a) || isSignalingNaN(b);
         } else if (a < b) {
             condition = Core::ConditionRegisterFlag::Negative;
         } else if (a > b) {
