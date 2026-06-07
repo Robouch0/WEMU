@@ -10,8 +10,8 @@
 #define GLM_FORCE_RADIANS
 #define GLM_FORCE_DEFAULT_ALIGNED_GENTYPES
 
-constexpr uint32_t WIDTH = 1280;
-constexpr uint32_t HEIGHT = 720;
+constexpr std::size_t WIDTH = 1280;
+constexpr std::size_t HEIGHT = 720;
 constexpr int MAX_FRAMES_IN_FLIGHT = 2;
 
 const std::vector<const char *> deviceExtensions = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
@@ -32,7 +32,7 @@ class Renderer {
 
         std::uint32_t get_buttons();
 
-        bool is_open() const { return m_open; }
+        [[nodiscard]] bool is_open() const { return m_open; }
 
         struct QueueFamilyIndices {
                 std::optional<uint32_t> graphicsFamily;
@@ -52,8 +52,6 @@ class Renderer {
 
         void initWindow();
 
-        static void framebufferResizeCallback(GLFWwindow *window, int width, int height);
-
         void initVulkan()
         {
             createInstance();
@@ -69,16 +67,6 @@ class Renderer {
         }
 
         void initFlipTV();
-
-        void createRenderPass();
-
-        [[nodiscard]] VkShaderModule createShaderModule(const std::vector<char> &code) const;
-
-        void createDescriptorSetLayout();
-
-        void createGraphicsPipeline();
-
-        void createFramebuffers();
 
         void createSwapChain();
 
@@ -138,17 +126,11 @@ class Renderer {
 
         void createUniformBuffers();
 
-        void createDescriptorPool();
-
-        void createDescriptorSets();
-
         [[nodiscard]] uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties) const;
 
         void createCommandBuffers();
 
         void recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex) const;
-
-        void mainLoop();
 
         void drawFrame();
 
