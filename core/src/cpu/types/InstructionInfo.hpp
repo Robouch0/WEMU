@@ -7,7 +7,14 @@
 
 #pragma once
 
-#include "EncodedInstruction.hpp"
+
+#include <cstdint>
+#include <functional>
+#include <vector>
+
+#include "cpu/types/EncodedInstruction.hpp"
+#include "cpu/types/Field.hpp"
+#include "cpu/types/InstructionID.hpp"
 
 namespace Core {
     class Interpreter;
