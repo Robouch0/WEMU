@@ -20,7 +20,7 @@ jobs:
           sudo apt-get install -y \
             cmake build-essential \
             qt6-base-dev qt6-tools-dev qt6-declarative-dev qt6-base-dev-tools \
-            libxkbcommon-dev libsdl2-dev zlib1g-dev
+            libxkbcommon-dev libvulkan-dev zlib1g-dev
 
       - name: Cache CMake build
         uses: actions/cache@v4
