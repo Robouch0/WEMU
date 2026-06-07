@@ -98,10 +98,7 @@ VkSurfaceFormatKHR Renderer::chooseSwapSurfaceFormat(const std::vector<VkSurface
     return availableFormats[0];
 }
 
-VkPresentModeKHR Renderer::chooseSwapPresentMode()
-{
-    return VK_PRESENT_MODE_FIFO_KHR;
-}
+VkPresentModeKHR Renderer::chooseSwapPresentMode() { return VK_PRESENT_MODE_FIFO_KHR; }
 
 [[nodiscard]] VkExtent2D Renderer::chooseSwapExtent(const VkSurfaceCapabilitiesKHR &capabilities) const
 {

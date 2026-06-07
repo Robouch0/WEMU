@@ -21,7 +21,8 @@ static constexpr std::uint32_t BTN_PLUS = 0x0008;
 static constexpr std::uint32_t BTN_MINUS = 0x0004;
 
 void pipelineBarrier(VkImage image, VkImageLayout oldLayout, VkImageLayout newLayout, VkAccessFlags srcAccess, VkAccessFlags dstAccess,
-                             VkPipelineStageFlags srcStage, VkPipelineStageFlags dstStage, VkCommandBuffer &cmd) {
+                     VkPipelineStageFlags srcStage, VkPipelineStageFlags dstStage, VkCommandBuffer &cmd)
+{
     VkImageMemoryBarrier b{};
     b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     b.oldLayout = oldLayout;
@@ -53,19 +54,24 @@ void Renderer::flip_tv(const std::uint8_t *rgbx, std::uint32_t w, std::uint32_t 
         std::memcpy(drow, srow, cols * 4);
     }
     vkUnmapMemory(m_logicalDevice, m_tvStagingMemory);
-    //endMapping
+    // endMapping
 
     // asks the swapchain the next available image to render into
     uint32_t imageIndex = 0;
     VkResult result;
 
     while (true) {
-        result = vkAcquireNextImageKHR(m_logicalDevice, m_swapChain, UINT64_MAX, m_imageAvailableSemaphores[m_currentFrame], VK_NULL_HANDLE, &imageIndex);
-        if (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR) break;
-        if (result == VK_ERROR_OUT_OF_DATE_KHR) { recreateSwapChain(); continue; }
+        result = vkAcquireNextImageKHR(m_logicalDevice, m_swapChain, UINT64_MAX, m_imageAvailableSemaphores[m_currentFrame], VK_NULL_HANDLE,
+                                       &imageIndex);
+        if (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR)
+            break;
+        if (result == VK_ERROR_OUT_OF_DATE_KHR) {
+            recreateSwapChain();
+            continue;
+        }
         throw std::runtime_error("flip_tv: failed to acquire swap chain image");
     }
-    //end of image retrieval
+    // end of image retrieval
 
     vkWaitForFences(m_logicalDevice, 1, &m_inFlightFences[m_currentFrame], VK_TRUE, UINT64_MAX);
     vkResetFences(m_logicalDevice, 1, &m_inFlightFences[m_currentFrame]);
@@ -81,7 +87,7 @@ void Renderer::flip_tv(const std::uint8_t *rgbx, std::uint32_t w, std::uint32_t 
         throw std::runtime_error("flip_tv: failed to begin command buffer");
 
     pipelineBarrier(m_tvImage, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
-            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, cmd);
+                    VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, cmd);
 
     VkBufferImageCopy region{};
     region.bufferOffset = 0;
@@ -93,10 +99,10 @@ void Renderer::flip_tv(const std::uint8_t *rgbx, std::uint32_t w, std::uint32_t 
     vkCmdCopyBufferToImage(cmd, m_tvStagingBuffer, m_tvImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
     pipelineBarrier(m_tvImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
-            VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, cmd);
+                    VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, cmd);
 
     pipelineBarrier(m_swapChainImages[imageIndex], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
-            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, cmd);
+                    VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, cmd);
 
 
     VkImageBlit blit{};
@@ -109,8 +115,8 @@ void Renderer::flip_tv(const std::uint8_t *rgbx, std::uint32_t w, std::uint32_t 
     vkCmdBlitImage(cmd, m_tvImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, m_swapChainImages[imageIndex], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
                    &blit, VK_FILTER_LINEAR);
 
-    pipelineBarrier(m_swapChainImages[imageIndex], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_ACCESS_TRANSFER_WRITE_BIT, 0,
-            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, cmd);
+    pipelineBarrier(m_swapChainImages[imageIndex], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                    VK_ACCESS_TRANSFER_WRITE_BIT, 0, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, cmd);
 
     if (vkEndCommandBuffer(cmd) != VK_SUCCESS)
         throw std::runtime_error("flip_tv: failed to record command buffer");
