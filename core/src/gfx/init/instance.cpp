@@ -2,10 +2,12 @@
 // Created by nicolas on 2/18/26.
 //
 
-#include "../Renderer.hpp"
 #include <stdexcept>
 
-void Renderer::createInstance() {
+#include "../Renderer.hpp"
+
+void Renderer::createInstance()
+{
     VkApplicationInfo appInfo{};
     appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
     appInfo.pApplicationName = "Wemu";

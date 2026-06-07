@@ -10,7 +10,8 @@
 //     }
 // }
 
-void Renderer::initWindow() {
+void Renderer::initWindow()
+{
     glfwInit();
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API); // don't create an useless OpenGL context
     glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE); // for now can't resize the window

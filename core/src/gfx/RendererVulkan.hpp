@@ -128,7 +128,8 @@
 //
 // 	void createCommandPool();
 //
-// 	void createImage(uint32_t width, uint32_t height, VkFormat format, VkImageTiling tiling, VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage& image, VkDeviceMemory& imageMemory) const;
+// 	void createImage(uint32_t width, uint32_t height, VkFormat format, VkImageTiling tiling, VkImageUsageFlags usage, VkMemoryPropertyFlags
+// properties, VkImage& image, VkDeviceMemory& imageMemory) const;
 //
 // 	VkImageView createImageView(VkImage image, VkFormat format);
 //
@@ -146,7 +147,8 @@
 //
 // 	void endSingleTimeCommands(VkCommandBuffer commandBuffer) const;
 //
-// 	void createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkBuffer &buffer, VkDeviceMemory &bufferMemory) const;
+// 	void createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkBuffer &buffer, VkDeviceMemory &bufferMemory)
+// const;
 //
 // 	void copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size) const;
 //

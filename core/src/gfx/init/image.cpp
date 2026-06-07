@@ -1,10 +1,12 @@
 #define STB_IMAGE_IMPLEMENTATION
-#include "../Renderer.hpp"
-#include "../headers/stb_image.h"
 #include <stdexcept>
 
+#include "../Renderer.hpp"
+#include "../headers/stb_image.h"
+
 void Renderer::createImage(const uint32_t width, const uint32_t height, const VkFormat format, const VkImageTiling tiling,
-    const VkImageUsageFlags usage, const VkMemoryPropertyFlags properties, VkImage& image, VkDeviceMemory& imageMemory) const {
+                           const VkImageUsageFlags usage, const VkMemoryPropertyFlags properties, VkImage &image, VkDeviceMemory &imageMemory) const
+{
     VkImageCreateInfo imageInfo{};
     imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     imageInfo.imageType = VK_IMAGE_TYPE_2D;
@@ -39,7 +41,8 @@ void Renderer::createImage(const uint32_t width, const uint32_t height, const Vk
     vkBindImageMemory(m_logicalDevice, image, imageMemory, 0);
 }
 
-VkImageView Renderer::createImageView(VkImage image, VkFormat format) {
+VkImageView Renderer::createImageView(VkImage image, VkFormat format)
+{
     VkImageViewCreateInfo viewInfo{};
     viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     viewInfo.image = image;
@@ -59,7 +62,8 @@ VkImageView Renderer::createImageView(VkImage image, VkFormat format) {
     return imageView;
 }
 
-void Renderer::createImageViews() {
+void Renderer::createImageViews()
+{
     m_swapChainImageViews.resize(m_swapChainImages.size());
 
     for (size_t i = 0; i < m_swapChainImages.size(); i++) {
@@ -67,28 +71,29 @@ void Renderer::createImageViews() {
     }
 }
 
-void Renderer::createTextureImage() {
+void Renderer::createTextureImage()
+{
     int texWidth, texHeight, texChannels;
     VkBuffer stagingBuffer;
     VkDeviceMemory stagingBufferMemory;
-    stbi_uc* pixels = stbi_load("../src/textures/knight.jpg", &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
+    stbi_uc *pixels = stbi_load("../src/textures/knight.jpg", &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
     const VkDeviceSize imageSize = texWidth * texHeight * 4; // 4 bytes per pixel for STBI_rgb_alpha
 
     if (!pixels) {
         throw std::runtime_error("failed to load texture image!");
     }
 
-    createBuffer(imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, stagingBuffer, stagingBufferMemory);
+    createBuffer(imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                 stagingBuffer, stagingBufferMemory);
 
-    void* data;
+    void *data;
     vkMapMemory(m_logicalDevice, stagingBufferMemory, 0, imageSize, 0, &data);
     memcpy(data, pixels, static_cast<size_t>(imageSize));
     vkUnmapMemory(m_logicalDevice, stagingBufferMemory);
     stbi_image_free(pixels);
 
-    createImage(texWidth, texHeight, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL,
-        VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_textureImage, m_textureImageMemory);
+    createImage(texWidth, texHeight, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_textureImage, m_textureImageMemory);
 
     transitionImageLayout(m_textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     copyBufferToImage(stagingBuffer, m_textureImage, static_cast<uint32_t>(texWidth), static_cast<uint32_t>(texHeight));
@@ -98,11 +103,10 @@ void Renderer::createTextureImage() {
     vkFreeMemory(m_logicalDevice, stagingBufferMemory, nullptr);
 }
 
-void Renderer::createTextureImageView() {
-    m_textureImageView = createImageView(m_textureImage, VK_FORMAT_R8G8B8A8_SRGB);
-}
+void Renderer::createTextureImageView() { m_textureImageView = createImageView(m_textureImage, VK_FORMAT_R8G8B8A8_SRGB); }
 
-void Renderer::createTextureSampler() {
+void Renderer::createTextureSampler()
+{
     VkSamplerCreateInfo samplerInfo{};
     samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
     samplerInfo.magFilter = VK_FILTER_LINEAR;
@@ -128,10 +132,10 @@ void Renderer::createTextureSampler() {
     if (vkCreateSampler(m_logicalDevice, &samplerInfo, nullptr, &m_textureSampler) != VK_SUCCESS) {
         throw std::runtime_error("failed to create texture sampler!");
     }
-
 }
 
-void Renderer::transitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout) {
+void Renderer::transitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout)
+{
     const VkCommandBuffer commandBuffer = beginSingleTimeCommands();
 
     VkImageMemoryBarrier barrier{};
@@ -166,14 +170,7 @@ void Renderer::transitionImageLayout(VkImage image, VkFormat format, VkImageLayo
         throw std::invalid_argument("unsupported layout transition!");
     }
 
-    vkCmdPipelineBarrier(
-            commandBuffer,
-            sourceStage , destinationStage,
-            0,
-            0, nullptr,
-            0, nullptr,
-            1, &barrier
-        );
+    vkCmdPipelineBarrier(commandBuffer, sourceStage, destinationStage, 0, 0, nullptr, 0, nullptr, 1, &barrier);
 
     endSingleTimeCommands(commandBuffer);
 }

@@ -2,18 +2,20 @@
 // Created by nicolas on 2/18/26.
 //
 
-#include "../Renderer.hpp"
 #include <set>
 #include <stdexcept>
 
-void Renderer::createLogicalDevice() {
+#include "../Renderer.hpp"
+
+void Renderer::createLogicalDevice()
+{
     const auto [graphicsFamily, presentFamily] = findQueueFamilies(m_physicalDevice);
 
     std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
     const std::set<uint32_t> uniqueQueueFamilies = {graphicsFamily.value(), presentFamily.value()};
 
     float queuePriority = 1.0f;
-    for (uint32_t queueFamily : uniqueQueueFamilies) {
+    for (uint32_t queueFamily: uniqueQueueFamilies) {
         VkDeviceQueueCreateInfo queueCreateInfo{};
         queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
         queueCreateInfo.queueFamilyIndex = queueFamily;

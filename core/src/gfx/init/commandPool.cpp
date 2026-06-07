@@ -2,10 +2,12 @@
 // Created by nicolas on 2/18/26.
 //
 
-#include "../Renderer.hpp"
 #include <stdexcept>
 
-void Renderer::createCommandPool() {
+#include "../Renderer.hpp"
+
+void Renderer::createCommandPool()
+{
     const auto [graphicsFamily, presentFamily] = findQueueFamilies(m_physicalDevice);
 
     VkCommandPoolCreateInfo poolInfo{};

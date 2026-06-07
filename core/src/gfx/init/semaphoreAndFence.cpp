@@ -2,10 +2,12 @@
 // Created by nicolas on 2/18/26.
 //
 
-#include "../Renderer.hpp"
 #include <stdexcept>
 
-void Renderer::createSyncObjects() {
+#include "../Renderer.hpp"
+
+void Renderer::createSyncObjects()
+{
     m_imageAvailableSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
     m_renderFinishedSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
     m_inFlightFences.resize(MAX_FRAMES_IN_FLIGHT);
@@ -22,6 +24,6 @@ void Renderer::createSyncObjects() {
             vkCreateSemaphore(m_logicalDevice, &semaphoreInfo, nullptr, &m_renderFinishedSemaphores[i]) != VK_SUCCESS ||
             vkCreateFence(m_logicalDevice, &fenceInfo, nullptr, &m_inFlightFences[i]) != VK_SUCCESS) {
             throw std::runtime_error("failed to create semaphores!");
-            }
+        }
     }
 }

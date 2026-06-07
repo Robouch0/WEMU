@@ -4,7 +4,8 @@
 
 #include "../Renderer.hpp"
 
-void Renderer::recreateSwapChain() {
+void Renderer::recreateSwapChain()
+{
     // int width = 0, height = 0;
     // glfwGetFramebufferSize(m_window, &width, &height);
     // while (width == 0 || height == 0) {
@@ -21,22 +22,24 @@ void Renderer::recreateSwapChain() {
     // createFramebuffers();
 }
 
-void Renderer::cleanupSwapChain() const {
-    for (const auto imageView : m_swapChainImageViews) {
+void Renderer::cleanupSwapChain() const
+{
+    for (const auto imageView: m_swapChainImageViews) {
         vkDestroyImageView(m_logicalDevice, imageView, nullptr);
     }
     vkDestroySwapchainKHR(m_logicalDevice, m_swapChain, nullptr);
 }
 
-void Renderer::cleanupFlipTv() const {
-    vkDestroyImage (m_logicalDevice, m_tvImage, nullptr);
+void Renderer::cleanupFlipTv() const
+{
+    vkDestroyImage(m_logicalDevice, m_tvImage, nullptr);
     vkFreeMemory(m_logicalDevice, m_tvImageMemory, nullptr);
     vkDestroyBuffer(m_logicalDevice, m_tvStagingBuffer, nullptr);
     vkFreeMemory(m_logicalDevice, m_tvStagingMemory, nullptr);
-
 }
 
-void Renderer::cleanup() const {
+void Renderer::cleanup() const
+{
     cleanupFlipTv();
     cleanupSwapChain();
 

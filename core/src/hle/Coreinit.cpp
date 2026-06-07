@@ -7,9 +7,9 @@
 
 #include "Coreinit.hpp"
 
+#include <GLFW/glfw3.h>
 #include <cstdio>
 #include <cstring>
-#include <GLFW/glfw3.h>
 
 #include "cpu/interpreter/Interpreter.hpp"
 #include "cpu/interpreter/SyscallHandler.hpp"
