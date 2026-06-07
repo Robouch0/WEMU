@@ -9,5 +9,5 @@ Checks: >-
   -performance-avoid-endl
 
 WarningsAsErrors: '*'
-HeaderFilterRegex: '.*core/src/.*'
+HeaderFilterRegex: '^(?!.*stb_image).*core/src/.*'
 FormatStyle: file
