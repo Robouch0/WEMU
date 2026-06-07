@@ -10,9 +10,9 @@
 
 void Renderer::createSwapChain()
 {
-    const auto [capabilities, formats, presentModes] = querySwapChainSupport(m_physicalDevice);
+    const auto [capabilities, formats, _] = querySwapChainSupport(m_physicalDevice);
     const auto [format, colorSpace] = chooseSwapSurfaceFormat(formats);
-    const VkPresentModeKHR presentMode = chooseSwapPresentMode(presentModes);
+    const VkPresentModeKHR presentMode = chooseSwapPresentMode();
     const VkExtent2D extent = chooseSwapExtent(capabilities);
 
     uint32_t imageCount = capabilities.minImageCount + 1;
@@ -98,14 +98,8 @@ VkSurfaceFormatKHR Renderer::chooseSwapSurfaceFormat(const std::vector<VkSurface
     return availableFormats[0];
 }
 
-VkPresentModeKHR Renderer::chooseSwapPresentMode(const std::vector<VkPresentModeKHR> &availablePresentModes)
+VkPresentModeKHR Renderer::chooseSwapPresentMode()
 {
-    for (const auto &availablePresentMode: availablePresentModes) {
-        if (availablePresentMode == VK_PRESENT_MODE_MAILBOX_KHR) {
-            return availablePresentMode;
-        }
-    }
-
     return VK_PRESENT_MODE_FIFO_KHR;
 }
 
