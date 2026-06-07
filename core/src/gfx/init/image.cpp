@@ -77,7 +77,7 @@ void Renderer::createTextureImage()
     VkBuffer stagingBuffer;
     VkDeviceMemory stagingBufferMemory;
     stbi_uc *pixels = stbi_load("../src/textures/knight.jpg", &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
-    const VkDeviceSize imageSize = texWidth * texHeight * 4; // 4 bytes per pixel for STBI_rgb_alpha
+    const VkDeviceSize imageSize = static_cast<std::size_t>(texWidth) * texHeight * 4; // 4 bytes per pixel for STBI_rgb_alpha
 
     if (!pixels) {
         throw std::runtime_error("failed to load texture image!");
@@ -134,9 +134,9 @@ void Renderer::createTextureSampler()
     }
 }
 
-void Renderer::transitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout)
+void Renderer::transitionImageLayout(const VkImage &image, VkFormat format, const VkImageLayout oldLayout, const VkImageLayout newLayout) const
 {
-    const VkCommandBuffer commandBuffer = beginSingleTimeCommands();
+    const VkCommandBuffer &commandBuffer = beginSingleTimeCommands();
 
     VkImageMemoryBarrier barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;

@@ -34,6 +34,9 @@ void Renderer::createSwapChain()
     const auto [graphicsFamily, presentFamily] = findQueueFamilies(m_physicalDevice);
     const uint32_t queueFamilyIndices[] = {graphicsFamily.value(), presentFamily.value()};
 
+    if (!graphicsFamily.has_value() || !presentFamily.has_value()) {
+        throw std::runtime_error("graphicFamily or presentFamily has no family found");
+    }
     if (graphicsFamily != presentFamily) {
         createInfo.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
         createInfo.queueFamilyIndexCount = 2;

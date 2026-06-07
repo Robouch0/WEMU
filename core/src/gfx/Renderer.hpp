@@ -30,7 +30,7 @@ class Renderer {
 
         bool poll_events();
 
-        std::uint32_t get_buttons();
+        [[nodiscard]] std::uint32_t get_buttons() const;
 
         [[nodiscard]] bool is_open() const { return m_open; }
 
@@ -107,7 +107,7 @@ class Renderer {
 
         void createTextureSampler();
 
-        void transitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout);
+        void transitionImageLayout(const VkImage &image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout) const;
 
         [[nodiscard]] VkCommandBuffer beginSingleTimeCommands() const;
 

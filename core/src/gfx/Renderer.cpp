@@ -20,8 +20,8 @@ static constexpr std::uint32_t BTN_B = 0x4000;
 static constexpr std::uint32_t BTN_PLUS = 0x0008;
 static constexpr std::uint32_t BTN_MINUS = 0x0004;
 
-void pipelineBarrier(VkImage image, VkImageLayout oldLayout, VkImageLayout newLayout, VkAccessFlags srcAccess, VkAccessFlags dstAccess,
-                     VkPipelineStageFlags srcStage, VkPipelineStageFlags dstStage, VkCommandBuffer &cmd)
+void pipelineBarrier(const VkImage &image, const VkImageLayout &oldLayout, const VkImageLayout &newLayout, const VkAccessFlags srcAccess, const VkAccessFlags dstAccess,
+                     const VkPipelineStageFlags srcStage, const VkPipelineStageFlags dstStage, const VkCommandBuffer &cmd)
 {
     VkImageMemoryBarrier b{};
     b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -38,8 +38,8 @@ void pipelineBarrier(VkImage image, VkImageLayout oldLayout, VkImageLayout newLa
 
 void Renderer::flip_tv(const std::uint8_t *rgbx, std::uint32_t w, std::uint32_t h)
 {
-    const std::uint32_t cols = (w < WIDTH) ? w : WIDTH;
-    const std::uint32_t rows = (h < HEIGHT) ? h : HEIGHT;
+    const std::size_t cols = (w < WIDTH) ? w : WIDTH;
+    const std::size_t rows = (h < HEIGHT) ? h : HEIGHT;
 
     // map to cpu readable
     void *mapped = nullptr;
@@ -108,10 +108,10 @@ void Renderer::flip_tv(const std::uint8_t *rgbx, std::uint32_t w, std::uint32_t 
     VkImageBlit blit{};
     blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     blit.srcOffsets[0] = {0, 0, 0};
-    blit.srcOffsets[1] = {(std::int32_t) WIDTH, (std::int32_t) HEIGHT, 1};
+    blit.srcOffsets[1] = {WIDTH, HEIGHT, 1};
     blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     blit.dstOffsets[0] = {0, 0, 0};
-    blit.dstOffsets[1] = {(std::int32_t) m_swapChainExtent.width, (std::int32_t) m_swapChainExtent.height, 1};
+    blit.dstOffsets[1] = {static_cast<std::int32_t>(m_swapChainExtent.width), static_cast<std::int32_t>(m_swapChainExtent.height), 1};
     vkCmdBlitImage(cmd, m_tvImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, m_swapChainImages[imageIndex], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
                    &blit, VK_FILTER_LINEAR);
 
@@ -167,7 +167,7 @@ bool Renderer::poll_events()
     return true;
 }
 
-std::uint32_t Renderer::get_buttons()
+std::uint32_t Renderer::get_buttons() const
 {
     std::uint32_t btns = 0;
     if (glfwGetKey(m_window, GLFW_KEY_UP) == GLFW_PRESS || glfwGetKey(m_window, GLFW_KEY_W) == GLFW_PRESS)

@@ -11,6 +11,9 @@ void Renderer::createLogicalDevice()
 {
     const auto [graphicsFamily, presentFamily] = findQueueFamilies(m_physicalDevice);
 
+    if (!graphicsFamily.has_value() || !presentFamily.has_value()) {
+        throw std::runtime_error("graphics family or present family has no family found");
+    }
     std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
     const std::set<uint32_t> uniqueQueueFamilies = {graphicsFamily.value(), presentFamily.value()};
 
