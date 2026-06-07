@@ -32,6 +32,10 @@ void Renderer::createSwapChain()
     createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
 
     const auto [graphicsFamily, presentFamily] = findQueueFamilies(m_physicalDevice);
+
+    if (!graphicsFamily.has_value() || !presentFamily.has_value()) {
+        throw std::runtime_error("graphicsFamily or oresentFamily has no family found");
+    }
     const uint32_t queueFamilyIndices[] = {graphicsFamily.value(), presentFamily.value()};
 
     if (!graphicsFamily.has_value() || !presentFamily.has_value()) {
