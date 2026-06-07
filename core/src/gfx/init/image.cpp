@@ -73,7 +73,9 @@ void Renderer::createImageViews()
 
 void Renderer::createTextureImage()
 {
-    int texWidth, texHeight, texChannels = 0;
+    int texWidth = 0;
+    int texHeight = 0;
+    int texChannels = 0;
     VkBuffer stagingBuffer;
     VkDeviceMemory stagingBufferMemory;
     stbi_uc *pixels = stbi_load("../src/textures/knight.jpg", &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
