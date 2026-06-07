@@ -86,7 +86,7 @@ log "Detected: ${PRETTY_NAME:-$DISTRO_ID}"
 #   - Qt6 dev (base + declarative + multimedia + tools + 5compat shim)
 #   - QML *runtime* modules (the ones you discovered were missing!)
 #   - Vulkan SDK pieces (headers, loader, validation, glslang)
-#   - GLFW3, zlib
+#   - GLFW3, SDL2, zlib
 #   - GoogleTest (CMake will FetchContent if needed; package speeds it up)
 
 # Debian / Ubuntu shared list
@@ -112,6 +112,7 @@ declare -a APT_PKGS=(
 
   # Window/input/graphics deps
   libglfw3-dev
+  libsdl2-dev
   libglm-dev
 
   # Qt6 dev

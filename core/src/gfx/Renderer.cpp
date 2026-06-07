@@ -94,7 +94,7 @@ void Renderer::flip_tv(const std::uint8_t *rgbx, std::uint32_t w, std::uint32_t 
 
     VkBufferImageCopy region{};
     region.bufferOffset = 0;
-    region.bufferRowLength = WIDTH; // tightly packed, no SDL pitch padding
+    region.bufferRowLength = WIDTH;
     region.bufferImageHeight = HEIGHT;
     region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     region.imageOffset = {0, 0, 0};
