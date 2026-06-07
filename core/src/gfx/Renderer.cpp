@@ -20,8 +20,9 @@ static constexpr std::uint32_t BTN_B = 0x4000;
 static constexpr std::uint32_t BTN_PLUS = 0x0008;
 static constexpr std::uint32_t BTN_MINUS = 0x0004;
 
-void pipelineBarrier(const VkImage &image, const VkImageLayout &oldLayout, const VkImageLayout &newLayout, const VkAccessFlags srcAccess, const VkAccessFlags dstAccess,
-                     const VkPipelineStageFlags srcStage, const VkPipelineStageFlags dstStage, const VkCommandBuffer &cmd)
+void pipelineBarrier(const VkImage &image, const VkImageLayout &oldLayout, const VkImageLayout &newLayout, const VkAccessFlags srcAccess,
+                     const VkAccessFlags dstAccess, const VkPipelineStageFlags srcStage, const VkPipelineStageFlags dstStage,
+                     const VkCommandBuffer &cmd)
 {
     VkImageMemoryBarrier b{};
     b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
