@@ -2,7 +2,7 @@
 // Created by nicolas on 2/18/26.
 //
 
-#include <algorithm> // Necessary for std::clamp
+#include <algorithm>
 #include <limits>
 #include <stdexcept>
 
@@ -40,8 +40,8 @@ void Renderer::createSwapChain()
         createInfo.pQueueFamilyIndices = queueFamilyIndices;
     } else {
         createInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        createInfo.queueFamilyIndexCount = 0; // Optional
-        createInfo.pQueueFamilyIndices = nullptr; // Optional
+        createInfo.queueFamilyIndexCount = 0;
+        createInfo.pQueueFamilyIndices = nullptr;
     }
 
     createInfo.preTransform = capabilities.currentTransform;

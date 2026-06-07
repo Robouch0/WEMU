@@ -98,9 +98,6 @@ bool Renderer::isDeviceSuitable(const VkPhysicalDevice device) const
         swapChainAdequate = !swapChainSupport.formats.empty() && !swapChainSupport.presentModes.empty();
     }
 
-    // VkPhysicalDeviceFeatures supportedFeatures;
-    // vkGetPhysicalDeviceFeatures(m_logicalDevice, &supportedFeatures);
-
     return indices.isComplete() && extensionsSupported && swapChainAdequate /*&& supportedFeatures.samplerAnisotropy*/;
 }
 

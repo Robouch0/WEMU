@@ -77,15 +77,12 @@ add_library(core STATIC
         src/gfx/init/buffer.cpp
         src/gfx/init/cleanup.cpp
         src/gfx/init/commandPool.cpp
-        src/gfx/init/descriptor.cpp
         src/gfx/init/flipTv.cpp
-        src/gfx/init/framebuffers.cpp
         src/gfx/init/image.cpp
         src/gfx/init/instance.cpp
         src/gfx/init/logicalDevice.cpp
         src/gfx/init/pick.cpp
         src/gfx/init/semaphoreAndFence.cpp
-        src/gfx/init/shader.cpp
         src/gfx/init/surface.cpp
         src/gfx/init/swapChain.cpp
         src/gfx/init/update.cpp

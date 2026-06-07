@@ -37,11 +37,12 @@
 
 #pragma once
 
-#include <GLFW/glfw3.h>
 #include <cstdint> // Necessary for uint32_t
 #include <optional>
 #include <vector>
 #include <vulkan/vulkan.h>
+#define GLFW_INCLUDE_VULKAN
+#include <GLFW/glfw3.h>
 
 #define GLM_FORCE_RADIANS
 #define GLM_FORCE_DEFAULT_ALIGNED_GENTYPES
@@ -62,20 +63,15 @@ class Renderer {
 
         ~Renderer() { cleanup(); }
 
-        // void run() {
-        // 	mainLoop();
-        // }
-
         void flip_tv(const std::uint8_t *rgbx, std::uint32_t w, std::uint32_t h);
 
         bool poll_events();
 
-        // Keyboard state → VPAD button bitmask.
         std::uint32_t get_buttons();
 
         bool is_open() const { return m_open; }
 
-        struct QueueFamilyIndices { // all the queue family are created here
+        struct QueueFamilyIndices {
                 std::optional<uint32_t> graphicsFamily;
                 std::optional<uint32_t> presentFamily;
 
@@ -103,19 +99,7 @@ class Renderer {
             createLogicalDevice();
             createSwapChain();
             createImageViews();
-            // createRenderPass();
-            // createDescriptorSetLayout();
-            // createGraphicsPipeline();
-            // createFramebuffers();
             createCommandPool();
-            // createTextureImage();
-            // createTextureImageView();
-            // createTextureSampler();
-            // createVertexBuffer();
-            // createIndexBuffer();
-            // createUniformBuffers();
-            // createDescriptorPool();
-            // createDescriptorSets();
             createCommandBuffers();
             createSyncObjects();
             initFlipTV();
@@ -137,7 +121,6 @@ class Renderer {
 
         void createSurface();
 
-        // This function will pick a correct GPU
         void pickPhysicalDevice();
 
         void createLogicalDevice();

@@ -11,14 +11,6 @@
 #include "../Renderer.hpp"
 #include "../headers/vertex.hpp"
 
-// void Renderer::mainLoop() {
-// 	while (!glfwWindowShouldClose(m_window)) {
-// 		glfwPollEvents();
-// 		drawFrame();
-// 	}
-// 	vkDeviceWaitIdle(m_logicalDevice);
-// }
-
 void Renderer::drawFrame()
 {
     vkWaitForFences(m_logicalDevice, 1, &m_inFlightFences[m_currentFrame], VK_TRUE, UINT64_MAX);
@@ -70,7 +62,7 @@ void Renderer::drawFrame()
     presentInfo.swapchainCount = 1;
     presentInfo.pSwapchains = swapChains;
     presentInfo.pImageIndices = &imageIndex;
-    presentInfo.pResults = nullptr; // Optional
+    presentInfo.pResults = nullptr;
 
     result = vkQueuePresentKHR(m_presentQueue, &presentInfo);
 
@@ -93,10 +85,10 @@ void Renderer::updateUniformBuffer(const uint32_t currentImage) const
 
     UniformBufferObject ubo{};
     ubo.model = glm::rotate(glm::mat4(1.0f), time * glm::radians(90.0f), glm::vec3(0.0f, 0.0f, 1.0f));
-    ubo.view = glm::lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f)); // move and rotate the view
+    ubo.view = glm::lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f));
     ubo.proj = glm::perspective(glm::radians(45.0f), static_cast<float>(m_swapChainExtent.width) / static_cast<float>(m_swapChainExtent.height), 0.1f,
                                 10.0f);
-    ubo.proj[1][1] *= -1; // flip the Y axis
+    ubo.proj[1][1] *= -1;
 
     memcpy(m_uniformBuffersMapped[currentImage], &ubo, sizeof(ubo));
 }
