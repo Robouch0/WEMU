@@ -19,16 +19,16 @@ Our goal is to accurately emulate the Wii U's PowerPC CPU and GPU in order to ru
 
 WEMU is not yet playable. The following components are in active development:
 
-| Component | Status |
-|---|---|
-| Big-endian ELF binary loader (with ZLIB section support) | Done |
-| PowerPC interpreter (ADD family of instructions) | In progress |
+| Component | Status      |
+|---|-------------|
+| Big-endian ELF/RPX loader (ZLIB section decompression via zlib) | Done        |
+| PowerPC interpreter (arithmetic, logic, branches, compare, float, load/store, shift, SPR) | Done        |
 | Vulkan rendering pipeline (GLFW) | In progress |
 | Qt6/QML launcher UI | In progress |
-| USB/gamepad input (SDL2) | Done |
-| RPX file format support | Planned |
-| Wii U title library browser | Planned |
-| Phone-as-GamePad web app | Planned |
+| USB/gamepad input (SDL2) | Done        |
+| RPX file format support (SHF_DEFLATED parsing) | Done        |
+| Wii U title library browser | In progress |
+| Phone-as-GamePad web app | Planned     |
 
 ---
 
@@ -47,43 +47,67 @@ WEMU is not yet playable. The following components are in active development:
 
 ## Building from Source
 
-**Platform:** Linux only.
+**Platform:** Linux only (Ubuntu/Debian, Fedora, Arch).
 
-### Dependencies
-
-```bash
-# Debian/Ubuntu
-sudo apt install cmake g++ zlib1g-dev libvulkan-dev libglfw3-dev libsdl2-dev \
-     qt6-base-dev qt6-declarative-dev glslang-tools
-```
-
-### Build
+### Quick start (recommended)
 
 ```bash
 git clone https://github.com/Robouch0/WEMU.git
 cd WEMU
+./setup.sh
+```
+
+`setup.sh` detects your distribution, installs all system dependencies, then builds `core`, `gui`, and the Vulkan renderer. It targets < 7 minutes on a 4-core VM.
+
+```
+Usage:
+  ./setup.sh                      # install deps + build everything
+  ./setup.sh --test               # build + run unit tests
+  ./setup.sh --no-build           # install deps only
+  ./setup.sh --clean              # wipe build dirs before configuring
+  ./setup.sh --build-type Release # default is Debug
+  ./setup.sh --jobs 8             # override parallel job count
+```
+
+After a successful build:
+- GUI binary: `./cmake-build-debug/gui/appgui`
+- Vulkan binary: `./vulkan/build/`
+
+### Manual build
+
+<details>
+<summary>Expand for manual steps</summary>
+
+```bash
+# Debian/Ubuntu dependencies
+sudo apt install cmake g++ zlib1g-dev libvulkan-dev libglfw3-dev libsdl2-dev \
+     qt6-base-dev qt6-declarative-dev glslang-tools ninja-build ccache
 
 # Core emulator + Qt GUI
+git clone https://github.com/Robouch0/WEMU.git && cd WEMU
 mkdir cmake-build-debug && cd cmake-build-debug
 cmake .. -DCMAKE_BUILD_TYPE=Debug
-make -j$(nproc)
+cmake --build . -j$(nproc)
 
 # Vulkan renderer (standalone)
 cd ../vulkan && mkdir build && cd build
 cmake ..
-make -j$(nproc)
+cmake --build . -j$(nproc)
 ```
+
+</details>
 
 ### Running Tests
 
 ```bash
-cd core && mkdir build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Debug
-make -j$(nproc)
-ctest
+# Via setup.sh
+./setup.sh --test
+
+# Or manually
+cd cmake-build-debug && ctest --output-on-failure
 
 # Run a specific test
-./wemu_tests --gtest_filter=InstructionTest.ADD_NoOE_NoRc
+./cmake-build-debug/wemu_tests --gtest_filter=InstructionTest.ADD_NoOE_NoRc
 ```
 
 ---
@@ -92,17 +116,16 @@ ctest
 
 ```
 WEMU/
-├── core/           # PowerPC interpreter, ELF loader, CPU state
-│   ├── src/binary/ # ELF loader + big-endian decoder
-│   ├── src/cpu/    # Interpreter, registers, instruction implementations
-│   │   └── tables/ # X-macro tables: cpu_instructions.anh, cpu_fields.anh
-│   └── tests/      # GoogleTest unit tests
-├── gui/            # Qt6/QML launcher and input management
-│   └── src/input/  # IInputDevice, KeyboardInput, SDLGamepadInput
-├── vulkan/         # Vulkan/GLFW rendering engine
-└── libs/
-    ├── cpu_IR/     # CPU intermediate representation interface
-    └── gfx_IR/     # GPU intermediate representation interface
+├── core/               # PowerPC interpreter, ELF/RPX loader, CPU state
+│   ├── src/binary/     # ELF/RPX loader + big-endian decoder
+│   ├── src/cpu/        # Interpreter, registers, instruction implementations
+│   │   └── tables/     # X-macro tables: cpu_instructions.anh, cpu_fields.anh
+│   └── tests/          # GoogleTest unit tests
+├── gui/                # Qt6/QML launcher and input management
+│   └── src/input/      # IInputDevice, KeyboardInput, SDLGamepadInput
+├── vulkan/             # Vulkan/GLFW rendering engine
+├── BE-elfanalyzer/     # Utility for inspecting ELF/RPX binaries
+
 ```
 
 ### Adding a PowerPC Instruction
