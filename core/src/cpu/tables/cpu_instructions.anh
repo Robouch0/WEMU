@@ -106,6 +106,7 @@ INSTR(SC, OPCD(17))
 INSTR(FCMPU, OPCD(63), XO10(0))
 INSTR(FNEG, OPCD(63), XO10(40))
 INSTR(FMR, OPCD(63), XO10(72))
+INSTR(FABS, OPCD(63), XO10(264))
 
 // Cache and Sync
 INSTR(DCBST, OPCD(31), XO9(54))
@@ -115,7 +116,7 @@ INSTR(SYNC, OPCD(31), XO9(598))
 INSTR(EIEIO, OPCD(31), XO9(356))
 INSTR(ICBI, OPCD(31), XO9(982))
 
-// ── Compare (Cmp.cpp) ──────────────────────────────────────────────────────── 2000C48
+// ── Compare (Cmp.cpp)
 INSTR(CMP,   OPCD(31), XO10(0))
 INSTR(CMPL,  OPCD(31), XO10(32))
 INSTR(CMPI,  OPCD(11))
