@@ -5,6 +5,8 @@
 ** FloatMove
 */
 
+#include <cmath>
+
 #include "cpu/interpreter/Interpreter.hpp"
 #include "cpu/types/EncodedInstruction.hpp"
 
@@ -45,9 +47,11 @@ namespace Core::Instruction {
      * @param cpu   Interpreter state.
      * @param instr Encoded instruction (fields: rt as FRT, rb as FRB, rc).
      */
-    void FABS(Interpreter &cpu, const EncodedInstruction &instr);
-    // {
-    // }
+    void FABS(Interpreter &cpu, const EncodedInstruction &instr)
+    {
+        cpu.m_fpr[instr.frt] = std::fabs(cpu.m_fpr[instr.frb]);
+        cpu.updateCR1(instr);
+    }
 
     /**
      * @brief Floating-Point Round to Single Precision.

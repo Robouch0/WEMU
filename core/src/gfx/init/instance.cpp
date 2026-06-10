@@ -2,10 +2,12 @@
 // Created by nicolas on 2/18/26.
 //
 
-#include "headers/wemuEngineVulkan.hpp"
 #include <stdexcept>
 
-void WemuEngineVulkan::createInstance() {
+#include "../Renderer.hpp"
+
+void Renderer::createInstance()
+{
     VkApplicationInfo appInfo{};
     appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
     appInfo.pApplicationName = "Wemu";

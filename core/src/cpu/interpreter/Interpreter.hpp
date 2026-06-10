@@ -133,7 +133,7 @@ namespace Core {
             std::atomic<std::uint32_t> m_controllerMask{0};
             bool m_hle_redirected{false};
 
-            Renderer *m_renderer = nullptr; // SDL window — set after construction
+            Renderer *m_renderer = nullptr; // Window — set after construction
             std::unordered_map<std::uint32_t, HookFn> m_hooks; // PPC addr → intercept fn
             std::uint32_t m_hooks_min{0xFFFFFFFFu}; // Opt C: hook address range
             std::uint32_t m_hooks_max{0u};

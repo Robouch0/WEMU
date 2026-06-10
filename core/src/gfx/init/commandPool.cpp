@@ -2,15 +2,19 @@
 // Created by nicolas on 2/18/26.
 //
 
-#include "headers/wemuEngineVulkan.hpp"
 #include <stdexcept>
 
-void WemuEngineVulkan::createCommandPool() {
+#include "../Renderer.hpp"
+
+void Renderer::createCommandPool()
+{
     const auto [graphicsFamily, presentFamily] = findQueueFamilies(m_physicalDevice);
 
     VkCommandPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+    if (!graphicsFamily.has_value())
+        throw std::runtime_error("no graphic family found");
     poolInfo.queueFamilyIndex = graphicsFamily.value();
 
     if (vkCreateCommandPool(m_logicalDevice, &poolInfo, nullptr, &m_commandPool) != VK_SUCCESS) {

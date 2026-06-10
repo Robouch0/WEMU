@@ -20,8 +20,6 @@
 *.mod
 *.smod
 
-compile_commands.json
-
 # Compiled Static libraries
 *.lai
 *.la
@@ -33,9 +31,14 @@ compile_commands.json
 *.out
 *.app
 .idea
+
+# Cmake
 cmake-build-debug
 build
-WEMU
-
+compile_commands.json
+compile_commands.events.json
 .cache
+
+# Project specific
+WEMU
 vulkan/src/shaders/*.spv

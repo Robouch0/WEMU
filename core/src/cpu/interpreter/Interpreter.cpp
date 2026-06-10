@@ -83,6 +83,8 @@ InstructionID Core::Interpreter::findInstructionID(const EncodedInstruction &ins
                     return instr.xo10 == value;
                 case Field::F_XO9:
                     return instr.xo9 == value;
+                case Field::F_XO5:
+                    return instr.xo5 == value;
                 case Field::F_OPCD:
                     return true;
                 default:

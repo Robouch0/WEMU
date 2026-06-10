@@ -10,8 +10,13 @@ project(WemuEmulator)
 
 set(CMAKE_CXX_STANDARD 23)
 
+find_package(PkgConfig REQUIRED)
 find_package(ZLIB REQUIRED)
-find_package(SDL2 REQUIRED)
+find_package(Vulkan REQUIRED)
+if(NOT Vulkan_FOUND)
+    message(FATAL_ERROR "Vulkan SDK not found. Install it or set VULKAN_SDK.")
+endif()
+pkg_check_modules(GLFW3 REQUIRED glfw3)
 
 # ------------------------------------------------------------
 # 1. OPTIONS
@@ -71,6 +76,19 @@ add_library(core STATIC
         src/hle/StdlibHooks.hpp
         src/hle/StdlibHooks.cpp
         src/gfx/Renderer.cpp
+        src/gfx/init/buffer.cpp
+        src/gfx/init/cleanup.cpp
+        src/gfx/init/commandPool.cpp
+        src/gfx/init/flipTv.cpp
+        src/gfx/init/image.cpp
+        src/gfx/init/instance.cpp
+        src/gfx/init/logicalDevice.cpp
+        src/gfx/init/pick.cpp
+        src/gfx/init/semaphoreAndFence.cpp
+        src/gfx/init/surface.cpp
+        src/gfx/init/swapChain.cpp
+        src/gfx/init/update.cpp
+        src/gfx/init/window.cpp
         src/cpu/instructions/logical/Ext.cpp
         src/cpu/instructions/logical/Cnt.cpp
 )
@@ -79,10 +97,15 @@ target_include_directories(core PUBLIC
         "${CMAKE_CURRENT_SOURCE_DIR}/src"
         "${CMAKE_CURRENT_SOURCE_DIR}/include"
         ${ZLIB_INCLUDE_DIRS}
-        ${SDL2_INCLUDE_DIRS}
+        ${Vulkan_INCLUDE_DIRS}
+        ${GLFW3_INCLUDE_DIRS}
 )
 
-target_link_libraries(core PRIVATE ${ZLIB_LIBRARIES} ${SDL2_LIBRARIES})
+target_link_libraries(core PRIVATE
+        ${ZLIB_LIBRARIES}
+        Vulkan::Vulkan
+        ${GLFW3_STATIC_LIBRARIES}
+)
 
 target_compile_features(core PUBLIC cxx_std_23)
 

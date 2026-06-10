@@ -109,6 +109,7 @@ declare -a APT_PKGS=(
   spirv-tools
   glslang-tools
   glslc
+  libglm-dev
 
   # Window/input/graphics deps
   libglfw3-dev

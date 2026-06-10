@@ -7,6 +7,7 @@
 
 #include "Coreinit.hpp"
 
+#include <GLFW/glfw3.h>
 #include <cstdio>
 #include <cstring>
 
@@ -293,9 +294,11 @@ static void hle_OSScreenFlipBuffersEx(Core::Interpreter &cpu)
 
     // FPS counter
     static std::uint32_t frames = 0;
-    static std::uint64_t last_ms = SDL_GetTicks64();
+
+    // multiplied by 1000 to get in milliseconds
+    static std::uint64_t last_ms = glfwGetTimerValue() * 1000 / glfwGetTimerFrequency();
     ++frames;
-    std::uint64_t now = SDL_GetTicks64();
+    std::uint64_t now = glfwGetTimerValue() * 1000 / glfwGetTimerFrequency();
     if (now - last_ms >= 1000) {
         fprintf(stderr, "[FPS] %u\n", frames);
         frames = 0;
