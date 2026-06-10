@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include <bit>
 #include <cstdint>
 
 static constexpr std::uint32_t CARRY_OFFSET = 32;
@@ -53,6 +54,12 @@ union EncodedInstruction {
 
         struct {
                 std::uint32_t : 1;
+                std::uint32_t xo5 : 5;
+                std::uint32_t : 26;
+        };
+
+        struct {
+                std::uint32_t : 1;
                 std::uint32_t xo9 : 9;
                 std::uint32_t : 20;
         };
@@ -66,6 +73,12 @@ union EncodedInstruction {
         struct {
                 std::uint32_t : 16;
                 std::uint32_t ra : 5;
+                std::uint32_t : 11;
+        };
+
+        struct {
+                std::uint32_t : 16;
+                std::uint32_t fra : 5;
                 std::uint32_t : 11;
         };
 
@@ -129,6 +142,18 @@ union EncodedInstruction {
                 std::uint32_t : 11;
                 std::uint32_t frb : 5;
                 std::uint32_t : 16;
+        };
+
+        struct {
+                std::uint32_t : 6;
+                std::uint32_t frc : 5;
+                std::uint32_t : 21;
+        };
+
+        struct {
+                std::uint32_t : 23;
+                std::uint32_t bf : 3;
+                std::uint32_t : 6;
         };
 
         struct {

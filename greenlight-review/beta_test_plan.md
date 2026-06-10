@@ -16,14 +16,14 @@ Wemu is a wii U Emulator designed to work on Linux, our ambition is to be able t
 ---
 
 ## **3. Feature table**
-Feature ID | User role | Feature name | Short description
--- | -- | -- | --
-F1 | Contributor | Build & Launch | User can build the emulator on a standard Linux system and launch it without manual patching or complex configuration
-F2 | Player | Title Library | Emulator scans a directory containing dumped Wii U titles and displays name, publisher, version, and icon extracted from meta.xml
-F3 | Player | RPX Loader | The emulator is able to load a main.rpx file, parse its structure, and prepare it for execution
-F4 | Player | PowerPC Execution | Minimal PowerPC Program Execution
-F5 | Player | Controller Binding | A modern USB controller (for example Xbox One Controller) can be mapped to Wii U GamePad buttons with visual input feedback
-F6 | Contributor | Documentation &  instruction extension | A new contributor can follow the documentation to   understand the CPU pipeline, and add a minimal PowerPC instruction
+Feature ID | User role | Feature name                   | Short description
+-- | -- |--------------------------------| --
+F1 | Contributor | Build & Launch                 | As a player or a contributor, I can build the emulator on a standard Linux system and launch it without manual patching or complex configuration
+F2 | Player | Browse the title library       | As a player, I want to see my homebrew titles displayed with their name, publisher and version, so that I can browse my library visually.
+F3 | Player | Load an RPX file               | As a player, I want the emulator to open and parse a main.rpx file, so that a title is recognized and prepared for execution without me worrying about file formats or entrypoint.
+F4 | Player | Execute PowerPC code           | As a player, I want to see visible graphic output when the emulator runs a PowerPC program, so that I can play real games.
+F5 | Player | Bind a USB controller          | As a player, I want to map a modern USB controller (Xbox One) to Wii U GamePad buttons with visual input feedback, so that I can play comfortably with hardware I already own.
+F6 | Contributor | Extend the CPU instruction set | As a new contributor, I can follow the documentation to add a minimal PowerPC instruction, so that I can grow the emulator's CPU pipeline without needing insider knowledge.
 
 
 ---
@@ -36,6 +36,6 @@ F2 | Game metadata is correctly read and displayed | 3 different dumped titles s
 F3 | RPX file is recognized and parsed without crash | 2 RPX files loaded with valid entry point detection | Result
 F4 | PowerPC code executes with observable behavior | A minimal RPX displays a graphical output (color change or moving shape) for at least 5 seconds | Result
 F5 | Controller inputs are detected and mapped | 3 connection attempts with correct button feedback | Result
-F6 | A contributor can extend CPU instruction set |  Following documentation, one new PPC instruction can be added, it is correctly executed and update corresponding registers
+F6 | A contributor can extend CPU instruction set |  Following documentation, one new PPC instruction can be added, it is correctly executed and update corresponding registers | Result
 
 ---
