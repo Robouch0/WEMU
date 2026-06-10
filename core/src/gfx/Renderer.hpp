@@ -158,7 +158,7 @@ class Renderer {
         VkFormat m_swapChainImageFormat;
         VkExtent2D m_swapChainExtent;
         std::vector<VkImageView> m_swapChainImageViews;
-        std::vector<VkFramebuffer> swapChainFramebuffers;
+        std::vector<VkFramebuffer> m_swapChainFramebuffers;
         VkRenderPass m_renderPass;
 
         VkDescriptorSetLayout m_descriptorSetLayout;
