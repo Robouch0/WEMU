@@ -5,6 +5,8 @@
 ** FloatMove
 */
 
+#include <cmath>
+
 #include "cpu/interpreter/Interpreter.hpp"
 #include "cpu/types/EncodedInstruction.hpp"
 

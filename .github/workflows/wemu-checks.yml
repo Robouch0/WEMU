@@ -20,7 +20,8 @@ jobs:
           sudo apt-get install -y \
             cmake build-essential \
             qt6-base-dev qt6-tools-dev qt6-declarative-dev qt6-base-dev-tools \
-            libxkbcommon-dev libsdl2-dev zlib1g-dev
+            libxkbcommon-dev libsdl2-dev zlib1g-dev libglfw3-dev \
+            libvulkan-dev vulkan-tools vulkan-validationlayers libglm-dev
 
       - name: Cache CMake build
         uses: actions/cache@v4
@@ -48,7 +49,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             cmake build-essential \
-            zlib1g-dev libsdl2-dev
+            zlib1g-dev libsdl2-dev libvulkan-dev vulkan-tools vulkan-validationlayers libglm-dev libglfw3-dev
 
       - name: Cache CMake build
         uses: actions/cache@v4
@@ -96,7 +97,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             cmake build-essential \
-            zlib1g-dev libsdl2-dev clang-tidy
+            zlib1g-dev libsdl2-dev clang-tidy libvulkan-dev vulkan-tools vulkan-validationlayers libglm-dev libglfw3-dev
 
       - name: Configure core (generate compile_commands.json)
         run: cmake -S core -B core/build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON

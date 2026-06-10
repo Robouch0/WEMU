@@ -2,12 +2,14 @@
 // Created by nicolas on 2/18/26.
 //
 
-#include "headers/wemuEngineVulkan.hpp"
 #include <map>
 #include <set>
 #include <stdexcept>
 
-void WemuEngineVulkan::pickPhysicalDevice() {
+#include "../Renderer.hpp"
+
+void Renderer::pickPhysicalDevice()
+{
     m_physicalDevice = VK_NULL_HANDLE;
     uint32_t deviceCount = 0;
 
@@ -35,7 +37,8 @@ void WemuEngineVulkan::pickPhysicalDevice() {
     }
 }
 
-WemuEngineVulkan::QueueFamilyIndices WemuEngineVulkan::findQueueFamilies(const VkPhysicalDevice device) const {
+Renderer::QueueFamilyIndices Renderer::findQueueFamilies(const VkPhysicalDevice device) const
+{
     QueueFamilyIndices indices;
     uint32_t queueFamilyCount = 0;
 
@@ -65,7 +68,8 @@ WemuEngineVulkan::QueueFamilyIndices WemuEngineVulkan::findQueueFamilies(const V
     return indices;
 }
 
-bool WemuEngineVulkan::checkDeviceExtensionSupport(const VkPhysicalDevice device) {
+bool Renderer::checkDeviceExtensionSupport(const VkPhysicalDevice device)
+{
     uint32_t extensionCount;
     vkEnumerateDeviceExtensionProperties(device, nullptr, &extensionCount, nullptr);
 
@@ -75,14 +79,15 @@ bool WemuEngineVulkan::checkDeviceExtensionSupport(const VkPhysicalDevice device
 
     std::set<std::string> requiredExtensions(deviceExtensions.begin(), deviceExtensions.end());
 
-    for (const auto& extension : availableExtensions) {
+    for (const auto &extension: availableExtensions) {
         requiredExtensions.erase(extension.extensionName);
     }
 
     return requiredExtensions.empty();
 }
 
-bool WemuEngineVulkan::isDeviceSuitable(const VkPhysicalDevice device) const {
+bool Renderer::isDeviceSuitable(const VkPhysicalDevice device) const
+{
     const QueueFamilyIndices indices = findQueueFamilies(device);
 
     const bool extensionsSupported = checkDeviceExtensionSupport(device);
@@ -93,13 +98,11 @@ bool WemuEngineVulkan::isDeviceSuitable(const VkPhysicalDevice device) const {
         swapChainAdequate = !swapChainSupport.formats.empty() && !swapChainSupport.presentModes.empty();
     }
 
-    // VkPhysicalDeviceFeatures supportedFeatures;
-    // vkGetPhysicalDeviceFeatures(m_logicalDevice, &supportedFeatures);
-
     return indices.isComplete() && extensionsSupported && swapChainAdequate /*&& supportedFeatures.samplerAnisotropy*/;
 }
 
-[[nodiscard]] uint32_t WemuEngineVulkan::findMemoryType(const uint32_t typeFilter, const VkMemoryPropertyFlags properties) const {
+[[nodiscard]] uint32_t Renderer::findMemoryType(const uint32_t typeFilter, const VkMemoryPropertyFlags properties) const
+{
     VkPhysicalDeviceMemoryProperties memProperties;
     vkGetPhysicalDeviceMemoryProperties(m_physicalDevice, &memProperties);
 
@@ -111,4 +114,3 @@ bool WemuEngineVulkan::isDeviceSuitable(const VkPhysicalDevice device) const {
 
     throw std::runtime_error("failed to find suitable memory type!");
 }
-
