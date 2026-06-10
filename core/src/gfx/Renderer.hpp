@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <vector>
@@ -45,6 +46,10 @@ class Renderer {
         void set_title(const std::string &title) { if (m_window) SDL_SetWindowTitle(m_window, title.c_str()); }
         void show() { if (m_window) { m_open = true; SDL_ShowWindow(m_window); } }
         void hide() { if (m_window) SDL_HideWindow(m_window); }
+
+        // Called after the very first vkQueuePresent — use to show the output window
+        // exactly when the first real frame is on screen (avoids compositor ghost images).
+        void setFirstFrameCallback(std::function<void()> cb) { m_onFirstFrame = std::move(cb); }
 
         struct QueueFamilyIndices {
                 std::optional<uint32_t> graphicsFamily;
@@ -212,4 +217,6 @@ class Renderer {
         bool     m_embedded          = false;
         uint32_t m_surfaceWidth      = WIDTH;
         uint32_t m_surfaceHeight     = HEIGHT;
+
+        std::function<void()> m_onFirstFrame;
 };

@@ -9,10 +9,25 @@ Rectangle {
 
     Component.onCompleted: page.forceActiveFocus()
 
+    // Vertical focus: true = the header Settings button, false = the carousel.
+    property bool settingsFocused: false
+    // Left-stick vertical edge state: -1 = pushed up, +1 = pushed down.
+    property int vDir: 0
+    // True between launch and the game's first presented frame (RPX loading).
+    property bool launching: false
+
     function launchCurrent() {
+        if (launching) return
         if (carousel.count > 0 && carousel.currentItem)
             EmulatorLauncher.launch(carousel.currentItem.gameRpxPath,
                                     carousel.currentItem.gameName)
+    }
+
+    function activateCurrent() {
+        if (settingsFocused)
+            mainLoader.source = "pages/SettingsPage.qml"
+        else
+            launchCurrent()
     }
 
     // ───────────────────────────────────────────────────────────── header
@@ -71,8 +86,11 @@ Rectangle {
                 width: 110
                 height: 36
                 radius: 6
-                color: settingsMouseArea.containsMouse ? "#d0d0d5" : "#e4e4ea"
+                color: settingsMouseArea.containsMouse || page.settingsFocused ? "#d0d0d5" : "#e4e4ea"
+                border.color: page.settingsFocused ? "#3498ff" : "transparent"
+                border.width: page.settingsFocused ? 2 : 0
                 Behavior on color { ColorAnimation { duration: 100 } }
+                Behavior on border.color { ColorAnimation { duration: 120 } }
 
                 Text {
                     anchors.centerIn: parent
@@ -180,7 +198,9 @@ Rectangle {
             id: cardWrapper
             width: 240
             height: 280
-            property bool isCurrent: ListView.isCurrentItem
+            // Visually selected only while the carousel itself has focus
+            // the highlight follows the focus up to the Settings button.
+            property bool isCurrent: ListView.isCurrentItem && !page.settingsFocused
             property string gameName:      model.name !== "" ? model.name : "Unknown"
             property string gamePublisher: model.publisher
             property string gameVersion:   model.version
@@ -282,21 +302,36 @@ Rectangle {
             width: 240
             height: 56
             radius: 10
-            color: launchMouseArea.containsMouse ? "#2980d9" : "#3498ff"
+            color: page.launching ? "#9aa0a6"
+                 : launchMouseArea.containsMouse ? "#2980d9" : "#3498ff"
             Behavior on color { ColorAnimation { duration: 120 } }
 
-            Text {
+            Row {
                 anchors.centerIn: parent
-                text: "▶  Play"
-                color: "white"
-                font.pixelSize: 18
-                font.bold: true
+                spacing: 10
+
+                BusyIndicator {
+                    visible: page.launching
+                    running: visible
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 24
+                    height: 24
+                }
+
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: page.launching ? "Loading game RPX…" : "▶  Play"
+                    color: "white"
+                    font.pixelSize: 18
+                    font.bold: true
+                }
             }
 
             MouseArea {
                 id: launchMouseArea
                 anchors.fill: parent
                 hoverEnabled: true
+                enabled: !page.launching
                 cursorShape: Qt.PointingHandCursor
                 onClicked: page.launchCurrent()
             }
@@ -304,7 +339,7 @@ Rectangle {
 
         Text {
             anchors.horizontalCenter: parent.horizontalCenter
-            text: "← →  navigate     A / Enter  play"
+            text: "← →  navigate     ↑  settings     A / Enter  select"
             color: "#999999"
             font.pixelSize: 11
         }
@@ -312,27 +347,87 @@ Rectangle {
 
     // ─────────────────────────────────────────────────────── keyboard nav
 
-    Keys.onLeftPressed: if (carousel.count > 0) carousel.decrementCurrentIndex()
-    Keys.onRightPressed: if (carousel.count > 0) carousel.incrementCurrentIndex()
-    Keys.onReturnPressed: page.launchCurrent()
-    Keys.onEnterPressed: page.launchCurrent()
+    Keys.onLeftPressed: if (!settingsFocused && carousel.count > 0) carousel.decrementCurrentIndex()
+    Keys.onRightPressed: if (!settingsFocused && carousel.count > 0) carousel.incrementCurrentIndex()
+    Keys.onUpPressed: settingsFocused = true
+    Keys.onDownPressed: settingsFocused = false
+    Keys.onReturnPressed: page.activateCurrent()
+    Keys.onEnterPressed: page.activateCurrent()
 
     // ─────────────────────────────────────────────────────── controller nav
 
+    // Left-stick state: -1 = pushed left, +1 = pushed right, 0 = centered.
+    property int stickDir: 0
+
+    function stickStep() {
+        if (!rootWindow.visible || carousel.count === 0 || settingsFocused) {
+            stickRepeat.stop()
+            stickDir = 0
+            return
+        }
+        if (stickDir < 0)      carousel.decrementCurrentIndex()
+        else if (stickDir > 0) carousel.incrementCurrentIndex()
+    }
+
+    Timer {
+        id: stickRepeat
+        repeat: true
+        onTriggered: {
+            interval = 140
+            page.stickStep()
+        }
+    }
+
     Connections {
         target: InputManager
+
         function onButtonChanged(button, pressed, device) {
             if (!rootWindow.visible || !pressed) return
-            if (button === "DPAD_LEFT")       carousel.decrementCurrentIndex()
-            else if (button === "DPAD_RIGHT") carousel.incrementCurrentIndex()
-            else if (button === "A")          page.launchCurrent()
+            if (button === "Up")          page.settingsFocused = true
+            else if (button === "Down")   page.settingsFocused = false
+            else if (button === "Left"  && !page.settingsFocused)  carousel.decrementCurrentIndex()
+            else if (button === "Right" && !page.settingsFocused)  carousel.incrementCurrentIndex()
+            else if (button === "A")      page.activateCurrent()
+        }
+
+        function onAxisChanged(axis, value, device) {
+            if (!rootWindow.visible) return
+
+            if (axis === "LX") {
+                if (page.stickDir === 0 && Math.abs(value) >= 0.5 && !page.settingsFocused) {
+                    page.stickDir = value < 0 ? -1 : 1
+                    page.stickStep()
+                    stickRepeat.interval = 350
+                    stickRepeat.restart()
+                } else if (page.stickDir !== 0 && Math.abs(value) < 0.25) {
+                    page.stickDir = 0
+                    stickRepeat.stop()
+                }
+            } else if (axis === "LY") {
+                if (page.vDir === 0 && Math.abs(value) >= 0.5) {
+                    page.vDir = value < 0 ? -1 : 1
+                    page.settingsFocused = (page.vDir === -1)
+                } else if (page.vDir !== 0 && Math.abs(value) < 0.25) {
+                    page.vDir = 0
+                }
+            }
         }
     }
 
     Connections {
         target: EmulatorLauncher
+        // Hide only once the game's first frame is on screen the menu stays visible during the RPX load instead of leaving no window at all
+        function onRendererReady() {
+            rootWindow.visible = false
+            page.launching = false
+        }
         function onStateChanged(running) {
-            rootWindow.visible = !running
+            if (running) {
+                page.launching = true
+            } else {
+                page.launching = false
+                rootWindow.visible = true
+            }
         }
     }
 }

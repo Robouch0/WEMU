@@ -32,10 +32,10 @@ InputProfile InputProfileManager::createDefaultProfile(const QString &name)
         { "B",          "B"         },
         { "X",          "X"         },
         { "Y",          "Y"         },
-        { "DPAD_UP",    "DPAD_UP"   },
-        { "DPAD_DOWN",  "DPAD_DOWN" },
-        { "DPAD_LEFT",  "DPAD_LEFT" },
-        { "DPAD_RIGHT", "DPAD_RIGHT"},
+        { "DPAD_UP",    "Up"    },
+        { "DPAD_DOWN",  "Down"  },
+        { "DPAD_LEFT",  "Left"  },
+        { "DPAD_RIGHT", "Right" },
         { "L",          "LB"        },
         { "R",          "RB"        },
         { "ZL",         "LT"        },
@@ -88,6 +88,13 @@ void InputProfileManager::setBinding(const QString &wiiuButton, const QString &x
     }
 
     bindings[wiiuButton] = xboxButton;
+    save();
+    emit bindingsChanged();
+}
+
+void InputProfileManager::resetCurrentProfile()
+{
+    m_profiles[m_currentIndex] = createDefaultProfile(m_profiles[m_currentIndex].name);
     save();
     emit bindingsChanged();
 }
@@ -158,4 +165,16 @@ void InputProfileManager::load()
     const int savedIndex = root["currentIndex"].toInt(0);
     if (savedIndex >= 0 && savedIndex < k_maxProfiles)
         m_currentIndex = savedIndex;
+
+    // Migrate pre-rename DPAD bindings so old save files don't break keyboard input.
+    static const QMap<QString, QString> s_migrate = {
+        {"DPAD_UP", "Up"}, {"DPAD_DOWN", "Down"},
+        {"DPAD_LEFT", "Left"}, {"DPAD_RIGHT", "Right"},
+    };
+    for (auto &profile : m_profiles) {
+        for (auto &val : profile.bindings) {
+            if (s_migrate.contains(val))
+                val = s_migrate[val];
+        }
+    }
 }

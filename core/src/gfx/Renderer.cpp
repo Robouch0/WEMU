@@ -9,6 +9,9 @@
 #include <stdexcept>
 #include <thread>
 
+// Wii U targets 60 fps. Cap flip_tv so the interpreter doesn't run faster than real hardware when the swapchain has spare images to return immediately.
+static constexpr auto kTargetFrameTime = std::chrono::duration<double>(1.0 / 60.0);
+
 
 // VPAD button bitmasks (same as wut header vpad/input.h)
 static constexpr std::uint32_t BTN_UP = 0x0200;
@@ -162,6 +165,23 @@ void Renderer::flip_tv(const std::uint8_t *rgbx, std::uint32_t w, std::uint32_t 
     }
 
     m_currentFrame = (m_currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
+
+    // Software frame cap / sleep the remaining time in this 1/60 s budget so
+    // the game runs at Wii U native speed even when spare swapchain images
+    // would otherwise let vkAcquireNextImageKHR return without blocking.
+    {
+        using Clock = std::chrono::steady_clock;
+        static thread_local Clock::time_point s_lastFlip = Clock::now();
+        auto elapsed = Clock::now() - s_lastFlip;
+        if (elapsed < kTargetFrameTime)
+            std::this_thread::sleep_for(kTargetFrameTime - elapsed);
+        s_lastFlip = Clock::now();
+    }
+
+    if (m_onFirstFrame) {
+        auto cb = std::move(m_onFirstFrame);
+        cb();
+    }
 }
 
 bool Renderer::poll_events()

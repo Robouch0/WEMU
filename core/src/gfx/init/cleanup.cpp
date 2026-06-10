@@ -33,6 +33,8 @@ void Renderer::cleanupFlipTv() const
 
 void Renderer::cleanup() const
 {
+    vkDeviceWaitIdle(m_logicalDevice);
+
     cleanupFlipTv();
     cleanupSwapChain();
 

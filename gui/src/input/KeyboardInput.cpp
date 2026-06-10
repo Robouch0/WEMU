@@ -10,12 +10,15 @@ KeyboardInput::KeyboardInput(QObject *parent)
 
 bool KeyboardInput::eventFilter(QObject *obj, QEvent *event)
 {
-    if (event->type() == QEvent::KeyPress) {
-        const auto *keyEvent = dynamic_cast<QKeyEvent*>(event);
-        onKeyPressed(keyEvent->key());
-    } else if (event->type() == QEvent::KeyRelease) {
-        const auto *keyEvent = dynamic_cast<QKeyEvent*>(event);
-        onKeyReleased(keyEvent->key());
+    if (event->type() == QEvent::KeyPress || event->type() == QEvent::KeyRelease) {
+        const auto *keyEvent = static_cast<QKeyEvent*>(event);
+
+        if (!keyEvent->isAutoRepeat()) {
+            if (event->type() == QEvent::KeyPress)
+                onKeyPressed(keyEvent->key());
+            else
+                onKeyReleased(keyEvent->key());
+        }
     }
     return QObject::eventFilter(obj, event);
 }
@@ -52,9 +55,12 @@ bool KeyboardInput::isButtonPressed(const QString &buttonName) const
 
 bool KeyboardInput::isButtonReleased(const QString &buttonName) const
 {
-    int key = Qt::Key_A;
-    const auto it = m_keyStates.find(key);
-    return it != m_keyStates.end() && it.value() == KeyState::Released;
+    for (auto it = m_keyStates.begin(); it != m_keyStates.end(); ++it) {
+        QString keyName = QKeySequence(it.key()).toString();
+        if (keyName.compare(buttonName, Qt::CaseInsensitive) == 0)
+            return it.value() == KeyState::Released;
+    }
+    return false;
 }
 
 QStringList KeyboardInput::allKeys()

@@ -10,6 +10,7 @@ set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Quick QuickControls2)
+find_package(Vulkan REQUIRED)
 
 qt_standard_project_setup(REQUIRES 6.6.2)
 find_package(SDL2 REQUIRED)
@@ -22,7 +23,9 @@ qt_add_executable(appgui
     src/input/InputProfileManager.cpp
     src/library/TitleScanner.cpp
     src/emulator/EmulatorLauncher.cpp
+    src/gfx/VulkanOutputWindow.cpp
 )
+
 
 target_sources(appgui PRIVATE
         src/input/IInputDevice.hpp
@@ -62,7 +65,9 @@ target_include_directories(appgui
         ${CMAKE_SOURCE_DIR}/gui/src/input
         ${CMAKE_SOURCE_DIR}/gui/src/library
         ${CMAKE_SOURCE_DIR}/gui/src/emulator
+        ${CMAKE_SOURCE_DIR}/gui/src/gfx
         ${Qt6Core_INCLUDE_DIRS}
+        ${Vulkan_INCLUDE_DIRS}
 )
 
 target_link_libraries(appgui
@@ -71,6 +76,7 @@ target_link_libraries(appgui
         Qt6::Quick
         Qt6::Gui
         Qt6::QuickControls2
+        Vulkan::Vulkan
         SDL2::SDL2
         core
 )

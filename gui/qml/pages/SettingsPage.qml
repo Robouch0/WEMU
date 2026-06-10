@@ -13,10 +13,19 @@ Rectangle {
         target: InputManager
 
         function onButtonChanged(button, pressed, device) {
-            if (listeningFor !== "" && pressed && InputProfileManager.isKnownXboxButton(button)) {
-                InputProfileManager.setBinding(listeningFor, button)
-                listeningFor = ""
+            if (!pressed) return
+
+            if (listeningFor !== "") {
+                if (InputProfileManager.isKnownXboxButton(button)) {
+                    InputProfileManager.setBinding(listeningFor, button)
+                    listeningFor = ""
+                }
+                return
             }
+
+            // B → back to the main menu, mirroring the "← Home" button.
+            if (button === "B")
+                mainLoader.source = "pages/MainMenu.qml"
         }
     }
 
@@ -157,6 +166,7 @@ Rectangle {
                                 }
                             }
                         }
+
                     }
 
                     Rectangle {
@@ -215,37 +225,77 @@ Rectangle {
                         }
                     }
 
-                    Rectangle {
-                        visible: listeningFor !== ""
+                    Item {
+                        width: parent.width - 24
                         height: 26
-                        width: listeningText.implicitWidth + 28
-                        radius: 13
-                        color: "#f5a623"
 
-                        SequentialAnimation on opacity {
-                            running: listeningFor !== ""
-                            loops: Animation.Infinite
-                            NumberAnimation { to: 0.55; duration: 600; easing.type: Easing.InOutQuad }
-                            NumberAnimation { to: 1.0;  duration: 600; easing.type: Easing.InOutQuad }
+                        Rectangle {
+                            anchors.left: parent.left
+                            anchors.verticalCenter: parent.verticalCenter
+                            visible: listeningFor !== ""
+                            height: 26
+                            width: listeningText.implicitWidth + 28
+                            radius: 13
+                            color: "#f5a623"
+
+                            SequentialAnimation on opacity {
+                                running: listeningFor !== ""
+                                loops: Animation.Infinite
+                                NumberAnimation { to: 0.55; duration: 600; easing.type: Easing.InOutQuad }
+                                NumberAnimation { to: 1.0;  duration: 600; easing.type: Easing.InOutQuad }
+                            }
+
+                            Text {
+                                id: listeningText
+                                anchors.centerIn: parent
+                                text: "● Press a button on the controller…"
+                                color: "white"
+                                font.pixelSize: 12
+                                font.bold: true
+                            }
                         }
 
                         Text {
-                            id: listeningText
-                            anchors.centerIn: parent
-                            text: "● Press a button on the controller…"
-                            color: "white"
-                            font.pixelSize: 12
-                            font.bold: true
+                            anchors.left: parent.left
+                            anchors.verticalCenter: parent.verticalCenter
+                            visible: listeningFor === ""
+                            text: InputManager.connectedDevices().length > 0
+                                  ? "Connected: " + InputManager.connectedDevices().join(", ")
+                                  : "No controller connected"
+                            color: "#888888"
+                            font.pixelSize: 11
                         }
-                    }
 
-                    Text {
-                        visible: listeningFor === ""
-                        text: InputManager.connectedDevices().length > 0
-                              ? "Connected: " + InputManager.connectedDevices().join(", ")
-                              : "No controller connected"
-                        color: "#888888"
-                        font.pixelSize: 11
+                        Rectangle {
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: resetText.implicitWidth + 18
+                            height: 22
+                            radius: 4
+                            color: resetMouseArea.containsMouse ? "#f3d6d3" : "#e4e4ea"
+                            border.color: "#cccccc"
+                            Behavior on color { ColorAnimation { duration: 100 } }
+
+                            Text {
+                                id: resetText
+                                anchors.centerIn: parent
+                                text: "Reset to default"
+                                font.pixelSize: 10
+                                font.bold: true
+                                color: "#c0392b"
+                            }
+
+                            MouseArea {
+                                id: resetMouseArea
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: {
+                                    listeningFor = ""
+                                    InputProfileManager.resetCurrentProfile()
+                                }
+                            }
+                        }
                     }
                 }
             }

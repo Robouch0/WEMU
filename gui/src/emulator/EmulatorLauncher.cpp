@@ -1,5 +1,6 @@
 #include "EmulatorLauncher.hpp"
 
+#include "VulkanOutputWindow.hpp"
 #include "binary/Loader.hpp"
 #include "cpu/interpreter/Interpreter.hpp"
 #include "gfx/Renderer.hpp"
@@ -12,7 +13,6 @@
 
 #include <QDebug>
 #include <mutex>
-#include <optional>
 
 static void registerHleFunctionsOnce()
 {
@@ -25,6 +25,8 @@ static void registerHleFunctionsOnce()
 }
 
 GameThread::GameThread(QObject *parent) : QThread(parent) {}
+
+GameThread::~GameThread() = default;
 
 void GameThread::queueGame(const QString &rpxPath, const QString &title)
 {
@@ -45,11 +47,20 @@ void GameThread::setControllerMask(std::uint32_t mask)
         interp->m_controllerMask = mask;
 }
 
+void GameThread::setVulkanOutput(VulkanOutputWindow *window)
+{
+    m_vulkanOutput = window;
+    m_renderer = std::make_unique<Renderer>(
+        window->vkInstance(),
+        window->vkSurface(),
+        static_cast<uint32_t>(window->width()),
+        static_cast<uint32_t>(window->height())
+    );
+}
+
 void GameThread::run()
 {
     registerHleFunctionsOnce();
-
-    std::optional<Renderer> renderer;
 
     while (!isInterruptionRequested()) {
         if (!m_startRequested) {
@@ -61,8 +72,11 @@ void GameThread::run()
         QString title = m_nextTitle;
         m_startRequested = false;
 
-        if (!renderer.has_value())
-            renderer.emplace();
+        if (!m_renderer) {
+            m_renderer = std::make_unique<Renderer>();
+        }
+
+        m_renderer->setFirstFrameCallback([this]() { emit rendererReady(); });
 
         try {
             const Core::Loader loader(path.toStdString());
@@ -71,7 +85,7 @@ void GameThread::run()
             Core::Interpreter interpreter(binary);
             m_interpreter = &interpreter;
 
-            interpreter.m_renderer = &*renderer;
+            interpreter.m_renderer = m_renderer.get();
             Core::installStdlibHooks(interpreter, binary);
 
             interpreter.m_gpr[1] = 0xC0FFFFF0u;
@@ -80,15 +94,11 @@ void GameThread::run()
             interpreter.m_gpr[4] = 0u;
             interpreter.m_memory.write<uint32_t>(0xC0FFFFF0u, 0);
 
-            renderer->set_title(title.isEmpty() ? "WEMU" : title.toStdString());
-            renderer->show();
             interpreter.run();
-            renderer->hide();
 
             m_interpreter = nullptr;
 
         } catch (const std::exception &e) {
-            if (renderer.has_value()) renderer->hide();
             m_interpreter = nullptr;
             emit gameError(QString::fromStdString(e.what()));
         }
@@ -109,6 +119,7 @@ EmulatorLauncher::EmulatorLauncher(QObject *parent)
     connect(m_thread, &GameThread::gameError, this, [](const QString &msg) {
         qWarning() << "[Launcher] Emulator error:" << msg;
     });
+    connect(m_thread, &GameThread::rendererReady, this, &EmulatorLauncher::rendererReady);
 
     m_thread->start();
 }
@@ -125,12 +136,22 @@ void EmulatorLauncher::setWindowHandle(WId handle)
     Q_UNUSED(handle)
 }
 
+void EmulatorLauncher::setVulkanOutput(VulkanOutputWindow *window)
+{
+    m_vulkanWindow = window;
+    m_thread->setVulkanOutput(window);
+}
+
 void EmulatorLauncher::launch(const QString &rpxPath, const QString &title)
 {
     if (m_emulating) {
         qWarning() << "[Launcher] Already running, ignoring launch request";
         return;
     }
+
+    if (m_vulkanWindow)
+        m_vulkanWindow->setTitle(title.isEmpty() ? QStringLiteral("WEMU")
+                                                 : QStringLiteral("WEMU — ") + title);
 
     m_emulating = true;
     m_thread->queueGame(rpxPath, title);
@@ -164,21 +185,26 @@ void EmulatorLauncher::connectInput(InputManager *mgr, InputProfileManager *prof
             return mgr->isButtonPressed(profileMgr->getBinding(wiiuAction));
         };
 
+        auto key = [&](const QString &keyName) {
+            return mgr->isButtonPressed(keyName);
+        };
+
         std::uint32_t mask = 0;
-        if (pressed("DPAD_UP"))    mask |= VPAD_UP;
-        if (pressed("DPAD_DOWN"))  mask |= VPAD_DOWN;
-        if (pressed("DPAD_LEFT"))  mask |= VPAD_LEFT;
-        if (pressed("DPAD_RIGHT")) mask |= VPAD_RIGHT;
-        if (pressed("A"))          mask |= VPAD_A;
-        if (pressed("B"))          mask |= VPAD_B;
+        if (pressed("DPAD_UP")    || key("Up"))    mask |= VPAD_UP;
+        if (pressed("DPAD_DOWN")  || key("Down"))  mask |= VPAD_DOWN;
+        if (pressed("DPAD_LEFT")  || key("Left"))  mask |= VPAD_LEFT;
+        if (pressed("DPAD_RIGHT") || key("Right")) mask |= VPAD_RIGHT;
+
+        if (pressed("A") || key("Return") || key("Enter")) mask |= VPAD_A;
+        if (pressed("B") || key("Backspace"))      mask |= VPAD_B;
         if (pressed("X"))          mask |= VPAD_X;
         if (pressed("Y"))          mask |= VPAD_Y;
         if (pressed("L"))          mask |= VPAD_L;
         if (pressed("R"))          mask |= VPAD_R;
         if (pressed("ZL"))         mask |= VPAD_ZL;
         if (pressed("ZR"))         mask |= VPAD_ZR;
-        if (mgr->isButtonPressed("START")) mask |= VPAD_PLUS;
-        if (mgr->isButtonPressed("BACK"))  mask |= VPAD_MINUS;
+        if (mgr->isButtonPressed("START") || key("P")) mask |= VPAD_PLUS;
+        if (mgr->isButtonPressed("BACK")  || key("M")) mask |= VPAD_MINUS;
         m_thread->setControllerMask(mask);
     });
 }

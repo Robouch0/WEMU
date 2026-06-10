@@ -17,10 +17,10 @@ SDLGamepadInput::SDLGamepadInput(const int index, QObject *parent)
         { "START", SDL_CONTROLLER_BUTTON_START },
         { "XBOX_GUIDE", SDL_CONTROLLER_BUTTON_GUIDE},
 
-        { "DPAD_UP",    SDL_CONTROLLER_BUTTON_DPAD_UP },
-        { "DPAD_DOWN",  SDL_CONTROLLER_BUTTON_DPAD_DOWN },
-        { "DPAD_LEFT",  SDL_CONTROLLER_BUTTON_DPAD_LEFT },
-        { "DPAD_RIGHT", SDL_CONTROLLER_BUTTON_DPAD_RIGHT },
+        { "Up",    SDL_CONTROLLER_BUTTON_DPAD_UP },
+        { "Down",  SDL_CONTROLLER_BUTTON_DPAD_DOWN },
+        { "Left",  SDL_CONTROLLER_BUTTON_DPAD_LEFT },
+        { "Right", SDL_CONTROLLER_BUTTON_DPAD_RIGHT },
 
         { "LEFTSTICK_BUTTON",  SDL_CONTROLLER_BUTTON_LEFTSTICK },
         { "RIGHTSTICK_BUTTON",  SDL_CONTROLLER_BUTTON_RIGHTSTICK },
@@ -88,6 +88,10 @@ void SDLGamepadInput::update()
 
         if (now != last) {
             last = now;
+            // Mirror into m_lastButtons so the polled isButtonPressed() path
+            // sees triggers too — otherwise bindings on LT/RT only exist for
+            // signal consumers and silently never reach the game.
+            m_lastButtons[name] = now;
             emit buttonStateChanged(name, now);
         }
     };
