@@ -185,6 +185,7 @@ Rectangle {
             property string gamePublisher: model.publisher
             property string gameVersion:   model.version
             property string gameRpxPath:   model.rpxPath
+            property string gameIconPath:  model.iconPath
 
             Rectangle {
                 id: card
@@ -223,6 +224,15 @@ Rectangle {
                         color: "#f0f0f3"
                         radius: 8
                         border.color: "#e0e0e3"
+                        clip: true
+
+                        Image {
+                            anchors.fill: parent
+                            source: cardWrapper.gameIconPath
+                            fillMode: Image.PreserveAspectCrop
+                            visible: source.toString() !== ""
+                            asynchronous: true
+                        }
                     }
 
                     Text {

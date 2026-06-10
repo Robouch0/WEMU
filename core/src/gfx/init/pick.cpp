@@ -54,7 +54,7 @@ Renderer::QueueFamilyIndices Renderer::findQueueFamilies(const VkPhysicalDevice 
         vkGetPhysicalDeviceSurfaceSupportKHR(device, i, m_surface, &presentSupport);
 
         if (presentSupport) {
-            indices.presentFamily = 1;
+            indices.presentFamily = i;
         }
 
         if (queueFamily.queueFlags & VK_QUEUE_GRAPHICS_BIT) {

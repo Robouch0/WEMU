@@ -2,6 +2,7 @@
 
 #include <QDir>
 #include <QFile>
+#include <QUrl>
 #include <QXmlStreamReader>
 
 TitleScanner::TitleScanner(QObject *parent)
@@ -38,6 +39,14 @@ void TitleScanner::scanDirectory(const QString &path)
         if (rpxFiles.isEmpty())
             continue;
         title.rpxPath = codeDir + "/" + rpxFiles.first();
+
+        for (const QString &candidate : {gameDir + "/meta/cover.png",
+                                         gameDir + "/cover.png"}) {
+            if (QFile::exists(candidate)) {
+                title.iconPath = QUrl::fromLocalFile(candidate).toString();
+                break;
+            }
+        }
 
         QFile file(metaXml);
         if (file.open(QIODevice::ReadOnly)) {

@@ -43,8 +43,11 @@ void Renderer::cleanup() const
     }
     vkDestroyCommandPool(m_logicalDevice, m_commandPool, nullptr);
     vkDestroyDevice(m_logicalDevice, nullptr);
-    vkDestroySurfaceKHR(m_instance, m_surface, nullptr);
-    vkDestroyInstance(m_instance, nullptr);
-    glfwDestroyWindow(m_window);
-    glfwTerminate();
+
+    if (!m_embedded) {
+        vkDestroySurfaceKHR(m_instance, m_surface, nullptr);
+        vkDestroyInstance(m_instance, nullptr);
+        SDL_DestroyWindow(m_window);
+        SDL_Quit();
+    }
 }

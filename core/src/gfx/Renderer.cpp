@@ -37,6 +37,12 @@ void pipelineBarrier(const VkImage &image, const VkImageLayout &oldLayout, const
     vkCmdPipelineBarrier(cmd, srcStage, dstStage, 0, 0, nullptr, 0, nullptr, 1, &b);
 };
 
+Renderer::Renderer(VkInstance instance, VkSurfaceKHR surface, uint32_t w, uint32_t h)
+    : m_instance(instance), m_surface(surface), m_surfaceWidth(w), m_surfaceHeight(h), m_embedded(true)
+{
+    initVulkanPipeline();
+}
+
 void Renderer::flip_tv(const std::uint8_t *rgbx, std::uint32_t w, std::uint32_t h)
 {
     const std::size_t cols = (w < WIDTH) ? w : WIDTH;
@@ -160,32 +166,35 @@ void Renderer::flip_tv(const std::uint8_t *rgbx, std::uint32_t w, std::uint32_t 
 
 bool Renderer::poll_events()
 {
-    glfwPollEvents();
-    if (glfwWindowShouldClose(m_window)) {
-        m_open = false;
-        return false;
+    if (m_embedded)
+        return true;
+    SDL_Event event;
+    while (SDL_PollEvent(&event)) {
+        if (event.type == SDL_QUIT) {
+            m_open = false;
+            return false;
+        }
+        if (event.type == SDL_KEYDOWN && event.key.keysym.scancode == SDL_SCANCODE_ESCAPE) {
+            m_open = false;
+            return false;
+        }
     }
     return true;
 }
 
 std::uint32_t Renderer::get_buttons() const
 {
+    if (m_embedded)
+        return 0;
+    const Uint8 *keys = SDL_GetKeyboardState(nullptr);
     std::uint32_t btns = 0;
-    if (glfwGetKey(m_window, GLFW_KEY_UP) == GLFW_PRESS || glfwGetKey(m_window, GLFW_KEY_W) == GLFW_PRESS)
-        btns |= BTN_UP;
-    if (glfwGetKey(m_window, GLFW_KEY_DOWN) == GLFW_PRESS || glfwGetKey(m_window, GLFW_KEY_S) == GLFW_PRESS)
-        btns |= BTN_DOWN;
-    if (glfwGetKey(m_window, GLFW_KEY_LEFT) == GLFW_PRESS || glfwGetKey(m_window, GLFW_KEY_A) == GLFW_PRESS)
-        btns |= BTN_LEFT;
-    if (glfwGetKey(m_window, GLFW_KEY_RIGHT) == GLFW_PRESS || glfwGetKey(m_window, GLFW_KEY_D) == GLFW_PRESS)
-        btns |= BTN_RIGHT;
-    if (glfwGetKey(m_window, GLFW_KEY_ENTER) == GLFW_PRESS)
-        btns |= BTN_A;
-    if (glfwGetKey(m_window, GLFW_KEY_BACKSPACE) == GLFW_PRESS)
-        btns |= BTN_B;
-    if (glfwGetKey(m_window, GLFW_KEY_P) == GLFW_PRESS)
-        btns |= BTN_PLUS;
-    if (glfwGetKey(m_window, GLFW_KEY_M) == GLFW_PRESS)
-        btns |= BTN_MINUS;
+    if (keys[SDL_SCANCODE_UP]    || keys[SDL_SCANCODE_W]) btns |= BTN_UP;
+    if (keys[SDL_SCANCODE_DOWN]  || keys[SDL_SCANCODE_S]) btns |= BTN_DOWN;
+    if (keys[SDL_SCANCODE_LEFT]  || keys[SDL_SCANCODE_A]) btns |= BTN_LEFT;
+    if (keys[SDL_SCANCODE_RIGHT] || keys[SDL_SCANCODE_D]) btns |= BTN_RIGHT;
+    if (keys[SDL_SCANCODE_RETURN])                         btns |= BTN_A;
+    if (keys[SDL_SCANCODE_BACKSPACE])                      btns |= BTN_B;
+    if (keys[SDL_SCANCODE_P])                              btns |= BTN_PLUS;
+    if (keys[SDL_SCANCODE_M])                              btns |= BTN_MINUS;
     return btns;
 }

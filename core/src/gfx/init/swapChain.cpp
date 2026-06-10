@@ -115,7 +115,12 @@ VkPresentModeKHR Renderer::chooseSwapPresentMode() { return VK_PRESENT_MODE_FIFO
 
     int width, height;
 
-    glfwGetFramebufferSize(m_window, &width, &height);
+    if (m_embedded) {
+        width  = static_cast<int>(m_surfaceWidth);
+        height = static_cast<int>(m_surfaceHeight);
+    } else {
+        SDL_Vulkan_GetDrawableSize(m_window, &width, &height);
+    }
 
     VkExtent2D actualExtent = {static_cast<uint32_t>(width), static_cast<uint32_t>(height)};
 

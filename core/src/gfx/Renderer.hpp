@@ -4,9 +4,9 @@
 #include <optional>
 #include <string>
 #include <vector>
+#include <SDL2/SDL.h>
+#include <SDL2/SDL_vulkan.h>
 #include <vulkan/vulkan.h>
-#define GLFW_INCLUDE_VULKAN
-#include <GLFW/glfw3.h>
 
 #define GLM_FORCE_RADIANS
 #define GLM_FORCE_DEFAULT_ALIGNED_GENTYPES
@@ -19,11 +19,18 @@ const std::vector<const char *> deviceExtensions = {VK_KHR_SWAPCHAIN_EXTENSION_N
 
 class Renderer {
     public:
+        // Standalone: creates own SDL window, Vulkan instance and surface.
         Renderer()
         {
             initWindow();
-            initVulkan();
+            createInstance();
+            createSurface();
+            initVulkanPipeline();
         }
+
+        // Embedded: takes an externally-owned instance and surface (e.g. from Qt).
+        // Does not own or destroy those handles.
+        Renderer(VkInstance instance, VkSurfaceKHR surface, uint32_t w, uint32_t h);
 
         ~Renderer() { cleanup(); }
 
@@ -35,9 +42,9 @@ class Renderer {
 
         [[nodiscard]] bool is_open() const { return m_open; }
 
-        void set_title(const std::string &title) { glfwSetWindowTitle(m_window, title.c_str()); }
-        void show() { glfwShowWindow(m_window); }
-        void hide() { glfwHideWindow(m_window); }
+        void set_title(const std::string &title) { if (m_window) SDL_SetWindowTitle(m_window, title.c_str()); }
+        void show() { if (m_window) { m_open = true; SDL_ShowWindow(m_window); } }
+        void hide() { if (m_window) SDL_HideWindow(m_window); }
 
         struct QueueFamilyIndices {
                 std::optional<uint32_t> graphicsFamily;
@@ -57,10 +64,8 @@ class Renderer {
 
         void initWindow();
 
-        void initVulkan()
+        void initVulkanPipeline()
         {
-            createInstance();
-            createSurface();
             pickPhysicalDevice();
             createLogicalDevice();
             createSwapChain();
@@ -149,7 +154,7 @@ class Renderer {
 
         void cleanup() const;
 
-        GLFWwindow *m_window;
+        SDL_Window *m_window = nullptr;
         VkInstance m_instance;
         VkPhysicalDevice m_physicalDevice;
         VkDevice m_logicalDevice;
@@ -202,7 +207,9 @@ class Renderer {
         VkImage m_tvImage = VK_NULL_HANDLE;
         VkDeviceMemory m_tvImageMemory = VK_NULL_HANDLE;
 
-        bool m_framebufferResized = false;
-
-        bool m_open = true;
+        bool     m_framebufferResized = false;
+        bool     m_open              = true;
+        bool     m_embedded          = false;
+        uint32_t m_surfaceWidth      = WIDTH;
+        uint32_t m_surfaceHeight     = HEIGHT;
 };
