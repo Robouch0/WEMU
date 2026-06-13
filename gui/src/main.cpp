@@ -84,7 +84,7 @@ int main(int argc, char *argv[])
 
     auto *rootQuickWindow = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
     QObject::connect(rootQuickWindow, &QQuickWindow::closing,
-                     &app, [](QQuickCloseEvent *) { QCoreApplication::exit(0); });
+                     &app, [](auto *) { QCoreApplication::exit(0); });
 
     QObject::connect(&app, &QGuiApplication::aboutToQuit,
                      inputManager, &InputManager::stopPolling);

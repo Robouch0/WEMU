@@ -1,12 +1,12 @@
 #pragma once
 
+#include <SDL2/SDL.h>
+#include <SDL2/SDL_vulkan.h>
 #include <cstdint>
 #include <functional>
 #include <optional>
 #include <string>
 #include <vector>
-#include <SDL2/SDL.h>
-#include <SDL2/SDL_vulkan.h>
 #include <vulkan/vulkan.h>
 
 #define GLM_FORCE_RADIANS
@@ -43,9 +43,23 @@ class Renderer {
 
         [[nodiscard]] bool is_open() const { return m_open; }
 
-        void set_title(const std::string &title) { if (m_window) SDL_SetWindowTitle(m_window, title.c_str()); }
-        void show() { if (m_window) { m_open = true; SDL_ShowWindow(m_window); } }
-        void hide() { if (m_window) SDL_HideWindow(m_window); }
+        void set_title(const std::string &title)
+        {
+            if (m_window)
+                SDL_SetWindowTitle(m_window, title.c_str());
+        }
+        void show()
+        {
+            if (m_window) {
+                m_open = true;
+                SDL_ShowWindow(m_window);
+            }
+        }
+        void hide()
+        {
+            if (m_window)
+                SDL_HideWindow(m_window);
+        }
 
         // Called after the very first vkQueuePresent — use to show the output window
         // exactly when the first real frame is on screen (avoids compositor ghost images).
@@ -212,11 +226,11 @@ class Renderer {
         VkImage m_tvImage = VK_NULL_HANDLE;
         VkDeviceMemory m_tvImageMemory = VK_NULL_HANDLE;
 
-        bool     m_framebufferResized = false;
-        bool     m_open              = true;
-        bool     m_embedded          = false;
-        uint32_t m_surfaceWidth      = WIDTH;
-        uint32_t m_surfaceHeight     = HEIGHT;
+        bool m_framebufferResized = false;
+        bool m_open = true;
+        bool m_embedded = false;
+        uint32_t m_surfaceWidth = WIDTH;
+        uint32_t m_surfaceHeight = HEIGHT;
 
         std::function<void()> m_onFirstFrame;
 };

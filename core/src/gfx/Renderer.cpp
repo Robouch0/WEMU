@@ -9,7 +9,8 @@
 #include <stdexcept>
 #include <thread>
 
-// Wii U targets 60 fps. Cap flip_tv so the interpreter doesn't run faster than real hardware when the swapchain has spare images to return immediately.
+// Wii U targets 60 fps. Cap flip_tv so the interpreter doesn't run faster than real hardware when the swapchain has spare images to return
+// immediately.
 static constexpr auto kTargetFrameTime = std::chrono::duration<double>(1.0 / 60.0);
 
 
@@ -40,8 +41,8 @@ void pipelineBarrier(const VkImage &image, const VkImageLayout &oldLayout, const
     vkCmdPipelineBarrier(cmd, srcStage, dstStage, 0, 0, nullptr, 0, nullptr, 1, &b);
 };
 
-Renderer::Renderer(VkInstance instance, VkSurfaceKHR surface, uint32_t w, uint32_t h)
-    : m_instance(instance), m_surface(surface), m_surfaceWidth(w), m_surfaceHeight(h), m_embedded(true)
+Renderer::Renderer(VkInstance instance, VkSurfaceKHR surface, uint32_t w, uint32_t h) :
+    m_instance(instance), m_surface(surface), m_surfaceWidth(w), m_surfaceHeight(h), m_embedded(true)
 {
     initVulkanPipeline();
 }
@@ -208,13 +209,21 @@ std::uint32_t Renderer::get_buttons() const
         return 0;
     const Uint8 *keys = SDL_GetKeyboardState(nullptr);
     std::uint32_t btns = 0;
-    if (keys[SDL_SCANCODE_UP]    || keys[SDL_SCANCODE_W]) btns |= BTN_UP;
-    if (keys[SDL_SCANCODE_DOWN]  || keys[SDL_SCANCODE_S]) btns |= BTN_DOWN;
-    if (keys[SDL_SCANCODE_LEFT]  || keys[SDL_SCANCODE_A]) btns |= BTN_LEFT;
-    if (keys[SDL_SCANCODE_RIGHT] || keys[SDL_SCANCODE_D]) btns |= BTN_RIGHT;
-    if (keys[SDL_SCANCODE_RETURN])                         btns |= BTN_A;
-    if (keys[SDL_SCANCODE_BACKSPACE])                      btns |= BTN_B;
-    if (keys[SDL_SCANCODE_P])                              btns |= BTN_PLUS;
-    if (keys[SDL_SCANCODE_M])                              btns |= BTN_MINUS;
+    if (keys[SDL_SCANCODE_UP] || keys[SDL_SCANCODE_W])
+        btns |= BTN_UP;
+    if (keys[SDL_SCANCODE_DOWN] || keys[SDL_SCANCODE_S])
+        btns |= BTN_DOWN;
+    if (keys[SDL_SCANCODE_LEFT] || keys[SDL_SCANCODE_A])
+        btns |= BTN_LEFT;
+    if (keys[SDL_SCANCODE_RIGHT] || keys[SDL_SCANCODE_D])
+        btns |= BTN_RIGHT;
+    if (keys[SDL_SCANCODE_RETURN])
+        btns |= BTN_A;
+    if (keys[SDL_SCANCODE_BACKSPACE])
+        btns |= BTN_B;
+    if (keys[SDL_SCANCODE_P])
+        btns |= BTN_PLUS;
+    if (keys[SDL_SCANCODE_M])
+        btns |= BTN_MINUS;
     return btns;
 }

@@ -5,4 +5,4 @@ namespace Core {
     struct Binary;
 
     void installStdlibHooks(Interpreter &interp, const Binary &binary);
-}
+} // namespace Core

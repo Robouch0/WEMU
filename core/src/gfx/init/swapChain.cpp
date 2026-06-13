@@ -116,7 +116,7 @@ VkPresentModeKHR Renderer::chooseSwapPresentMode() { return VK_PRESENT_MODE_FIFO
     int width, height;
 
     if (m_embedded) {
-        width  = static_cast<int>(m_surfaceWidth);
+        width = static_cast<int>(m_surfaceWidth);
         height = static_cast<int>(m_surfaceHeight);
     } else {
         SDL_Vulkan_GetDrawableSize(m_window, &width, &height);

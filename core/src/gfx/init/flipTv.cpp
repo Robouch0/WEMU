@@ -3,6 +3,7 @@
 //
 
 #include <cstring>
+
 #include "../Renderer.hpp"
 
 void Renderer::initFlipTV()
