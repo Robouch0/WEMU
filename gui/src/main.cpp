@@ -3,8 +3,6 @@
 #include <QQmlContext>
 #include <QDebug>
 #include <QDir>
-#include <QQuickWindow>
-#include <QTimer>
 #include <SDL2/SDL.h>
 #include "input/IInputDevice.hpp"
 #include "input/InputManager.hpp"
@@ -82,9 +80,16 @@ int main(int argc, char *argv[])
             emulatorLauncher->stop();
     });
 
-    auto *rootQuickWindow = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
-    QObject::connect(rootQuickWindow, &QQuickWindow::closing,
-                     &app, [](auto *) { QCoreApplication::exit(0); });
+
+    struct CloseWatcher : QObject {
+        using QObject::QObject;
+        bool eventFilter(QObject *, QEvent *e) override {
+            if (e->type() == QEvent::Close)
+                QCoreApplication::exit(0);
+            return false;
+        }
+    };
+    rootWindow->installEventFilter(new CloseWatcher(&app));
 
     QObject::connect(&app, &QGuiApplication::aboutToQuit,
                      inputManager, &InputManager::stopPolling);
