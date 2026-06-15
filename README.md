@@ -1,215 +1,169 @@
-# Wemu - Wii U Emulator
+![License](https://img.shields.io/github/license/Robouch0/WEMU)
+![Stars](https://img.shields.io/github/stars/Robouch0/WEMU?style=social)
+![Issues](https://img.shields.io/github/issues/Robouch0/WEMU)
+![Last Commit](https://img.shields.io/github/last-commit/Robouch0/WEMU/dev)
+![Language](https://img.shields.io/github/languages/top/Robouch0/WEMU)
+![C++23](https://img.shields.io/badge/C%2B%2B-23-blue?logo=cplusplus)
+![Platform](https://img.shields.io/badge/platform-Linux-lightgrey?logo=linux)
+![GitHub Actions Status](https://img.shields.io/github/actions/workflow/status/Robouch0/WEMU/wemu-checks.yml?branch=dev&label=Build)
 
-A high-performance, open-source Wii U emulator for Windows, macOS, and Linux.
+# WEMU — Wii U Emulator
 
-## Features
+WEMU is an open-source Wii U emulator for Linux, written in C++23. The project is currently in early development, targeting a public beta in July 2026.
 
-- **Game Compatibility**: Play your favorite Wii U games with high accuracy
-- **Enhanced Graphics**: Upscaling, anti-aliasing, and improved visual quality
-- **Multiple Input Options**: Support for GamePad, Pro Controller, and keyboard/mouse
-- **Save States**: Save and load game progress at any point
-- **Shader Cache**: Reduced stuttering with precompiled shader cache
-- **Audio Enhancement**: High-quality audio processing and surround sound support
-- **Modding Support**: Load game mods and custom content
-
-## System Requirements
-
-### Minimum Requirements
-- **OS**: Windows 10 64-bit / macOS 10.15 / Ubuntu 18.04+
-- **CPU**: Intel Core i5-4430 / AMD FX-6300
-- **GPU**: NVIDIA GTX 750 Ti / AMD Radeon R7 260X
-- **RAM**: 4 GB
-- **Storage**: 2 GB free space
-
-### Recommended Requirements
-- **OS**: Windows 11 64-bit / macOS 12+ / Ubuntu 20.04+
-- **CPU**: Intel Core i7-8700K / AMD Ryzen 5 2600
-- **GPU**: NVIDIA GTX 1060 6GB / AMD RX 580 8GB
-- **RAM**: 8 GB
-- **Storage**: 4 GB free space (SSD recommended)
-
-## Installation
-
-### Windows
-1. Download the latest release from the [Releases](https://github.com/username/wemu/releases) page
-2. Extract the ZIP file to your desired location
-3. Run `Wemu.exe`
-
-### macOS
-1. Download the latest `.dmg` file from [Releases](https://github.com/username/wemu/releases)
-2. Mount the DMG and drag Wemu to Applications
-3. Launch from Applications folder
-
-### Linux
-```bash
-# Ubuntu/Debian
-sudo apt update
-sudo apt install wemu
-
-# Arch Linux
-yay -S wemu
-
-# Or build from source
-git clone https://github.com/username/wemu.git
-cd wemu
-mkdir build && cd build
-cmake ..
-make -j$(nproc)
-```
-
-## Quick Start
-
-1. **Install Wii U System Files**: Place your legally dumped Wii U system files in the `sys/` directory
-2. **Add Games**: Copy your game files to the `games/` directory or use File → Add Game Directory
-3. **Configure Input**: Go to Settings → Input to set up your controllers
-4. **Start Playing**: Double-click a game in the game list to launch
-
-## Configuration
-
-### Graphics Settings
-- **Renderer**: Vulkan (recommended) or OpenGL
-- **Resolution**: Up to 4K upscaling
-- **Anti-aliasing**: FXAA, SMAA, or MSAA
-- **Anisotropic Filtering**: Up to 16x
-
-### Audio Settings
-- **Backend**: DirectSound, XAudio2, or ALSA
-- **Latency**: Adjustable buffer size
-- **Channels**: Stereo or 5.1 surround
-
-### GamePad Settings
-- **Screen Layout**: Single screen, dual screen, or picture-in-picture
-- **Touch Input**: Mouse or touch screen support
-- **Motion Controls**: Gyroscope and accelerometer emulation
-
-## Game Compatibility
-
-Check our [Compatibility Database](https://github.com/Robouch0/WEMU/wiki/Game-Compatibility-Database) for the latest game compatibility status.
-
-**Compatibility Ratings:**
-- 🟢 **Perfect**: Fully playable with no issues
-- 🟡 **Playable**: Playable with minor issues
-- 🟠 **Ingame**: Starts but has major issues
-- 🔴 **Broken**: Doesn't boot or crashes immediately
-
-## Legal Notice
-
-This emulator requires legally obtained Wii U system files and game dumps. We do not provide copyrighted content.
-
-**To legally use this emulator, you must:**
-- Own a physical Wii U console
-- Dump your own system files using homebrew tools
-- Dump your own game discs
-
-## Building from Source
-
-### Prerequisites
-- CMake 3.15+
-- C++17 compatible compiler
-- Git
-
-### Dependencies
-- OpenGL 4.5+ / Vulkan 1.1+
-- SDL2
-- libpng
-- zlib
-- OpenAL
-
-### Build Instructions
-```bash
-git clone --recursive https://github.com/username/wemu.git
-cd wemu
-mkdir build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release
-make -j$(nproc)
-```
-
-## Contributing
-
-We welcome contributions! Please read our [Contributing Guidelines](CONTRIBUTING.md) before submitting pull requests.
-
-### Development Setup
-1. Fork the repository
-2. Create a feature branch: `git checkout -b feature-name`
-3. Make your changes and test thoroughly
-4. Submit a pull request with a detailed description
-
-### Code Style
-- Follow the existing code style
-- Use meaningful variable names
-- Comment complex algorithms
-- Run tests before submitting
-
-## Troubleshooting
-
-### Common Issues
-
-**Black Screen on Launch**
-- Update your graphics drivers
-- Try switching between Vulkan and OpenGL renderers
-- Check that system files are properly installed
-
-**Poor Performance**
-- Enable shader cache
-- Lower resolution and graphics settings
-- Close unnecessary background applications
-- Ensure you meet the minimum system requirements
-
-**Controller Not Working**
-- Check Settings → Input configuration
-- Ensure your controller is properly connected
-- Try different input backends
-
-### Getting Help
-- Check our [FAQ](https://github.com/username/wemu/wiki/FAQ)
-- Search existing [Issues](https://github.com/username/wemu/issues)
-- Join our [Discord Server](https://discord.gg/wemu)
-
-## Changelog
-
-See [CHANGELOG.md](CHANGELOG.md) for detailed version history.
-
-## License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-```
-MIT License
-
-Copyright (c) 2025 Wemu Contributors
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-```
-
-## Acknowledgments
-
-- Nintendo for creating the Wii U console
-- The homebrew community for reverse engineering efforts
-- All contributors and testers
-- Special thanks to the Dolphin and Cemu teams for inspiration
-
-## Links
-
-- **Website**: https://wemu.vercel.app
-- **Discord**: https://discord.gg/wemu
-- **Compatibility Database**: https://github.com/Robouch0/WEMU/wiki/Game-Compatibility-Database
+Our goal is to accurately emulate the Wii U's PowerPC CPU and GPU in order to run Wii U software. What sets WEMU apart from existing solutions like Cemu is a companion feature: **use your phone as the Wii U GamePad**. A web application streams the GamePad screen from the emulator to your phone and sends touch inputs back, replacing the physical GamePad entirely.
 
 ---
 
-**Disclaimer**: This emulator is for educational and preservation purposes. Users are responsible for ensuring they comply with all applicable laws regarding game preservation and emulation in their jurisdiction.
+## Current State
+
+WEMU is not yet playable. The following components are in active development:
+
+| Component | Status      |
+|---|-------------|
+| Big-endian ELF/RPX loader (ZLIB section decompression via zlib) | Done        |
+| PowerPC interpreter (arithmetic, logic, branches, compare, float, load/store, shift, SPR) | Done        |
+| Vulkan rendering pipeline (GLFW) | In progress |
+| Qt6/QML launcher UI | In progress |
+| USB/gamepad input (SDL2) | Done        |
+| RPX file format support (SHF_DEFLATED parsing) | Done        |
+| Wii U title library browser | In progress |
+| Phone-as-GamePad web app | Planned     |
+
+---
+
+## Beta Goals (July 2026)
+
+| Feature | Description |
+|---|---|
+| **Build & Launch** | Build and launch on a standard Linux system in under 7 minutes on a blank VM |
+| **Title Library** | Scan a directory of dumped Wii U titles and display name, publisher, version, and icon from `meta.xml` |
+| **RPX Loader** | Load a `main.rpx`, parse its structure, and detect its entry point |
+| **PowerPC Execution** | Execute a minimal RPX that produces a graphical output for at least 5 seconds |
+| **Controller Binding** | Map a USB controller (e.g. Xbox One) to Wii U GamePad buttons with visual feedback |
+| **Contributor Docs** | A new contributor can read the documentation and add a new PowerPC instruction that correctly updates registers |
+
+---
+
+## Building from Source
+
+**Platform:** Linux only (Ubuntu/Debian, Fedora, Arch).
+
+### Quick start (recommended)
+
+```bash
+git clone https://github.com/Robouch0/WEMU.git
+cd WEMU
+./setup.sh
+```
+
+`setup.sh` detects your distribution, installs all system dependencies, then builds `core`, `gui`, and the Vulkan renderer. It targets < 7 minutes on a 4-core VM.
+
+```
+Usage:
+  ./setup.sh                      # install deps + build everything
+  ./setup.sh --test               # build + run unit tests
+  ./setup.sh --no-build           # install deps only
+  ./setup.sh --clean              # wipe build dirs before configuring
+  ./setup.sh --build-type Release # default is Debug
+  ./setup.sh --jobs 8             # override parallel job count
+```
+
+After a successful build:
+- GUI binary: `./cmake-build-debug/gui/appgui`
+- Vulkan binary: `./vulkan/build/`
+
+### Manual build
+
+<details>
+<summary>Expand for manual steps</summary>
+
+```bash
+# Debian/Ubuntu dependencies
+sudo apt install cmake g++ zlib1g-dev libvulkan-dev libglfw3-dev libsdl2-dev \
+     qt6-base-dev qt6-declarative-dev glslang-tools ninja-build ccache
+
+# Core emulator + Qt GUI
+git clone https://github.com/Robouch0/WEMU.git && cd WEMU
+mkdir cmake-build-debug && cd cmake-build-debug
+cmake .. -DCMAKE_BUILD_TYPE=Debug
+cmake --build . -j$(nproc)
+
+# Vulkan renderer (standalone)
+cd ../vulkan && mkdir build && cd build
+cmake ..
+cmake --build . -j$(nproc)
+```
+
+</details>
+
+### Running Tests
+
+```bash
+# Via setup.sh
+./setup.sh --test
+
+# Or manually
+cd cmake-build-debug && ctest --output-on-failure
+
+# Run a specific test
+./cmake-build-debug/wemu_tests --gtest_filter=InstructionTest.ADD_NoOE_NoRc
+```
+
+---
+
+## Architecture Overview
+
+```
+WEMU/
+├── core/               # PowerPC interpreter, ELF/RPX loader, CPU state
+│   ├── src/binary/     # ELF/RPX loader + big-endian decoder
+│   ├── src/cpu/        # Interpreter, registers, instruction implementations
+│   │   └── tables/     # X-macro tables: cpu_instructions.anh, cpu_fields.anh
+│   └── tests/          # GoogleTest unit tests
+├── gui/                # Qt6/QML launcher and input management
+│   └── src/input/      # IInputDevice, KeyboardInput, SDLGamepadInput
+├── vulkan/             # Vulkan/GLFW rendering engine
+├── BE-elfanalyzer/     # Utility for inspecting ELF/RPX binaries
+
+```
+
+### Adding a PowerPC Instruction
+
+Instructions are registered through an X-macro table. To add a new instruction:
+
+1. Add an entry to `core/src/cpu/tables/cpu_instructions.anh`:
+   ```c
+   INSTR(MYINSTR, OPCD(x), XO9(y))
+   ```
+
+2. Implement the function in `core/src/cpu/instructions/`:
+   ```cpp
+   void Core::Instruction::MYINSTR(Core::Interpreter &cpu, const EncodedInstruction &instr)
+   {
+       // access cpu.m_gpr[], cpu.m_cr, cpu.m_xer, etc.
+   }
+   ```
+
+The instruction will be automatically registered in the dispatch table and enumerated in `InstructionID` — no other files need to be modified.
+
+---
+
+## Contributing
+
+Feature branches are developed off `dev`. Only `dev` can be merged into `main`.
+
+1. Fork the repository and create a branch from `dev`
+2. Open a pull request targeting `dev`
+
+---
+
+## Legal Notice
+
+WEMU does not include or distribute any Nintendo copyrighted material. To use this emulator, you must own a physical Wii U console and legally dump your own games and system files.
+
+---
+
+## License
+
+MIT License — Copyright (c) 2025 Hugo Duchemin. See [LICENSE](LICENSE) for details.

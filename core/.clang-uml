@@ -1,0 +1,17 @@
+compilation_database_dir: build
+output_directory: uml
+diagrams:
+  core_classes:
+    type: class
+    generate_packages: true
+    glob:
+      - src/cpu/interpreter/Interpreter.cpp
+      - src/binary/Loader.cpp
+    include:
+      namespaces:
+        - Core
+        - Utils
+    exclude:
+      namespaces:
+        - std
+        - Core::Instruction

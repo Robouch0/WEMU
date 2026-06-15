@@ -1,38 +1,113 @@
-name: Build WEMU Project
+name: Build and Check WEMU
 
 on:
   pull_request:
-    branches:
-      - dev
-      - main
+    branches: [dev, main]
   push:
-    branches:
-      - 29-github-action-ci-checking-the-cmake-project-itself-is-still-building-as-it-should
-      - dev
-      - main
+    branches: [dev, main]
 
 jobs:
   build:
+    name: Full Build (core + gui)
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Qt6 and dependencies
+      - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y qt6-base-dev qt6-tools-dev cmake build-essential
+          sudo apt-get install -y \
+            cmake build-essential \
+            qt6-base-dev qt6-tools-dev qt6-declarative-dev qt6-base-dev-tools \
+            libxkbcommon-dev libsdl2-dev zlib1g-dev libglfw3-dev \
+            libvulkan-dev vulkan-tools vulkan-validationlayers libglm-dev
 
-      - name: Create build directory
-        run: mkdir -p build
+      - name: Cache CMake build
+        uses: actions/cache@v4
+        with:
+          path: build
+          key: ${{ runner.os }}-build-full-${{ hashFiles('**/CMakeLists.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-build-full-
 
       - name: Configure project with CMake
-        run: |
-          cd build
-          cmake ..
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 
-      - name: Build the project
+      - name: Build project
+        run: cmake --build build --parallel $(nproc)
+
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
         run: |
-          cd build
-          cmake --build .
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake build-essential \
+            zlib1g-dev libsdl2-dev libvulkan-dev vulkan-tools vulkan-validationlayers libglm-dev libglfw3-dev
+
+      - name: Cache CMake build
+        uses: actions/cache@v4
+        with:
+          path: core/build
+          key: ${{ runner.os }}-build-core-${{ hashFiles('core/**/CMakeLists.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-build-core-
+
+      - name: Configure core with CMake
+        run: cmake -S core -B core/build -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build core
+        run: cmake --build core/build --parallel $(nproc)
+
+      - name: Run tests
+        run: ctest --test-dir core/build --output-on-failure --parallel $(nproc)
+
+  clang-format:
+    name: clang-format
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install clang-format
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-format
+
+      - name: Check formatting
+        run: |
+          find core/src core/tests \( -name "*.cpp" -o -name "*.hpp" \) -print0 | \
+            xargs -0 clang-format --dry-run --Werror
+
+  clang-tidy:
+    name: clang-tidy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake build-essential \
+            zlib1g-dev libsdl2-dev clang-tidy libvulkan-dev vulkan-tools vulkan-validationlayers libglm-dev libglfw3-dev
+
+      - name: Configure core (generate compile_commands.json)
+        run: cmake -S core -B core/build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+
+      # clang-tidy needs generated headers (e.g. moc, configure-time files)
+      # to exist before it can analyze sources that include them.
+      - name: Build core (so generated headers exist)
+        run: cmake --build core/build --parallel $(nproc)
+
+      - name: Run clang-tidy
+        run: |
+          find core/src -name "*.cpp" -print0 | \
+            xargs -0 -P $(nproc) clang-tidy -p core/build --warnings-as-errors='*'

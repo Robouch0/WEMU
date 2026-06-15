@@ -7,21 +7,28 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstdint>
+#include <format>
+#include <iostream>
 #include <map>
-#include <stdfloat>
 #include <vector>
 
 #include "Registers.hpp"
 #include "binary/Binary.hpp"
+#include "cpu/memory/Memory.hpp"
 #include "cpu/types/EncodedInstruction.hpp"
 #include "cpu/types/Instruction.hpp"
+#include "gfx/Renderer.hpp"
+#include "utils/BeDecoder.hpp"
+#include "utils/Logger.hpp"
 
 namespace Core {
+    static constexpr std::uint32_t INSTR_SIZE = sizeof(std::uint32_t);
+
     class InterpreterException final : public Core::Exception {
         public:
-            explicit InterpreterException(const std::string &errorMessage) : Core::Exception(
-                "InterpreterException", errorMessage) {}
+            explicit InterpreterException(const std::string &errorMessage) : Core::Exception("InterpreterException", errorMessage) {}
 
             ~InterpreterException() override = default;
     };
@@ -38,32 +45,118 @@ namespace Core {
 
             void executeInstruction(const EncodedInstruction &instr);
 
-        private:
+            template<typename T>
+            T readArgs(size_t index)
+            {
+                return m_gpr[3 + index];
+            }
+
+            void writeReturnValue(const std::uint32_t val) { m_gpr[3] = val; }
+
+            void debugDumpGPR()
+            {
+                if constexpr (Utils::Log::kLevel <= Utils::Log::Level::Trace) {
+                    std::cout << "==== GPR Dump ====" << std::endl;
+                    for (int i = 0; i < 32; ++i)
+                        std::cout << std::format("r{:02d} : 0x{:08X}  ({})", i, m_gpr[i], m_gprSigned[i]) << std::endl;
+                    std::cout << "==================" << std::endl;
+
+                    std::cout << "==== CR Dump  ====" << std::endl;
+                    for (int i = 0; i < 8; ++i) {
+                        const std::uint32_t field = (m_cr.raw >> ((7 - i) * 4)) & 0xF;
+                        std::cout << std::format("cr{} : 0x{:X}  [{}{}{}{}]", i, field, (field & ConditionRegisterFlag::Negative) ? "LT " : "   ",
+                                                 (field & ConditionRegisterFlag::Positive) ? "GT " : "   ",
+                                                 (field & ConditionRegisterFlag::Zero) ? "EQ " : "   ",
+                                                 (field & ConditionRegisterFlag::SummaryOverflow) ? "SO" : "  ")
+                                  << std::endl;
+                    }
+                    std::cout << "==== CTR Dump  ====" << std::endl;
+                    std::cout << std::format("ctr {:X}", m_ctr) << std::endl;
+                    std::cout << "==================" << std::endl;
+
+                    std::cout << "268437924 MEM -> " << std::hex << this->m_memory.read<uint32_t>(268437924) << std::dec << std::endl;
+                }
+            }
+
+            void reset()
+            {
+                m_pc = 0;
+                m_nextPc = 0;
+                m_cr = {};
+                m_lr = 0;
+                m_ctr = 0;
+                std::fill(std::begin(m_gpr), std::end(m_gpr), 0u);
+                m_xer = {};
+                std::fill(std::begin(m_fpr), std::end(m_fpr), 0.0f);
+                m_fpscr = {};
+            }
+
+        public:
+            [[nodiscard]] bool step(Utils::BeDecoder &decoder, const std::uint32_t ppc_pc);
+
             void initInstructionMap();
 
-            void updateCR(Core::ConditionRegister::Register &cr, const std::int32_t &result,
-                          const EncodedInstruction &instr) const;
+            void updateCR0(const std::int32_t &result, const EncodedInstruction &instr, const bool forceUpdate = false);
 
-            void updateOverflow(const std::int32_t &a, const std::int32_t &b, const std::int32_t &result,
-                                const EncodedInstruction &instr, const std::uint32_t &carry = 0);
+            void updateCR1(const EncodedInstruction &instr) noexcept;
 
-            #define INSTR(name, ...) friend void Core::Instruction::name(Core::Interpreter &, const EncodedInstruction &);
-            #include "cpu/tables/cpu_instructions.anh"
-            #undef INSTR
+            /**
+             * @brief Updates XER overflow bits based on a precomputed overflow condition.
+             *        Use this overload for instructions with custom overflow logic (e.g. DIVW, DIVWU).
+             *
+             * @param overflow Precomputed overflow condition
+             * @param instr    Encoded instruction (used to check OE bit)
+             */
+            void updateOverflow(bool overflow, const EncodedInstruction &instr);
+
+            /**
+             * @brief Updates XER overflow bits for signed addition-based instructions.
+             *        Overflow is detected when two operands of the same sign produce a result of opposite sign.
+             *        Use this overload for ADD, ADDC, ADDE, ADDZE, ADDME and their variants.
+             *
+             * @param a      First operand (signed)
+             * @param b      Second operand (signed)
+             * @param result Result of the addition (signed)
+             * @param instr  Encoded instruction (used to check OE bit)
+             */
+            void updateOverflow(const std::int32_t &a, const std::int32_t &b, const std::int32_t &result, const EncodedInstruction &instr);
+
+            void stop() { m_running = false; }
+
+#define INSTR(name, ...) friend void Core::Instruction::name(Core::Interpreter &, const EncodedInstruction &);
+#include "cpu/tables/cpu_instructions.anh"
+#undef INSTR
+
+            using HookFn = std::function<void(Interpreter &)>;
+
+            std::atomic<bool> m_running{true};
+            std::atomic<std::uint32_t> m_controllerMask{0};
+            bool m_hle_redirected{false};
+
+            Renderer *m_renderer = nullptr; // Window — set after construction
+            std::unordered_map<std::uint32_t, HookFn> m_hooks; // PPC addr → intercept fn
+            std::uint32_t m_hooks_min{0xFFFFFFFFu}; // Opt C: hook address range
+            std::uint32_t m_hooks_max{0u};
 
             Core::Binary m_binary;
+            Core::Memory m_memory;
+
+            std::uint32_t m_pc{};
+            std::uint32_t m_nextPc{};
 
             Core::ConditionRegister m_cr{};
             std::uint32_t m_lr{}; // Link Register
             std::uint32_t m_ctr{}; // Counter Register
             union {
-                std::uint32_t m_gpr[32];
-                std::int32_t m_gprSigned[32];
+                    std::uint32_t m_gpr[32]{};
+                    std::int32_t m_gprSigned[32];
             }; // General Purpose Registers (unsigned/signed)
             Core::FixedPointExceptionRegister m_xer{};
-            std::float32_t m_fpr[32]{}; // Fixed-Point Registers
+            double m_fpr[32]{}; // Fixed-Point Registers
             Core::FloatingPointStatusAndControlRegister m_fpscr{};
 
-            std::map<std::uint32_t, std::vector<InstructionInfo> > m_instructionMap{};
+            std::map<std::uint32_t, std::vector<InstructionInfo>> m_instructionMap{};
     };
+
+
 } // namespace Core

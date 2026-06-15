@@ -1,19 +1,109 @@
-#include <QApplication>
-#include <QMainWindow>
-#include <QPushButton>
+#include <QGuiApplication>
+#include <QQmlApplicationEngine>
+#include <QQmlContext>
+#include <QDebug>
+#include <QDir>
+#include <SDL2/SDL.h>
+#include "input/IInputDevice.hpp"
+#include "input/InputManager.hpp"
+#include "input/InputProfileManager.hpp"
+#include "input/KeyboardInput.hpp"
+#include "library/TitleScanner.hpp"
+#include "emulator/EmulatorLauncher.hpp"
+#include "gfx/VulkanOutputWindow.hpp"
 
-#include "cpuInterface.hpp"
+int main(int argc, char *argv[])
+{
+    SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
+    if (SDL_Init(SDL_INIT_GAMECONTROLLER) != 0) {
+        qFatal("SDL_Init failed: %s", SDL_GetError());
+    }
 
-int main(int argc, char *argv[]) {
-    QApplication app(argc, argv);
+    QGuiApplication app(argc, argv);
+    QGuiApplication::setApplicationName("wemu");
 
-    QMainWindow window;
-    window.setWindowTitle("Qt GUI Test");
+    app.setQuitOnLastWindowClosed(false);
+    QQmlApplicationEngine engine;
 
-    auto button = new QPushButton("Hello, Qt (cutie :)!", &window);
-    window.setCentralWidget(button);
+    auto inputManager = new InputManager();
+    auto keyboard = new KeyboardInput();
+    auto titleScanner = new TitleScanner(&app);
+    inputManager->addDevice(keyboard);
 
-    window.resize(1920, 1080);
-    window.show();
-    return app.exec();
+    auto inputProfileManager = new InputProfileManager();
+
+    engine.rootContext()->setContextProperty("InputManager", inputManager);
+    engine.rootContext()->setContextProperty("InputProfileManager", inputProfileManager);
+    engine.rootContext()->setContextProperty("TitleScanner", titleScanner);
+
+    auto emulatorLauncher = new EmulatorLauncher(&app);
+    emulatorLauncher->connectInput(inputManager, inputProfileManager);
+    engine.rootContext()->setContextProperty("EmulatorLauncher", emulatorLauncher);
+
+    const QString gamesPath = QDir::cleanPath(QCoreApplication::applicationDirPath() + "/../../games");
+    titleScanner->scanDirectory(gamesPath);
+
+    QObject::connect(&engine, &QQmlApplicationEngine::objectCreationFailed,
+                     &app, []() { QCoreApplication::exit(-1); }, Qt::QueuedConnection);
+
+    engine.load(QUrl("qrc:/assets/qml/Main.qml"));
+
+    auto *rootWindow = qobject_cast<QWindow *>(engine.rootObjects().first());
+    auto *vulkanWindow = new VulkanOutputWindow();
+    vulkanWindow->setTitle("WEMU");
+
+    emulatorLauncher->setVulkanOutput(vulkanWindow);
+
+    QObject::connect(emulatorLauncher, &EmulatorLauncher::stateChanged,
+                     rootWindow, [rootWindow, vulkanWindow](bool running) {
+        if (running) {
+            vulkanWindow->resize(rootWindow->size());
+            vulkanWindow->setPosition(rootWindow->position());
+        } else {
+            vulkanWindow->hide();
+        }
+    });
+
+    QObject::connect(emulatorLauncher, &EmulatorLauncher::rendererReady,
+                     rootWindow, [vulkanWindow]() {
+        vulkanWindow->show();
+        vulkanWindow->raise();
+        vulkanWindow->requestActivate();
+    });
+
+    QObject::connect(vulkanWindow, &VulkanOutputWindow::escapePressed,
+                     emulatorLauncher, &EmulatorLauncher::stop);
+
+    QObject::connect(keyboard, &KeyboardInput::keyStateChanged,
+                     emulatorLauncher, [emulatorLauncher](const QString &key, bool pressed) {
+        if (pressed && key == "Escape")
+            emulatorLauncher->stop();
+    });
+
+
+    struct CloseWatcher : QObject {
+        using QObject::QObject;
+        bool eventFilter(QObject *, QEvent *e) override {
+            if (e->type() == QEvent::Close)
+                QCoreApplication::exit(0);
+            return false;
+        }
+    };
+    rootWindow->installEventFilter(new CloseWatcher(&app));
+
+    QObject::connect(&app, &QGuiApplication::aboutToQuit,
+                     inputManager, &InputManager::stopPolling);
+
+    QObject::connect(&app, &QGuiApplication::aboutToQuit,
+                     emulatorLauncher, &EmulatorLauncher::stop);
+
+    qDebug() << "Emulator GUI started with persistent InputManager";
+
+    const int ret = app.exec();
+
+    delete emulatorLauncher;   // destroys the Renderer
+    delete vulkanWindow;       // destroys the Vulkan surface + instance
+    delete inputManager;       // closes SDL game controllers
+    SDL_Quit();
+    return ret;
 }

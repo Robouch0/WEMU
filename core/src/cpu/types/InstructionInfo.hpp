@@ -7,14 +7,21 @@
 
 #pragma once
 
-#include "EncodedInstruction.hpp"
+
+#include <cstdint>
+#include <functional>
+#include <vector>
+
+#include "cpu/types/EncodedInstruction.hpp"
+#include "cpu/types/Field.hpp"
+#include "cpu/types/InstructionID.hpp"
 
 namespace Core {
     class Interpreter;
 }
 
 struct InstructionInfo {
-    InstructionID id;
-    std::vector<std::pair<Field, uint32_t> > matchFields;
-    std::function<void(Core::Interpreter &, const EncodedInstruction &)> function;
+        InstructionID id;
+        std::vector<std::pair<Field, uint32_t>> matchFields;
+        std::function<void(Core::Interpreter &, const EncodedInstruction &)> function;
 };

@@ -1,0 +1,13 @@
+---
+Checks: >-
+  clang-diagnostic-*,
+  clang-analyzer-*,
+  bugprone-*,
+  performance-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-macro-parentheses,
+  -performance-avoid-endl
+
+WarningsAsErrors: '*'
+HeaderFilterRegex: '^(?!.*stb_image).*core/src/.*'
+FormatStyle: file

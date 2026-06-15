@@ -5,31 +5,66 @@
 ** Interpreter
 */
 
+#include "Interpreter.hpp"
+
 #include <algorithm>
 #include <bitset>
 #include <utility>
 
-#include "Interpreter.hpp"
-#include "utils/BeDecoder.hpp"
+#include "utils/Logger.hpp"
 
-Core::Interpreter::Interpreter(Core::Binary binary) : m_binary(std::move(binary)) { initInstructionMap(); }
+Core::Interpreter::Interpreter(Core::Binary binary) : m_binary(std::move(binary))
+{
+    m_memory = m_binary.m_memory;
+    initInstructionMap();
+}
+
+[[nodiscard]] bool Core::Interpreter::step(Utils::BeDecoder &decoder, const std::uint32_t ppc_pc)
+{
+    decoder.seek(m_pc);
+    const EncodedInstruction encodedInstruction(decoder.extractSwap<std::uint32_t>());
+    Utils::Log::trace("[PC=0x{:08X}]\t{}", ppc_pc, std::bitset<32>(encodedInstruction.raw).to_string());
+    m_nextPc = m_pc + Core::INSTR_SIZE;
+    try {
+        executeInstruction(encodedInstruction);
+        debugDumpGPR();
+    } catch (Core::Exception &e) {
+        Utils::Log::error("[PC=0x{:08X}] {}", ppc_pc, e.what());
+        if (e.isFatal())
+            return false;
+    }
+    return true;
+}
 
 void Core::Interpreter::run()
 {
-    const Core::Section &textSection = m_binary.findSection(".text");
-    auto instructionDecoder = Utils::BeDecoder(textSection.data);
-
-    std::cout << "Content of section " << textSection.name << std::endl;
-    for (Elf32_Off offset = 0; offset < textSection.header.sh_size; offset += 4) {
-        const EncodedInstruction encodedInstruction(instructionDecoder.extractSwap<uint32_t>());
-        std::cout << " " << std::hex << (offset + textSection.header.sh_addr) << std::dec << "\t"
-                << std::bitset<sizeof(uint32_t) * 8>(encodedInstruction.raw) << "\t";
-        try {
-            executeInstruction(encodedInstruction);
-        } catch (Core::InterpreterException &e) {
-            std::cout << e.what() << std::endl;
-        }
+    auto instructionDecoder = Utils::BeDecoder(m_binary.m_memory.getMemory());
+    std::uint32_t ppc_pc = m_binary.header.e_entry;
+    m_hooks_min = 0xFFFFFFFFu;
+    m_hooks_max = 0u;
+    for (const auto &[addr, _]: m_hooks) {
+        if (addr < m_hooks_min)
+            m_hooks_min = addr;
+        if (addr > m_hooks_max)
+            m_hooks_max = addr;
     }
+
+    m_pc = ppc_pc - Core::Memory::MemoryMap::ApplicationCode;
+    Utils::Log::info("[EMU] Starting at entrypoint 0x{:08X}", ppc_pc);
+    while (m_running) {
+        ppc_pc = m_pc + Core::Memory::MemoryMap::ApplicationCode;
+        if (ppc_pc >= m_hooks_min && ppc_pc <= m_hooks_max) {
+            if (auto it = m_hooks.find(ppc_pc); it != m_hooks.end()) {
+                it->second(*this);
+                m_pc = m_lr;
+                continue;
+            }
+        }
+        if (!step(instructionDecoder, ppc_pc))
+            break;
+        m_pc = m_nextPc;
+    }
+    Utils::Log::info("[EMU] Exited. PC=0x{:08X}", ppc_pc);
 }
 
 InstructionID Core::Interpreter::findInstructionID(const EncodedInstruction &instr)
@@ -40,10 +75,16 @@ InstructionID Core::Interpreter::findInstructionID(const EncodedInstruction &ins
         const bool found = std::ranges::all_of(fields.begin(), fields.end(), [&](const auto &p) {
             const auto &[field, value] = p;
             switch (field) {
+                case Field::F_AA:
+                    return instr.aa == value;
+                case Field::F_LK:
+                    return instr.lk == value;
                 case Field::F_XO10:
                     return instr.xo10 == value;
                 case Field::F_XO9:
                     return instr.xo9 == value;
+                case Field::F_XO5:
+                    return instr.xo5 == value;
                 case Field::F_OPCD:
                     return true;
                 default:
@@ -54,15 +95,14 @@ InstructionID Core::Interpreter::findInstructionID(const EncodedInstruction &ins
         if (found)
             return id;
     }
-    throw Core::InterpreterException("No instruction found with this fields. (opcode == " + std::to_string(instr.opcd) +
-                                     ")");
+    throw Core::InterpreterException("No instruction found with this fields. (opcode == " + std::to_string(instr.opcd) + ")");
 }
 
 void Core::Interpreter::executeInstruction(const EncodedInstruction &instr)
 {
     InstructionID id = findInstructionID(instr);
 
-    std::cout << instructionIDToString(id) << std::endl;
+    Utils::Log::trace("{}", instructionIDToString(id));
     INSTRUCTIONARRAY[id].function(*this, instr);
 }
 
@@ -78,30 +118,56 @@ void Core::Interpreter::initInstructionMap()
     }
 }
 
-void Core::Interpreter::updateCR(Core::ConditionRegister::Register &cr, const std::int32_t &result,
-                                 const EncodedInstruction &instr) const
+void Core::Interpreter::updateCR0(const std::int32_t &result, const EncodedInstruction &instr, const bool forceUpdate)
 {
-    if (instr.rc) {
-        cr.lt = result < 0;
-        cr.gt = result > 0;
-        cr.eq = result == 0;
-        cr.so = m_xer.so;
-    }
+    if (!instr.rc && !forceUpdate)
+        return;
+    std::uint32_t flags = 0;
+
+    if (result == 0)
+        flags |= ConditionRegisterFlag::Zero;
+    else if (result < 0)
+        flags |= ConditionRegisterFlag::Negative;
+    else
+        flags |= ConditionRegisterFlag::Positive;
+    if (m_xer.so)
+        flags |= ConditionRegisterFlag::SummaryOverflow;
+    m_cr.cr0 = flags;
 }
 
-void Core::Interpreter::updateOverflow(const std::int32_t &a, const std::int32_t &b, const std::int32_t &result,
-                                       const EncodedInstruction &instr, const std::uint32_t &carry)
+void Core::Interpreter::updateCR1(const EncodedInstruction &instr) noexcept
+{
+    if (!instr.rc)
+        return;
+    std::uint32_t flags = 0;
+
+    if (m_fpscr.fx)
+        flags |= ConditionRegisterFlag::Negative;
+    if (m_fpscr.fex)
+        flags |= ConditionRegisterFlag::Positive;
+    if (m_fpscr.vx)
+        flags |= ConditionRegisterFlag::Zero;
+    if (m_fpscr.ox)
+        flags |= ConditionRegisterFlag::SummaryOverflow;
+    m_cr.cr1 = flags;
+}
+
+void Core::Interpreter::updateOverflow(const bool overflow, const EncodedInstruction &instr)
 {
     if (!instr.oe)
         return;
 
+    m_xer.ov = overflow;
+    if (m_xer.ov)
+        m_xer.so = true;
+}
+
+void Core::Interpreter::updateOverflow(const std::int32_t &a, const std::int32_t &b, const std::int32_t &result, const EncodedInstruction &instr)
+{
     const bool aSign = a < 0;
     const bool bSign = b < 0;
     const bool resultSign = result < 0;
+    const bool overflow = (aSign == bSign) && (aSign != resultSign);
 
-    m_xer.ov = (aSign == bSign) && (aSign != resultSign) ||
-               ((carry == 1) && (aSign == resultSign) && (bSign == resultSign));;
-
-    if (m_xer.ov)
-        m_xer.so = true;
+    this->updateOverflow(overflow, instr);
 }

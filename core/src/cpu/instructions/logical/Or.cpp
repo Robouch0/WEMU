@@ -1,0 +1,52 @@
+//
+// Created by nicolas on 3/22/26.
+//
+
+/*
+** EPITECH PROJECT, 2025
+** core
+** File description:
+** Or
+*/
+
+#include "cpu/interpreter/Interpreter.hpp"
+#include "cpu/types/EncodedInstruction.hpp"
+
+namespace Core::Instruction {
+
+    void OR(Core::Interpreter &cpu, const EncodedInstruction &instr)
+    {
+        cpu.m_gpr[instr.ra] = cpu.m_gpr[instr.rs] | cpu.m_gpr[instr.rb];
+        cpu.updateCR0(cpu.m_gprSigned[instr.ra], instr);
+    }
+
+    void ORC(Core::Interpreter &cpu, const EncodedInstruction &instr)
+    {
+        cpu.m_gpr[instr.ra] = cpu.m_gpr[instr.rs] | (~cpu.m_gpr[instr.rb]);
+        cpu.updateCR0(cpu.m_gprSigned[instr.ra], instr);
+    }
+
+    void NOR(Core::Interpreter &cpu, const EncodedInstruction &instr)
+    {
+        cpu.m_gpr[instr.ra] = ~(cpu.m_gpr[instr.rs] | cpu.m_gpr[instr.rb]);
+        cpu.updateCR0(cpu.m_gprSigned[instr.ra], instr);
+    }
+
+    /**
+     * @brief The contents of register RS are ORed with 48 0s || UI and the result is placed into register RA.
+     * @param cpu
+     * @param instr
+     */
+    void ORI(Core::Interpreter &cpu, const EncodedInstruction &instr) { cpu.m_gpr[instr.ra] = cpu.m_gpr[instr.rs] | instr.ui; }
+
+    /**
+     * @brief The contents of register RS are ORed with 32 0s || UI || 16 0s and the result is placed into register RA.
+     * @param cpu
+     * @param instr
+     */
+    void ORIS(Core::Interpreter &cpu, const EncodedInstruction &instr)
+    {
+        const std::uint32_t rightComparison = instr.ui << 16;
+        cpu.m_gpr[instr.ra] = cpu.m_gpr[instr.rs] | rightComparison;
+    }
+} // namespace Core::Instruction

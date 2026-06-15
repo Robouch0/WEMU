@@ -31,5 +31,14 @@
 *.out
 *.app
 .idea
+
+# Cmake
 cmake-build-debug
 build
+compile_commands.json
+compile_commands.events.json
+.cache
+
+# Project specific
+WEMU
+vulkan/src/shaders/*.spv

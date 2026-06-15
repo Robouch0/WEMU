@@ -7,8 +7,7 @@
 
 #include "BeDecoder.hpp"
 
-Utils::BeDecoder::BeDecoder(std::vector<char> buffer) : m_buffer(std::move(buffer)),
-                                                        m_view(m_buffer.data(), m_buffer.size()), m_offset(0) {}
+Utils::BeDecoder::BeDecoder(std::vector<char> buffer) : m_buffer(std::move(buffer)), m_view(m_buffer.data(), m_buffer.size()), m_offset(0) {}
 
 Utils::BeDecoder::BeDecoder(const std::string &filepath)
 {
