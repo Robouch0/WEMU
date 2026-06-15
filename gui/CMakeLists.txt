@@ -3,16 +3,16 @@ cmake_minimum_required(VERSION 3.16)
 project(gui VERSION 0.1 LANGUAGES CXX)
 
 
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Quick QuickControls2)
+find_package(Vulkan REQUIRED)
 
 qt_standard_project_setup(REQUIRES 6.6.2)
-qt_add_resources(RESOURCES resources.qrc)
 find_package(SDL2 REQUIRED)
 
 qt_add_executable(appgui
@@ -21,9 +21,11 @@ qt_add_executable(appgui
     src/input/SDLGamepadInput.cpp
     src/input/InputManager.cpp
     src/input/InputProfileManager.cpp
-    ${RESOURCES}
-
+    src/library/TitleScanner.cpp
+    src/emulator/EmulatorLauncher.cpp
+    src/gfx/VulkanOutputWindow.cpp
 )
+
 
 target_sources(appgui PRIVATE
         src/input/IInputDevice.hpp
@@ -32,6 +34,7 @@ target_sources(appgui PRIVATE
         src/input/SDLGamepadInput.hpp
         src/input/InputProfile.hpp
         src/input/InputProfileManager.hpp
+        src/library/TitleScanner.hpp
 )
 
 qt_add_qml_module(appgui
@@ -48,9 +51,10 @@ qt_add_qml_module(appgui
         qml/components/ControllerStick.qml
         qml/components/GamepadPreview.qml
         qml/components/BindingRow.qml
-        #qml/assets/FrenchGuy.mp4
-        RESOURCES resources.qrc
 )
+
+qt_add_resources(APPGUI_QRC resources.qrc)
+target_sources(appgui PRIVATE ${APPGUI_QRC})
 
 set_target_properties(appgui PROPERTIES
     WIN32_EXECUTABLE TRUE
@@ -60,7 +64,11 @@ target_include_directories(appgui
         PRIVATE
         ${CMAKE_SOURCE_DIR}/core/src/
         ${CMAKE_SOURCE_DIR}/gui/src/input
+        ${CMAKE_SOURCE_DIR}/gui/src/library
+        ${CMAKE_SOURCE_DIR}/gui/src/emulator
+        ${CMAKE_SOURCE_DIR}/gui/src/gfx
         ${Qt6Core_INCLUDE_DIRS}
+        ${Vulkan_INCLUDE_DIRS}
 )
 
 target_link_libraries(appgui
@@ -69,7 +77,9 @@ target_link_libraries(appgui
         Qt6::Quick
         Qt6::Gui
         Qt6::QuickControls2
+        Vulkan::Vulkan
         SDL2::SDL2
+        core
 )
 
 include(GNUInstallDirs)

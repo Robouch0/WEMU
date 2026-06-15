@@ -294,13 +294,14 @@ Item {
             if (button === "Y")
                 yPressed = pressed
 
-            if (button === "DPAD_DOWN")
+            // SDLGamepadInput emits the dpad as "Up"/"Down"/"Left"/"Right"
+            if (button === "Down")
                 dpadDownPressed = pressed
-            if (button === "DPAD_UP")
+            if (button === "Up")
                 dpadUpPressed = pressed
-            if (button === "DPAD_LEFT")
+            if (button === "Left")
                 dpadLeftPressed = pressed
-            if (button === "DPAD_RIGHT")
+            if (button === "Right")
                 dpadRightPressed = pressed
 
             if (button === "LEFTSTICK_BUTTON")

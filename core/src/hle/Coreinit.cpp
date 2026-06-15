@@ -7,7 +7,7 @@
 
 #include "Coreinit.hpp"
 
-#include <GLFW/glfw3.h>
+#include <SDL2/SDL.h>
 #include <cstdio>
 #include <cstring>
 
@@ -296,9 +296,9 @@ static void hle_OSScreenFlipBuffersEx(Core::Interpreter &cpu)
     static std::uint32_t frames = 0;
 
     // multiplied by 1000 to get in milliseconds
-    static std::uint64_t last_ms = glfwGetTimerValue() * 1000 / glfwGetTimerFrequency();
+    static std::uint64_t last_ms = SDL_GetPerformanceCounter() * 1000 / SDL_GetPerformanceFrequency();
     ++frames;
-    std::uint64_t now = glfwGetTimerValue() * 1000 / glfwGetTimerFrequency();
+    std::uint64_t now = SDL_GetPerformanceCounter() * 1000 / SDL_GetPerformanceFrequency();
     if (now - last_ms >= 1000) {
         fprintf(stderr, "[FPS] %u\n", frames);
         frames = 0;
@@ -529,7 +529,7 @@ static void hle_VPADRead(Core::Interpreter &cpu)
     }
 
     cpu.m_renderer->poll_events();
-    std::uint32_t hold = cpu.m_renderer->get_buttons();
+    std::uint32_t hold = cpu.m_renderer->get_buttons() | cpu.m_controllerMask;
 
     static std::uint32_t s_prev_hold = 0;
     std::uint32_t trigger = hold & ~s_prev_hold;

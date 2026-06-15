@@ -8,7 +8,6 @@
 
 void Renderer::createSurface()
 {
-    if (glfwCreateWindowSurface(m_instance, m_window, nullptr, &m_surface) != VK_SUCCESS) {
-        throw std::runtime_error("failed to create window surface");
-    }
+    if (SDL_Vulkan_CreateSurface(m_window, m_instance, &m_surface) == SDL_FALSE)
+        throw std::runtime_error(std::string("SDL_Vulkan_CreateSurface failed: ") + SDL_GetError());
 }

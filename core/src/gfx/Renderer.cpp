@@ -9,6 +9,10 @@
 #include <stdexcept>
 #include <thread>
 
+// Wii U targets 60 fps. Cap flip_tv so the interpreter doesn't run faster than real hardware when the swapchain has spare images to return
+// immediately.
+static constexpr auto kTargetFrameTime = std::chrono::duration<double>(1.0 / 60.0);
+
 
 // VPAD button bitmasks (same as wut header vpad/input.h)
 static constexpr std::uint32_t BTN_UP = 0x0200;
@@ -36,6 +40,12 @@ void pipelineBarrier(const VkImage &image, const VkImageLayout &oldLayout, const
     b.dstAccessMask = dstAccess;
     vkCmdPipelineBarrier(cmd, srcStage, dstStage, 0, 0, nullptr, 0, nullptr, 1, &b);
 };
+
+Renderer::Renderer(VkInstance instance, VkSurfaceKHR surface, uint32_t w, uint32_t h) :
+    m_instance(instance), m_surface(surface), m_surfaceWidth(w), m_surfaceHeight(h), m_embedded(true)
+{
+    initVulkanPipeline();
+}
 
 void Renderer::flip_tv(const std::uint8_t *rgbx, std::uint32_t w, std::uint32_t h)
 {
@@ -156,36 +166,64 @@ void Renderer::flip_tv(const std::uint8_t *rgbx, std::uint32_t w, std::uint32_t 
     }
 
     m_currentFrame = (m_currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
+
+    // Software frame cap / sleep the remaining time in this 1/60 s budget so
+    // the game runs at Wii U native speed even when spare swapchain images
+    // would otherwise let vkAcquireNextImageKHR return without blocking.
+    {
+        using Clock = std::chrono::steady_clock;
+        static thread_local Clock::time_point s_lastFlip = Clock::now();
+        auto elapsed = Clock::now() - s_lastFlip;
+        if (elapsed < kTargetFrameTime)
+            std::this_thread::sleep_for(kTargetFrameTime - elapsed);
+        s_lastFlip = Clock::now();
+    }
+
+    if (m_onFirstFrame) {
+        auto cb = std::move(m_onFirstFrame);
+        cb();
+    }
 }
 
 bool Renderer::poll_events()
 {
-    glfwPollEvents();
-    if (glfwWindowShouldClose(m_window)) {
-        m_open = false;
-        return false;
+    if (m_embedded)
+        return true;
+    SDL_Event event;
+    while (SDL_PollEvent(&event)) {
+        if (event.type == SDL_QUIT) {
+            m_open = false;
+            return false;
+        }
+        if (event.type == SDL_KEYDOWN && event.key.keysym.scancode == SDL_SCANCODE_ESCAPE) {
+            m_open = false;
+            return false;
+        }
     }
     return true;
 }
 
 std::uint32_t Renderer::get_buttons() const
 {
+    if (m_embedded)
+        return 0;
+    const Uint8 *keys = SDL_GetKeyboardState(nullptr);
     std::uint32_t btns = 0;
-    if (glfwGetKey(m_window, GLFW_KEY_UP) == GLFW_PRESS || glfwGetKey(m_window, GLFW_KEY_W) == GLFW_PRESS)
+    if (keys[SDL_SCANCODE_UP] || keys[SDL_SCANCODE_W])
         btns |= BTN_UP;
-    if (glfwGetKey(m_window, GLFW_KEY_DOWN) == GLFW_PRESS || glfwGetKey(m_window, GLFW_KEY_S) == GLFW_PRESS)
+    if (keys[SDL_SCANCODE_DOWN] || keys[SDL_SCANCODE_S])
         btns |= BTN_DOWN;
-    if (glfwGetKey(m_window, GLFW_KEY_LEFT) == GLFW_PRESS || glfwGetKey(m_window, GLFW_KEY_A) == GLFW_PRESS)
+    if (keys[SDL_SCANCODE_LEFT] || keys[SDL_SCANCODE_A])
         btns |= BTN_LEFT;
-    if (glfwGetKey(m_window, GLFW_KEY_RIGHT) == GLFW_PRESS || glfwGetKey(m_window, GLFW_KEY_D) == GLFW_PRESS)
+    if (keys[SDL_SCANCODE_RIGHT] || keys[SDL_SCANCODE_D])
         btns |= BTN_RIGHT;
-    if (glfwGetKey(m_window, GLFW_KEY_ENTER) == GLFW_PRESS)
+    if (keys[SDL_SCANCODE_RETURN])
         btns |= BTN_A;
-    if (glfwGetKey(m_window, GLFW_KEY_BACKSPACE) == GLFW_PRESS)
+    if (keys[SDL_SCANCODE_BACKSPACE])
         btns |= BTN_B;
-    if (glfwGetKey(m_window, GLFW_KEY_P) == GLFW_PRESS)
+    if (keys[SDL_SCANCODE_P])
         btns |= BTN_PLUS;
-    if (glfwGetKey(m_window, GLFW_KEY_M) == GLFW_PRESS)
+    if (keys[SDL_SCANCODE_M])
         btns |= BTN_MINUS;
     return btns;
 }

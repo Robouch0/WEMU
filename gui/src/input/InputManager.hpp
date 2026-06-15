@@ -19,6 +19,9 @@ class InputManager final : public QObject {
         Q_INVOKABLE [[nodiscard]] QStringList connectedDevices() const;
         Q_INVOKABLE [[nodiscard]] float getAxis(const QString &axisName) const;
 
+    public slots:
+        void stopPolling() { m_updateTimer.stop(); }
+
     signals:
         void inputUpdated();
         void axisChanged(QString axisName, float value, QString deviceName);

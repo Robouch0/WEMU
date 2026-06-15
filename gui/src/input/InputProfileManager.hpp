@@ -20,6 +20,7 @@ class InputProfileManager : public QObject {
         Q_INVOKABLE [[nodiscard]] QString getBinding(const QString &wiiuButton) const;
         Q_INVOKABLE [[nodiscard]] bool isKnownXboxButton(const QString &button) const;
         Q_INVOKABLE void selectProfile(int index);
+        Q_INVOKABLE void resetCurrentProfile();
 
     signals:
         void bindingsChanged();

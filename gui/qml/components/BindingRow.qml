@@ -11,8 +11,14 @@ Rectangle {
     signal rowClicked()
 
     height: 36
-    color: mouseArea.containsMouse ? "#ececf0" : "transparent"
+    color: root.isListening
+        ? "#fff5e0"
+        : (mouseArea.containsMouse ? "#ececf0" : "transparent")
     radius: 4
+    border.color: root.isListening ? "#f5a623" : "transparent"
+    border.width: root.isListening ? 1 : 0
+
+    Behavior on color { ColorAnimation { duration: 120 } }
 
     MouseArea {
         id: mouseArea

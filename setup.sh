@@ -20,11 +20,12 @@
 #   5. Prints the full elapsed time. Targets < 7 minutes on a 4-core VM.
 #
 # Usage:
-#   ./setup.sh                         # install deps + build everything
+#   ./setup.sh                         # install deps + build everything (Release)
 #   ./setup.sh --no-build              # install deps only
 #   ./setup.sh --test                  # build + run tests
 #   ./setup.sh --jobs 8                # override parallel jobs
-#   ./setup.sh --build-type Release    # default is Debug (matches README)
+#   ./setup.sh --debug                 # build in Debug mode instead of Release
+#   ./setup.sh --build-type RelWithDebInfo   # any CMake build type
 #   ./setup.sh --clean                 # wipe build dirs before configuring
 #   ./setup.sh -h | --help
 # ==============================================================================
@@ -32,7 +33,7 @@
 set -euo pipefail
 
 # ----- defaults ---------------------------------------------------------------
-BUILD_TYPE="Debug"
+BUILD_TYPE="Release"
 JOBS="$(nproc 2>/dev/null || echo 4)"
 DO_BUILD=1
 DO_TEST=0
@@ -46,6 +47,7 @@ while [[ $# -gt 0 ]]; do
     --clean)      DO_CLEAN=1; shift ;;
     --jobs)       JOBS="$2"; shift 2 ;;
     --build-type) BUILD_TYPE="$2"; shift 2 ;;
+    --debug)      BUILD_TYPE="Debug"; shift ;;
     -h|--help)
       sed -n '2,/^# ===/{ /^# ===/q; s/^# \{0,1\}//; p; }' "$0"
       exit 0 ;;
@@ -236,7 +238,7 @@ configure_and_build() {
 
 # ----- 1. core + gui (root CMakeLists pulls both) -----------------------------
 log "===== Stage 1/2 : core + gui ====="
-configure_and_build "." "cmake-build-debug" "WEMU (core + gui)"
+configure_and_build "." "build" "WEMU (core + gui)"
 
 # ----- 2. vulkan (standalone tree) --------------------------------------------
 if [[ -f vulkan/CMakeLists.txt ]]; then
@@ -249,10 +251,10 @@ fi
 # ----- tests ------------------------------------------------------------------
 if [[ "$DO_TEST" -eq 1 ]]; then
   log "===== Running unit tests ====="
-  if [[ -f cmake-build-debug/CTestTestfile.cmake ]]; then
-    ( cd cmake-build-debug && ctest --output-on-failure --parallel "$JOBS" )
+  if [[ -f build/CTestTestfile.cmake ]]; then
+    ( cd build && ctest --output-on-failure --parallel "$JOBS" )
   else
-    warn "No CTest configuration found in cmake-build-debug — skipping ctest."
+    warn "No CTest configuration found in build — skipping ctest."
     warn "If tests live in core/build, run: cd core/build && ctest"
   fi
 fi
@@ -261,9 +263,10 @@ fi
 log "Build complete."
 echo
 echo "Artifacts:"
-echo "  GUI binary:    $(pwd)/cmake-build-debug/gui/appgui"
+echo "  GUI binary:    $(pwd)/build/gui/appgui"
 [[ -d vulkan/build ]] && echo "  Vulkan binary: $(pwd)/vulkan/build/  (look for the executable)"
 echo
-echo "To run the GUI:    ./cmake-build-debug/gui/appgui"
+echo "To run the GUI:    ./build/gui/appgui"
 echo "To re-run tests:   ./setup.sh --test"
 echo "To rebuild clean:  ./setup.sh --clean"
+echo "To build debug:    ./setup.sh --debug"

@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <format>
 #include <iostream>
@@ -120,13 +121,16 @@ namespace Core {
              */
             void updateOverflow(const std::int32_t &a, const std::int32_t &b, const std::int32_t &result, const EncodedInstruction &instr);
 
+            void stop() { m_running = false; }
+
 #define INSTR(name, ...) friend void Core::Instruction::name(Core::Interpreter &, const EncodedInstruction &);
 #include "cpu/tables/cpu_instructions.anh"
 #undef INSTR
 
             using HookFn = std::function<void(Interpreter &)>;
 
-            bool m_running{true};
+            std::atomic<bool> m_running{true};
+            std::atomic<std::uint32_t> m_controllerMask{0};
             bool m_hle_redirected{false};
 
             Renderer *m_renderer = nullptr; // Window — set after construction

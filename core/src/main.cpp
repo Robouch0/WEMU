@@ -22,6 +22,7 @@
 #include "cpu/memory/Memory.hpp"
 #include "hle/Coreinit.hpp"
 #include "hle/Libc.hpp"
+#include "hle/StdlibHooks.hpp"
 #include "hle/Whb.hpp"
 #include "lib/coreinit/Coreinint.hpp"
 #include "utils/BeDecoder.hpp"
@@ -106,38 +107,7 @@ int main(const int ac, char const *const *av)
         Renderer renderer;
         interpreter.m_renderer = &renderer;
 
-        // 5. Register address hooks for compiled-in stdlib (bypasses broken WUT sbrk heap)
-        struct {
-                const char *name;
-                Core::Interpreter::HookFn fn;
-        } stdlib_hooks[] = {
-                {"memalign", [](Core::Interpreter &cpu) { cpu.m_gpr[3] = cpu.m_memory.heapAllocate(cpu.m_gpr[4], cpu.m_gpr[3] ? cpu.m_gpr[3] : 8); }},
-                {"malloc", [](Core::Interpreter &cpu) { cpu.m_gpr[3] = cpu.m_memory.heapAllocate(cpu.m_gpr[3], 8); }},
-                {"calloc",
-                 [](Core::Interpreter &cpu) {
-                     uint32_t n = cpu.m_gpr[3] * cpu.m_gpr[4];
-                     uint32_t a = cpu.m_memory.heapAllocate(n, 8);
-                     if (a) {
-                         uint8_t *p = cpu.m_memory.hostPtr(a);
-                         if (p)
-                             std::memset(p, 0, n);
-                     }
-                     cpu.m_gpr[3] = a;
-                 }},
-                {"realloc", [](Core::Interpreter &cpu) { cpu.m_gpr[3] = cpu.m_memory.heapAllocate(cpu.m_gpr[4], 8); }},
-                {"free", [](Core::Interpreter &) {}},
-                {"__wut_sbrk_r", [](Core::Interpreter &cpu) { cpu.m_gpr[3] = cpu.m_memory.heapAllocate(cpu.m_gpr[4], 4); }},
-                {"_sbrk_r", [](Core::Interpreter &cpu) { cpu.m_gpr[3] = cpu.m_memory.heapAllocate(cpu.m_gpr[4], 4); }},
-        };
-
-        for (auto &h: stdlib_hooks) {
-            for (const auto &sym: binary.symbols) {
-                if (sym.name == h.name && sym.raw.header.st_value >= 0x02000000u && sym.raw.header.st_value < 0x10000000u) {
-                    interpreter.m_hooks[sym.raw.header.st_value] = h.fn;
-                    fprintf(stderr, "[hook] %s @ 0x%08X\n", h.name, sym.raw.header.st_value);
-                }
-            }
-        }
+        Core::installStdlibHooks(interpreter, binary);
 
         // 6. Init CPU state
         interpreter.m_gpr[1] = 0xC0FFFFF0u; // r1 = stack top
