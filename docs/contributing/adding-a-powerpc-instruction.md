@@ -114,15 +114,10 @@ namespace Core::Instruction {
      */
     void SUBF(Core::Interpreter &cpu, const EncodedInstruction &instr)
     {
-        cpu.m_gpr[instr.rt] = cpu.m_gpr[instr.rb] - cpu.m_gpr[instr.ra];
+        cpu.m_gpr[instr.rt] = ~cpu.m_gpr[instr.ra] + cpu.m_gpr[instr.rb] + 1;
 
-        cpu.updateCR(cpu.m_cr.cr0, cpu.m_gprSigned[instr.rt], instr);
-        cpu.updateOverflow(
-            cpu.m_gprSigned[instr.ra],
-            cpu.m_gprSigned[instr.rb],
-            cpu.m_gprSigned[instr.rt],
-            instr
-        );
+        cpu.updateOverflow(-cpu.m_gprSigned[instr.ra], cpu.m_gprSigned[instr.rb], cpu.m_gprSigned[instr.rt], instr);
+        cpu.updateCR0(cpu.m_gprSigned[instr.rt], instr);
     }
 
 } // namespace Core::Instruction
