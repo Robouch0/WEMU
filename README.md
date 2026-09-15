@@ -160,10 +160,24 @@ Feature branches are developed off `dev`. Only `dev` can be merged into `main`.
 
 ## Legal Notice
 
-WEMU does not include or distribute any Nintendo copyrighted material. To use this emulator, you must own a physical Wii U console and legally dump your own games and system files.
+WEMU is an independent and unofficial open-source Wii U emulator. It is not affiliated with, authorized, sponsored, or endorsed by Nintendo.
+
+WEMU does not include or distribute Nintendo games, firmware, cryptographic keys, SDK files, copyrighted assets, or other proprietary Nintendo material.
+
+Users are responsible for obtaining any games, system files, keys, or other required data lawfully and for complying with the laws applicable in their jurisdiction.
+
+Nintendo, Wii U, and other Nintendo names and trademarks remain the property of their respective owners.
 
 ---
 
 ## License
 
-MIT License — Copyright (c) 2025 Hugo Duchemin. See [LICENSE](LICENSE) for details.
+WEMU's original source code is licensed under the [MIT License](LICENSE).
+
+The MIT License permits use, copying, modification, redistribution, sublicensing use of WEMU.
+
+The MIT License applies only to code and other material for which the WEMU contributors have the necessary rights. It does not grant any rights to Nintendo software, games, firmware, trademarks, cryptographic material, or other third-party intellectual property.
+
+WEMU also uses third-party open-source libraries that remain subject to their respective licenses. See [Third-Party Licenses](docs/legal/THIRD_PARTY_LICENSES.md) for details.
+
+Copyright © 2025-2026 WEMU contributors.

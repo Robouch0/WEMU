@@ -55,6 +55,12 @@ find core/src core/tests \( -name '*.cpp' -o -name '*.hpp' \) | xargs clang-form
 
 ## Legal
 
-By submitting a pull request you confirm that your contribution is your own work and that you agree to license it under the [MIT License](LICENSE).
+By submitting a pull request, you confirm that:
 
-WEMU does not include or distribute any Nintendo copyrighted material. Do not submit code that incorporates dumped firmware, ROMs, or proprietary headers.
+- you created the contribution yourself, or otherwise have the necessary rights to submit it;
+- the contribution may be distributed as part of WEMU under the [MIT License](LICENSE);
+- the contribution does not contain code or other material copied from Nintendo proprietary software, SDKs, firmware, games, documentation, or other sources that WEMU does not have permission to redistribute.
+
+Do not submit Nintendo firmware, game data, ROMs, cryptographic keys, proprietary SDK headers or source code, copyrighted Nintendo assets, or other proprietary Nintendo material.
+
+Third-party open-source code may only be introduced after its license has been checked for compatibility with WEMU. If a pull request introduces a new dependency, update [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) as part of the same pull request.
