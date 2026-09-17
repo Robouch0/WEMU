@@ -70,7 +70,7 @@ Usage:
 ```
 
 After a successful build:
-- GUI binary: `./cmake-build-debug/gui/appgui`
+- GUI binary: `./cmake-build-debug/gui/wemu`
 - Vulkan binary: `./vulkan/build/`
 
 ### Manual build

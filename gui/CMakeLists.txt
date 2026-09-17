@@ -15,7 +15,7 @@ find_package(Vulkan REQUIRED)
 qt_standard_project_setup(REQUIRES 6.6.2)
 find_package(SDL2 REQUIRED)
 
-qt_add_executable(appgui
+qt_add_executable(wemu
     src/main.cpp
     src/input/KeyboardInput.cpp
     src/input/SDLGamepadInput.cpp
@@ -27,7 +27,7 @@ qt_add_executable(appgui
 )
 
 
-target_sources(appgui PRIVATE
+target_sources(wemu PRIVATE
         src/input/IInputDevice.hpp
         src/input/KeyboardInput.hpp
         src/input/InputManager.hpp
@@ -37,7 +37,7 @@ target_sources(appgui PRIVATE
         src/library/TitleScanner.hpp
 )
 
-qt_add_qml_module(appgui
+qt_add_qml_module(wemu
     URI gui
     VERSION 1.0
     QML_FILES
@@ -53,14 +53,14 @@ qt_add_qml_module(appgui
         qml/components/BindingRow.qml
 )
 
-qt_add_resources(APPGUI_QRC resources.qrc)
-target_sources(appgui PRIVATE ${APPGUI_QRC})
+qt_add_resources(wemu_QRC resources.qrc)
+target_sources(wemu PRIVATE ${wemu_QRC})
 
-set_target_properties(appgui PROPERTIES
+set_target_properties(wemu PROPERTIES
     WIN32_EXECUTABLE TRUE
 )
 
-target_include_directories(appgui
+target_include_directories(wemu
         PRIVATE
         ${CMAKE_SOURCE_DIR}/core/src/
         ${CMAKE_SOURCE_DIR}/gui/src/input
@@ -71,7 +71,7 @@ target_include_directories(appgui
         ${Vulkan_INCLUDE_DIRS}
 )
 
-target_link_libraries(appgui
+target_link_libraries(wemu
     PRIVATE
         Qt6::Core
         Qt6::Quick
@@ -83,7 +83,7 @@ target_link_libraries(appgui
 )
 
 include(GNUInstallDirs)
-install(TARGETS appgui
+install(TARGETS wemu
     BUNDLE DESTINATION .
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
