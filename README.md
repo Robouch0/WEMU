@@ -27,7 +27,7 @@ WEMU is not yet playable. The following components are in active development:
 | Qt6/QML launcher UI | In progress |
 | USB/gamepad input (SDL2) | Done        |
 | RPX file format support (SHF_DEFLATED parsing) | Done        |
-| Wii U title library browser | In progress |
+| Wii U title library browser | Done |
 | Phone-as-GamePad web app | Planned     |
 
 ---
