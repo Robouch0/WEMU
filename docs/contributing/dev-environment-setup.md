@@ -95,7 +95,7 @@ make -j$(nproc)
 
 Produced binaries:
 - `cmake-build-debug/core/wemu` — the emulator CLI
-- `cmake-build-debug/gui/appgui` — the Qt launcher
+- `cmake-build-debug/gui/wemu` — the Qt launcher
 
 > GoogleTest is fetched automatically from GitHub during the first CMake run. An internet connection is required.
 

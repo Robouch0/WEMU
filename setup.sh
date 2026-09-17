@@ -126,7 +126,7 @@ declare -a APT_PKGS=(
   qt6-tools-dev-tools
   libqt6core5compat6-dev
 
-  # Qt6 QML runtime modules — required for ./appgui to start without
+  # Qt6 QML runtime modules — required for ./wemu to start without
   # 'module "QtQuick" is not installed' errors.
   qml6-module-qtquick
   qml6-module-qtquick-controls
@@ -263,10 +263,10 @@ fi
 log "Build complete."
 echo
 echo "Artifacts:"
-echo "  GUI binary:    $(pwd)/build/gui/appgui"
+echo "  GUI binary:    $(pwd)/build/gui/wemu"
 [[ -d vulkan/build ]] && echo "  Vulkan binary: $(pwd)/vulkan/build/  (look for the executable)"
 echo
-echo "To run the GUI:    ./build/gui/appgui"
+echo "To run the GUI:    ./build/gui/wemu"
 echo "To re-run tests:   ./setup.sh --test"
 echo "To rebuild clean:  ./setup.sh --clean"
 echo "To build debug:    ./setup.sh --debug"

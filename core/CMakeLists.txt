@@ -120,12 +120,12 @@ endif()
 # ------------------------------------------------------------
 # 3. BINAIRE PRINCIPAL
 # ------------------------------------------------------------
-add_executable(wemu src/main.cpp)
-target_link_libraries(wemu PRIVATE core)
+add_executable(WemuCore src/main.cpp)
+target_link_libraries(WemuCore PRIVATE core)
 
 if(ENABLE_COVERAGE)
-    target_compile_options(wemu PRIVATE --coverage -O0 -g)
-    target_link_options(wemu PRIVATE --coverage)
+    target_compile_options(WemuCore PRIVATE --coverage -O0 -g)
+    target_link_options(WemuCore PRIVATE --coverage)
 endif()
 
 # ------------------------------------------------------------

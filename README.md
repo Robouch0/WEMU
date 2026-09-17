@@ -27,21 +27,8 @@ WEMU is not yet playable. The following components are in active development:
 | Qt6/QML launcher UI | In progress |
 | USB/gamepad input (SDL2) | Done        |
 | RPX file format support (SHF_DEFLATED parsing) | Done        |
-| Wii U title library browser | In progress |
+| Wii U title library browser | Done |
 | Phone-as-GamePad web app | Planned     |
-
----
-
-## Beta Goals (July 2026)
-
-| Feature | Description |
-|---|---|
-| **Build & Launch** | Build and launch on a standard Linux system in under 7 minutes on a blank VM |
-| **Title Library** | Scan a directory of dumped Wii U titles and display name, publisher, version, and icon from `meta.xml` |
-| **RPX Loader** | Load a `main.rpx`, parse its structure, and detect its entry point |
-| **PowerPC Execution** | Execute a minimal RPX that produces a graphical output for at least 5 seconds |
-| **Controller Binding** | Map a USB controller (e.g. Xbox One) to Wii U GamePad buttons with visual feedback |
-| **Contributor Docs** | A new contributor can read the documentation and add a new PowerPC instruction that correctly updates registers |
 
 ---
 
@@ -70,7 +57,7 @@ Usage:
 ```
 
 After a successful build:
-- GUI binary: `./cmake-build-debug/gui/appgui`
+- GUI binary: `./cmake-build-debug/gui/wemu`
 - Vulkan binary: `./vulkan/build/`
 
 ### Manual build
