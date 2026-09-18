@@ -26,6 +26,17 @@ Full technical documentation is available in the [project wiki](https://github.c
 
 ---
 
+## Commit messages
+
+This project follows the [Conventional Commits](https://www.conventionalcommits.org/) specification.
+
+Examples:
+- `feat(core): add lwz instruction`
+- `fix(loader): handle compressed RPX sections`
+- `test(instructions): add coverage for stwu`
+
+---
+
 ## CI checks
 
 Every pull request runs three automated checks. All three must pass before merge.
