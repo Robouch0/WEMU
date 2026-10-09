@@ -11,16 +11,26 @@ project(WemuEmulator)
 set(CMAKE_CXX_STANDARD 23)
 
 find_package(ZLIB REQUIRED)
+find_package(Threads REQUIRED)
+find_program(WEMU_RUNTIME_GLSLANG glslangValidator)
+find_program(WEMU_RUNTIME_SPIRV_VAL spirv-val)
 find_package(Vulkan REQUIRED)
 if(NOT Vulkan_FOUND)
     message(FATAL_ERROR "Vulkan SDK not found. Install it or set VULKAN_SDK.")
 endif()
 find_package(SDL2 REQUIRED)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET libavcodec>=60 libavutil libswscale)
 
 # ------------------------------------------------------------
 # 1. OPTIONS
 # ------------------------------------------------------------
 option(ENABLE_COVERAGE "Enable coverage reporting" OFF)
+option(WEMU_BUILD_GUI "Build the desktop game library" OFF)
+option(WEMU_ENABLE_LLVM "Build experimental PPC native block compiler (LLVM 19)" OFF)
+if(WEMU_BUILD_GUI AND CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+    add_subdirectory(../gui gui)
+endif()
 
 # ------------------------------------------------------------
 # 2. CORE LIBRARY
@@ -101,6 +111,8 @@ target_include_directories(core PUBLIC
 )
 
 target_link_libraries(core PRIVATE
+        Threads::Threads
+        PkgConfig::FFMPEG
         ${ZLIB_LIBRARIES}
         Vulkan::Vulkan
         ${SDL2_LIBRARIES}
@@ -120,12 +132,16 @@ endif()
 # ------------------------------------------------------------
 # 3. BINAIRE PRINCIPAL
 # ------------------------------------------------------------
-add_executable(WemuCore src/main.cpp)
-target_link_libraries(WemuCore PRIVATE core)
+add_executable(wemu src/main.cpp)
+target_link_libraries(wemu PRIVATE core)
+
+if(WEMU_ENABLE_LLVM)
+    find_package(LLVM 19.1 REQUIRED CONFIG)
+endif()
 
 if(ENABLE_COVERAGE)
-    target_compile_options(WemuCore PRIVATE --coverage -O0 -g)
-    target_link_options(WemuCore PRIVATE --coverage)
+    target_compile_options(wemu PRIVATE --coverage -O0 -g)
+    target_link_options(wemu PRIVATE --coverage)
 endif()
 
 # ------------------------------------------------------------
