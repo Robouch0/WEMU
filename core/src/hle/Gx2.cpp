@@ -9,6 +9,8 @@
 #include "cpu/interpreter/SyscallHandler.hpp"
 #include "cpu/memory/Memory.hpp"
 #include "gfx/Gx2CommandStream.hpp"
+#include "gfx/Gx2Replayer.hpp"
+#include "gfx/VulkanRasterBackend.hpp"
 #include "gfx/Renderer.hpp"
 #include "gfx/SurfaceLayout.hpp"
 #include "utils/Diagnostics.hpp"
@@ -249,8 +251,8 @@ namespace {
         return now - now % kVsyncPeriod;
     }
 
-    // GX2SwapScanBuffers: capture the frame boundary and advance guest timing.
-    // Graphics replay and presentation are integrated in the next phase.
+    // GX2SwapScanBuffers: end of a frame. Record it, replay the accumulated stream into a framebuffer,
+    // present it through the Vulkan renderer, then start a fresh frame.
     void gx2_swap(Core::Interpreter &cpu)
     {
         recordCmd(cpu, Core::Gfx::Gx2Cmd::SwapScanBuffers);
@@ -294,6 +296,29 @@ namespace {
                 c.payload.clear();
             }
         }
+        static Core::Gfx::Gx2Replayer replayer;
+        // WEMU_GPU rasterises the frame on the GPU (Vulkan) instead of the software rasteriser.
+        //   =1 -> the general multi-target render graph (offscreen buffers + render-to-texture)
+        //   =2 -> the legacy single-target quad compositor (flattens everything to the scan target)
+        static const int gpuMode = []() {
+            const char *e = std::getenv("WEMU_GPU");
+            return e ? std::atoi(e) : 0;
+        }();
+        if (gpuMode) {
+            replayer.setGpuRenderer(cpu.m_renderer);
+            replayer.setGpuRenderGraph(gpuMode == 1);
+        }
+        static const bool nativeInitialized = [&] {
+            const auto *enabled = std::getenv("WEMU_NATIVE_RASTER");
+            if (!gpuMode && enabled && enabled[0] == '1') {
+                replayer.setRasterBackend(std::make_shared<Core::Gfx::VulkanRasterBackend>(
+                    !std::getenv("WEMU_NATIVE_TEXTURE_REUSE") || std::string_view(std::getenv("WEMU_NATIVE_TEXTURE_REUSE")) != "0",
+                    std::getenv("WEMU_NATIVE_LAZY_READBACK") && std::string_view(std::getenv("WEMU_NATIVE_LAZY_READBACK")) == "1"));
+                Utils::Log::error("[GX2] experimental translated Vulkan raster backend enabled; unsupported draws remain software");
+            }
+            return true;
+        }();
+        (void)nativeInitialized;
         // Frame-content telemetry: how much GX2 work the title recorded this frame.
         if (g_swapCount < 3 || (g_swapCount % 300) == 0)
             Utils::Log::error("[GX2] swap #{}: {} cmds, {} draws this frame", g_swapCount, Core::Gfx::gx2Stream().size(),
@@ -485,6 +510,29 @@ namespace {
                 }
             }
         }
+        // Frame-identical skip: rebuilding the framebuffer costs ~0.8s of CPU on this software
+        // rasteriser and blocks the guest for the whole GX2SwapScanBuffers call. During static
+        // stretches (loading, menus at rest) the title submits a byte-identical command stream for
+        // hundreds of presents, so we hash the (already frame-end-refreshed) stream and, when it
+        // matches the last presented frame, re-present the cached framebuffer instead of rebuilding
+        // it. The guest then advances at the flip_tv-paced ~60 fps rather than ~1.25 fps — i.e. much
+        // closer to real Wii U speed, which is what actually makes the menu appear quickly. Set
+        // WEMU_NO_FRAMESKIP=1 to force a rebuild every present (debugging). See Gx2CommandStream::
+        // contentHash for what the identity check does and does not cover.
+        static const bool noSkip = []() {
+            const char *e = std::getenv("WEMU_NO_FRAMESKIP");
+            return e && e[0] == '1';
+        }();
+        static std::uint64_t s_lastHash = 0;
+        static bool s_haveFrame = false;
+        const std::uint64_t hash = Core::Gfx::gx2Stream().contentHash();
+        if (noSkip || !s_haveFrame || hash != s_lastHash) {
+            replayer.replay(Core::Gfx::gx2Stream(), &cpu.m_memory);
+            s_lastHash = hash;
+            s_haveFrame = true;
+        }
+        if (cpu.m_renderer)
+            cpu.m_renderer->flip_tv(replayer.framebuffer().data(), Core::Gfx::Gx2Replayer::kWidth, Core::Gfx::Gx2Replayer::kHeight);
         Core::Gfx::gx2Stream().clear();
         g_swapCount++;
         g_flipCount = g_swapCount;

@@ -18,6 +18,11 @@ constexpr int MAX_FRAMES_IN_FLIGHT = 2;
 
 const std::vector<const char *> deviceExtensions = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
 
+namespace Core::Gfx {
+    class GpuQuadRasterizer;
+    class GpuRenderGraph;
+}
+
 class Renderer {
     public:
         // Standalone: creates own SDL window, Vulkan instance and surface.
@@ -36,6 +41,29 @@ class Renderer {
         ~Renderer() { cleanup(); }
 
         void flip_tv(const std::uint8_t *rgbx, std::uint32_t w, std::uint32_t h);
+
+        // GPU rasterisation path (WEMU_GPU=1). The Gx2Replayer computes screen-space textured
+        // triangles on the CPU and hands them here to be filled on the GPU instead of by the
+        // software rasteriser. `xyuv` is `count` vertices of 4 floats each (x,y in framebuffer
+        // pixels, u,v in [0,1]); `key` is the guest texture address (for the upload cache).
+        void gpuBegin();
+        void gpuDrawTriangles(std::uint64_t key, const std::uint8_t *rgba, std::uint32_t tw, std::uint32_t th, const float *xyuv,
+                              std::uint32_t count);
+        void gpuEnd(std::uint8_t *outRgbx);
+
+        // GPU render-target graph (WEMU_GPU=1). A general GX2->Vulkan compositor: every guest colour
+        // buffer is a persistent GPU image, draws render into the currently-bound target, and a draw
+        // that samples a colour buffer reads that target's image directly (render-to-texture — MK8's
+        // offscreen menu buffers + bloom). `xyuv` is `count` verts of 4 floats (x,y in target pixels,
+        // u,v in [0,1]). See Core::Gfx::GpuRenderGraph.
+        void gpuBeginFrame();
+        void gpuBindTarget(std::uint32_t addr, std::uint32_t w, std::uint32_t h);
+        void gpuClearTarget(std::uint32_t addr, std::uint32_t w, std::uint32_t h, const float rgba[4]);
+        [[nodiscard]] bool gpuIsTarget(std::uint32_t addr) const;
+        void gpuDrawTexture(std::uint64_t key, const std::uint8_t *rgba, std::uint32_t tw, std::uint32_t th, const float *xyuv,
+                            std::uint32_t count);
+        void gpuDrawTarget(std::uint32_t srcAddr, const float *xyuv, std::uint32_t count);
+        void gpuPresentTarget(std::uint32_t scanAddr, std::uint8_t *outRgbx);
 
         bool poll_events();
 
@@ -225,6 +253,9 @@ class Renderer {
         VkDeviceMemory m_tvStagingMemory = VK_NULL_HANDLE;
         VkImage m_tvImage = VK_NULL_HANDLE;
         VkDeviceMemory m_tvImageMemory = VK_NULL_HANDLE;
+
+        Core::Gfx::GpuQuadRasterizer *m_gpuQuad = nullptr; // lazily created on first gpuBegin(); freed in cleanup()
+        Core::Gfx::GpuRenderGraph *m_gpuGraph = nullptr;   // lazily created on first gpuBeginFrame(); freed in cleanup()
 
         bool m_framebufferResized = false;
         bool m_open = true;

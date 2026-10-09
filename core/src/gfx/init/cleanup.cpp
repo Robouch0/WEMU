@@ -2,6 +2,8 @@
 // Created by nicolas on 2/18/26.
 //
 
+#include "../GpuQuadRasterizer.hpp"
+#include "../GpuRenderGraph.hpp"
 #include "../Renderer.hpp"
 
 void Renderer::recreateSwapChain()
@@ -34,6 +36,10 @@ void Renderer::cleanupFlipTv() const
 void Renderer::cleanup() const
 {
     vkDeviceWaitIdle(m_logicalDevice);
+
+    // Destroy the GPU rasteriser / render graph (own Vulkan objects) before we tear down device/pool.
+    delete m_gpuQuad;
+    delete m_gpuGraph;
 
     cleanupFlipTv();
     cleanupSwapChain();
