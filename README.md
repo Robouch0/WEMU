@@ -159,6 +159,11 @@ WEMU/
 
 ```
 
+The loaded binary owns guest RAM. The loader transfers it to the interpreter without
+copying the buffer; instruction fetch, data accesses, HLE, and diagnostics share that
+same memory. Memory is move-only, and typed reads/writes validate the complete access
+range while preserving big-endian values and unaligned guest accesses.
+
 ### Adding a PowerPC Instruction
 
 Instructions are registered through an X-macro table. To add a new instruction:

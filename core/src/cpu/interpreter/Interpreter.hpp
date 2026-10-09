@@ -162,7 +162,8 @@ namespace Core {
             std::uint32_t m_hooks_max{0u};
 
             Core::Binary m_binary;
-            Core::Memory m_memory;
+            // Data accesses, instruction fetch, and diagnostics share the binary's owned RAM.
+            Core::Memory &m_memory;
 
             std::uint32_t m_pc{};
             std::uint32_t m_nextPc{};

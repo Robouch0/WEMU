@@ -19,6 +19,7 @@
 #include <iostream>
 #include <map>
 #include <string>
+#include <utility>
 
 #include "binary/Binary.hpp"
 #include "binary/Loader.hpp"
@@ -99,9 +100,11 @@ int main(const int ac, char const *const *av)
     }
     try {
         const char *executable = av[guiSession ? 2 : 1];
-        const Core::Loader loader(executable);
+        Core::Loader loader(executable);
+        const auto codeAddressRange = loader.codeAddressRange;
+        const auto dataAddressRange = loader.dataAddressRange;
 
-        Core::Binary binary = loader.getBinary();
+        Core::Binary binary = std::move(loader).takeBinary();
         std::cout << "main MEM -> " << std::hex << binary.m_memory.read<uint32_t>(268437924) << std::dec << std::endl;
 
         // These dumps are enormous for real titles (MK8 has a huge symtab) and
@@ -138,7 +141,7 @@ int main(const int ac, char const *const *av)
             }
         }
 
-        Core::Interpreter interpreter(binary);
+        Core::Interpreter interpreter(std::move(binary));
 
         std::cout << "CPU 268437924 MEM -> " << std::hex << interpreter.m_memory.read<uint32_t>(268437924) << std::dec << std::endl;
 
@@ -146,7 +149,7 @@ int main(const int ac, char const *const *av)
         Renderer renderer;
         interpreter.m_renderer = &renderer;
 
-        Core::installStdlibHooks(interpreter, binary);
+        Core::installStdlibHooks(interpreter, interpreter.m_binary);
         if (guiSession)
             std::cout << "[BOOT] GUI session: title-specific hooks disabled" << std::endl;
         if (!guiSession) {
@@ -160,8 +163,8 @@ int main(const int ac, char const *const *av)
 
         // 6. Init CPU state (emulate the Wii U loader's hand-off to the module entry)
         interpreter.m_gpr[1] = 0xC0FFFFF0u; // r1 = stack top
-        interpreter.m_gpr[2] = binary.sda2Base; // r2  = small-data area 2 base (from FILEINFO)
-        interpreter.m_gpr[13] = binary.sdaBase; // r13 = small-data area base (from FILEINFO)
+        interpreter.m_gpr[2] = interpreter.m_binary.sda2Base; // r2 = small-data area 2 base (from FILEINFO)
+        interpreter.m_gpr[13] = interpreter.m_binary.sdaBase; // r13 = small-data area base (from FILEINFO)
         interpreter.m_gpr[3] = 0u; // argc
         interpreter.m_gpr[4] = 0u; // argv
 
@@ -172,8 +175,8 @@ int main(const int ac, char const *const *av)
         interpreter.m_memory.write<std::uint32_t>(0xC0FFFFF0u, 0);
 
         std::cout << "Loaded module!" << std::endl;
-        std::cout << "Code: " << std::hex << "0x" << loader.codeAddressRange.first << ":" << "0x" << loader.codeAddressRange.second << std::endl;
-        std::cout << "Data: " << std::hex << "0x" << loader.dataAddressRange.first << ":" << "0x" << loader.dataAddressRange.second << std::endl;
+        std::cout << "Code: " << std::hex << "0x" << codeAddressRange.first << ":" << "0x" << codeAddressRange.second << std::endl;
+        std::cout << "Data: " << std::hex << "0x" << dataAddressRange.first << ":" << "0x" << dataAddressRange.second << std::endl;
 
         // WEMU_DUMP_STRINGS=addr1,addr2,... : print NUL-terminated guest strings at the given hex
         // addresses (design aid, e.g. reading .rodata shader-uniform names).

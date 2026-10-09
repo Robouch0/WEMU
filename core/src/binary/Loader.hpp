@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <map>
+#include <utility>
 
 #include "Binary.hpp"
 #include "Loader.hpp"
@@ -28,7 +29,11 @@ namespace Core {
         public:
             explicit Loader(const std::string &filepath);
 
-            [[nodiscard]] Binary getBinary() const noexcept { return m_bin; }
+            // Inspect the loaded image without copying guest RAM. The view belongs to this loader.
+            [[nodiscard]] const Binary &getBinary() const & noexcept { return m_bin; }
+            const Binary &getBinary() const && = delete;
+            // Consume the loaded image; its guest pointers remain stable across the transfer.
+            [[nodiscard]] Binary takeBinary() && noexcept { return std::move(m_bin); }
 
         private:
             void loadHeader();

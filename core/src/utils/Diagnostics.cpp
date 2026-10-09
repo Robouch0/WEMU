@@ -961,9 +961,8 @@ namespace Core::Diag {
             if (!end || *end != ':')
                 break;
             const std::uint32_t value = static_cast<std::uint32_t>(std::strtoul(end + 1, &end, 16));
-            // Both views: m_memory backs data accesses, m_binary.m_memory backs instruction fetch.
+            // Instruction fetch and data accesses share this live guest-memory buffer.
             cpu.m_memory.write<std::uint32_t>(addr, value);
-            cpu.m_binary.m_memory.write<std::uint32_t>(addr, value);
             std::cout << std::format("[DIAG] patched guest word 0x{:08X} = 0x{:08X}", addr, value) << std::endl;
             p = (*end == ',') ? end + 1 : end;
         }

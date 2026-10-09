@@ -23,9 +23,8 @@
     #include "cpu/recompiler/Dispatcher.hpp"
 #endif
 
-Core::Interpreter::Interpreter(Core::Binary binary) : m_binary(std::move(binary))
+Core::Interpreter::Interpreter(Core::Binary binary) : m_binary(std::move(binary)), m_memory(m_binary.m_memory)
 {
-    m_memory = m_binary.m_memory;
     initInstructionMap();
     for (const auto &sym: m_binary.symbols)
         if (sym.raw.header.st_value >= 0xC0000000u && !sym.name.empty())

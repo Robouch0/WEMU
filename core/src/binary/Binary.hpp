@@ -72,6 +72,7 @@ namespace Core {
             Elf32_Ehdr header;
             std::vector<Section> sections;
             std::vector<Symbol> symbols;
+            // Owns guest RAM; the loaded image is moved into the interpreter rather than copied.
             Core::Memory m_memory{};
 
             // Small-data-area base pointers from the RPL FILEINFO section. The Wii U loader places
