@@ -1,65 +1,31 @@
 #pragma once
 #include <QObject>
-#include <QThread>
-#include <qwindowdefs.h>
-#include <atomic>
-#include <memory>
-
-namespace Core { class Interpreter; }
-class Renderer;
-class InputManager;
-class InputProfileManager;
-class VulkanOutputWindow;
-
-
-class GameThread : public QThread {
-    Q_OBJECT
-public:
-    explicit GameThread(QObject *parent = nullptr);
-    ~GameThread() override;
-
-    void queueGame(const QString &rpxPath, const QString &title);
-    void stopGame();
-    void setControllerMask(std::uint32_t mask);
-    void setVulkanOutput(VulkanOutputWindow *window);
-
-signals:
-    void gameFinished();
-    void gameError(const QString &message);
-    void rendererReady();
-
-protected:
-    void run() override;
-
-private:
-    std::atomic<bool>                m_startRequested{false};
-    std::atomic<Core::Interpreter *> m_interpreter{nullptr};
-    QString                          m_nextPath;
-    QString                          m_nextTitle;
-    VulkanOutputWindow              *m_vulkanOutput = nullptr;
-    std::unique_ptr<Renderer>        m_renderer;
-};
+#include <QProcess>
+#include <QTimer>
 
 class EmulatorLauncher : public QObject {
     Q_OBJECT
+    Q_PROPERTY(bool running READ running NOTIFY runningChanged)
+    Q_PROPERTY(QString error READ error NOTIFY errorChanged)
+    Q_PROPERTY(QString logPath READ logPath NOTIFY logPathChanged)
 public:
     explicit EmulatorLauncher(QObject *parent = nullptr);
     ~EmulatorLauncher() override;
-
-    Q_INVOKABLE void setWindowHandle(WId handle);
-    void setVulkanOutput(VulkanOutputWindow *window);
-
-    Q_INVOKABLE void launch(const QString &rpxPath, const QString &title = QString());
+    bool running() const { return m_process.state() != QProcess::NotRunning; }
+    QString error() const { return m_error; }
+    QString logPath() const { return m_logPath; }
+    Q_INVOKABLE void launch(const QString &rpxPath, const QString &title, const QString &contentPath);
     Q_INVOKABLE void stop();
-
-    void connectInput(InputManager *mgr, InputProfileManager *profileMgr);
-
+    Q_INVOKABLE void openLog();
 signals:
+    void runningChanged();
     void stateChanged(bool running);
-    void rendererReady();
-
+    void errorChanged();
+    void logPathChanged();
 private:
-    GameThread         *m_thread       = nullptr;
-    VulkanOutputWindow *m_vulkanWindow = nullptr;
-    bool                m_emulating    = false;
+    QProcess m_process;
+    QTimer m_stopTimer;
+    QString m_error, m_logPath;
+    bool m_stopping = false;
+    void setError(const QString &error);
 };

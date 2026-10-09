@@ -15,6 +15,8 @@ public:
         QString version;
         QString iconPath;
         QString rpxPath;
+        QString contentPath;
+        QString titleId;
     };
 
     enum Roles {
@@ -23,9 +25,13 @@ public:
         VersionRole,
         IconPathRole,
         RpxPathRole,
+        ContentPathRole,
+        TitleIdRole,
     };
 
     explicit TitleScanner(QObject *parent = nullptr);
+
+    static QString defaultLibraryPath(const QString &applicationDirectory, const QString &workingDirectory);
 
     // mandatory overrides for QAbstractListModel
     [[nodiscard]] int rowCount(const QModelIndex &parent) const override;
@@ -33,6 +39,7 @@ public:
     [[nodiscard]] QHash<int, QByteArray> roleNames() const override;
 
     Q_INVOKABLE void scanDirectory(const QString &path);
+    Q_INVOKABLE void refresh() { scanDirectory(m_searchPath); }
 
     [[nodiscard]] QString searchPath() const { return m_searchPath; }
 

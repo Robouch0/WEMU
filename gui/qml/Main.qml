@@ -6,9 +6,9 @@ ApplicationWindow {
     visible: true
     width: 1280
     height: 720
-    minimumWidth: 1280
-    minimumHeight: 720
-    title: "Emulator"
+    minimumWidth: 800
+    minimumHeight: 640
+    title: "WEMU Library"
 
     Loader {
         id: mainLoader
