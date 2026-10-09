@@ -21,6 +21,7 @@
 #include "cpu/types/Instruction.hpp"
 #include "gfx/Renderer.hpp"
 #include "hle/Scheduler.hpp"
+#include "hle/H264.hpp"
 #include "utils/BeDecoder.hpp"
 #include "utils/Logger.hpp"
 
@@ -91,6 +92,7 @@ namespace Core {
 
             void reset()
             {
+                m_h264.reset();
                 m_blockCache.clear();
                 m_failed = false;
                 m_pc = 0;
@@ -145,6 +147,7 @@ namespace Core {
 
             std::atomic<bool> m_running{true};
             bool m_failed{false};
+            std::shared_ptr<H264::State> m_h264;
             std::atomic<std::uint32_t> m_controllerMask{0};
             std::uint32_t m_vpadPreviousHold{0};
             std::uint64_t m_vpadReadCount{0};

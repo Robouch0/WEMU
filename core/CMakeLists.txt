@@ -36,6 +36,22 @@ endif()
 # 2. CORE LIBRARY
 # ------------------------------------------------------------
 add_library(core STATIC
+        src/hle/MemHeap.hpp
+        src/hle/MemHeap.cpp
+        src/hle/CoreinitExtra.hpp
+        src/hle/CoreinitExtra.cpp
+        src/hle/H264.cpp
+        src/video/H264Decoder.cpp
+        src/hle/Ax.hpp
+        src/hle/Ax.cpp
+        src/hle/AsyncCallbacks.hpp
+        src/hle/AsyncCallbacks.cpp
+        src/hle/NnOnline.hpp
+        src/hle/NnOnline.cpp
+        src/hle/Gx2.hpp
+        src/hle/Gx2.cpp
+        src/hle/Fs.hpp
+        src/hle/Fs.cpp
         src/utils/Diagnostics.hpp
         src/utils/Diagnostics.cpp
         src/hle/Scheduler.hpp

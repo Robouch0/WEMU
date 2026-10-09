@@ -7,6 +7,9 @@
 
 #pragma once
 
+#include <cstdint>
+#include <map>
+
 #include "Binary.hpp"
 #include "Loader.hpp"
 #include "utils/BeDecoder.hpp"
@@ -48,6 +51,17 @@ namespace Core {
             void loadSymbolsName();
             void loadSymbolsMeta();
             void resolveSymbols();
+            void resolveDataImports();
+
+            // Parse the RPL FILEINFO section for the SDA base pointers (r13/r2).
+            void loadFileInfo();
+
+            // Relocations (SHT_RELA): patch loaded code/data with resolved symbol
+            // addresses. Mandatory for real RPX files -- homebrew often links without
+            // needing them, but Cafe-SDK titles like MK8 rely entirely on them.
+            void loadRelocations();
+            void applyRelaSection(const Section &relaSection);
+            void applyRelocation(const Elf32_Rela &rela);
 
             static void loadSymbolHeader(Utils::BeDecoder &symDecoder, Core::Symbol &symbol);
 
@@ -55,6 +69,11 @@ namespace Core {
 
             Binary m_bin;
             Utils::BeDecoder m_beDecoder;
+
+            // Relocation statistics, filled by loadRelocations() and printed as a
+            // summary so we can see at a glance how much of a real title we cover.
+            std::size_t m_relocApplied = 0;
+            std::map<std::uint32_t, std::size_t> m_relocUnhandled;
 
         public:
             std::pair<std::uint32_t, std::uint32_t> codeAddressRange;

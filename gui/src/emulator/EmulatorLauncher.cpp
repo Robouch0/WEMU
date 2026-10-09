@@ -8,11 +8,15 @@
 #include "hle/Libc.hpp"
 #include "hle/StdlibHooks.hpp"
 #include "hle/Whb.hpp"
+#include "hle/Fs.hpp"
+#include "hle/Gx2.hpp"
+#include "hle/H264.hpp"
 #include "InputManager.hpp"
 #include "InputProfileManager.hpp"
 
 #include <QDebug>
 #include <mutex>
+#include <filesystem>
 
 static void registerHleFunctionsOnce()
 {
@@ -21,6 +25,9 @@ static void registerHleFunctionsOnce()
         RegisterCoreinitFunctions();
         RegisterLibcFunctions();
         RegisterWhbFunctions();
+        RegisterFsFunctions();
+        RegisterGx2Functions();
+        RegisterH264Functions();
     });
 }
 
@@ -82,6 +89,9 @@ void GameThread::run()
             const Core::Loader loader(path.toStdString());
             Core::Binary binary = loader.getBinary();
 
+            const auto contentRoot = std::filesystem::path(path.toStdString()).parent_path().parent_path() / "content";
+            SetFsContentRoot(contentRoot.string());
+
             Core::Interpreter interpreter(binary);
             m_interpreter = &interpreter;
 
@@ -89,7 +99,9 @@ void GameThread::run()
             Core::installStdlibHooks(interpreter, binary);
 
             interpreter.m_gpr[1] = 0xC0FFFFF0u;
-            interpreter.m_gpr[2] = 0u;
+            interpreter.m_gpr[2] = binary.sda2Base;
+            interpreter.m_gpr[13] = binary.sdaBase;
+            interpreter.m_lr = Core::RETURN_SENTINEL - Core::Memory::MemoryMap::ApplicationCode;
             interpreter.m_gpr[3] = 0u;
             interpreter.m_gpr[4] = 0u;
             interpreter.m_memory.write<uint32_t>(0xC0FFFFF0u, 0);

@@ -8,13 +8,23 @@
 #include "Coreinit.hpp"
 
 #include <SDL2/SDL.h>
+#include <array>
+#include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <unordered_map>
 
 #include "cpu/interpreter/Interpreter.hpp"
 #include "cpu/interpreter/SyscallHandler.hpp"
 #include "cpu/memory/Memory.hpp"
 #include "gfx/Renderer.hpp"
+#include "hle/Ax.hpp"
+#include "hle/AsyncCallbacks.hpp"
+#include "hle/CoreinitExtra.hpp"
+#include "hle/NnOnline.hpp"
+#include "hle/MemHeap.hpp"
+#include "utils/Diagnostics.hpp"
 
 // ── Framebuffer addresses (TV=0, DRC=1) ──────────────────────────────────────
 
@@ -184,9 +194,9 @@ static void blit_char(std::uint8_t *fb, std::uint32_t stride_px, int col_px, int
     }
 }
 
-// ── Thread-local storage (single-thread emulation, 64 keys max) ───────────────
+// ── Thread-local storage (per guest thread, 64 keys max) ─────────────────────
 
-static std::uint32_t s_tls[64] = {};
+static std::unordered_map<std::uint32_t, std::array<std::uint32_t, 64>> s_tls; // thread handle -> slots
 
 // ── HLE implementations ───────────────────────────────────────────────────────
 
@@ -310,27 +320,74 @@ static void hle_OSScreenFlipBuffersEx(Core::Interpreter &cpu)
 
 // ---- OS misc ----
 
-static void hle_OSGetTick(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
+// Espresso/Latte clock rates (Hz). The Cafe runtime derives its timer frequency from busSpeed,
+// so these must be non-zero or the title's OSTicksToSeconds math divides by zero.
+static constexpr std::uint32_t kBusClockSpeed = 248625000u;
+static constexpr std::uint32_t kCoreClockSpeed = 1243125000u; // busSpeed * 5
+
+// OS queries and scheduler deadlines share one per-interpreter time base.
+// Reading the clock must not itself advance time; interpreter service ticks do.
+namespace Core {
+    void advanceGuestFrameClock(Interpreter &cpu)
+    {
+        static const bool on = []() {
+            const char *e = std::getenv("WEMU_FRAME_CLOCK");
+            return e && e[0] == '1';
+        }();
+        if (on)
+            cpu.m_scheduler.advanceFrame(1035937ull); // busSpeed / 4 / 60
+    }
+}
+
+static void hle_OSGetTick(Core::Interpreter &cpu) { cpu.m_gpr[3] = static_cast<std::uint32_t>(cpu.m_scheduler.now()); }
 static void hle_OSGetTime(Core::Interpreter &cpu)
 {
-    cpu.m_gpr[3] = 0;
-    cpu.m_gpr[4] = 0;
+    const std::uint64_t t = cpu.m_scheduler.now();
+    cpu.m_gpr[3] = static_cast<std::uint32_t>(t >> 32);
+    cpu.m_gpr[4] = static_cast<std::uint32_t>(t & 0xFFFFFFFFu);
+}
+static void hle_OSGetSystemTime(Core::Interpreter &cpu)
+{
+    const std::uint64_t t = cpu.m_scheduler.now();
+    cpu.m_gpr[3] = static_cast<std::uint32_t>(t >> 32);
+    cpu.m_gpr[4] = static_cast<std::uint32_t>(t & 0xFFFFFFFFu);
 }
 static void hle_OSGetTitleID(Core::Interpreter &cpu)
 {
     cpu.m_gpr[3] = 0;
     cpu.m_gpr[4] = 0;
 }
-static void hle_OSGetSystemInfo(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
-static void hle_OSGetCoreId(Core::Interpreter &cpu) { cpu.m_gpr[3] = 1; }
+
+// OSGetSystemInfo returns a pointer to a static OSSystemInfo struct. Layout (decaf/Cafe SDK):
+// 0x00 busSpeed, 0x04 coreSpeed, 0x08 baseTime(u64), 0x10..0x18 per-core L2 size, 0x1C cpuRatio.
+static void hle_OSGetSystemInfo(Core::Interpreter &cpu)
+{
+    static std::uint32_t infoAddr = 0;
+    if (!infoAddr) {
+        infoAddr = cpu.m_memory.heapAllocate(0x20, 8);
+        cpu.m_memory.write<std::uint32_t>(infoAddr + 0x00, kBusClockSpeed);
+        cpu.m_memory.write<std::uint32_t>(infoAddr + 0x04, kCoreClockSpeed);
+        cpu.m_memory.write<std::uint32_t>(infoAddr + 0x08, 0u); // baseTime hi
+        cpu.m_memory.write<std::uint32_t>(infoAddr + 0x0C, 0u); // baseTime lo
+        cpu.m_memory.write<std::uint32_t>(infoAddr + 0x10, 0x80000u); // L2 core0
+        cpu.m_memory.write<std::uint32_t>(infoAddr + 0x14, 0x200000u); // L2 core1
+        cpu.m_memory.write<std::uint32_t>(infoAddr + 0x18, 0x80000u); // L2 core2
+        cpu.m_memory.write<std::uint32_t>(infoAddr + 0x1C, 5u); // core/bus ratio
+    }
+    cpu.m_gpr[3] = infoAddr;
+}
+static void hle_OSGetCoreId(Core::Interpreter &cpu) { cpu.m_gpr[3] = cpu.m_scheduler.currentCoreId(); }
 static void hle_OSGetMainCoreId(Core::Interpreter &cpu) { cpu.m_gpr[3] = 1; }
+static void hle_OSGetCoreCount(Core::Interpreter &cpu) { cpu.m_gpr[3] = 3; }
+static void hle_OSIsMainCore(Core::Interpreter &cpu) { cpu.m_gpr[3] = cpu.m_scheduler.currentCoreId() == 1; }
 static void hle_OSIsDebuggerPresent(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
 static void hle_OSIsDebuggerInitialized(Core::Interpreter &cpu)
 {
     Utils::Log::error("hle_OSIsDebuggerInitialized");
     cpu.m_gpr[3] = 0;
 }
-static void hle_OSEnableHomeButtonMenu(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
+// Returns the PREVIOUS enabled state; MK8 loops "disable + pump ProcUI" until it sees 1.
+static void hle_OSEnableHomeButtonMenu(Core::Interpreter &cpu) { cpu.m_gpr[3] = 1; }
 
 static void hle_OSCompareAndSwapAtomic(Core::Interpreter &cpu)
 {
@@ -398,22 +455,94 @@ static void hle_os_snprintf(Core::Interpreter &cpu)
 }
 
 // ---- OS Mutex ----
+// Real exclusion matters: with timeslice preemption, guest critical sections (nw::snd's voice
+// pool, sead heaps) rely on these actually blocking, exactly as on multi-core hardware.
 
-static void hle_OSInitMutex(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
-static void hle_OSInitMutexEx(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
-static void hle_OSLockMutex(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
-static void hle_OSUnlockMutex(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
+static void hle_OSInitMutex(Core::Interpreter &cpu)
+{
+    cpu.m_scheduler.mutexReset(cpu.m_gpr[3]);
+    cpu.m_gpr[3] = 0;
+}
+static void hle_OSInitMutexEx(Core::Interpreter &cpu)
+{
+    cpu.m_scheduler.mutexReset(cpu.m_gpr[3]);
+    cpu.m_gpr[3] = 0;
+}
+static void hle_OSLockMutex(Core::Interpreter &cpu)
+{
+    if (cpu.m_scheduler.mutexLock(cpu, cpu.m_gpr[3]))
+        cpu.m_gpr[3] = 0;
+    // else: parked on the mutex; the SC re-executes on wake and retries the acquire
+}
+static void hle_OSUnlockMutex(Core::Interpreter &cpu)
+{
+    cpu.m_scheduler.mutexUnlock(cpu.m_gpr[3]);
+    cpu.m_gpr[3] = 0;
+    cpu.m_scheduler.rescheduleAfterHle(cpu);
+}
+static void hle_OSTryLockMutex(Core::Interpreter &cpu) { cpu.m_gpr[3] = cpu.m_scheduler.mutexTryLock(cpu.m_gpr[3]) ? 1 : 0; }
 
-// ---- OS Thread ----
+// ---- OS Thread (backed by the cooperative Scheduler) ----
 
-static void hle_OSCreateThread(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
-static void hle_OSResumeThread(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
-static void hle_OSSleepTicks(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
-static void hle_OSYieldThread(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
-static void hle_OSGetCurrentThread(Core::Interpreter &cpu) { cpu.m_gpr[3] = 1; }
+// BOOL OSCreateThread(OSThread *thread, entry, int argc, void *argv, void *stackTop, u32 stackSize,
+//                     int priority, u32 attr). stackTop is the high end; the stack grows down.
+static void hle_OSCreateThread(Core::Interpreter &cpu)
+{
+    Core::ThreadContext *t = cpu.m_scheduler.create(cpu, cpu.m_gpr[3], cpu.m_gpr[4], cpu.m_gpr[5], cpu.m_gpr[6], cpu.m_gpr[7],
+                                                    static_cast<std::int32_t>(cpu.m_gpr[9])); // r9 = Cafe priority (0 highest)
+    if (const std::uint32_t affinity = cpu.m_gpr[10] & 7; affinity && t) // r10 = attr, bits 0-2 = core mask
+        t->affinity = affinity;
+    cpu.m_gpr[3] = t ? 1 : 0;
+}
+
+static void hle_OSResumeThread(Core::Interpreter &cpu)
+{
+    cpu.m_scheduler.resume(cpu.m_gpr[3]);
+    cpu.m_gpr[3] = 1; // previous suspend count (good enough)
+    cpu.m_scheduler.rescheduleAfterHle(cpu);
+}
+
+// void OSSleepTicks(OSTime ticks) — 64-bit OSTime passed as r3:r4 (high:low).
+static void hle_OSSleepTicks(Core::Interpreter &cpu)
+{
+    const std::uint64_t ticks = (static_cast<std::uint64_t>(cpu.m_gpr[3]) << 32) | cpu.m_gpr[4];
+    cpu.m_scheduler.sleep(cpu, ticks);
+}
+
+static void hle_OSYieldThread(Core::Interpreter &cpu) { cpu.m_scheduler.yield(cpu); }
+
+static void hle_OSGetCurrentThread(Core::Interpreter &cpu) { cpu.m_gpr[3] = cpu.m_scheduler.currentHandle(); }
+
+// BOOL OSJoinThread(OSThread *thread, int *result)
+static void hle_OSJoinThread(Core::Interpreter &cpu)
+{
+    cpu.m_scheduler.join(cpu, cpu.m_gpr[3]);
+    if (!cpu.m_hle_redirected)
+        cpu.m_gpr[3] = 1;
+}
+
+// void OSExitThread(int code) — terminates the calling thread.
+static void hle_OSExitThread(Core::Interpreter &cpu)
+{
+    if (cpu.m_scheduler.exitCurrent(cpu))
+        cpu.m_hle_redirected = true; // resumed another thread; don't return to LR
+    else
+        cpu.m_running = false; // last thread finished
+}
+
 static void hle_OSSetThreadName(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
-static void hle_OSSetThreadPriority(Core::Interpreter &cpu) { cpu.m_gpr[3] = 1; }
-static void hle_OSSetThreadAffinity(Core::Interpreter &cpu) { cpu.m_gpr[3] = 1; }
+static void hle_OSSetThreadPriority(Core::Interpreter &cpu)
+{
+    cpu.m_scheduler.setPriority(cpu.m_gpr[3], static_cast<std::int32_t>(cpu.m_gpr[4]));
+    cpu.m_gpr[3] = 1;
+    cpu.m_scheduler.rescheduleAfterHle(cpu);
+}
+static void hle_OSSetThreadAffinity(Core::Interpreter &cpu)
+{
+    cpu.m_scheduler.setAffinity(cpu.m_gpr[3], cpu.m_gpr[4]);
+    cpu.m_gpr[3] = 1;
+    cpu.m_scheduler.rescheduleAfterHle(cpu);
+}
 
 // ---- OS TLS ----
 
@@ -421,7 +550,7 @@ static void hle_wut_get_thread_specific(Core::Interpreter &cpu)
 {
     std::uint32_t key = cpu.m_gpr[3];
 
-    cpu.m_gpr[3] = (key < 64) ? s_tls[key] : 0;
+    cpu.m_gpr[3] = (key < 64) ? s_tls[cpu.m_scheduler.currentHandle()][key] : 0;
 }
 
 static void hle_wut_set_thread_specific(Core::Interpreter &cpu)
@@ -429,35 +558,34 @@ static void hle_wut_set_thread_specific(Core::Interpreter &cpu)
     std::uint32_t key = cpu.m_gpr[3], val = cpu.m_gpr[4];
 
     if (key < 64)
-        s_tls[key] = val;
+        s_tls[cpu.m_scheduler.currentHandle()][key] = val;
     cpu.m_gpr[3] = 0;
 }
 
 // ---- MEM ----
+// Real guest-visible heaps (base heaps + ExpHeap/FrmHeap with free) live in hle/MemHeap.cpp.
 
-static void hle_MEMAllocFromDefaultHeap(Core::Interpreter &cpu) { cpu.m_gpr[3] = cpu.m_memory.heapAllocate(cpu.m_gpr[3], 8); }
+// ---- OS block mem ops ----
 
-static void hle_MEMAllocFromDefaultHeapEx(Core::Interpreter &cpu)
+// OSBlockMove(dst, src, size, flush) — memmove between guest buffers (overlap-safe).
+static void hle_OSBlockMove(Core::Interpreter &cpu)
 {
-    std::uint32_t size = cpu.m_gpr[3];
-    std::uint32_t align = cpu.m_gpr[4];
-
-    cpu.m_gpr[3] = cpu.m_memory.heapAllocate(size, align ? align : 8);
+    std::uint8_t *dst = cpu.m_memory.hostPtr(cpu.m_gpr[3]);
+    const std::uint8_t *src = cpu.m_memory.hostPtr(cpu.m_gpr[4]);
+    const std::uint32_t size = cpu.m_gpr[5];
+    if (dst && src && size)
+        std::memmove(dst, src, size);
+    cpu.m_gpr[3] = 0;
 }
 
-static void hle_MEMFreeToDefaultHeap(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
-static void hle_MEMGetBaseHeapHandle(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0xDEAD0001u; }
-static void hle_MEMCreateExpHeapEx(Core::Interpreter &cpu) { /* return base addr as handle */ }
-static void hle_MEMFreeToExpHeap(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
-static void hle_MEMDestroyExpHeap(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
-static void hle_MEMGetAllocatableSizeForExpHeapEx(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0x1000000; }
-
-static void hle_MEMAllocFromExpHeapEx(Core::Interpreter &cpu)
+// OSBlockSet(dst, value, size) — memset on a guest buffer.
+static void hle_OSBlockSet(Core::Interpreter &cpu)
 {
-    std::uint32_t size = cpu.m_gpr[4];
-    std::uint32_t align = cpu.m_gpr[5];
-
-    cpu.m_gpr[3] = cpu.m_memory.heapAllocate(size, align ? align : 8);
+    std::uint8_t *dst = cpu.m_memory.hostPtr(cpu.m_gpr[3]);
+    const std::uint32_t size = cpu.m_gpr[5];
+    if (dst && size)
+        std::memset(dst, static_cast<int>(cpu.m_gpr[4] & 0xFF), size);
+    cpu.m_gpr[3] = 0;
 }
 
 // ---- DC (cache) ----
@@ -466,9 +594,229 @@ static void hle_DCFlushRange(Core::Interpreter &cpu) { (void) cpu; }
 static void hle_DCInvalidateRange(Core::Interpreter &cpu) { (void) cpu; }
 
 // ---- OS sync ----
+// Spinlocks and fast mutexes share the scheduler's mutex table (distinct guest addresses).
+// Cafe's spinlock Acquire also disables interrupts for the critical section, saving the prior
+// state in the lock; we mirror that so preemption stays off until the matching Release.
 
-static void hle_OSUninterruptibleSpinLock_Acquire(Core::Interpreter &cpu) { (void) cpu; }
-static void hle_OSUninterruptibleSpinLock_Release(Core::Interpreter &cpu) { (void) cpu; }
+static std::unordered_map<std::uint32_t, bool> g_spinSavedIntr;
+
+static void hle_OSUninterruptibleSpinLock_Acquire(Core::Interpreter &cpu)
+{
+    const std::uint32_t lock = cpu.m_gpr[3];
+    if (!cpu.m_scheduler.mutexLock(cpu, lock))
+        return; // parked; the SC re-executes on wake
+    g_spinSavedIntr[lock] = cpu.m_interruptsDisabled;
+    cpu.m_interruptsDisabled = true;
+    cpu.m_gpr[3] = 1; // BOOL acquired
+}
+static void hle_OSUninterruptibleSpinLock_Release(Core::Interpreter &cpu)
+{
+    const std::uint32_t lock = cpu.m_gpr[3];
+    cpu.m_interruptsDisabled = g_spinSavedIntr[lock];
+    cpu.m_scheduler.mutexUnlock(lock);
+    cpu.m_gpr[3] = 1;
+    cpu.m_scheduler.rescheduleAfterHle(cpu);
+}
+static void hle_OSUninterruptibleSpinLock_TryAcquire(Core::Interpreter &cpu)
+{
+    const std::uint32_t lock = cpu.m_gpr[3];
+    if (!cpu.m_scheduler.mutexTryLock(lock)) {
+        cpu.m_gpr[3] = 0;
+        return;
+    }
+    g_spinSavedIntr[lock] = cpu.m_interruptsDisabled;
+    cpu.m_interruptsDisabled = true;
+    cpu.m_gpr[3] = 1;
+}
+
+static void hle_OSFastMutex_Init(Core::Interpreter &cpu) { cpu.m_scheduler.mutexReset(cpu.m_gpr[3]); }
+static void hle_OSFastMutex_Lock(Core::Interpreter &cpu) { cpu.m_scheduler.mutexLock(cpu, cpu.m_gpr[3]); }
+static void hle_OSFastMutex_Unlock(Core::Interpreter &cpu)
+{
+    cpu.m_scheduler.mutexUnlock(cpu.m_gpr[3]);
+    cpu.m_scheduler.rescheduleAfterHle(cpu);
+}
+static void hle_OSFastMutex_TryLock(Core::Interpreter &cpu) { cpu.m_gpr[3] = cpu.m_scheduler.mutexTryLock(cpu.m_gpr[3]) ? 1 : 0; }
+
+static void hle_OSGetThreadPriority(Core::Interpreter &cpu) { cpu.m_gpr[3] = 16; } // default priority
+// ---- OSMessageQueue ----
+// A faithful ring buffer. The guest owns the OSMessage[] storage (16 bytes/entry: message + args[3]);
+// we track head/count host-side keyed by the guest queue pointer and copy whole 16-byte entries in
+// guest-endian (raw memcpy, no field interpretation needed). Cooperative scheduling means callers
+// already yield/sleep between polls, so non-blocking ring semantics are enough to let a producer
+// thread fill a queue a consumer thread is draining.
+namespace {
+    struct MsgQueueState {
+            std::uint32_t buffer{0};
+            std::uint32_t capacity{0};
+            std::uint32_t head{0};
+            std::uint32_t count{0};
+    };
+    std::unordered_map<std::uint32_t, MsgQueueState> g_msgQueues;
+    constexpr std::uint32_t kOSMessageSize = 16;
+
+    void copyMessage(Core::Interpreter &cpu, std::uint32_t dst, std::uint32_t src)
+    {
+        std::uint8_t *d = cpu.m_memory.hostPtr(dst);
+        const std::uint8_t *s = cpu.m_memory.hostPtr(src);
+        if (d && s)
+            std::memcpy(d, s, kOSMessageSize);
+    }
+} // namespace
+
+static void hle_OSInitMessageQueue(Core::Interpreter &cpu)
+{
+    g_msgQueues[cpu.m_gpr[3]] = MsgQueueState{cpu.m_gpr[4], cpu.m_gpr[5], 0, 0};
+    cpu.m_gpr[3] = 0;
+}
+
+// Senders park on queueAddr^1, receivers on queueAddr, so a send doesn't wake other senders.
+static void hle_OSSendMessage(Core::Interpreter &cpu)
+{
+    const std::uint32_t queue = cpu.m_gpr[3];
+    auto &q = g_msgQueues[queue];
+    if (!q.capacity || q.count == q.capacity) { // queue full
+        const bool blocking = cpu.m_gpr[5] & 1; // OS_MESSAGE_FLAGS_BLOCKING
+        if (q.capacity && blocking && cpu.m_scheduler.blockOn(cpu, queue ^ 1, /*retryInstruction=*/true))
+            return; // resume at the send SC and retry once a receiver frees a slot
+        cpu.m_gpr[3] = 0;
+        return;
+    }
+    const std::uint32_t tail = (q.head + q.count) % q.capacity;
+    copyMessage(cpu, q.buffer + tail * kOSMessageSize, cpu.m_gpr[4]);
+    q.count++;
+    cpu.m_gpr[3] = 1;
+    cpu.m_scheduler.wakeAll(queue);
+    cpu.m_scheduler.rescheduleAfterHle(cpu);
+}
+
+static void hle_OSJamMessage(Core::Interpreter &cpu) // insert at the front
+{
+    const std::uint32_t queue = cpu.m_gpr[3];
+    auto &q = g_msgQueues[queue];
+    if (!q.capacity || q.count == q.capacity) {
+        const bool blocking = cpu.m_gpr[5] & 1;
+        if (q.capacity && blocking && cpu.m_scheduler.blockOn(cpu, queue ^ 1, /*retryInstruction=*/true))
+            return; // resume at the jam SC and retry once a receiver frees a slot
+        cpu.m_gpr[3] = 0;
+        return;
+    }
+    q.head = (q.head + q.capacity - 1) % q.capacity;
+    copyMessage(cpu, q.buffer + q.head * kOSMessageSize, cpu.m_gpr[4]);
+    q.count++;
+    cpu.m_gpr[3] = 1;
+    cpu.m_scheduler.wakeAll(queue);
+    cpu.m_scheduler.rescheduleAfterHle(cpu);
+}
+
+static void hle_OSReceiveMessage(Core::Interpreter &cpu)
+{
+    const std::uint32_t queue = cpu.m_gpr[3];
+    auto &q = g_msgQueues[queue];
+    // WEMU_TRACE_MAINQ=1: when the main thread polls an EMPTY queue, log the queue address and the
+    // guest back-chain (once per unique call-site). Surfaces which producer-less queue main is
+    // busy-waiting on when the title won't advance.
+    static const bool traceMainQ = []() {
+        const char *e = std::getenv("WEMU_TRACE_MAINQ");
+        return e && e[0] == '1';
+    }();
+    if (traceMainQ && q.count == 0) {
+        const auto *cur = cpu.m_scheduler.current();
+        if (cur && cur->name == "main") {
+            static std::unordered_map<std::uint32_t, int> seen;
+            const std::uint32_t lr = cpu.m_lr + Core::Memory::MemoryMap::ApplicationCode;
+            if (seen[lr]++ < 2) {
+                Utils::Log::error("[MAINQ] main recv empty queue=0x{:08X} flags=0x{:X} lr={} -- back-chain:", queue, cpu.m_gpr[5],
+                                  Core::Diag::symbolize(cpu, lr));
+                std::uint32_t sp = cpu.m_gpr[1];
+                for (int f = 0; f < 12 && sp; f++) {
+                    std::uint32_t nextSp = 0, savedLr = 0;
+                    try {
+                        nextSp = cpu.m_memory.read<std::uint32_t>(sp);
+                        savedLr = cpu.m_memory.read<std::uint32_t>(sp + 4);
+                    } catch (...) {
+                        break;
+                    }
+                    if (savedLr)
+                        Utils::Log::error("           #{} ret={}", f, Core::Diag::symbolize(cpu, savedLr));
+                    if (nextSp <= sp)
+                        break;
+                    sp = nextSp;
+                }
+            }
+        }
+    }
+    if (q.count == 0) { // empty
+        // With OS_MESSAGE_FLAGS_BLOCKING, park until a sender posts. A blocking receive must not
+        // return FALSE after wake; resume at the SC so the receive is re-executed and copies the
+        // newly available message. Some Cafe wrappers use the returned payload immediately and do
+        // not retry a FALSE receive themselves.
+        const bool blocking = cpu.m_gpr[5] & 1;
+        if (blocking && cpu.m_scheduler.blockOn(cpu, queue, /*retryInstruction=*/true))
+            return;
+        if (blocking) {
+            cpu.m_gpr[3] = 0;
+            return;
+        }
+        // A non-blocking receive observes this instant only. Retrying after a forced
+        // context switch can prevent producers from building a queue ahead of consumers.
+        cpu.m_gpr[3] = 0;
+        return;
+    }
+    copyMessage(cpu, cpu.m_gpr[4], q.buffer + q.head * kOSMessageSize);
+    q.head = (q.head + 1) % q.capacity;
+    q.count--;
+    cpu.m_gpr[3] = 1;
+    cpu.m_scheduler.wakeAll(queue ^ 1); // a slot freed up: wake blocked senders
+    cpu.m_scheduler.rescheduleAfterHle(cpu);
+}
+
+static void hle_OSPeekMessage(Core::Interpreter &cpu)
+{
+    auto &q = g_msgQueues[cpu.m_gpr[3]];
+    if (q.count == 0) {
+        cpu.m_gpr[3] = 0;
+        return;
+    }
+    copyMessage(cpu, cpu.m_gpr[4], q.buffer + q.head * kOSMessageSize);
+    cpu.m_gpr[3] = 1;
+}
+
+// ---- hardware register / interrupt / dynamic-load primitives ----
+// We have no GPU/HW register file; reads return 0 and writes are dropped. Under cooperative
+// scheduling interrupts are meaningless, so disable returns "previously enabled" and restore is a
+// no-op. OSDynLoad_Acquire must write a non-zero module handle to *outHandle (r4) or callers
+// null-deref the returned handle.
+static void hle___OSReadRegister32Ex(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
+static void hle___OSWriteRegister32Ex(Core::Interpreter &cpu) { (void) cpu; }
+static void hle_OSReadRegister16(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
+static void hle_OSWriteRegister16(Core::Interpreter &cpu) { (void) cpu; }
+// Track the disable window so the timeslice preemption doesn't fire inside guest critical
+// sections. Returns the previous "enabled" state, per the Cafe API.
+static void hle_OSDisableInterrupts(Core::Interpreter &cpu)
+{
+    cpu.m_gpr[3] = cpu.m_interruptsDisabled ? 0 : 1;
+    cpu.m_interruptsDisabled = true;
+}
+
+static void hle_OSRestoreInterrupts(Core::Interpreter &cpu)
+{
+    const bool wasDisabled = cpu.m_interruptsDisabled;
+    cpu.m_interruptsDisabled = cpu.m_gpr[3] == 0; // r3 = state to restore (1 = enabled)
+    cpu.m_gpr[3] = wasDisabled ? 0 : 1;
+    cpu.m_scheduler.rescheduleAfterHle(cpu);
+}
+static void hle_OSEnforceInorderIO(Core::Interpreter &cpu) { (void) cpu; }
+static void hle_OSDriver_Register(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
+
+static void hle_OSDynLoad_Acquire(Core::Interpreter &cpu)
+{
+    if (cpu.m_gpr[4]) // *outHandle = fake non-zero module handle
+        cpu.m_memory.write<std::uint32_t>(cpu.m_gpr[4], 0xD11B0001u);
+    cpu.m_gpr[3] = 0; // OS_DYNLOAD_OK
+}
+
+static void hle_FSSetStateChangeNotification(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
 
 // ---- WUT runtime ----
 
@@ -494,28 +842,127 @@ static void hle___rplwrap_exit(Core::Interpreter &cpu) // NOLINT(bugprone-reserv
 
 static void hle_main_import(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
 
+// ---- misc library stubs (nn::act, SAVE, padscore/KPAD, WPAD, bsp) ----
+// Stubbed so init paths that query them complete. Returning success/non-zero where a caller reads
+// the result back; real behaviour is deferred.
+static void hle_nn_act_Initialize(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; } // nn::Result OK
+
+// Fake offline account in slot 1 so the boot-time account queries succeed without a network.
+static void hle_nn_act_GetSlotNo(Core::Interpreter &cpu) { cpu.m_gpr[3] = 1; }
+static void hle_nn_act_GetNumOfAccounts(Core::Interpreter &cpu) { cpu.m_gpr[3] = 1; }
+static void hle_nn_act_IsSlotOccupied(Core::Interpreter &cpu) { cpu.m_gpr[3] = (cpu.m_gpr[3] & 0xFF) == 1; }
+static void hle_nn_act_GetPersistentId(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0x80000001u; }
+static void hle_nn_act_GetPersistentIdEx(Core::Interpreter &cpu) { cpu.m_gpr[3] = (cpu.m_gpr[3] & 0xFF) == 1 ? 0x80000001u : 0; }
+static void hle_nn_act_IsNetworkAccount(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
+
+// Out-parameter getters for the fake account: stable made-up ids, nn::Result OK.
+static void hle_nn_act_GetUuidEx(Core::Interpreter &cpu) // (ACTUuid* out, u8 slot)
+{
+    for (std::uint32_t i = 0; i < 16 && cpu.m_gpr[3]; i++)
+        cpu.m_memory.write<std::uint8_t>(cpu.m_gpr[3] + i, static_cast<std::uint8_t>(0xA0 + i));
+    cpu.m_gpr[3] = 0;
+}
+
+static void hle_nn_act_GetPrincipalIdEx(Core::Interpreter &cpu) // (u32* out, u8 slot)
+{
+    if (cpu.m_gpr[3])
+        cpu.m_memory.write<std::uint32_t>(cpu.m_gpr[3], 0x12345678u);
+    cpu.m_gpr[3] = 0;
+}
+
+static void hle_nn_act_GetSimpleAddressIdEx(Core::Interpreter &cpu) // (u32* out, u8 slot)
+{
+    if (cpu.m_gpr[3])
+        cpu.m_memory.write<std::uint32_t>(cpu.m_gpr[3], 0x11223344u);
+    cpu.m_gpr[3] = 0;
+}
+
+static void hle_nn_act_GetTransferableIdEx(Core::Interpreter &cpu) // (u64* out, u32 unk, u8 slot)
+{
+    if (cpu.m_gpr[3])
+        cpu.m_memory.write<std::uint64_t>(cpu.m_gpr[3], 0x1122334455667788ull);
+    cpu.m_gpr[3] = 0;
+}
+
+static void hle_OSIsHomeButtonMenuEnabled(Core::Interpreter &cpu) { cpu.m_gpr[3] = 1; }
+
+// _SYSGetSystemApplicationTitleId(SYSTEM_APP_ID id) -> u64 title id in r3:r4.
+static void hle__SYSGetSystemApplicationTitleId(Core::Interpreter &cpu)
+{
+    cpu.m_gpr[4] = 0x10040200u | (cpu.m_gpr[3] << 8);
+    cpu.m_gpr[3] = 0x00050010u;
+}
+
+// GetMii(FFLStoreData* out): zeroed Mii + OK result; real Mii data can come with FFL support.
+static void hle_nn_act_GetMii(Core::Interpreter &cpu)
+{
+    for (std::uint32_t off = 0; off < 0x60 && cpu.m_gpr[3]; off += 4)
+        cpu.m_memory.write<std::uint32_t>(cpu.m_gpr[3] + off, 0);
+    cpu.m_gpr[3] = 0;
+}
+
+// GetMiiName(char16* out): "WEMU" in UTF-16BE + terminator, OK result.
+static void hle_nn_act_GetMiiName(Core::Interpreter &cpu)
+{
+    if (cpu.m_gpr[3]) {
+        const char16_t name[] = u"WEMU";
+        for (std::uint32_t i = 0; i < 5; ++i)
+            cpu.m_memory.write<std::uint16_t>(cpu.m_gpr[3] + i * 2, static_cast<std::uint16_t>(name[i]));
+    }
+    cpu.m_gpr[3] = 0;
+}
+static void hle_SAVEInit(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
+static void hle_KPADInitEx(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
+static void hle_KPADGetMplsWorkSize(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0x1000; }
+static void hle_KPADSetMplsWorkarea(Core::Interpreter &cpu) { (void) cpu; }
+static void hle_WPADEnableURCC(Core::Interpreter &cpu) { (void) cpu; }
+
+// bspGetHardwareVersion(u32* outVersion) -> writes a plausible Latte hardware version, returns 0.
+static void hle_bspGetHardwareVersion(Core::Interpreter &cpu)
+{
+    if (cpu.m_gpr[3])
+        cpu.m_memory.write<std::uint32_t>(cpu.m_gpr[3], 0x21100010u);
+    cpu.m_gpr[3] = 0;
+}
+
 // ---- ProcUI ----
 
 static void hle_ProcUIInit(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
 static void hle_ProcUIInitEx(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
 static void hle_ProcUIShutdown(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
-static void hle_ProcUIIsRunning(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
+static void hle_ProcUIIsRunning(Core::Interpreter &cpu)
+{
+    // BOOL ProcUIIsRunning(void).  Returning false here tells the title that the process is in
+    // shutdown and lets otherwise-healthy loops fall through to libc exit(0).  Keep the app
+    // running until the host window is closed.
+    cpu.m_gpr[3] = (!cpu.m_renderer || cpu.m_renderer->is_open()) ? 1u : 0u;
+}
 static void hle_ProcUISubProcessMessages(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
 static void hle_ProcUIRegisterCallback(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
 
 static void hle_ProcUIProcessMessages(Core::Interpreter &cpu)
 {
+    // ProcUIStatus: 0=IN_FOREGROUND, 1=IN_BACKGROUND, 2=RELEASE_FOREGROUND, 3=EXITING.
+    //
+    // A host SDL quit/escape is not a Cafe ProcUI shutdown request from the emulated OS.  Reporting
+    // EXITING here makes MK8 cleanly fall through to _Exit(0), hiding the real next boot gate.
+    // Keep the title in foreground; if the host asks to close, stop the interpreter directly.
     if (cpu.m_renderer) {
-        cpu.m_renderer->poll_events();
-        cpu.m_gpr[3] = cpu.m_renderer->is_open() ? 0u : 3u;
-    } else {
-        cpu.m_gpr[3] = 0;
+        if (!cpu.m_renderer->poll_events())
+            cpu.m_running = false;
     }
+    cpu.m_gpr[3] = 0; // PROCUI_STATUS_IN_FOREGROUND
+    cpu.m_scheduler.yield(cpu);
 }
 
 // ---- VPAD ----
 
-static void hle_VPADInit(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
+static void hle_VPADInit(Core::Interpreter &cpu)
+{
+    cpu.m_vpadPreviousHold = 0;
+    cpu.m_vpadReadCount = 0;
+    cpu.m_gpr[3] = 0;
+}
 static void hle_VPADSetAccParam(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
 
 static void hle_VPADRead(Core::Interpreter &cpu)
@@ -523,22 +970,48 @@ static void hle_VPADRead(Core::Interpreter &cpu)
     std::uint32_t buf_addr = cpu.m_gpr[4];
     std::uint32_t err_addr = cpu.m_gpr[6];
 
-    if (!cpu.m_renderer) {
+    const auto channel = cpu.m_gpr[3];
+    const auto count = static_cast<std::int32_t>(cpu.m_gpr[5]);
+    if (channel || count <= 0 || !buf_addr) {
+        if (err_addr)
+            cpu.m_memory.write<std::uint32_t>(err_addr, channel ? -2u : -1u);
         cpu.m_gpr[3] = 0;
         return;
     }
 
-    cpu.m_renderer->poll_events();
-    std::uint32_t hold = cpu.m_renderer->get_buttons() | cpu.m_controllerMask;
+    if (cpu.m_renderer)
+        cpu.m_renderer->poll_events();
+    std::uint32_t hold = (cpu.m_renderer ? cpu.m_renderer->get_buttons() : 0u) | cpu.m_controllerMask;
 
-    static std::uint32_t s_prev_hold = 0;
-    std::uint32_t trigger = hold & ~s_prev_hold;
-    std::uint32_t released = s_prev_hold & ~hold;
-    s_prev_hold = hold;
+    // WEMU_AUTO_A=1: pulse the confirm buttons so unattended boots pass "press +/A" gates (MK8's
+    // title is "Press +"). Pulsing is driven by the VPADRead CALL COUNT, not wall time, so the
+    // rising edge (a read with the button up followed by a read with it down) is always clean even
+    // when the guest polls sparsely at a low frame rate — MK8's title reads the `trigger` (edge)
+    // field, so a missed edge means no advance. We press A (0x8000) + PLUS/Start (0x0008) together.
+    static const bool autoA = []() {
+        const char *e = std::getenv("WEMU_AUTO_A");
+        return e && e[0] == '1';
+    }();
+    ++cpu.m_vpadReadCount;
+    if (autoA) {
+        // ~20-read press, ~100-read gap: guarantees an up->down->up cycle the edge detector sees.
+        if (cpu.m_vpadReadCount % 120 < 20)
+            hold |= 0x8000u | 0x0008u;
+    }
+
+    std::uint32_t trigger = hold & ~cpu.m_vpadPreviousHold;
+    std::uint32_t released = cpu.m_vpadPreviousHold & ~hold;
+
+    // One complete sample: centered sticks, no touch/motion, and an identity orientation.
+    for (std::uint32_t offset = 0; offset < 0xAC; offset += 4)
+        cpu.m_memory.write<std::uint32_t>(buf_addr + offset, 0);
+    for (const auto offset : {0x6Cu, 0x7Cu, 0x8Cu})
+        cpu.m_memory.write<std::uint32_t>(buf_addr + offset, 0x3F800000);
 
     cpu.m_memory.write<std::uint32_t>(buf_addr + 0, hold);
     cpu.m_memory.write<std::uint32_t>(buf_addr + 4, trigger);
     cpu.m_memory.write<std::uint32_t>(buf_addr + 8, released);
+    cpu.m_vpadPreviousHold = hold;
 
     if (err_addr)
         cpu.m_memory.write<std::uint32_t>(err_addr, 0);
@@ -550,8 +1023,6 @@ static void hle_VPADRead(Core::Interpreter &cpu)
 
 static void hle_FSInit(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
 static void hle_FSShutdown(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
-static void hle_FSAddClient(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
-static void hle_FSDelClient(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
 static void hle_FSInitCmdBlock(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
 static void hle_FSAInit(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
 static void hle_FSAShutdown(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
@@ -589,8 +1060,61 @@ void RegisterCoreinitFunctions()
     Core::syscallHandler.registerSyscall("OSGetTime", hle_OSGetTime);
     Core::syscallHandler.registerSyscall("OSGetTitleID", hle_OSGetTitleID);
     Core::syscallHandler.registerSyscall("OSGetSystemInfo", hle_OSGetSystemInfo);
+    Core::syscallHandler.registerSyscall("OSGetSystemTime", hle_OSGetSystemTime);
+    Core::syscallHandler.registerSyscall("OSFastMutex_Init", hle_OSFastMutex_Init);
+    Core::syscallHandler.registerSyscall("OSFastMutex_Lock", hle_OSFastMutex_Lock);
+    Core::syscallHandler.registerSyscall("OSFastMutex_Unlock", hle_OSFastMutex_Unlock);
+    Core::syscallHandler.registerSyscall("OSFastMutex_TryLock", hle_OSFastMutex_TryLock);
+    Core::syscallHandler.registerSyscall("OSBlockMove", hle_OSBlockMove);
+    Core::syscallHandler.registerSyscall("OSBlockSet", hle_OSBlockSet);
+    Core::syscallHandler.registerSyscall("OSGetThreadPriority", hle_OSGetThreadPriority);
+    Core::syscallHandler.registerSyscall("OSInitMessageQueue", hle_OSInitMessageQueue);
+    Core::syscallHandler.registerSyscall("OSSendMessage", hle_OSSendMessage);
+    Core::syscallHandler.registerSyscall("OSReceiveMessage", hle_OSReceiveMessage);
+    Core::syscallHandler.registerSyscall("OSPeekMessage", hle_OSPeekMessage);
+    Core::syscallHandler.registerSyscall("OSJamMessage", hle_OSJamMessage);
+    Core::syscallHandler.registerSyscall("__OSReadRegister32Ex", hle___OSReadRegister32Ex);
+    Core::syscallHandler.registerSyscall("__OSWriteRegister32Ex", hle___OSWriteRegister32Ex);
+    Core::syscallHandler.registerSyscall("OSReadRegister16", hle_OSReadRegister16);
+    Core::syscallHandler.registerSyscall("OSWriteRegister16", hle_OSWriteRegister16);
+    Core::syscallHandler.registerSyscall("OSDisableInterrupts", hle_OSDisableInterrupts);
+    Core::syscallHandler.registerSyscall("OSRestoreInterrupts", hle_OSRestoreInterrupts);
+    Core::syscallHandler.registerSyscall("OSEnforceInorderIO", hle_OSEnforceInorderIO);
+    Core::syscallHandler.registerSyscall("OSDriver_Register", hle_OSDriver_Register);
+    Core::syscallHandler.registerSyscall("OSDynLoad_Acquire", hle_OSDynLoad_Acquire);
+    Core::syscallHandler.registerSyscall("Initialize__Q2_2nn3actFv", hle_nn_act_Initialize);
+    Core::syscallHandler.registerSyscall("Finalize__Q2_2nn3actFv", hle_nn_act_Initialize);
+    Core::syscallHandler.registerSyscall("GetSlotNo__Q2_2nn3actFv", hle_nn_act_GetSlotNo);
+    Core::syscallHandler.registerSyscall("GetDefaultAccount__Q2_2nn3actFv", hle_nn_act_GetSlotNo);
+    Core::syscallHandler.registerSyscall("GetParentalControlSlotNo__Q2_2nn3actFv", hle_nn_act_GetSlotNo);
+    Core::syscallHandler.registerSyscall("GetNumOfAccounts__Q2_2nn3actFv", hle_nn_act_GetNumOfAccounts);
+    Core::syscallHandler.registerSyscall("IsSlotOccupied__Q2_2nn3actFUc", hle_nn_act_IsSlotOccupied);
+    Core::syscallHandler.registerSyscall("GetPersistentId__Q2_2nn3actFv", hle_nn_act_GetPersistentId);
+    Core::syscallHandler.registerSyscall("GetPersistentIdEx__Q2_2nn3actFUc", hle_nn_act_GetPersistentIdEx);
+    Core::syscallHandler.registerSyscall("IsNetworkAccount__Q2_2nn3actFv", hle_nn_act_IsNetworkAccount);
+    Core::syscallHandler.registerSyscall("IsNetworkAccountEx__Q2_2nn3actFUc", hle_nn_act_IsNetworkAccount);
+    Core::syscallHandler.registerSyscall("GetMii__Q2_2nn3actFP12FFLStoreData", hle_nn_act_GetMii);
+    Core::syscallHandler.registerSyscall("GetMiiEx__Q2_2nn3actFP12FFLStoreDataUc", hle_nn_act_GetMii);
+    Core::syscallHandler.registerSyscall("GetMiiName__Q2_2nn3actFPw", hle_nn_act_GetMiiName);
+    Core::syscallHandler.registerSyscall("GetMiiNameEx__Q2_2nn3actFPwUc", hle_nn_act_GetMiiName);
+    Core::syscallHandler.registerSyscall("GetUuidEx__Q2_2nn3actFP7ACTUuidUc", hle_nn_act_GetUuidEx);
+    Core::syscallHandler.registerSyscall("GetPrincipalIdEx__Q2_2nn3actFPUiUc", hle_nn_act_GetPrincipalIdEx);
+    Core::syscallHandler.registerSyscall("GetSimpleAddressIdEx__Q2_2nn3actFPUiUc", hle_nn_act_GetSimpleAddressIdEx);
+    Core::syscallHandler.registerSyscall("GetTransferableIdEx__Q2_2nn3actFPULUiUc", hle_nn_act_GetTransferableIdEx);
+    Core::syscallHandler.registerSyscall("OSIsHomeButtonMenuEnabled", hle_OSIsHomeButtonMenuEnabled);
+    Core::syscallHandler.registerSyscall("OSEnableHomeButtonMenu", hle_OSEnableHomeButtonMenu);
+    Core::syscallHandler.registerSyscall("_SYSGetSystemApplicationTitleId", hle__SYSGetSystemApplicationTitleId);
+    Core::syscallHandler.registerSyscall("SAVEInit", hle_SAVEInit);
+    Core::syscallHandler.registerSyscall("KPADInitEx", hle_KPADInitEx);
+    Core::syscallHandler.registerSyscall("KPADGetMplsWorkSize", hle_KPADGetMplsWorkSize);
+    Core::syscallHandler.registerSyscall("KPADSetMplsWorkarea", hle_KPADSetMplsWorkarea);
+    Core::syscallHandler.registerSyscall("WPADEnableURCC", hle_WPADEnableURCC);
+    Core::syscallHandler.registerSyscall("bspGetHardwareVersion", hle_bspGetHardwareVersion);
+    Core::syscallHandler.registerSyscall("FSSetStateChangeNotification", hle_FSSetStateChangeNotification);
     Core::syscallHandler.registerSyscall("OSGetCoreId", hle_OSGetCoreId);
     Core::syscallHandler.registerSyscall("OSGetMainCoreId", hle_OSGetMainCoreId);
+    Core::syscallHandler.registerSyscall("OSGetCoreCount", hle_OSGetCoreCount);
+    Core::syscallHandler.registerSyscall("OSIsMainCore", hle_OSIsMainCore);
     Core::syscallHandler.registerSyscall("OSIsDebuggerPresent", hle_OSIsDebuggerPresent);
     Core::syscallHandler.registerSyscall("OSIsDebuggerInitialized", hle_OSIsDebuggerInitialized);
     Core::syscallHandler.registerSyscall("OSEnableHomeButtonMenu", hle_OSEnableHomeButtonMenu);
@@ -605,6 +1129,7 @@ void RegisterCoreinitFunctions()
     Core::syscallHandler.registerSyscall("OSInitMutexEx", hle_OSInitMutexEx);
     Core::syscallHandler.registerSyscall("OSLockMutex", hle_OSLockMutex);
     Core::syscallHandler.registerSyscall("OSUnlockMutex", hle_OSUnlockMutex);
+    Core::syscallHandler.registerSyscall("OSTryLockMutex", hle_OSTryLockMutex);
 
     // OS Thread
     Core::syscallHandler.registerSyscall("OSCreateThread", hle_OSCreateThread);
@@ -612,6 +1137,8 @@ void RegisterCoreinitFunctions()
     Core::syscallHandler.registerSyscall("OSSleepTicks", hle_OSSleepTicks);
     Core::syscallHandler.registerSyscall("OSYieldThread", hle_OSYieldThread);
     Core::syscallHandler.registerSyscall("OSGetCurrentThread", hle_OSGetCurrentThread);
+    Core::syscallHandler.registerSyscall("OSJoinThread", hle_OSJoinThread);
+    Core::syscallHandler.registerSyscall("OSExitThread", hle_OSExitThread);
     Core::syscallHandler.registerSyscall("OSSetThreadName", hle_OSSetThreadName);
     Core::syscallHandler.registerSyscall("OSSetThreadPriority", hle_OSSetThreadPriority);
     Core::syscallHandler.registerSyscall("OSSetThreadAffinity", hle_OSSetThreadAffinity);
@@ -622,16 +1149,8 @@ void RegisterCoreinitFunctions()
     Core::syscallHandler.registerSyscall("OSGetThreadSpecific", hle_wut_get_thread_specific);
     Core::syscallHandler.registerSyscall("OSSetThreadSpecific", hle_wut_set_thread_specific);
 
-    // MEM
-    Core::syscallHandler.registerSyscall("MEMAllocFromDefaultHeap", hle_MEMAllocFromDefaultHeap);
-    Core::syscallHandler.registerSyscall("MEMAllocFromDefaultHeapEx", hle_MEMAllocFromDefaultHeapEx);
-    Core::syscallHandler.registerSyscall("MEMFreeToDefaultHeap", hle_MEMFreeToDefaultHeap);
-    Core::syscallHandler.registerSyscall("MEMGetBaseHeapHandle", hle_MEMGetBaseHeapHandle);
-    Core::syscallHandler.registerSyscall("MEMCreateExpHeapEx", hle_MEMCreateExpHeapEx);
-    Core::syscallHandler.registerSyscall("MEMAllocFromExpHeapEx", hle_MEMAllocFromExpHeapEx);
-    Core::syscallHandler.registerSyscall("MEMFreeToExpHeap", hle_MEMFreeToExpHeap);
-    Core::syscallHandler.registerSyscall("MEMDestroyExpHeap", hle_MEMDestroyExpHeap);
-    Core::syscallHandler.registerSyscall("MEMGetAllocatableSizeForExpHeapEx", hle_MEMGetAllocatableSizeForExpHeapEx);
+    // MEM (real guest-visible heaps)
+    RegisterMemHeapFunctions();
 
     // Cache
     Core::syscallHandler.registerSyscall("DCFlushRange", hle_DCFlushRange);
@@ -640,6 +1159,7 @@ void RegisterCoreinitFunctions()
     // OS sync
     Core::syscallHandler.registerSyscall("OSUninterruptibleSpinLock_Acquire", hle_OSUninterruptibleSpinLock_Acquire);
     Core::syscallHandler.registerSyscall("OSUninterruptibleSpinLock_Release", hle_OSUninterruptibleSpinLock_Release);
+    Core::syscallHandler.registerSyscall("OSUninterruptibleSpinLock_TryAcquire", hle_OSUninterruptibleSpinLock_TryAcquire);
 
     // WUT runtime
     Core::syscallHandler.registerSyscall("__init_wut", hle___init_wut);
@@ -664,8 +1184,6 @@ void RegisterCoreinitFunctions()
     // FS / FSA
     Core::syscallHandler.registerSyscall("FSInit", hle_FSInit);
     Core::syscallHandler.registerSyscall("FSShutdown", hle_FSShutdown);
-    Core::syscallHandler.registerSyscall("FSAddClient", hle_FSAddClient);
-    Core::syscallHandler.registerSyscall("FSDelClient", hle_FSDelClient);
     Core::syscallHandler.registerSyscall("FSInitCmdBlock", hle_FSInitCmdBlock);
     Core::syscallHandler.registerSyscall("FSAInit", hle_FSAInit);
     Core::syscallHandler.registerSyscall("FSAShutdown", hle_FSAShutdown);
@@ -682,4 +1200,13 @@ void RegisterCoreinitFunctions()
     // Sysapp
     Core::syscallHandler.registerSyscall("SYSRelaunchTitle", hle_SYSRelaunchTitle);
     Core::syscallHandler.registerSyscall("SYSLaunchMenu", hle_SYSLaunchMenu);
+
+    // Events, conds, alarms, GHS runtime, cache ops, panic/report, UC/MCP, OSDynLoad, zlib
+    RegisterCoreinitExtraFunctions();
+
+    // sndcore2 (AX) voices + frame-callback registry
+    RegisterAxFunctions();
+
+    // Online/account service libraries (nn::ac/fp/olv/boss/ec, AOC) + async login callbacks
+    RegisterNnOnlineFunctions();
 }
