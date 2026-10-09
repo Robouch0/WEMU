@@ -36,6 +36,18 @@ endif()
 # 2. CORE LIBRARY
 # ------------------------------------------------------------
 add_library(core STATIC
+        src/utils/Diagnostics.hpp
+        src/utils/Diagnostics.cpp
+        src/hle/Scheduler.hpp
+        src/hle/Scheduler.cpp
+        src/cpu/recompiler/Block.cpp
+        src/cpu/instructions/CrLogical.cpp
+        src/cpu/instructions/Trap.cpp
+        src/cpu/instructions/load/LoadExtra.cpp
+        src/cpu/instructions/store/StoreExtra.cpp
+        src/cpu/instructions/float/FloatArith.cpp
+        src/cpu/instructions/float/FloatLoadStoreExtra.cpp
+        src/cpu/instructions/float/PairedSingle.cpp
         src/binary/Binary.hpp
         src/utils/BeDecoder.hpp
         src/utils/Logger.hpp
@@ -137,6 +149,20 @@ target_link_libraries(wemu PRIVATE core)
 
 if(WEMU_ENABLE_LLVM)
     find_package(LLVM 19.1 REQUIRED CONFIG)
+    set(ppc_identity "")
+    foreach(ppc_source IN ITEMS src/cpu/recompiler/Block.cpp src/cpu/recompiler/Block.hpp
+            src/cpu/recompiler/LlvmBackend.cpp src/cpu/recompiler/LlvmBackend.hpp)
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${ppc_source}")
+        file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/${ppc_source}" ppc_hash)
+        string(APPEND ppc_identity "${ppc_hash}")
+    endforeach()
+    string(SHA256 ppc_fingerprint "${ppc_identity}")
+    set_property(SOURCE src/cpu/recompiler/LlvmBackend.cpp APPEND PROPERTY COMPILE_DEFINITIONS
+        "WEMU_PPC_COMPILER_FINGERPRINT=\"${ppc_fingerprint}\"")
+    target_sources(core PRIVATE src/cpu/recompiler/LlvmBackend.cpp src/cpu/recompiler/Dispatcher.cpp src/cpu/recompiler/ObjectCache.cpp)
+    target_include_directories(core SYSTEM PRIVATE ${LLVM_INCLUDE_DIRS})
+    target_compile_definitions(core PUBLIC WEMU_HAS_LLVM=1)
+    target_link_libraries(core PRIVATE LLVM)
 endif()
 
 if(ENABLE_COVERAGE)

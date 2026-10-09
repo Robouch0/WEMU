@@ -25,6 +25,7 @@
 #include "cpu/interpreter/Interpreter.hpp"
 #include "cpu/interpreter/SyscallHandler.hpp"
 #include "cpu/types/EncodedInstruction.hpp"
+#include "utils/Diagnostics.hpp"
 
 namespace Core::Instruction {
 
@@ -130,20 +131,25 @@ namespace Core::Instruction {
         // Import interception: RPL import stubs live at 0xC0000xxx (outside the flat buffer).
         // Dispatch to the HLE handler and return to LR, just like SC does.
         if (cpu.m_ctr >= 0xC0000000U) {
-            const std::string *sym_name = nullptr;
-            for (const auto &sym: cpu.m_binary.symbols) {
-                if (sym.raw.header.st_value == cpu.m_ctr) {
-                    sym_name = &sym.name;
-                    break;
-                }
-            }
+            const auto it = cpu.m_importBySentinel.find(cpu.m_ctr);
+            const std::string *sym_name = it != cpu.m_importBySentinel.end() ? it->second : nullptr;
             cpu.m_hle_redirected = false;
             if (sym_name && Core::syscallHandler.syscallTable.contains(*sym_name)) {
-                Utils::Log::debug("[BCTR] symbol name found {}", *sym_name);
-                Utils::Log::debug("[HLE] [BCTR] SyscallTable has found symbol {}", *sym_name);
-                Core::syscallHandler.get (*sym_name)(cpu);
+                const auto handler = Core::syscallHandler.get(*sym_name);
+                if (Diag::traceHle()) {
+                    const std::uint32_t a3 = cpu.m_gpr[3], a4 = cpu.m_gpr[4], a5 = cpu.m_gpr[5], a6 = cpu.m_gpr[6];
+                    handler(cpu);
+                    std::cout << std::format("[HLE] {}(r3=0x{:08X} r4=0x{:08X} r5=0x{:08X} r6=0x{:08X}) -> 0x{:08X} [bctr]", *sym_name,
+                                             a3, a4, a5, a6, cpu.m_gpr[3])
+                              << std::endl;
+                } else {
+                    handler(cpu);
+                }
+            } else if (sym_name) {
+                Diag::noteUnknownImport(*sym_name, cpu);
+                cpu.m_gpr[3] = 0;
             } else {
-                Utils::Log::debug("[BCTR] We put the value 0 inside gpr 0 bc why not (salut matthieu)");
+                Utils::Log::error("[BCTR] indirect call to unmapped sentinel 0x{:08X} (no symbol); returning 0", cpu.m_ctr);
                 cpu.m_gpr[3] = 0;
             }
             if (!cpu.m_hle_redirected)

@@ -29,19 +29,21 @@ namespace Core {
             enum MemoryMap : std::uint32_t {
                 ApplicationCode = 0x02000000,
                 ApplicationData = 0x10000000,
-                ApplicationMemoryEnd = 0x42000000,
+                ApplicationMemoryEnd = 0x6D000000,
                 GraphicsResources = 0xF4000000,
                 GraphicsResourcesEnd = 0xF6000000
             };
 
             static constexpr uint32_t STACK_BASE = 0xC0FF0000;
             static constexpr uint32_t STACK_SIZE = 0x100000; // 1 MB
-            static constexpr uint32_t HEAP_BASE = 0x28000000;
+            // Internal HLE pool (0x26000000..0x28000000). The guest-visible MEM2 arena that the
+            // title allocates from starts at 0x28000000 (see hle/MemHeap.cpp) — keep out of it.
+            static constexpr uint32_t HEAP_BASE = 0x26000000;
             static constexpr uint32_t MIN_HEAP_ALIGN = 4;
             static constexpr uint32_t DIMPORT_BASE = 0xC0000000; // dimport slots
             static constexpr uint32_t DIMPORT_SIZE = 0x4000; // 16 KB
 
-            explicit Memory(const std::size_t &size = 0x40000000) : m_memory(), m_virtAddress(ApplicationCode), m_memSize(size)
+            explicit Memory(const std::size_t &size = ApplicationMemoryEnd - ApplicationCode) : m_memory(), m_virtAddress(ApplicationCode), m_memSize(size)
             {
                 m_memory.resize(size);
                 m_stack.resize(STACK_SIZE);
@@ -55,15 +57,17 @@ namespace Core {
 
             [[nodiscard]] std::uint8_t *hostPtr(const std::uint32_t address) noexcept
             {
+                // Main memory (code/data/heap, [ApplicationCode, ApplicationMemoryEnd)) is by far the
+                // common case, so test it first: one predictable branch on the hot path. Stack and
+                // dimport live at 0xC0xxxxxx, well above ApplicationMemoryEnd, so their offset here
+                // exceeds m_memory.size() and correctly falls through to the checks below.
+                const std::size_t offset = static_cast<std::size_t>(address) - m_virtAddress;
+                if (address >= m_virtAddress && offset < m_memory.size())
+                    return reinterpret_cast<std::uint8_t *>(m_memory.data() + offset);
                 if (address >= STACK_BASE && address < STACK_BASE + STACK_SIZE)
                     return reinterpret_cast<std::uint8_t *>(m_stack.data() + (address - STACK_BASE));
                 if (address >= DIMPORT_BASE && address < DIMPORT_BASE + DIMPORT_SIZE)
                     return reinterpret_cast<uint8_t *>(m_dimport.data()) + (address - DIMPORT_BASE);
-                if (address >= m_virtAddress) {
-                    const std::size_t offset = address - m_virtAddress;
-                    if (offset < m_memory.size())
-                        return reinterpret_cast<std::uint8_t *>(m_memory.data() + offset);
-                }
                 return nullptr;
             }
 
