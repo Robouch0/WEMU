@@ -7,7 +7,7 @@
 
 namespace Core::Gfx::Latte {
     std::shared_ptr<const FragmentShader> FragmentShaderCache::get(const std::vector<std::uint32_t> &words,
-                                                                  std::span<const TextureType> resourceTypes)
+                                                                   std::span<const TextureType> resourceTypes)
     {
         // Missing resource types default to 2D, so trailing defaults are equivalent.
         while (!resourceTypes.empty() && resourceTypes.back() == TextureType::TwoD)
@@ -19,9 +19,9 @@ namespace Core::Gfx::Latte {
         }
         ++m_misses;
         auto shader = std::make_shared<const FragmentShader>(lowerFragmentShader(*decodeProgram(words), resourceTypes));
-        constexpr std::size_t maxBytes = 32 * 1024 * 1024;
-        const auto bytes = words.size() * sizeof(std::uint32_t) + resourceTypes.size() * sizeof(TextureType) +
-                           shader->source.size() + shader->error.size() + shader->textures.size() * sizeof(TextureBinding);
+        constexpr std::size_t maxBytes = std::size_t{32} * 1024 * 1024;
+        const auto bytes = words.size() * sizeof(std::uint32_t) + resourceTypes.size() * sizeof(TextureType) + shader->source.size() +
+                           shader->error.size() + shader->textures.size() * sizeof(TextureBinding);
         if (bytes <= maxBytes) {
             if (m_entries.size() >= 128 || bytes > maxBytes - m_bytes) {
                 m_entries.clear();
@@ -81,14 +81,32 @@ namespace Core::Gfx::Latte {
 
         std::string predicateCondition(const AluInst &in)
         {
-            if (in.op3) return {};
+            if (in.op3)
+                return {};
             std::string comparison;
             switch (in.op) {
-                case OP2_PRED_SETE: case OP2_PRED_SETE_PUSH: case OP2_PRED_SETE_INT: comparison = "=="; break;
-                case OP2_PRED_SETGT: case OP2_PRED_SETGT_PUSH: case OP2_PRED_SETGT_INT: comparison = ">"; break;
-                case OP2_PRED_SETGE: case OP2_PRED_SETGE_PUSH: case OP2_PRED_SETGE_INT: comparison = ">="; break;
-                case OP2_PRED_SETNE: case OP2_PRED_SETNE_PUSH: case OP2_PRED_SETNE_INT: comparison = "!="; break;
-                default: return {};
+                case OP2_PRED_SETE:
+                case OP2_PRED_SETE_PUSH:
+                case OP2_PRED_SETE_INT:
+                    comparison = "==";
+                    break;
+                case OP2_PRED_SETGT:
+                case OP2_PRED_SETGT_PUSH:
+                case OP2_PRED_SETGT_INT:
+                    comparison = ">";
+                    break;
+                case OP2_PRED_SETGE:
+                case OP2_PRED_SETGE_PUSH:
+                case OP2_PRED_SETGE_INT:
+                    comparison = ">=";
+                    break;
+                case OP2_PRED_SETNE:
+                case OP2_PRED_SETNE_PUSH:
+                case OP2_PRED_SETNE_INT:
+                    comparison = "!=";
+                    break;
+                default:
+                    return {};
             }
             auto a = source(in.src[0], in), b = source(in.src[1], in);
             if (in.op >= OP2_PRED_SETE_INT) {
@@ -112,9 +130,9 @@ namespace Core::Gfx::Latte {
             if (bankSwizzle > (in.scalarSlot ? 3u : 5u))
                 throw std::runtime_error("reserved ALU bank swizzle");
             if (!condition.empty())
-                return in.op >= OP2_PRED_SETE_INT ? "uintBitsToFloat(" + condition + " ? 4294967295u : 0u)"
-                                                : "(" + condition + " ? 1.0 : 0.0)";
-            const auto a = source(in.src[0], in), b = source(in.src[1], in);
+                return in.op >= OP2_PRED_SETE_INT ? "uintBitsToFloat(" + condition + " ? 4294967295u : 0u)" : "(" + condition + " ? 1.0 : 0.0)";
+            auto a = source(in.src[0], in);
+            const auto b = source(in.src[1], in);
             if (in.op3) {
                 const auto c = source(in.src[2], in);
                 switch (in.op) {
@@ -228,11 +246,13 @@ namespace Core::Gfx::Latte {
                 entryDepth.push_back(depth);
                 body += std::format("if(pc<={}u) {{\n", cf / 2);
                 const auto push = [&] {
-                    if (depth == 32) throw std::runtime_error("control-flow stack overflow");
+                    if (depth == 32)
+                        throw std::runtime_error("control-flow stack overflow");
                     body += std::format("activeStack[{}]=laneActive;\n", depth++);
                 };
                 const auto pop = [&](unsigned count) {
-                    if (count > depth) throw std::runtime_error("control-flow stack underflow");
+                    if (count > depth)
+                        throw std::runtime_error("control-flow stack underflow");
                     if (count) {
                         depth -= count;
                         body += std::format("laneActive=activeStack[{}];\n", depth);
@@ -241,9 +261,10 @@ namespace Core::Gfx::Latte {
                 if (isAluClause(w1)) {
                     const auto kind = cfAluInst(w1);
                     if (kind < 8 || kind > 11 || (w0 >> 30) || (w1 & 3) || (w1 & (1u << 30)))
-                        throw std::runtime_error(std::format("unsupported ALU clause: cf={} kind={} uniform={} whole_quad={}",
-                            cf / 2, kind, bool((w0 >> 30) || (w1 & 3)), bool(w1 & (1u << 30))));
-                    if (kind == 9) push();
+                        throw std::runtime_error(std::format("unsupported ALU clause: cf={} kind={} uniform={} whole_quad={}", cf / 2, kind,
+                                                             bool((w0 >> 30) || (w1 & 3)), bool(w1 & (1u << 30))));
+                    if (kind == 9)
+                        push();
                     const auto key = (std::uint64_t(w0 & 0x3FFFFF) << 32) | (((w1 >> 18) & 127) + 1);
                     const auto it = program.clauses.find(key);
                     if (it == program.clauses.end())
@@ -255,20 +276,23 @@ namespace Core::Gfx::Latte {
                             const auto &in = group[i];
                             body += std::format("bool e{}={};\n", i, in.predSel == 2 ? "!pred" : in.predSel == 3 ? "pred" : "true");
                             const auto condition = predicateCondition(in);
-                            if (!condition.empty()) body += std::format("bool p{}={};\n", i, condition);
+                            if (!condition.empty())
+                                body += std::format("bool p{}={};\n", i, condition);
                             auto value = expression(in);
                             if (in.omod)
-                                value = "(" + value + (in.omod == 1 ? " * 2.0)" : in.omod == 2 ? " * 4.0)" : " * 0.5)");
+                                value = std::format("({}{}", value, in.omod == 1 ? " * 2.0)" : in.omod == 2 ? " * 4.0)" : " * 0.5)");
                             if (in.clamp)
-                                value = "clampReference(" + value + ")";
+                                value = std::format("clampReference({})", value);
                             body += std::format("precise float t{} = {};\n", i, value);
                         }
                         // All sources read the pre-group state. Commit only after every RHS.
                         for (unsigned i = 0; i < group.size(); ++i) {
                             const auto &in = group[i];
                             body += std::format("if(e{}) {{\n", i);
-                            if (!in.op3 && (in.raw1 & 8u)) body += std::format("nextPred=p{};\n", i);
-                            if (!in.op3 && (in.raw1 & 4u)) body += std::format("nextActive=p{};\n", i);
+                            if (!in.op3 && (in.raw1 & 8u))
+                                body += std::format("nextPred=p{};\n", i);
+                            if (!in.op3 && (in.raw1 & 4u))
+                                body += std::format("nextActive=p{};\n", i);
                             if (in.writeMask)
                                 body += std::format("r[{}][{}]=t{};\n", in.dstGpr, in.dstChan, i);
                             body += in.scalarSlot ? std::format("ps=t{};\n", i) : std::format("pv[{}]=t{};\n", in.dstChan, i);
@@ -277,8 +301,10 @@ namespace Core::Gfx::Latte {
                         body += "pred=nextPred; laneActive=nextActive; }\n";
                     }
                     body += "}\n";
-                    if (kind == 10) pop(1);
-                    if (kind == 11) pop(2);
+                    if (kind == 10)
+                        pop(1);
+                    if (kind == 11)
+                        pop(2);
                     body += "}\n";
                     continue;
                 }
@@ -291,7 +317,7 @@ namespace Core::Gfx::Latte {
                         throw std::runtime_error("unsupported texture clause flags");
                     const auto count = (((w1 >> 10) & 7) | ((w1 >> 16) & 8)) + 1;
                     for (unsigned i = 0; i < count; ++i) {
-                        const auto off = std::uint64_t(w0) * 2 + i * 4;
+                        const auto off = std::uint64_t(w0) * 2 + std::uint64_t(i) * 4;
                         if (off + 3 >= words.size())
                             throw std::runtime_error("truncated texture clause");
                         const auto t0 = words[off], t1 = words[off + 1], t2 = words[off + 2];
@@ -300,13 +326,14 @@ namespace Core::Gfx::Latte {
                         constexpr auto tex1Mask = 127u | (0xFFFu << 9) | (15u << 28);
                         // TEX has three instruction words in a four-word slot. The
                         // final word is padding, not additional instruction flags.
-                        if ((texOp != 0x0F && texOp != 0x10 && texOp != 0x13) || (t0 & ~tex0Mask) || (t1 & ~tex1Mask) || (t1 & 0x30000000) != 0x30000000 ||
-                            (t2 & 0x7FFF))
+                        if ((texOp != 0x0F && texOp != 0x10 && texOp != 0x13) || (t0 & ~tex0Mask) || (t1 & ~tex1Mask) ||
+                            (t1 & 0x30000000) != 0x30000000 || (t2 & 0x7FFF))
                             throw std::runtime_error(std::format("unsupported texture instruction: cf={} slot={} op={} words={:08X},{:08X},{:08X}",
                                                                  cf / 2, i, texOp, t0, t1, t2));
                         if (texOp == 0x10 || texOp == 0x0F)
                             result.requiresBaseLevelOnly = true;
-                        if (texOp == 0x0F) result.usesGather = true;
+                        if (texOp == 0x0F)
+                            result.usesGather = true;
                         const unsigned resource = (t0 >> 8) & 255, sampler = (t2 >> 15) & 31;
                         auto binding = std::find_if(result.textures.begin(), result.textures.end(),
                                                     [&](const auto &b) { return b.resource == resource && b.sampler == sampler; });
@@ -320,21 +347,24 @@ namespace Core::Gfx::Latte {
                         const auto reg = std::format("r[{}]", (t0 >> 16) & 127);
                         auto coords = std::format("{},{}", select(reg, (t2 >> 20) & 7), select(reg, (t2 >> 23) & 7));
                         const bool array = binding->type == TextureType::TwoDArray;
-                        if (array) coords += std::format(",arrayLayerReference({},textureSize(tex{},0).z)",
-                                                       select(reg, (t2 >> 26) & 7), binding->binding);
+                        if (array)
+                            coords += std::format(",arrayLayerReference({},textureSize(tex{},0).z)", select(reg, (t2 >> 26) & 7), binding->binding);
                         if (texOp == 0x0F) {
-                            if (array) throw std::runtime_error("array gather not yet supported");
+                            if (array)
+                                throw std::runtime_error("array gather not yet supported");
                             // Validate all source selectors consistently with the interpreter.
-                            for (unsigned c = 0; c < 4; ++c) select(reg, (t2 >> (20 + c * 3)) & 7);
+                            for (unsigned c = 0; c < 4; ++c)
+                                select(reg, (t2 >> (20 + c * 3)) & 7);
                             body += std::format("{{ vec2 coord=vec2({}); vec4 sampled; "
-                                "if(any(isnan(coord))||any(isinf(coord))) sampled=vec4(u.borders[{}].r); "
-                                "else sampled=textureGather(tex{},coord,0);\n", coords, binding->binding - 1, binding->binding);
+                                                "if(any(isnan(coord))||any(isinf(coord))) sampled=vec4(u.borders[{}].r); "
+                                                "else sampled=textureGather(tex{},coord,0);\n",
+                                                coords, binding->binding - 1, binding->binding);
                         } else if (array) {
                             body += std::format("{{ vec3 originalCoord=vec3({},{},{}); vec4 sampled; "
-                                "if(any(isnan(originalCoord))||any(isinf(originalCoord))) sampled=u.borders[{}]; "
-                                "else sampled=sampleArrayReference(tex{},vec3({}),u.sampling[{}]);\n",
-                                select(reg, (t2 >> 20) & 7), select(reg, (t2 >> 23) & 7), select(reg, (t2 >> 26) & 7),
-                                binding->binding - 1, binding->binding, coords, binding->binding - 1);
+                                                "if(any(isnan(originalCoord))||any(isinf(originalCoord))) sampled=u.borders[{}]; "
+                                                "else sampled=sampleArrayReference(tex{},vec3({}),u.sampling[{}]);\n",
+                                                select(reg, (t2 >> 20) & 7), select(reg, (t2 >> 23) & 7), select(reg, (t2 >> 26) & 7),
+                                                binding->binding - 1, binding->binding, coords, binding->binding - 1);
                         } else {
                             body += std::format("{{ vec4 sampled=textureLod(tex{},vec2({}),0.0);\n", binding->binding, coords);
                         }
@@ -349,31 +379,40 @@ namespace Core::Gfx::Latte {
                 } else if (op == CF_EXP || op == CF_EXP_DONE) {
                     constexpr auto export1Mask = 0xFFFu | (1u << 21) | (1u << 22) | (127u << 23) | (1u << 31);
                     if (exported || (w0 & ~(127u << 15)) || (w1 & ~export1Mask))
-                        throw std::runtime_error(std::format("unsupported export target, addressing or burst: cf={} type={} base={} repeated={} words={:08X},{:08X}",
-                                                             cf / 2, (w0 >> 13) & 3, w0 & 0x1FFF, exported, w0, w1));
+                        throw std::runtime_error(
+                                std::format("unsupported export target, addressing or burst: cf={} type={} base={} repeated={} words={:08X},{:08X}",
+                                            cf / 2, (w0 >> 13) & 3, w0 & 0x1FFF, exported, w0, w1));
                     const auto reg = std::format("r[{}]", (w0 >> 15) & 127);
-                    body += std::format("if(!laneActive) discard; color=vec4({},{},{},{});\n", select(reg, w1 & 7), select(reg, (w1 >> 3) & 7), select(reg, (w1 >> 6) & 7),
-                                        select(reg, (w1 >> 9) & 7));
+                    body += std::format("if(!laneActive) discard; color=vec4({},{},{},{});\n", select(reg, w1 & 7), select(reg, (w1 >> 3) & 7),
+                                        select(reg, (w1 >> 6) & 7), select(reg, (w1 >> 9) & 7));
                     exported = true;
                     body += "wroteColor=true;\n";
                 } else if (op == 0x0A || op == 0x0B || op == 0x0D || op == 0x0E) {
                     // VALID_PIXEL_MODE is equivalent here: kill/demote are not supported.
                     constexpr auto mask = 7u | (1u << 22) | (127u << 23) | (1u << 31);
-                    if (w1 & ~mask) throw std::runtime_error("unsupported conditional control-flow flags");
+                    if (w1 & ~mask)
+                        throw std::runtime_error("unsupported conditional control-flow flags");
                     const auto count = w1 & 7u;
                     if (op == 0x0A || op == 0x0D) {
                         if (w0 <= cf / 2 || count > depth)
                             throw std::runtime_error("unsupported backward jump or stack pop");
                         jumpTargets.emplace_back(w0, depth - count);
-                        if (op == 0x0D && !depth) throw std::runtime_error("ELSE without stack entry");
+                        if (op == 0x0D && !depth)
+                            throw std::runtime_error("ELSE without stack entry");
                         body += op == 0x0A ? "if(!laneActive) {\n" : "if(laneActive) {\n";
-                        if (count) body += std::format("laneActive=activeStack[{}];\n", depth - count);
+                        if (count)
+                            body += std::format("laneActive=activeStack[{}];\n", depth - count);
                         body += std::format("pc={}u;\n}}", w0);
-                        if (op == 0x0D) body += std::format(" else {{ laneActive=activeStack[{}]&&!laneActive; }}", depth - 1);
+                        if (op == 0x0D)
+                            body += std::format(" else {{ laneActive=activeStack[{}]&&!laneActive; }}", depth - 1);
                         body += "\n";
                     } else {
-                        if (w0 || (op == 0x0B && count)) throw std::runtime_error("unsupported stack control fields");
-                        if (op == 0x0B) push(); else pop(count);
+                        if (w0 || (op == 0x0B && count))
+                            throw std::runtime_error("unsupported stack control fields");
+                        if (op == 0x0B)
+                            push();
+                        else
+                            pop(count);
                     }
                 } else {
                     constexpr auto controlMask = (1u << 21) | (127u << 23) | (1u << 31);
@@ -388,8 +427,9 @@ namespace Core::Gfx::Latte {
             }
             if (!exported || !terminated)
                 throw std::runtime_error("missing color export or shader termination");
-            if (depth) throw std::runtime_error("unbalanced control-flow stack");
-            for (const auto [target, expectedDepth] : jumpTargets)
+            if (depth)
+                throw std::runtime_error("unbalanced control-flow stack");
+            for (const auto [target, expectedDepth]: jumpTargets)
                 if (target >= entryDepth.size() || entryDepth[target] != expectedDepth)
                     throw std::runtime_error("jump target has incompatible control-flow stack");
             result.source = "#version 450\nlayout(location=0) in vec4 inputs[4];\nlayout(location=0) out vec4 color;\n"
@@ -434,7 +474,7 @@ vec4 sampleArrayReference(sampler2DArray tex,vec3 p,vec4 state) {
 )";
             for (const auto &b: result.textures)
                 result.source += std::format("layout(set=0,binding={}) uniform sampler2D{} tex{};\n", b.binding,
-                                            b.type == TextureType::TwoDArray ? "Array" : "", b.binding);
+                                             b.type == TextureType::TwoDArray ? "Array" : "", b.binding);
             result.source += body + "if(!wroteColor) discard;\n}\n";
         } catch (const std::runtime_error &error) {
             result = {};

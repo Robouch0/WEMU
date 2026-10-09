@@ -1,7 +1,8 @@
 #pragma once
 
-#include "Block.hpp"
 #include <string>
+
+#include "Block.hpp"
 
 namespace Core::Ppc {
     // Executable artifacts: only use a private, trusted local directory.
@@ -15,9 +16,10 @@ namespace Core::Ppc {
             [[nodiscard]] bool available() const { return m_directory >= 0; }
             std::optional<std::vector<std::uint8_t>> load(const Block &block) const;
             bool store(const Block &block, std::span<const std::uint8_t> object) const;
+
         private:
             std::vector<std::uint8_t> key(const Block &block) const;
             int m_directory{-1};
             std::string m_identity;
     };
-}
+} // namespace Core::Ppc

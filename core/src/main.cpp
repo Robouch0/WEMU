@@ -13,6 +13,7 @@
 
 #include <bitset>
 #include <cstdlib>
+#include <filesystem>
 #include <format>
 #include <fstream>
 #include <iostream>
@@ -21,21 +22,20 @@
 
 #include "binary/Binary.hpp"
 #include "binary/Loader.hpp"
-#include "hle/CoreinitExtra.hpp"
 #include "cpu/interpreter/Interpreter.hpp"
 #include "cpu/memory/Memory.hpp"
 #include "hle/Coreinit.hpp"
+#include "hle/CoreinitExtra.hpp"
+#include "hle/Fs.hpp"
+#include "hle/Gx2.hpp"
 #include "hle/H264.hpp"
 #include "hle/Libc.hpp"
 #include "hle/StdlibHooks.hpp"
+#include "hle/Whb.hpp"
+#include "lib/coreinit/Coreinint.hpp"
+#include "utils/BeDecoder.hpp"
 #include "utils/Diagnostics.hpp"
 #include "utils/Logger.hpp"
-#include "hle/Whb.hpp"
-#include "hle/Gx2.hpp"
-#include "hle/Fs.hpp"
-#include "lib/coreinit/Coreinint.hpp"
-#include <filesystem>
-#include "utils/BeDecoder.hpp"
 
 
 void print_elf32_ehdr(const Elf32_Ehdr &ehdr)
@@ -150,11 +150,11 @@ int main(const int ac, char const *const *av)
         if (guiSession)
             std::cout << "[BOOT] GUI session: title-specific hooks disabled" << std::endl;
         if (!guiSession) {
-        InstallMVPlayerHooks(interpreter); // per-method MVPlayer (menu movie) intercepts
-        InstallTitleSeqPoolFix(interpreter); // seed the title-sequence frame pool (title -> menu gate)
-        InstallSceneConfigWorkaround(interpreter); // skip the empty scene-config iteration (scene-init gate)
-        InstallSceneUpdateForce(interpreter); // EXPERIMENT: WEMU_FORCE_SCENE=1 forces scene "not busy"
-        InstallSubsysReadyForce(interpreter); // EXPERIMENT: WEMU_FORCE_SUBSYS=1 forces scene-obj subsystem ready
+            InstallMVPlayerHooks(interpreter); // per-method MVPlayer (menu movie) intercepts
+            InstallTitleSeqPoolFix(interpreter); // seed the title-sequence frame pool (title -> menu gate)
+            InstallSceneConfigWorkaround(interpreter); // skip the empty scene-config iteration (scene-init gate)
+            InstallSceneUpdateForce(interpreter); // EXPERIMENT: WEMU_FORCE_SCENE=1 forces scene "not busy"
+            InstallSubsysReadyForce(interpreter); // EXPERIMENT: WEMU_FORCE_SUBSYS=1 forces scene-obj subsystem ready
         }
         Core::Diag::installPcCountSignalDump(); // WEMU_PC_COUNT: report tallies even when a hung boot is killed
 
@@ -209,18 +209,15 @@ int main(const int ac, char const *const *av)
             const std::size_t sep2 = sep1 == std::string::npos ? std::string::npos : spec.find(':', sep1 + 1);
             if (sep1 != std::string::npos && sep2 != std::string::npos) {
                 const std::uint32_t addr = static_cast<std::uint32_t>(std::strtoul(spec.substr(0, sep1).c_str(), nullptr, 16));
-                const std::uint32_t size =
-                    static_cast<std::uint32_t>(std::strtoul(spec.substr(sep1 + 1, sep2 - sep1 - 1).c_str(), nullptr, 0));
+                const std::uint32_t size = static_cast<std::uint32_t>(std::strtoul(spec.substr(sep1 + 1, sep2 - sep1 - 1).c_str(), nullptr, 0));
                 const std::string path = spec.substr(sep2 + 1);
                 const std::uint8_t *src = size ? interpreter.m_memory.hostPtr(addr) : nullptr;
                 if (src && interpreter.m_memory.hostPtr(addr + size - 1)) {
                     std::ofstream out(path, std::ios::binary);
                     out.write(reinterpret_cast<const char *>(src), size);
-                    std::cout << std::format("[DIAG] dumped guest memory 0x{:08X}:{} -> {}", addr, size, path)
-                              << std::endl;
+                    std::cout << std::format("[DIAG] dumped guest memory 0x{:08X}:{} -> {}", addr, size, path) << std::endl;
                 } else {
-                    std::cerr << std::format("[DIAG] WEMU_DUMP_MEM unreadable range 0x{:08X}:{}", addr, size)
-                              << std::endl;
+                    std::cerr << std::format("[DIAG] WEMU_DUMP_MEM unreadable range 0x{:08X}:{}", addr, size) << std::endl;
                 }
             }
         }

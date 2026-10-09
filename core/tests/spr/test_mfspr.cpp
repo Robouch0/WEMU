@@ -7,6 +7,24 @@
 
 #include "TestFixture.hpp"
 
+TEST_F(InstructionTest, MFSPR_TimeBaseSharesSchedulerClock)
+{
+    cpu->m_scheduler = Core::Scheduler{};
+    cpu->m_scheduler.advanceTicks(0x123456789ull);
+    EncodedInstruction inst(0);
+    inst.rt = 4;
+    inst.ra = 12; // TBL = 268
+    inst.rb = 8;
+    for (int repeat = 0; repeat < 3; ++repeat) {
+        Core::Instruction::MFSPR(*cpu, inst);
+        EXPECT_EQ(cpu->m_gpr[4], 0x23456789u);
+    }
+    inst.ra = 13; // TBU = 269
+    Core::Instruction::MFSPR(*cpu, inst);
+    EXPECT_EQ(cpu->m_gpr[4], 1u);
+    EXPECT_EQ(cpu->m_scheduler.now(), 0x123456789ull);
+}
+
 // SPR encoding: SPR = (inst.rb << 5) | inst.ra
 // LR  = SPR  8: ra=8,  rb=0
 // CTR = SPR  9: ra=9,  rb=0

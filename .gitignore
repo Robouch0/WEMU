@@ -45,6 +45,7 @@ vulkan/src/shaders/*.spv
 
 # Additional CMake caches
 cmake-build-*/
+build-*/
 CMakeCache.txt
 CMakeFiles/
 

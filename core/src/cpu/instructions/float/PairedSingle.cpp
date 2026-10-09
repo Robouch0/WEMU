@@ -32,16 +32,46 @@ namespace Core::Instruction {
         cpu.updateCR1(i);
     }
 
-    void PS_ADD(Interpreter &c, const EncodedInstruction &i) { pairLanes(c, i, [](double a, double b, double) { return a + b; }); }
-    void PS_SUB(Interpreter &c, const EncodedInstruction &i) { pairLanes(c, i, [](double a, double b, double) { return a - b; }); }
-    void PS_MUL(Interpreter &c, const EncodedInstruction &i) { pairLanes(c, i, [](double a, double, double cc) { return a * cc; }); }
-    void PS_DIV(Interpreter &c, const EncodedInstruction &i) { pairLanes(c, i, [](double a, double b, double) { return a / b; }); }
-    void PS_MADD(Interpreter &c, const EncodedInstruction &i) { pairLanes(c, i, [](double a, double b, double cc) { return std::fma(a, cc, b); }); }
-    void PS_MSUB(Interpreter &c, const EncodedInstruction &i) { pairLanes(c, i, [](double a, double b, double cc) { return std::fma(a, cc, -b); }); }
-    void PS_NMADD(Interpreter &c, const EncodedInstruction &i) { pairLanes(c, i, [](double a, double b, double cc) { return -std::fma(a, cc, b); }); }
-    void PS_NMSUB(Interpreter &c, const EncodedInstruction &i) { pairLanes(c, i, [](double a, double b, double cc) { return -std::fma(a, cc, -b); }); }
-    void PS_RES(Interpreter &c, const EncodedInstruction &i) { pairLanes(c, i, [](double, double b, double) { return 1.0 / b; }); }
-    void PS_RSQRTE(Interpreter &c, const EncodedInstruction &i) { pairLanes(c, i, [](double, double b, double) { return 1.0 / std::sqrt(b); }); }
+    void PS_ADD(Interpreter &c, const EncodedInstruction &i)
+    {
+        pairLanes(c, i, [](double a, double b, double) { return a + b; });
+    }
+    void PS_SUB(Interpreter &c, const EncodedInstruction &i)
+    {
+        pairLanes(c, i, [](double a, double b, double) { return a - b; });
+    }
+    void PS_MUL(Interpreter &c, const EncodedInstruction &i)
+    {
+        pairLanes(c, i, [](double a, double, double cc) { return a * cc; });
+    }
+    void PS_DIV(Interpreter &c, const EncodedInstruction &i)
+    {
+        pairLanes(c, i, [](double a, double b, double) { return a / b; });
+    }
+    void PS_MADD(Interpreter &c, const EncodedInstruction &i)
+    {
+        pairLanes(c, i, [](double a, double b, double cc) { return std::fma(a, cc, b); });
+    }
+    void PS_MSUB(Interpreter &c, const EncodedInstruction &i)
+    {
+        pairLanes(c, i, [](double a, double b, double cc) { return std::fma(a, cc, -b); });
+    }
+    void PS_NMADD(Interpreter &c, const EncodedInstruction &i)
+    {
+        pairLanes(c, i, [](double a, double b, double cc) { return -std::fma(a, cc, b); });
+    }
+    void PS_NMSUB(Interpreter &c, const EncodedInstruction &i)
+    {
+        pairLanes(c, i, [](double a, double b, double cc) { return -std::fma(a, cc, -b); });
+    }
+    void PS_RES(Interpreter &c, const EncodedInstruction &i)
+    {
+        pairLanes(c, i, [](double, double b, double) { return 1.0 / b; });
+    }
+    void PS_RSQRTE(Interpreter &c, const EncodedInstruction &i)
+    {
+        pairLanes(c, i, [](double, double b, double) { return 1.0 / std::sqrt(b); });
+    }
 
     // muls* multiply both lanes by a single broadcast lane of FRC.
     void PS_MULS0(Interpreter &c, const EncodedInstruction &i)
@@ -99,10 +129,30 @@ namespace Core::Instruction {
     }
 
     // ---- Moves / merges (X-form) ----
-    void PS_MR(Interpreter &c, const EncodedInstruction &i) { c.m_fpr[i.frt] = c.m_fpr[i.frb]; c.m_ps1[i.frt] = c.m_ps1[i.frb]; c.updateCR1(i); }
-    void PS_NEG(Interpreter &c, const EncodedInstruction &i) { c.m_fpr[i.frt] = -c.m_fpr[i.frb]; c.m_ps1[i.frt] = -c.m_ps1[i.frb]; c.updateCR1(i); }
-    void PS_ABS(Interpreter &c, const EncodedInstruction &i) { c.m_fpr[i.frt] = std::fabs(c.m_fpr[i.frb]); c.m_ps1[i.frt] = std::fabs(c.m_ps1[i.frb]); c.updateCR1(i); }
-    void PS_NABS(Interpreter &c, const EncodedInstruction &i) { c.m_fpr[i.frt] = -std::fabs(c.m_fpr[i.frb]); c.m_ps1[i.frt] = -std::fabs(c.m_ps1[i.frb]); c.updateCR1(i); }
+    void PS_MR(Interpreter &c, const EncodedInstruction &i)
+    {
+        c.m_fpr[i.frt] = c.m_fpr[i.frb];
+        c.m_ps1[i.frt] = c.m_ps1[i.frb];
+        c.updateCR1(i);
+    }
+    void PS_NEG(Interpreter &c, const EncodedInstruction &i)
+    {
+        c.m_fpr[i.frt] = -c.m_fpr[i.frb];
+        c.m_ps1[i.frt] = -c.m_ps1[i.frb];
+        c.updateCR1(i);
+    }
+    void PS_ABS(Interpreter &c, const EncodedInstruction &i)
+    {
+        c.m_fpr[i.frt] = std::fabs(c.m_fpr[i.frb]);
+        c.m_ps1[i.frt] = std::fabs(c.m_ps1[i.frb]);
+        c.updateCR1(i);
+    }
+    void PS_NABS(Interpreter &c, const EncodedInstruction &i)
+    {
+        c.m_fpr[i.frt] = -std::fabs(c.m_fpr[i.frb]);
+        c.m_ps1[i.frt] = -std::fabs(c.m_ps1[i.frb]);
+        c.updateCR1(i);
+    }
 
     void PS_MERGE00(Interpreter &c, const EncodedInstruction &i)
     {
@@ -145,14 +195,30 @@ namespace Core::Instruction {
     static void setCRField(Core::ConditionRegister &cr, const std::uint32_t field, const std::uint32_t value)
     {
         switch (field & 0x7u) {
-            case 0: cr.cr0 = value; break;
-            case 1: cr.cr1 = value; break;
-            case 2: cr.cr2 = value; break;
-            case 3: cr.cr3 = value; break;
-            case 4: cr.cr4 = value; break;
-            case 5: cr.cr5 = value; break;
-            case 6: cr.cr6 = value; break;
-            default: cr.cr7 = value; break;
+            case 0:
+                cr.cr0 = value;
+                break;
+            case 1:
+                cr.cr1 = value;
+                break;
+            case 2:
+                cr.cr2 = value;
+                break;
+            case 3:
+                cr.cr3 = value;
+                break;
+            case 4:
+                cr.cr4 = value;
+                break;
+            case 5:
+                cr.cr5 = value;
+                break;
+            case 6:
+                cr.cr6 = value;
+                break;
+            default:
+                cr.cr7 = value;
+                break;
         }
     }
 
@@ -195,10 +261,14 @@ namespace Core::Instruction {
     {
         const double f = std::ldexp(1.0, -scale);
         switch (type) {
-            case 4: return static_cast<double>(cpu.m_memory.read<std::uint8_t>(ea)) * f; // u8
-            case 5: return static_cast<double>(cpu.m_memory.read<std::uint16_t>(ea)) * f; // u16
-            case 6: return static_cast<double>(static_cast<std::int8_t>(cpu.m_memory.read<std::uint8_t>(ea))) * f; // s8
-            case 7: return static_cast<double>(static_cast<std::int16_t>(cpu.m_memory.read<std::uint16_t>(ea))) * f; // s16
+            case 4:
+                return static_cast<double>(cpu.m_memory.read<std::uint8_t>(ea)) * f; // u8
+            case 5:
+                return static_cast<double>(cpu.m_memory.read<std::uint16_t>(ea)) * f; // u16
+            case 6:
+                return static_cast<double>(static_cast<std::int8_t>(cpu.m_memory.read<std::uint8_t>(ea))) * f; // s8
+            case 7:
+                return static_cast<double>(static_cast<std::int16_t>(cpu.m_memory.read<std::uint16_t>(ea))) * f; // s16
             default: { // 0: float
                 const std::uint32_t raw = cpu.m_memory.read<std::uint32_t>(ea);
                 float v;
@@ -214,10 +284,18 @@ namespace Core::Instruction {
     {
         const double v = value * std::ldexp(1.0, scale);
         switch (type) {
-            case 4: cpu.m_memory.write<std::uint8_t>(ea, static_cast<std::uint8_t>(std::clamp(v, 0.0, 255.0))); break;
-            case 5: cpu.m_memory.write<std::uint16_t>(ea, static_cast<std::uint16_t>(std::clamp(v, 0.0, 65535.0))); break;
-            case 6: cpu.m_memory.write<std::uint8_t>(ea, static_cast<std::uint8_t>(static_cast<std::int8_t>(std::clamp(v, -128.0, 127.0)))); break;
-            case 7: cpu.m_memory.write<std::uint16_t>(ea, static_cast<std::uint16_t>(static_cast<std::int16_t>(std::clamp(v, -32768.0, 32767.0)))); break;
+            case 4:
+                cpu.m_memory.write<std::uint8_t>(ea, static_cast<std::uint8_t>(std::clamp(v, 0.0, 255.0)));
+                break;
+            case 5:
+                cpu.m_memory.write<std::uint16_t>(ea, static_cast<std::uint16_t>(std::clamp(v, 0.0, 65535.0)));
+                break;
+            case 6:
+                cpu.m_memory.write<std::uint8_t>(ea, static_cast<std::uint8_t>(static_cast<std::int8_t>(std::clamp(v, -128.0, 127.0))));
+                break;
+            case 7:
+                cpu.m_memory.write<std::uint16_t>(ea, static_cast<std::uint16_t>(static_cast<std::int16_t>(std::clamp(v, -32768.0, 32767.0))));
+                break;
             default: {
                 const auto f = static_cast<float>(value);
                 std::uint32_t raw;

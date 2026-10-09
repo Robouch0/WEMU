@@ -139,8 +139,8 @@ namespace Core::Instruction {
                 if (Diag::traceHle()) {
                     const std::uint32_t a3 = cpu.m_gpr[3], a4 = cpu.m_gpr[4], a5 = cpu.m_gpr[5], a6 = cpu.m_gpr[6];
                     handler(cpu);
-                    std::cout << std::format("[HLE] {}(r3=0x{:08X} r4=0x{:08X} r5=0x{:08X} r6=0x{:08X}) -> 0x{:08X} [bctr]", *sym_name,
-                                             a3, a4, a5, a6, cpu.m_gpr[3])
+                    std::cout << std::format("[HLE] {}(r3=0x{:08X} r4=0x{:08X} r5=0x{:08X} r6=0x{:08X}) -> 0x{:08X} [bctr]", *sym_name, a3, a4, a5,
+                                             a6, cpu.m_gpr[3])
                               << std::endl;
                 } else {
                     handler(cpu);

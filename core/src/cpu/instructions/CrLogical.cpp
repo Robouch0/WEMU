@@ -28,14 +28,38 @@ namespace Core::Instruction {
         setCrBit(cpu.m_cr.raw, instr.rt, op(a, b) & 1u);
     }
 
-    void CRAND(Interpreter &cpu, const EncodedInstruction &instr) { crLogical(cpu, instr, [](auto a, auto b) { return a & b; }); }
-    void CROR(Interpreter &cpu, const EncodedInstruction &instr) { crLogical(cpu, instr, [](auto a, auto b) { return a | b; }); }
-    void CRXOR(Interpreter &cpu, const EncodedInstruction &instr) { crLogical(cpu, instr, [](auto a, auto b) { return a ^ b; }); }
-    void CRNAND(Interpreter &cpu, const EncodedInstruction &instr) { crLogical(cpu, instr, [](auto a, auto b) { return ~(a & b); }); }
-    void CRNOR(Interpreter &cpu, const EncodedInstruction &instr) { crLogical(cpu, instr, [](auto a, auto b) { return ~(a | b); }); }
-    void CRANDC(Interpreter &cpu, const EncodedInstruction &instr) { crLogical(cpu, instr, [](auto a, auto b) { return a & ~b; }); }
-    void CRORC(Interpreter &cpu, const EncodedInstruction &instr) { crLogical(cpu, instr, [](auto a, auto b) { return a | ~b; }); }
-    void CREQV(Interpreter &cpu, const EncodedInstruction &instr) { crLogical(cpu, instr, [](auto a, auto b) { return ~(a ^ b); }); }
+    void CRAND(Interpreter &cpu, const EncodedInstruction &instr)
+    {
+        crLogical(cpu, instr, [](auto a, auto b) { return a & b; });
+    }
+    void CROR(Interpreter &cpu, const EncodedInstruction &instr)
+    {
+        crLogical(cpu, instr, [](auto a, auto b) { return a | b; });
+    }
+    void CRXOR(Interpreter &cpu, const EncodedInstruction &instr)
+    {
+        crLogical(cpu, instr, [](auto a, auto b) { return a ^ b; });
+    }
+    void CRNAND(Interpreter &cpu, const EncodedInstruction &instr)
+    {
+        crLogical(cpu, instr, [](auto a, auto b) { return ~(a & b); });
+    }
+    void CRNOR(Interpreter &cpu, const EncodedInstruction &instr)
+    {
+        crLogical(cpu, instr, [](auto a, auto b) { return ~(a | b); });
+    }
+    void CRANDC(Interpreter &cpu, const EncodedInstruction &instr)
+    {
+        crLogical(cpu, instr, [](auto a, auto b) { return a & ~b; });
+    }
+    void CRORC(Interpreter &cpu, const EncodedInstruction &instr)
+    {
+        crLogical(cpu, instr, [](auto a, auto b) { return a | ~b; });
+    }
+    void CREQV(Interpreter &cpu, const EncodedInstruction &instr)
+    {
+        crLogical(cpu, instr, [](auto a, auto b) { return ~(a ^ b); });
+    }
 
     /** @brief Move Condition Register Field. CR[BF] = CR[BFA]. BF = bits 6-8, BFA = bits 11-13. */
     void MCRF(Interpreter &cpu, const EncodedInstruction &instr)

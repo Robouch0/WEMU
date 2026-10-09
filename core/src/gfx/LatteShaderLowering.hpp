@@ -1,9 +1,9 @@
 #pragma once
 
-#include <string>
-#include <span>
 #include <map>
 #include <memory>
+#include <span>
+#include <string>
 
 #include "gfx/LatteProgram.hpp"
 
@@ -36,8 +36,7 @@ namespace Core::Gfx::Latte {
     // Replayer-owned, single-threaded cache. Exact keys include resource specialization.
     class FragmentShaderCache {
         public:
-            std::shared_ptr<const FragmentShader> get(const std::vector<std::uint32_t> &words,
-                                                     std::span<const TextureType> resourceTypes = {});
+            std::shared_ptr<const FragmentShader> get(const std::vector<std::uint32_t> &words, std::span<const TextureType> resourceTypes = {});
             std::size_t size() const { return m_entries.size(); }
             std::size_t hits() const { return m_hits; }
             std::size_t misses() const { return m_misses; }

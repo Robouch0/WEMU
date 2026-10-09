@@ -4,8 +4,8 @@
 #include <cstring>
 #include <filesystem>
 #include <string>
-#include <unordered_set>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "cpu/interpreter/Interpreter.hpp"
@@ -160,7 +160,10 @@ namespace {
     // constant, so bring-up tracing that has to survive a release build goes through here.
     bool fsTrace()
     {
-        static const bool on = []() { const char *e = std::getenv("WEMU_FS_TRACE"); return e && e[0] == '1'; }();
+        static const bool on = []() {
+            const char *e = std::getenv("WEMU_FS_TRACE");
+            return e && e[0] == '1';
+        }();
         return on;
     }
 
@@ -170,12 +173,10 @@ namespace {
         if (!filter || !filter[0] || guestPath.find(filter) == std::string::npos)
             return;
         const std::uint32_t lr = cpu.m_lr + Core::Memory::MemoryMap::ApplicationCode;
-        std::fprintf(stderr, "[FSTRACE] stack op=%s path=%s thread=0x%08X LR=%s\n", op, guestPath.c_str(),
-                     cpu.m_scheduler.currentHandle(), Core::Diag::symbolize(cpu, lr).c_str());
-        std::fprintf(stderr,
-                     "[FSTRACE]   regs r3=%08X r4=%08X r5=%08X r6=%08X r7=%08X r8=%08X r9=%08X r10=%08X sp=%08X\n",
-                     cpu.m_gpr[3], cpu.m_gpr[4], cpu.m_gpr[5], cpu.m_gpr[6], cpu.m_gpr[7], cpu.m_gpr[8], cpu.m_gpr[9],
-                     cpu.m_gpr[10], cpu.m_gpr[1]);
+        std::fprintf(stderr, "[FSTRACE] stack op=%s path=%s thread=0x%08X LR=%s\n", op, guestPath.c_str(), cpu.m_scheduler.currentHandle(),
+                     Core::Diag::symbolize(cpu, lr).c_str());
+        std::fprintf(stderr, "[FSTRACE]   regs r3=%08X r4=%08X r5=%08X r6=%08X r7=%08X r8=%08X r9=%08X r10=%08X sp=%08X\n", cpu.m_gpr[3],
+                     cpu.m_gpr[4], cpu.m_gpr[5], cpu.m_gpr[6], cpu.m_gpr[7], cpu.m_gpr[8], cpu.m_gpr[9], cpu.m_gpr[10], cpu.m_gpr[1]);
         if (std::strcmp(op, "statfile") == 0 && cpu.m_gpr[6]) {
             std::fprintf(stderr, "[FSTRACE]   statOut@0x%08X", cpu.m_gpr[6]);
             for (std::uint32_t off = 0; off <= 0x20; off += 4) {
@@ -268,8 +269,8 @@ namespace {
         }
         const std::int64_t read = readIntoGuest(cpu, it->second.fp, buffer, static_cast<std::uint64_t>(size) * count);
         if (fsTrace())
-            std::fprintf(stderr, "[FSTRACE] read handle=%u path=%s size=%u count=%u -> %lld blocks\n", handle,
-                         it->second.guestPath.c_str(), size, count, static_cast<long long>(read < 0 ? read : read / size));
+            std::fprintf(stderr, "[FSTRACE] read handle=%u path=%s size=%u count=%u -> %lld blocks\n", handle, it->second.guestPath.c_str(), size,
+                         count, static_cast<long long>(read < 0 ? read : read / size));
         traceStackForPath(cpu, it->second.guestPath, "read");
         cpu.m_gpr[3] = read < 0 ? FS_STATUS_NOT_FOUND : static_cast<std::int32_t>(read / size);
     }
@@ -290,8 +291,8 @@ namespace {
         std::fseek(it->second.fp, static_cast<long>(pos), SEEK_SET);
         const std::int64_t read = readIntoGuest(cpu, it->second.fp, buffer, static_cast<std::uint64_t>(size) * count);
         if (fsTrace())
-            std::fprintf(stderr, "[FSTRACE] readpos handle=%u path=%s pos=%u size=%u count=%u -> %lld blocks\n", handle,
-                         it->second.guestPath.c_str(), pos, size, count, static_cast<long long>(read < 0 ? read : read / size));
+            std::fprintf(stderr, "[FSTRACE] readpos handle=%u path=%s pos=%u size=%u count=%u -> %lld blocks\n", handle, it->second.guestPath.c_str(),
+                         pos, size, count, static_cast<long long>(read < 0 ? read : read / size));
         traceStackForPath(cpu, it->second.guestPath, "readpos");
         cpu.m_gpr[3] = read < 0 ? FS_STATUS_NOT_FOUND : static_cast<std::int32_t>(read / size);
     }
@@ -305,8 +306,7 @@ namespace {
             return;
         }
         if (fsTrace())
-            std::fprintf(stderr, "[FSTRACE] setpos handle=%u path=%s pos=%u\n", cpu.m_gpr[5], it->second.guestPath.c_str(),
-                         cpu.m_gpr[6]);
+            std::fprintf(stderr, "[FSTRACE] setpos handle=%u path=%s pos=%u\n", cpu.m_gpr[5], it->second.guestPath.c_str(), cpu.m_gpr[6]);
         traceStackForPath(cpu, it->second.guestPath, "setpos");
         std::fseek(it->second.fp, static_cast<long>(cpu.m_gpr[6]), SEEK_SET);
         cpu.m_gpr[3] = FS_STATUS_OK;
@@ -326,8 +326,7 @@ namespace {
         const long end = std::ftell(fp);
         std::fseek(fp, cur, SEEK_SET);
         if (fsTrace())
-            std::fprintf(stderr, "[FSTRACE] statfile handle=%u path=%s size=%ld\n", cpu.m_gpr[5], it->second.guestPath.c_str(),
-                         end);
+            std::fprintf(stderr, "[FSTRACE] statfile handle=%u path=%s size=%ld\n", cpu.m_gpr[5], it->second.guestPath.c_str(), end);
         writeStat(cpu, cpu.m_gpr[6], static_cast<std::uint64_t>(end < 0 ? 0 : end), false);
         traceStackForPath(cpu, it->second.guestPath, "statfile");
         cpu.m_gpr[3] = FS_STATUS_OK;
@@ -383,8 +382,7 @@ namespace {
         const std::uint32_t length = cpu.m_gpr[6];
         const std::string cwd = workingDirectory(cpu.m_gpr[3]);
         auto *dst = cpu.m_memory.hostPtr(buffer);
-        if (!dst || length < 0x27F || buffer > UINT32_MAX - cwd.size()
-            || !cpu.m_memory.hostPtr(buffer + static_cast<std::uint32_t>(cwd.size()))) {
+        if (!dst || length < 0x27F || buffer > UINT32_MAX - cwd.size() || !cpu.m_memory.hostPtr(buffer + static_cast<std::uint32_t>(cwd.size()))) {
             cpu.m_gpr[3] = FS_STATUS_FATAL_ERROR;
             return;
         }
@@ -432,8 +430,7 @@ namespace {
             }
         }
         if (fsTrace())
-            std::fprintf(stderr, "[FSTRACE] opendir%s %s\n",
-                anyDir ? "" : " MISS", guestPath.c_str());
+            std::fprintf(stderr, "[FSTRACE] opendir%s %s\n", anyDir ? "" : " MISS", guestPath.c_str());
         if (!anyDir) {
             Utils::Log::debug("[FS] OpenDir MISS {}", guestPath);
             cpu.m_gpr[3] = FS_STATUS_NOT_FOUND;
@@ -474,8 +471,8 @@ namespace {
             cpu.m_memory.write<std::uint8_t>(entryPtr + 0x64 + static_cast<std::uint32_t>(i), static_cast<std::uint8_t>(name[i]));
         cpu.m_memory.write<std::uint8_t>(entryPtr + 0x64 + static_cast<std::uint32_t>(std::min<std::size_t>(name.size(), 255)), 0);
         if (fsTrace())
-            std::fprintf(stderr, "[FSTRACE] readdir handle=%u name=%s%s size=%llu\n", cpu.m_gpr[5], name.c_str(),
-                isDir ? "/" : "", static_cast<unsigned long long>(size));
+            std::fprintf(stderr, "[FSTRACE] readdir handle=%u name=%s%s size=%llu\n", cpu.m_gpr[5], name.c_str(), isDir ? "/" : "",
+                         static_cast<unsigned long long>(size));
         cpu.m_gpr[3] = FS_STATUS_OK;
     }
 
@@ -569,8 +566,7 @@ namespace {
         if (cpu.m_gpr[8])
             cpu.m_memory.write<std::uint32_t>(cpu.m_gpr[8], handle);
         if (fsTrace())
-            std::fprintf(stderr, "[FSTRACE] saveopen handle=%u path=%s host=%s mode=%s\n", handle, guestPath.c_str(),
-                         host.c_str(), mode.c_str());
+            std::fprintf(stderr, "[FSTRACE] saveopen handle=%u path=%s host=%s mode=%s\n", handle, guestPath.c_str(), host.c_str(), mode.c_str());
         Utils::Log::debug("[FS] SAVEOpenFile {} ({}) -> handle={}", guestPath, mode, handle);
         cpu.m_gpr[3] = FS_STATUS_OK;
     }

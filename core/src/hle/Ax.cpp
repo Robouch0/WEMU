@@ -10,10 +10,10 @@
 
 #include "Ax.hpp"
 
-#include <cstdint>
 #include <array>
-#include <vector>
+#include <cstdint>
 #include <cstdlib>
+#include <vector>
 
 #include "cpu/interpreter/Interpreter.hpp"
 #include "cpu/interpreter/SyscallHandler.hpp"
@@ -38,8 +38,8 @@ namespace {
     std::uint32_t g_frameCallback = 0;
     bool g_initialized = false;
     struct FinalMixDevice {
-        std::uint32_t callback = 0;
-        std::uint32_t storage = 0;
+            std::uint32_t callback = 0;
+            std::uint32_t storage = 0;
     };
     std::array<FinalMixDevice, 2> g_finalMix;
 
@@ -57,31 +57,28 @@ namespace {
     Core::ThreadContext *g_axThread = nullptr;
     std::uint32_t g_axStackTop = 0;
     struct PendingCallback {
-        std::uint32_t function;
-        std::uint32_t argument = 0;
+            std::uint32_t function;
+            std::uint32_t argument = 0;
     };
     std::vector<PendingCallback> g_pendingCbs;
     std::size_t g_pendingIdx = 0;
 
-    bool hasCallbacks()
-    {
-        return g_frameCallback || !g_appFrameCallbacks.empty()
-            || g_finalMix[0].callback || g_finalMix[1].callback;
-    }
+    bool hasCallbacks() { return g_frameCallback || !g_appFrameCallbacks.empty() || g_finalMix[0].callback || g_finalMix[1].callback; }
 
     void buildPending(Core::Interpreter &cpu)
     {
-        if (!g_frameCount) g_firstFrameTick = cpu.m_scheduler.now();
+        if (!g_frameCount)
+            g_firstFrameTick = cpu.m_scheduler.now();
         ++g_frameCount;
         if (std::getenv("WEMU_AX_TRACE") && (g_frameCount <= 8 || g_frameCount % 256 == 0))
-            Utils::Log::error("[AX_CLOCK] frame={} tick={} elapsed_ticks={} previous_deadline_quarters={}",
-                g_frameCount, cpu.m_scheduler.now(), cpu.m_scheduler.now() - g_firstFrameTick, g_nextFrameQuarterTicks);
+            Utils::Log::error("[AX_CLOCK] frame={} tick={} elapsed_ticks={} previous_deadline_quarters={}", g_frameCount, cpu.m_scheduler.now(),
+                              cpu.m_scheduler.now() - g_firstFrameTick, g_nextFrameQuarterTicks);
         g_nextFrameQuarterTicks += kFrameQuarterTicks;
         g_pendingCbs.clear();
         g_pendingIdx = 0;
         if (g_frameCallback)
             g_pendingCbs.push_back({g_frameCallback});
-        for (auto callback : g_appFrameCallbacks)
+        for (auto callback: g_appFrameCallbacks)
             g_pendingCbs.push_back({callback});
         for (std::size_t device = 0; device < g_finalMix.size(); ++device) {
             auto &mix = g_finalMix[device];
@@ -173,7 +170,8 @@ namespace Core::Ax {
         g_pendingCbs.clear();
         g_pendingIdx = 0;
         if (!g_initialized || !hasCallbacks()) {
-            if (cpu.m_scheduler.parkCurrent(cpu)) return;
+            if (cpu.m_scheduler.parkCurrent(cpu))
+                return;
             cpu.m_lr = Core::AX_FRAME_SENTINEL - appCode;
             cpu.m_pc = cpu.m_nextPc = cpu.m_lr;
             cpu.m_scheduler.sleep(cpu, 1000);
@@ -342,19 +340,55 @@ namespace {
     }
 
     const char *const kNoops[] = {
-            "AXDecodeAdpcmData", "AXGetDeviceMode", "AXGetDeviceUpsampleStage",
-            "AXGetSwapProfile", "AXGetVoiceCurrentOffsetEx", "AXGetVoiceLoopCount", "AXInitProfile",
-            "AXRegisterAuxCallback", "AXRmtAdvancePtr", "AXRmtGetSamples",
-            "AXRmtGetSamplesLeft", "AXSetAuxReturnVolume", "AXSetDRCVSDownmixBalance", "AXSetDRCVSLC",
-            "AXSetDRCVSMode", "AXSetDRCVSOutputGain", "AXSetDRCVSSpeakerPosition", "AXSetDRCVSSurroundDepth",
-            "AXSetDRCVSSurroundLevelGain", "AXSetDefaultMixerSelect", "AXSetDeviceCompressor",
-            "AXSetDeviceLinearUpsampler", "AXSetDeviceUpsampleStage", "AXSetDeviceVolume", "AXSetMaxVoices",
-            "AXSetVoiceAdpcm", "AXSetVoiceAdpcmLoop", "AXSetVoiceBiquad", "AXSetVoiceBiquadCoefs",
-            "AXSetVoiceDeviceMix", "AXSetVoiceEndOffsetEx", "AXSetVoiceLoop", "AXSetVoiceLoopOffsetEx",
-            "AXSetVoiceLpf", "AXSetVoiceLpfCoefs", "AXSetVoiceMixerSelect",
-            "AXSetVoicePriority", "AXSetVoiceRmtIIR", "AXSetVoiceRmtIIRCoefs", "AXSetVoiceRmtOn",
-            "AXSetVoiceSrc", "AXSetVoiceSrcRatio", "AXSetVoiceSrcType", "AXSetVoiceState", "AXSetVoiceType",
-            "AXSetVoiceVe", "AXUserBegin", "AXUserEnd", "AXUserIsProtected",
+            "AXDecodeAdpcmData",
+            "AXGetDeviceMode",
+            "AXGetDeviceUpsampleStage",
+            "AXGetSwapProfile",
+            "AXGetVoiceCurrentOffsetEx",
+            "AXGetVoiceLoopCount",
+            "AXInitProfile",
+            "AXRegisterAuxCallback",
+            "AXRmtAdvancePtr",
+            "AXRmtGetSamples",
+            "AXRmtGetSamplesLeft",
+            "AXSetAuxReturnVolume",
+            "AXSetDRCVSDownmixBalance",
+            "AXSetDRCVSLC",
+            "AXSetDRCVSMode",
+            "AXSetDRCVSOutputGain",
+            "AXSetDRCVSSpeakerPosition",
+            "AXSetDRCVSSurroundDepth",
+            "AXSetDRCVSSurroundLevelGain",
+            "AXSetDefaultMixerSelect",
+            "AXSetDeviceCompressor",
+            "AXSetDeviceLinearUpsampler",
+            "AXSetDeviceUpsampleStage",
+            "AXSetDeviceVolume",
+            "AXSetMaxVoices",
+            "AXSetVoiceAdpcm",
+            "AXSetVoiceAdpcmLoop",
+            "AXSetVoiceBiquad",
+            "AXSetVoiceBiquadCoefs",
+            "AXSetVoiceDeviceMix",
+            "AXSetVoiceEndOffsetEx",
+            "AXSetVoiceLoop",
+            "AXSetVoiceLoopOffsetEx",
+            "AXSetVoiceLpf",
+            "AXSetVoiceLpfCoefs",
+            "AXSetVoiceMixerSelect",
+            "AXSetVoicePriority",
+            "AXSetVoiceRmtIIR",
+            "AXSetVoiceRmtIIRCoefs",
+            "AXSetVoiceRmtOn",
+            "AXSetVoiceSrc",
+            "AXSetVoiceSrcRatio",
+            "AXSetVoiceSrcType",
+            "AXSetVoiceState",
+            "AXSetVoiceType",
+            "AXSetVoiceVe",
+            "AXUserBegin",
+            "AXUserEnd",
+            "AXUserIsProtected",
     };
 
 } // namespace

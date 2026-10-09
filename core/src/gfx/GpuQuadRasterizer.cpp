@@ -368,8 +368,7 @@ namespace Core::Gfx {
         vkDestroyShaderModule(m_device, frag, nullptr);
     }
 
-    GpuQuadRasterizer::Texture &GpuQuadRasterizer::getOrCreateTexture(std::uint64_t key, const std::uint8_t *rgba, std::uint32_t tw,
-                                                                      std::uint32_t th)
+    GpuQuadRasterizer::Texture &GpuQuadRasterizer::getOrCreateTexture(std::uint64_t key, const std::uint8_t *rgba, std::uint32_t tw, std::uint32_t th)
     {
         const std::uint64_t hash = hashRgba(rgba, static_cast<std::size_t>(tw) * th * 4);
         Texture &t = m_textures[key];
@@ -442,8 +441,8 @@ namespace Core::Gfx {
         const VkDeviceSize bytes = static_cast<VkDeviceSize>(tw) * th * 4;
         VkBuffer staging;
         VkDeviceMemory stagingMem;
-        createBuffer(bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                     staging, stagingMem);
+        createBuffer(bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, staging,
+                     stagingMem);
         void *mapped;
         vkMapMemory(m_device, stagingMem, 0, bytes, 0, &mapped);
         std::memcpy(mapped, rgba, bytes);
@@ -471,8 +470,7 @@ namespace Core::Gfx {
         toRead.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         toRead.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
         toRead.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1,
-                             &toRead);
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &toRead);
         endOneTime(cmd);
 
         vkDestroyBuffer(m_device, staging, nullptr);
@@ -490,8 +488,8 @@ namespace Core::Gfx {
         m_draws.clear();
     }
 
-    void GpuQuadRasterizer::drawTriangles(std::uint64_t key, const std::uint8_t *rgba, std::uint32_t tw, std::uint32_t th,
-                                          const Vertex *verts, std::uint32_t count)
+    void GpuQuadRasterizer::drawTriangles(std::uint64_t key, const std::uint8_t *rgba, std::uint32_t tw, std::uint32_t th, const Vertex *verts,
+                                          std::uint32_t count)
     {
         if (count == 0 || tw == 0 || th == 0 || !rgba)
             return;

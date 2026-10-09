@@ -435,8 +435,7 @@ namespace Core::Gfx {
         return t;
     }
 
-    GpuRenderGraph::Texture &GpuRenderGraph::getOrCreateTexture(std::uint32_t key, const std::uint8_t *rgba, std::uint32_t tw,
-                                                                std::uint32_t th)
+    GpuRenderGraph::Texture &GpuRenderGraph::getOrCreateTexture(std::uint32_t key, const std::uint8_t *rgba, std::uint32_t tw, std::uint32_t th)
     {
         const std::uint64_t hash = hashRgba(rgba, static_cast<std::size_t>(tw) * th * 4);
         Texture &t = m_textures[key];
@@ -507,8 +506,8 @@ namespace Core::Gfx {
         const VkDeviceSize bytes = static_cast<VkDeviceSize>(tw) * th * 4;
         VkBuffer staging;
         VkDeviceMemory stagingMem;
-        createBuffer(bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                     staging, stagingMem);
+        createBuffer(bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, staging,
+                     stagingMem);
         void *mapped;
         vkMapMemory(m_device, stagingMem, 0, bytes, 0, &mapped);
         std::memcpy(mapped, rgba, bytes);
@@ -536,8 +535,7 @@ namespace Core::Gfx {
         toRead.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         toRead.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
         toRead.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1,
-                             &toRead);
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &toRead);
         endOneTime(cmd);
 
         vkDestroyBuffer(m_device, staging, nullptr);
@@ -661,8 +659,8 @@ namespace Core::Gfx {
                     for (const DrawCmd &d: p.draws)
                         rttDraws += (d.srcTarget != 0);
                 }
-                std::fprintf(stderr, "[GRAPH] present #%u: targets=%zu passes=%zu draws=%u rtt=%u scan=0x%08X\n", s_present - 1,
-                             m_targets.size(), m_passes.size(), totalDraws, rttDraws, scanAddr);
+                std::fprintf(stderr, "[GRAPH] present #%u: targets=%zu passes=%zu draws=%u rtt=%u scan=0x%08X\n", s_present - 1, m_targets.size(),
+                             m_passes.size(), totalDraws, rttDraws, scanAddr);
             }
         }
 
@@ -753,8 +751,8 @@ namespace Core::Gfx {
             const std::uint32_t cols = std::min(scan->w, m_maxWidth);
             const auto *srcBase = static_cast<const std::uint8_t *>(mapped);
             for (std::uint32_t y = 0; y < rows; y++)
-                std::memcpy(outRgbx + static_cast<std::size_t>(y) * m_maxWidth * 4,
-                            srcBase + static_cast<std::size_t>(y) * scan->w * 4, static_cast<std::size_t>(cols) * 4);
+                std::memcpy(outRgbx + static_cast<std::size_t>(y) * m_maxWidth * 4, srcBase + static_cast<std::size_t>(y) * scan->w * 4,
+                            static_cast<std::size_t>(cols) * 4);
             vkUnmapMemory(m_device, m_readbackMem);
         }
     }

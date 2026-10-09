@@ -6,13 +6,13 @@
 */
 
 #include "MemHeap.hpp"
-#include "CoreinitExtra.hpp"
 
 #include <algorithm>
 #include <cstdlib>
 #include <map>
 #include <unordered_map>
 
+#include "CoreinitExtra.hpp"
 #include "cpu/interpreter/Interpreter.hpp"
 #include "cpu/interpreter/SyscallHandler.hpp"
 #include "cpu/memory/Memory.hpp"
@@ -224,10 +224,7 @@ namespace {
         cpu.m_gpr[3] = cpu.m_memory.heapAllocate(size, align < 0 ? -align : (align ? align : 8));
     }
 
-    void mem_AllocFromExpHeapEx(Core::Interpreter &cpu)
-    {
-        heapAlloc(cpu, cpu.m_gpr[3], cpu.m_gpr[4], static_cast<std::int32_t>(cpu.m_gpr[5]));
-    }
+    void mem_AllocFromExpHeapEx(Core::Interpreter &cpu) { heapAlloc(cpu, cpu.m_gpr[3], cpu.m_gpr[4], static_cast<std::int32_t>(cpu.m_gpr[5])); }
 
     void mem_FreeToExpHeap(Core::Interpreter &cpu)
     {
@@ -271,16 +268,12 @@ namespace {
     }
 
     // Frame-heap allocs share the ExpHeap backend; state save/free-all semantics can come later.
-    void mem_AllocFromFrmHeapEx(Core::Interpreter &cpu)
-    {
-        heapAlloc(cpu, cpu.m_gpr[3], cpu.m_gpr[4], static_cast<std::int32_t>(cpu.m_gpr[5]));
-    }
+    void mem_AllocFromFrmHeapEx(Core::Interpreter &cpu) { heapAlloc(cpu, cpu.m_gpr[3], cpu.m_gpr[4], static_cast<std::int32_t>(cpu.m_gpr[5])); }
 
     void allocatorExpAlloc(Core::Interpreter &cpu)
     {
         const auto allocator = cpu.m_gpr[3];
-        heapAlloc(cpu, cpu.m_memory.read<std::uint32_t>(allocator + 4), cpu.m_gpr[4],
-                  cpu.m_memory.read<std::int32_t>(allocator + 8));
+        heapAlloc(cpu, cpu.m_memory.read<std::uint32_t>(allocator + 4), cpu.m_gpr[4], cpu.m_memory.read<std::int32_t>(allocator + 8));
     }
 
     void allocatorExpFree(Core::Interpreter &cpu)

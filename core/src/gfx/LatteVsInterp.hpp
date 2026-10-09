@@ -5,6 +5,7 @@
 #include <functional>
 #include <memory>
 #include <vector>
+
 #include "gfx/LatteProgram.hpp"
 
 // CPU interpreter for a subset of Latte (R600-class) vertex and pixel shader bytecode.
@@ -45,30 +46,29 @@ namespace Core::Gfx {
             // GX2_SHADER_MODE_UNIFORM_BLOCK). May be empty when no blocks are bound.
             using KcacheFetch = std::function<float(std::uint32_t bank, std::uint32_t vec4Idx, std::uint32_t chan)>;
             using TextureSample = std::function<bool(std::uint32_t resource, std::uint32_t sampler, const std::array<float, 4> &coords,
-                                                    std::array<float, 4> &rgba)>;
+                                                     std::array<float, 4> &rgba)>;
             // Four unfiltered mapped-red taps, not an ordinary RGBA sample.
             using TextureGather = TextureSample;
 
             using Program = Latte::Program;
             static std::shared_ptr<const Program> compile(const std::vector<std::uint32_t> &words);
-            static Output runPixel(const Program &program, const std::array<std::array<float, 4>, 4> &inputs,
-                                   const float *consts, std::uint32_t constCount, const TextureSample &textureSample,
-                                   const KcacheFetch &kcache = {}, const TextureGather &textureGather = {});
+            static Output runPixel(const Program &program, const std::array<std::array<float, 4>, 4> &inputs, const float *consts,
+                                   std::uint32_t constCount, const TextureSample &textureSample, const KcacheFetch &kcache = {},
+                                   const TextureGather &textureGather = {});
 
             // program: bytecode dwords (already byte-corrected). attribs: R1.. preloaded attribute
             // values. consts: the uniform register file (uniform-register mode / kcache-off reads).
-            static Output run(const std::vector<std::uint32_t> &program, const std::array<std::array<float, 4>, 4> &attribs,
-                              const float *consts, std::uint32_t constCount, const KcacheFetch &kcache = {},
-                              const TextureSample &textureSample = {});
+            static Output run(const std::vector<std::uint32_t> &program, const std::array<std::array<float, 4>, 4> &attribs, const float *consts,
+                              std::uint32_t constCount, const KcacheFetch &kcache = {}, const TextureSample &textureSample = {});
 
             // Force the ALU/export trace on for the next run() regardless of WEMU_VS_DEBUG, so a
             // single draw can be inspected without dumping every vertex in the frame.
             static void setDebugOnce(bool on);
 
         private:
-            static Output execute(const Program &program, const std::array<std::array<float, 4>, 4> &inputs,
-                                  const float *consts, std::uint32_t constCount, const KcacheFetch &kcache,
-                                  const TextureSample &textureSample, bool pixelStage, const TextureGather &textureGather = {});
+            static Output execute(const Program &program, const std::array<std::array<float, 4>, 4> &inputs, const float *consts,
+                                  std::uint32_t constCount, const KcacheFetch &kcache, const TextureSample &textureSample, bool pixelStage,
+                                  const TextureGather &textureGather = {});
     };
 
 } // namespace Core::Gfx

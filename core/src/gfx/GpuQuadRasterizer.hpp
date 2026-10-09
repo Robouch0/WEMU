@@ -23,8 +23,7 @@ namespace Core::Gfx {
                     float u, v; // texture coords [0,1]
             };
 
-            GpuQuadRasterizer(VkPhysicalDevice phys, VkDevice device, VkQueue queue, VkCommandPool pool, std::uint32_t width,
-                              std::uint32_t height);
+            GpuQuadRasterizer(VkPhysicalDevice phys, VkDevice device, VkQueue queue, VkCommandPool pool, std::uint32_t width, std::uint32_t height);
             ~GpuQuadRasterizer();
 
             GpuQuadRasterizer(const GpuQuadRasterizer &) = delete;
@@ -55,8 +54,7 @@ namespace Core::Gfx {
             };
 
             std::uint32_t findMemoryType(std::uint32_t typeBits, VkMemoryPropertyFlags props) const;
-            void createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags props, VkBuffer &buf,
-                              VkDeviceMemory &mem) const;
+            void createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags props, VkBuffer &buf, VkDeviceMemory &mem) const;
             VkCommandBuffer beginOneTime() const;
             void endOneTime(VkCommandBuffer cmd) const;
             void createOffscreenTarget();

@@ -25,8 +25,8 @@ namespace Core::Instruction {
         const std::uint32_t ua = cpu.m_gpr[instr.ra];
         const std::uint32_t ub = cpu.m_gpr[instr.rb];
 
-        const bool trapped = ((to & 0x10) && a < b) || ((to & 0x08) && a > b) || ((to & 0x04) && a == b) || ((to & 0x02) && ua < ub)
-            || ((to & 0x01) && ua > ub);
+        const bool trapped =
+                ((to & 0x10) && a < b) || ((to & 0x08) && a > b) || ((to & 0x04) && a == b) || ((to & 0x02) && ua < ub) || ((to & 0x01) && ua > ub);
 
         if (trapped)
             Utils::Log::warn("[CPU] tw trap (TO=0x{:X}, ra=0x{:08X}, rb=0x{:08X})", to, ua, ub);

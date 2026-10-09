@@ -43,7 +43,8 @@ namespace Core {
             static constexpr uint32_t DIMPORT_BASE = 0xC0000000; // dimport slots
             static constexpr uint32_t DIMPORT_SIZE = 0x4000; // 16 KB
 
-            explicit Memory(const std::size_t &size = ApplicationMemoryEnd - ApplicationCode) : m_memory(), m_virtAddress(ApplicationCode), m_memSize(size)
+            explicit Memory(const std::size_t &size = ApplicationMemoryEnd - ApplicationCode) :
+                m_memory(), m_virtAddress(ApplicationCode), m_memSize(size)
             {
                 m_memory.resize(size);
                 m_stack.resize(STACK_SIZE);

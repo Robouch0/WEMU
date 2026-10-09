@@ -9,7 +9,10 @@ on:
 jobs:
   build:
     name: Full Build (core + gui)
-    runs-on: ubuntu-latest
+    # Ubuntu 26.04 provides Qt >= 6.6.2; Ubuntu 24.04 ships Qt 6.4.
+    runs-on: ubuntu-26.04
+    env:
+      CXX: g++-14
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -18,29 +21,47 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            cmake build-essential pkg-config \
+            cmake build-essential g++-14 pkg-config \
             qt6-base-dev qt6-tools-dev qt6-declarative-dev qt6-base-dev-tools \
             libxkbcommon-dev libsdl2-dev libsdl2-image-dev zlib1g-dev libglfw3-dev \
             libavcodec-dev libavutil-dev libswscale-dev \
-            libvulkan-dev vulkan-tools vulkan-validationlayers libglm-dev
+            libvulkan-dev vulkan-tools vulkan-validationlayers libglm-dev \
+            glslang-tools spirv-tools mesa-vulkan-drivers
 
       - name: Cache CMake build
         uses: actions/cache@v4
         with:
           path: build
-          key: ${{ runner.os }}-build-full-${{ hashFiles('**/CMakeLists.txt') }}
+          key: ubuntu26-gcc14-build-full-${{ hashFiles('**/CMakeLists.txt') }}
           restore-keys: |
-            ${{ runner.os }}-build-full-
+            ubuntu26-gcc14-build-full-
 
       - name: Configure project with CMake
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=g++-14
 
       - name: Build project
         run: cmake --build build --parallel $(nproc)
 
+      - name: Run core and GUI tests with headless Vulkan
+        run: |
+          export WEMU_TEST_VULKAN=1
+          export VK_DRIVER_FILES="$(find /usr/share/vulkan/icd.d -name '*lvp*.json' -print -quit)"
+          test -n "$VK_DRIVER_FILES"
+          ctest --test-dir build --output-on-failure --parallel 1
+
   unit-tests:
     name: Unit Tests
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-26.04
+            llvm: "OFF"
+          - os: ubuntu-24.04
+            llvm: "ON"
+    env:
+      CXX: g++-14
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -49,30 +70,38 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            cmake build-essential pkg-config \
+            cmake build-essential g++-14 pkg-config \
             libavcodec-dev libavutil-dev libswscale-dev \
-            zlib1g-dev libsdl2-dev libvulkan-dev vulkan-tools vulkan-validationlayers libglm-dev libglfw3-dev
+            zlib1g-dev libsdl2-dev libvulkan-dev vulkan-tools vulkan-validationlayers libglm-dev libglfw3-dev \
+            glslang-tools spirv-tools mesa-vulkan-drivers
+          if [ "${{ matrix.llvm }}" = "ON" ]; then
+            sudo apt-get install -y llvm-19-dev
+          fi
 
       - name: Cache CMake build
         uses: actions/cache@v4
         with:
           path: core/build
-          key: ${{ runner.os }}-build-core-${{ hashFiles('core/**/CMakeLists.txt') }}
+          key: ${{ matrix.os }}-build-core-llvm-${{ matrix.llvm }}-${{ hashFiles('core/**/CMakeLists.txt') }}
           restore-keys: |
-            ${{ runner.os }}-build-core-
+            ${{ matrix.os }}-build-core-llvm-${{ matrix.llvm }}-
 
       - name: Configure core with CMake
-        run: cmake -S core -B core/build -DCMAKE_BUILD_TYPE=Debug
+        run: cmake -S core -B core/build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=g++-14 -DWEMU_ENABLE_LLVM=${{ matrix.llvm }}
 
       - name: Build core
         run: cmake --build core/build --parallel $(nproc)
 
       - name: Run tests
-        run: ctest --test-dir core/build --output-on-failure --parallel $(nproc)
+        run: |
+          export WEMU_TEST_VULKAN=1
+          export VK_DRIVER_FILES="$(find /usr/share/vulkan/icd.d -name '*lvp*.json' -print -quit)"
+          test -n "$VK_DRIVER_FILES"
+          ctest --test-dir core/build --output-on-failure --parallel 1
 
   clang-format:
     name: clang-format
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -80,16 +109,18 @@ jobs:
       - name: Install clang-format
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang-format
+          sudo apt-get install -y clang-format-19
 
       - name: Check formatting
         run: |
           find core/src core/tests \( -name "*.cpp" -o -name "*.hpp" \) -print0 | \
-            xargs -0 clang-format --dry-run --Werror
+            xargs -0 clang-format-19 --dry-run --Werror
 
   clang-tidy:
     name: clang-tidy
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    env:
+      CXX: g++-14
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -98,12 +129,13 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            cmake build-essential pkg-config \
+            cmake build-essential g++-14 pkg-config \
             libavcodec-dev libavutil-dev libswscale-dev \
-            zlib1g-dev libsdl2-dev clang-tidy libvulkan-dev vulkan-tools vulkan-validationlayers libglm-dev libglfw3-dev
+            zlib1g-dev libsdl2-dev clang-tidy-19 llvm-19-dev libvulkan-dev vulkan-tools vulkan-validationlayers libglm-dev libglfw3-dev \
+            glslang-tools spirv-tools
 
       - name: Configure core (generate compile_commands.json)
-        run: cmake -S core -B core/build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+        run: cmake -S core -B core/build -DCMAKE_CXX_COMPILER=g++-14 -DWEMU_ENABLE_LLVM=ON -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
       # clang-tidy needs generated headers (e.g. moc, configure-time files)
       # to exist before it can analyze sources that include them.
@@ -113,4 +145,4 @@ jobs:
       - name: Run clang-tidy
         run: |
           find core/src -name "*.cpp" -print0 | \
-            xargs -0 -P $(nproc) clang-tidy -p core/build --warnings-as-errors='*'
+            xargs -0 -P $(nproc) clang-tidy-19 -p core/build --warnings-as-errors='*'

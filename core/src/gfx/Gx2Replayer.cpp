@@ -1,21 +1,21 @@
 #include "gfx/Gx2Replayer.hpp"
 
 #include <algorithm>
-#include <cmath>
 #include <chrono>
-#include <format>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <string>
+#include <format>
 #include <stdexcept>
+#include <string>
 
 #include "cpu/memory/Memory.hpp"
 #include "gfx/LatteVsInterp.hpp"
+#include "gfx/Renderer.hpp" // full definition: the GPU path calls Renderer::gpu* methods
 #include "gfx/SurfaceLayout.hpp"
 #include "gfx/TextureFormat.hpp"
 #include "gfx/TriangleCoverage.hpp"
-#include "gfx/Renderer.hpp" // full definition: the GPU path calls Renderer::gpu* methods
 #include "utils/Logger.hpp"
 
 namespace Core::Gfx {
@@ -102,15 +102,9 @@ namespace Core::Gfx {
             return result;
         }
 
-        std::uint8_t byteFromUnit(const double v)
-        {
-            return static_cast<std::uint8_t>(std::clamp(v, 0.0, 1.0) * 255.0 + 0.5);
-        }
+        std::uint8_t byteFromUnit(const double v) { return static_cast<std::uint8_t>(std::lround(std::clamp(v, 0.0, 1.0) * 255.0)); }
 
-        std::uint8_t clampByte(const int v)
-        {
-            return static_cast<std::uint8_t>(std::clamp(v, 0, 255));
-        }
+        std::uint8_t clampByte(const int v) { return static_cast<std::uint8_t>(std::clamp(v, 0, 255)); }
 
         bool shouldDumpAfterDraw(const std::uint32_t draw)
         {
@@ -155,59 +149,100 @@ namespace Core::Gfx {
         const char *cfName(std::uint32_t inst)
         {
             switch (inst) {
-                case 0x00: return "NOP";
-                case 0x01: return "TEX";
-                case 0x02: return "VTX";
-                case 0x03: return "VTX_TC";
-                case 0x0A: return "JUMP";
-                case 0x0D: return "ELSE";
-                case 0x0E: return "POP";
-                case 0x13: return "CALL_FS";
-                case 0x14: return "RETURN";
-                case 0x27: return "EXP";
-                case 0x28: return "EXP_DONE";
-                default: return "?";
+                case 0x00:
+                    return "NOP";
+                case 0x01:
+                    return "TEX";
+                case 0x02:
+                    return "VTX";
+                case 0x03:
+                    return "VTX_TC";
+                case 0x0A:
+                    return "JUMP";
+                case 0x0D:
+                    return "ELSE";
+                case 0x0E:
+                    return "POP";
+                case 0x13:
+                    return "CALL_FS";
+                case 0x14:
+                    return "RETURN";
+                case 0x27:
+                    return "EXP";
+                case 0x28:
+                    return "EXP_DONE";
+                default:
+                    return "?";
             }
         }
 
         const char *alu2Name(std::uint32_t op)
         {
             switch (op) {
-                case 0x00: return "ADD";
-                case 0x01: return "MUL";
-                case 0x02: return "MUL_IEEE";
-                case 0x03: return "MAX";
-                case 0x04: return "MIN";
-                case 0x10: return "FRACT";
-                case 0x14: return "FLOOR";
-                case 0x19: return "MOV";
-                case 0x1A: return "NOP";
-                case 0x50: return "DOT4";
-                case 0x51: return "DOT4_IEEE";
-                case 0x66: return "RECIP_IEEE";
-                case 0x6B: return "FLT_TO_INT";
-                case 0x6C: return "INT_TO_FLT";
-                case 0x6D: return "UINT_TO_FLT";
-                case 0x70: return "ASHR";
-                case 0x71: return "LSHR";
-                case 0x72: return "LSHL";
-                case 0x79: return "FLT_TO_UINT";
-                default: return "?";
+                case 0x00:
+                    return "ADD";
+                case 0x01:
+                    return "MUL";
+                case 0x02:
+                    return "MUL_IEEE";
+                case 0x03:
+                    return "MAX";
+                case 0x04:
+                    return "MIN";
+                case 0x10:
+                    return "FRACT";
+                case 0x14:
+                    return "FLOOR";
+                case 0x19:
+                    return "MOV";
+                case 0x1A:
+                    return "NOP";
+                case 0x50:
+                    return "DOT4";
+                case 0x51:
+                    return "DOT4_IEEE";
+                case 0x66:
+                    return "RECIP_IEEE";
+                case 0x6B:
+                    return "FLT_TO_INT";
+                case 0x6C:
+                    return "INT_TO_FLT";
+                case 0x6D:
+                    return "UINT_TO_FLT";
+                case 0x70:
+                    return "ASHR";
+                case 0x71:
+                    return "LSHR";
+                case 0x72:
+                    return "LSHL";
+                case 0x79:
+                    return "FLT_TO_UINT";
+                default:
+                    return "?";
             }
         }
 
         const char *alu3Name(std::uint32_t op)
         {
             switch (op) {
-                case 0x10: return "MULADD";
-                case 0x14: return "MULADD_IEEE";
-                case 0x18: return "CNDE";
-                case 0x19: return "CNDGT";
-                case 0x1A: return "CNDGE";
-                case 0x1C: return "CNDE_INT";
-                case 0x1D: return "CNDGT_INT";
-                case 0x1E: return "CNDGE_INT";
-                default: return "?";
+                case 0x10:
+                    return "MULADD";
+                case 0x14:
+                    return "MULADD_IEEE";
+                case 0x18:
+                    return "CNDE";
+                case 0x19:
+                    return "CNDGT";
+                case 0x1A:
+                    return "CNDGE";
+                case 0x1C:
+                    return "CNDE_INT";
+                case 0x1D:
+                    return "CNDGT_INT";
+                case 0x1E:
+                    return "CNDGE_INT";
+                default:
+                    return "?";
             }
         }
 
@@ -239,14 +274,12 @@ namespace Core::Gfx {
             if (op3 >= 0x08) {
                 const std::uint32_t src2Sel = w1 & 0x1FF;
                 const std::uint32_t src2Chan = (w1 >> 10) & 3;
-                Utils::Log::error("[PSSUM]     alu@{} OP3 {}(0x{:02X}) R{}.{} = S{}.{} * S{}.{} + S{}.{} last={}", slot,
-                                  alu3Name(op3), op3, dst, dstChan, src0Sel, src0Chan, src1Sel, src1Chan, src2Sel, src2Chan,
-                                  (w0 >> 31) & 1);
+                Utils::Log::error("[PSSUM]     alu@{} OP3 {}(0x{:02X}) R{}.{} = S{}.{} * S{}.{} + S{}.{} last={}", slot, alu3Name(op3), op3, dst,
+                                  dstChan, src0Sel, src0Chan, src1Sel, src1Chan, src2Sel, src2Chan, (w0 >> 31) & 1);
             } else {
                 const std::uint32_t op = (w1 >> 7) & 0x7FF;
-                Utils::Log::error("[PSSUM]     alu@{} OP2 {}(0x{:02X}) R{}.{} = S{}.{} op S{}.{} wm={} last={}", slot,
-                                  alu2Name(op), op, dst, dstChan, src0Sel, src0Chan, src1Sel, src1Chan, (w1 >> 4) & 1,
-                                  (w0 >> 31) & 1);
+                Utils::Log::error("[PSSUM]     alu@{} OP2 {}(0x{:02X}) R{}.{} = S{}.{} op S{}.{} wm={} last={}", slot, alu2Name(op), op, dst, dstChan,
+                                  src0Sel, src0Chan, src1Sel, src1Chan, (w1 >> 4) & 1, (w0 >> 31) & 1);
             }
         }
 
@@ -260,14 +293,13 @@ namespace Core::Gfx {
 
             Utils::Log::error("[PSSUM] shader=0x{:08X} hash={:08X} words={} bytecode summary", guestShaderAddr, hash, program.size());
             for (std::uint32_t cf = 0; cf * 2 + 1 < program.size() && cf < 24; cf++) {
-                const std::uint32_t w0 = program[cf * 2];
-                const std::uint32_t w1 = program[cf * 2 + 1];
+                const std::uint32_t w0 = program[std::size_t(cf) * 2];
+                const std::uint32_t w1 = program[std::size_t(cf) * 2 + 1];
                 if (r600IsAluClause(w1)) {
                     const std::uint32_t addr = w0 & 0x3FFFFF;
                     const std::uint32_t count = ((w1 >> 18) & 0x7F) + 1;
-                    Utils::Log::error("[PSSUM]   CF{} ALU kind={} addr={} count={} kc0=b{} a{} m{} kc1=b{} a{} m{}", cf,
-                                      r600CfAluInst(w1), addr, count, (w0 >> 22) & 0xF, (w1 >> 2) & 0xFF, (w0 >> 30) & 3,
-                                      (w0 >> 26) & 0xF, (w1 >> 10) & 0xFF, w1 & 3);
+                    Utils::Log::error("[PSSUM]   CF{} ALU kind={} addr={} count={} kc0=b{} a{} m{} kc1=b{} a{} m{}", cf, r600CfAluInst(w1), addr,
+                                      count, (w0 >> 22) & 0xF, (w1 >> 2) & 0xFF, (w0 >> 30) & 3, (w0 >> 26) & 0xF, (w1 >> 10) & 0xFF, w1 & 3);
                     for (std::uint32_t slot = addr; slot < addr + std::min<std::uint32_t>(count, 12); slot++)
                         summarizeAluSlot(program, slot);
                     if (count > 12)
@@ -277,22 +309,22 @@ namespace Core::Gfx {
 
                 const std::uint32_t inst = r600CfInst(w1);
                 const std::uint32_t addr = w0 & 0x3FFFFF;
-                Utils::Log::error("[PSSUM]   CF{} {}(0x{:02X}) addr={} w0=0x{:08X} w1=0x{:08X} eop={}", cf, cfName(inst), inst,
-                                  addr, w0, w1, r600CfEop(w1));
+                Utils::Log::error("[PSSUM]   CF{} {}(0x{:02X}) addr={} w0=0x{:08X} w1=0x{:08X} eop={}", cf, cfName(inst), inst, addr, w0, w1,
+                                  r600CfEop(w1));
                 if (inst == 0x01 || inst == 0x02 || inst == 0x03) {
                     for (std::uint32_t slot = addr; slot < addr + 4 && slot * 2 + 1 < program.size(); slot++)
-                        Utils::Log::error("[PSSUM]     fetch@{} raw={} {}", slot, std::format("{:08X}", program[slot * 2]),
-                                          std::format("{:08X}", program[slot * 2 + 1]));
+                        Utils::Log::error("[PSSUM]     fetch@{} raw={} {}", slot, std::format("{:08X}", program[std::size_t(slot) * 2]),
+                                          std::format("{:08X}", program[std::size_t(slot) * 2 + 1]));
                 } else if (inst == 0x27 || inst == 0x28) {
-                    Utils::Log::error("[PSSUM]     export type={} base={} gpr=R{} sel=({}, {}, {}, {})", (w0 >> 13) & 3,
-                                      w0 & 0x1FFF, (w0 >> 15) & 0x7F, w1 & 7, (w1 >> 3) & 7, (w1 >> 6) & 7, (w1 >> 9) & 7);
+                    Utils::Log::error("[PSSUM]     export type={} base={} gpr=R{} sel=({}, {}, {}, {})", (w0 >> 13) & 3, w0 & 0x1FFF,
+                                      (w0 >> 15) & 0x7F, w1 & 7, (w1 >> 3) & 7, (w1 >> 6) & 7, (w1 >> 9) & 7);
                 }
                 if (r600CfEop(w1))
                     break;
             }
         }
 
-        enum class SimplePixelShaderKind {
+        enum class SimplePixelShaderKind : std::uint8_t {
             None,
             TextureRegs, // out = texture * p1 + p0
             TextureParamRegs, // out = texture * (PARAM0 * p1 + p0)
@@ -333,13 +365,13 @@ namespace Core::Gfx {
             const std::uint32_t aluCount = ((program[3] >> 18) & 0x7F) + 1;
             if (aluCount == 4) {
                 for (std::uint32_t i = 0; i < 4; i++) {
-                    const std::uint32_t w0 = program[(32 + i) * 2];
-                    const std::uint32_t w1 = program[(32 + i) * 2 + 1];
-                    if (op3(w1) != 0x10 || dstGpr(w1) != 1 || dstChan(w1) != i || src0Sel(w0) != 0 || src0Chan(w0) != i
-                        || src1Sel(w0) != 257 || src1Chan(w0) != i || (w1 & 0x1FF) != 256 || ((w1 >> 10) & 3) != i)
+                    const std::uint32_t w0 = program[(std::size_t{32} + i) * 2];
+                    const std::uint32_t w1 = program[(std::size_t{32} + i) * 2 + 1];
+                    if (op3(w1) != 0x10 || dstGpr(w1) != 1 || dstChan(w1) != i || src0Sel(w0) != 0 || src0Chan(w0) != i || src1Sel(w0) != 257 ||
+                        src1Chan(w0) != i || (w1 & 0x1FF) != 256 || ((w1 >> 10) & 3) != i)
                         return SimplePixelShaderKind::None;
                 }
-                if (!isLast(program[33 * 2]) || !isLast(program[35 * 2]))
+                if (!isLast(program[std::size_t{33} * 2]) || !isLast(program[std::size_t{35} * 2]))
                     return SimplePixelShaderKind::None;
                 return SimplePixelShaderKind::TextureRegs;
             }
@@ -348,31 +380,30 @@ namespace Core::Gfx {
                 return SimplePixelShaderKind::None;
 
             const std::uint32_t factorSrc[4][3] = {
-                {1, 1, 257}, // slot 32: PARAM0.y * c1.y + c0.y -> R127.z
-                {1, 0, 257}, // slot 33: PARAM0.x * c1.x + c0.x -> R123.w
-                {1, 3, 257}, // slot 34: PARAM0.w * c1.w + c0.w -> R123.x
-                {1, 2, 257}, // slot 35: PARAM0.z * c1.z + c0.z -> R123.y
+                    {1, 1, 257}, // slot 32: PARAM0.y * c1.y + c0.y -> R127.z
+                    {1, 0, 257}, // slot 33: PARAM0.x * c1.x + c0.x -> R123.w
+                    {1, 3, 257}, // slot 34: PARAM0.w * c1.w + c0.w -> R123.x
+                    {1, 2, 257}, // slot 35: PARAM0.z * c1.z + c0.z -> R123.y
             };
             for (std::uint32_t i = 0; i < 4; i++) {
-                const std::uint32_t w0 = program[(32 + i) * 2];
-                const std::uint32_t w1 = program[(32 + i) * 2 + 1];
-                if (op3(w1) != 0x10 || src0Sel(w0) != factorSrc[i][0] || src0Chan(w0) != factorSrc[i][1]
-                    || src1Sel(w0) != factorSrc[i][2] || src1Chan(w0) != factorSrc[i][1] || (w1 & 0x1FF) != 256
-                    || ((w1 >> 10) & 3) != factorSrc[i][1])
+                const std::uint32_t w0 = program[(std::size_t{32} + i) * 2];
+                const std::uint32_t w1 = program[(std::size_t{32} + i) * 2 + 1];
+                if (op3(w1) != 0x10 || src0Sel(w0) != factorSrc[i][0] || src0Chan(w0) != factorSrc[i][1] || src1Sel(w0) != factorSrc[i][2] ||
+                    src1Chan(w0) != factorSrc[i][1] || (w1 & 0x1FF) != 256 || ((w1 >> 10) & 3) != factorSrc[i][1])
                     return SimplePixelShaderKind::None;
             }
-            if (!isLast(program[33 * 2]) || isLast(program[34 * 2]) || isLast(program[35 * 2]))
+            if (!isLast(program[std::size_t{33} * 2]) || isLast(program[std::size_t{34} * 2]) || isLast(program[std::size_t{35} * 2]))
                 return SimplePixelShaderKind::None;
 
             for (std::uint32_t i = 0; i < 4; i++) {
                 const std::uint32_t slot = 36 + i;
-                const std::uint32_t w0 = program[slot * 2];
-                const std::uint32_t w1 = program[slot * 2 + 1];
-                if (op3(w1) >= 0x08 || op2(w1) != 0x01 || dstGpr(w1) != 1 || dstChan(w1) != i || src0Sel(w0) != 0
-                    || src0Chan(w0) != i)
+                const std::uint32_t w0 = program[std::size_t(slot) * 2];
+                const std::uint32_t w1 = program[std::size_t(slot) * 2 + 1];
+                if (op3(w1) >= 0x08 || op2(w1) != 0x01 || dstGpr(w1) != 1 || dstChan(w1) != i || src0Sel(w0) != 0 || src0Chan(w0) != i)
                     return SimplePixelShaderKind::None;
             }
-            if (!isLast(program[36 * 2]) || isLast(program[37 * 2]) || isLast(program[38 * 2]) || !isLast(program[39 * 2]))
+            if (!isLast(program[std::size_t{36} * 2]) || isLast(program[std::size_t{37} * 2]) || isLast(program[std::size_t{38} * 2]) ||
+                !isLast(program[std::size_t{39} * 2]))
                 return SimplePixelShaderKind::None;
             return SimplePixelShaderKind::TextureParamRegs;
         }
@@ -382,7 +413,7 @@ namespace Core::Gfx {
     void Gx2Replayer::buildClearFrame()
     {
         m_fb.assign(static_cast<std::size_t>(kWidth) * kHeight * 4, 0);
-        const auto toByte = [](float f) { return static_cast<std::uint8_t>(std::clamp(f, 0.0f, 1.0f) * 255.0f + 0.5f); };
+        const auto toByte = [](float f) { return static_cast<std::uint8_t>(std::lround(std::clamp(f, 0.0f, 1.0f) * 255.0f)); };
         const std::uint8_t r = toByte(m_clear[0]);
         const std::uint8_t g = toByte(m_clear[1]);
         const std::uint8_t b = toByte(m_clear[2]);
@@ -444,10 +475,12 @@ namespace Core::Gfx {
 
     void Gx2Replayer::resolveViewBacking(const Surface &s) const
     {
-        if (m_pendingReadbacks.empty()) return;
+        if (m_pendingReadbacks.empty())
+            return;
         const auto key = makeSurfaceKey(s);
         const auto pending = m_pendingReadbacks.find(key);
-        if (pending == m_pendingReadbacks.end()) return;
+        if (pending == m_pendingReadbacks.end())
+            return;
         const auto &pixels = pending->second->resolve();
         auto &backing = m_viewBackings.at(key);
         if (pixels.size() != backing.size())
@@ -460,7 +493,7 @@ namespace Core::Gfx {
     {
         // Software workers can select array slices dynamically. Resolve on the
         // replay thread before dispatch so sampling never mutates shared maps.
-        for (const auto &[key, pending] : m_pendingReadbacks) {
+        for (const auto &[key, pending]: m_pendingReadbacks) {
             const auto &pixels = pending->resolve();
             auto &backing = m_viewBackings.at(key);
             if (pixels.size() != backing.size())
@@ -470,8 +503,7 @@ namespace Core::Gfx {
         m_pendingReadbacks.clear();
     }
 
-    std::array<std::uint8_t, 4> Gx2Replayer::sampleViewBacking(const Surface &s, const std::vector<std::uint8_t> &backing, float u,
-                                                               float v) const
+    std::array<std::uint8_t, 4> Gx2Replayer::sampleViewBacking(const Surface &s, const std::vector<std::uint8_t> &backing, float u, float v) const
     {
         if (!s.width || !s.height || !s.pitch || backing.empty())
             return {128, 128, 128, 255};
@@ -487,76 +519,76 @@ namespace Core::Gfx {
 
     std::optional<Gx2Replayer::Surface> Gx2Replayer::arraySlice(const Surface &original, unsigned relative) const
     {
-            if (original.dimension != 5 || !original.depth || !original.sliceCount || original.firstMip || original.aa
-                || original.firstSlice >= original.depth || original.sliceCount > original.depth - original.firstSlice
-                || relative >= original.sliceCount
-                || !original.imageSize || original.imageSize % original.depth || !original.imagePtr || !m_mem)
-                return {};
-            const auto fmt = original.format & 0x3F;
-            const bool compressed = fmt >= 0x31 && fmt <= 0x35;
-            if (!compressed && fmt != 1 && fmt != 7 && fmt != 0x1A)
-                return {};
-            const unsigned bytes = compressed ? (fmt == 0x31 || fmt == 0x34 ? 8 : 16) : fmt == 1 ? 1 : fmt == 7 ? 2 : 4;
-            const unsigned width = compressed ? (original.width + 3) / 4 : original.width;
-            unsigned height = compressed ? (original.height + 3) / 4 : original.height;
-            unsigned pitchAlign = 1, heightAlign = 1;
-            if (original.tileMode == 2) {
-                pitchAlign = std::max(8u, 32u / bytes);
-                heightAlign = 8;
-            } else if (original.tileMode == 4) {
-                pitchAlign = std::max(32u, 128u / bytes);
-                heightAlign = 16;
-            } else if (original.tileMode > 1 && original.tileMode != 16) {
-                return {};
-            }
-            height = (height + heightAlign - 1) & ~(heightAlign - 1);
-            const std::uint64_t stride = original.imageSize / original.depth;
-            if (!width || !height || original.pitch < width || original.pitch % pitchAlign
-                || std::uint64_t(original.pitch) * height * bytes > stride
-                || (original.tileMode == 4 && stride % 2048))
-                return {};
-            const auto slice = original.firstSlice + relative;
-            const std::uint64_t address = original.imagePtr + stride * slice;
-            if (std::uint64_t(original.imagePtr) + original.imageSize > 0x100000000ull
-                || !m_mem->hostPtr(static_cast<std::uint32_t>(address))
-                || !m_mem->hostPtr(static_cast<std::uint32_t>(address + stride - 1)))
-                return {};
-            Surface selected = original;
-            selected.dimension = 1;
-            selected.imagePtr = static_cast<std::uint32_t>(address);
-            selected.imageSize = static_cast<std::uint32_t>(stride);
-            if (original.tileMode == 4) {
-                // Thin 2D macro tiles rotate the bank/pipe selection between slices.
-                const auto swizzle = (((original.swizzle >> 8) & 7) + slice * 2) & 7;
-                selected.swizzle = (original.swizzle & ~0x700u) | (swizzle << 8);
-            }
-            return selected;
+        if (original.dimension != 5 || !original.depth || !original.sliceCount || original.firstMip || original.aa ||
+            original.firstSlice >= original.depth || original.sliceCount > original.depth - original.firstSlice || relative >= original.sliceCount ||
+            !original.imageSize || original.imageSize % original.depth || !original.imagePtr || !m_mem)
+            return {};
+        const auto fmt = original.format & 0x3F;
+        const bool compressed = fmt >= 0x31 && fmt <= 0x35;
+        if (!compressed && fmt != 1 && fmt != 7 && fmt != 0x1A)
+            return {};
+        const unsigned bytes = compressed ? (fmt == 0x31 || fmt == 0x34 ? 8 : 16) : fmt == 1 ? 1 : fmt == 7 ? 2 : 4;
+        const unsigned width = compressed ? (original.width + 3) / 4 : original.width;
+        unsigned height = compressed ? (original.height + 3) / 4 : original.height;
+        unsigned pitchAlign = 1, heightAlign = 1;
+        if (original.tileMode == 2) {
+            pitchAlign = std::max(8u, 32u / bytes);
+            heightAlign = 8;
+        } else if (original.tileMode == 4) {
+            pitchAlign = std::max(32u, 128u / bytes);
+            heightAlign = 16;
+        } else if (original.tileMode > 1 && original.tileMode != 16) {
+            return {};
+        }
+        height = (height + heightAlign - 1) & ~(heightAlign - 1);
+        const std::uint64_t stride = original.imageSize / original.depth;
+        if (!width || !height || original.pitch < width || original.pitch % pitchAlign || std::uint64_t(original.pitch) * height * bytes > stride ||
+            (original.tileMode == 4 && stride % 2048))
+            return {};
+        const auto slice = original.firstSlice + relative;
+        const std::uint64_t address = original.imagePtr + stride * slice;
+        if (std::uint64_t(original.imagePtr) + original.imageSize > 0x100000000ull || !m_mem->hostPtr(static_cast<std::uint32_t>(address)) ||
+            !m_mem->hostPtr(static_cast<std::uint32_t>(address + stride - 1)))
+            return {};
+        Surface selected = original;
+        selected.dimension = 1;
+        selected.imagePtr = static_cast<std::uint32_t>(address);
+        selected.imageSize = static_cast<std::uint32_t>(stride);
+        if (original.tileMode == 4) {
+            // Thin 2D macro tiles rotate the bank/pipe selection between slices.
+            const auto swizzle = (((original.swizzle >> 8) & 7) + slice * 2) & 7;
+            selected.swizzle = (original.swizzle & ~0x700u) | (swizzle << 8);
+        }
+        return selected;
     }
 
     std::shared_ptr<Gx2Replayer::ArraySnapshot> Gx2Replayer::arraySnapshot(const Surface &surface)
     {
         constexpr std::uint64_t budget = 64ull * 1024 * 1024;
         const std::uint64_t decodedBytes = std::uint64_t(surface.width) * surface.height * surface.sliceCount * 4;
-        if (!surface.width || !surface.height || surface.width > 4096 || surface.height > 4096
-            || !surface.sliceCount || surface.sliceCount > 256 || decodedBytes + surface.imageSize > budget
-            || !useViewBacking()) return {};
+        if (!surface.width || !surface.height || surface.width > 4096 || surface.height > 4096 || !surface.sliceCount || surface.sliceCount > 256 ||
+            decodedBytes + surface.imageSize > budget || !useViewBacking())
+            return {};
         const auto sourceEnd = std::uint64_t(surface.imagePtr) + surface.imageSize;
-        for (const auto &[key, backing] : m_viewBackings)
-            if (std::uint64_t(key.imagePtr) < sourceEnd
-                && std::uint64_t(surface.imagePtr) < std::uint64_t(key.imagePtr) + backing.size()) return {};
+        for (const auto &[key, backing]: m_viewBackings)
+            if (std::uint64_t(key.imagePtr) < sourceEnd && std::uint64_t(surface.imagePtr) < std::uint64_t(key.imagePtr) + backing.size())
+                return {};
         std::vector<Surface> slices;
         for (unsigned layer = 0; layer < surface.sliceCount; ++layer) {
             const auto selected = arraySlice(surface, layer);
             // Rendered aliases must use versioned snapshots, not a raw-memory cache.
-            if (!selected || findViewBacking(*selected) || m_cpuWritten.contains(selected->imagePtr)) return {};
+            if (!selected || findViewBacking(*selected) || m_cpuWritten.contains(selected->imagePtr))
+                return {};
             slices.push_back(*selected);
         }
         const auto *begin = m_mem->hostPtr(surface.imagePtr);
         const auto *end = m_mem->hostPtr(surface.imagePtr + surface.imageSize - 1);
-        if (!begin || !end || std::uintptr_t(end) - std::uintptr_t(begin) != surface.imageSize - 1) return {};
-        for (const auto &entry : m_arraySnapshots)
-            if (entry->surface == surface && entry->source.size() == surface.imageSize
-                && std::memcmp(entry->source.data(), begin, surface.imageSize) == 0) return entry;
+        if (!begin || !end || std::uintptr_t(end) - std::uintptr_t(begin) != surface.imageSize - 1)
+            return {};
+        for (const auto &entry: m_arraySnapshots)
+            if (entry->surface == surface && entry->source.size() == surface.imageSize &&
+                std::memcmp(entry->source.data(), begin, surface.imageSize) == 0)
+                return entry;
         auto result = std::make_shared<ArraySnapshot>();
         result->surface = surface;
         result->source.assign(begin, begin + surface.imageSize);
@@ -564,14 +596,14 @@ namespace Core::Gfx {
         for (unsigned layer = 0; layer < slices.size(); ++layer)
             for (unsigned y = 0; y < surface.height; ++y)
                 for (unsigned x = 0; x < surface.width; ++x) {
-                    const auto color = sample(slices[layer], (float(x) + 0.5f) / surface.width,
-                                              (float(y) + 0.5f) / surface.height);
+                    const auto color = sample(slices[layer], (float(x) + 0.5f) / float(surface.width), (float(y) + 0.5f) / float(surface.height));
                     const auto offset = ((std::size_t(layer) * surface.height + y) * surface.width + x) * 4;
-                    std::copy(color.begin(), color.end(), result->rgba.begin() + offset);
+                    std::copy(color.begin(), color.end(), result->rgba.data() + offset);
                 }
         std::erase_if(m_arraySnapshots, [&](const auto &entry) { return entry->surface == surface; });
         auto bytes = decodedBytes + surface.imageSize;
-        for (const auto &entry : m_arraySnapshots) bytes += entry->source.size() + entry->rgba.size();
+        for (const auto &entry: m_arraySnapshots)
+            bytes += entry->source.size() + entry->rgba.size();
         while (!m_arraySnapshots.empty() && (bytes > budget || m_arraySnapshots.size() >= 8)) {
             bytes -= m_arraySnapshots.front()->source.size() + m_arraySnapshots.front()->rgba.size();
             m_arraySnapshots.erase(m_arraySnapshots.begin());
@@ -583,34 +615,31 @@ namespace Core::Gfx {
     bool Gx2Replayer::supportsGather(const Surface &surface, const TextureSampler &sampler)
     {
         const auto state = sampler.regs[0];
-        return surface.dimension == 1 && surface.mipCount == 1 && !surface.firstMip && !surface.aa
-            && !surface.firstSlice && surface.sliceCount == 1 && surface.imagePtr && surface.width && surface.height
-            && (state & 7) <= 2 && ((state >> 3) & 7) <= 2 && ((state >> 9) & 7) <= 1
-            && ((state >> 12) & 7) <= 1 && !((state >> 19) & 7);
+        return surface.dimension == 1 && surface.mipCount == 1 && !surface.firstMip && !surface.aa && !surface.firstSlice &&
+               surface.sliceCount == 1 && surface.imagePtr && surface.width && surface.height && (state & 7) <= 2 && ((state >> 3) & 7) <= 2 &&
+               ((state >> 9) & 7) <= 1 && ((state >> 12) & 7) <= 1 && !((state >> 19) & 7);
     }
 
-    std::array<float, 4> Gx2Replayer::sampleTexture(const Surface &original, const TextureSampler &sampler, float u, float v,
-                                                 float layer,
-                                                 const std::vector<std::uint8_t> *feedback, bool gather) const
+    std::array<float, 4> Gx2Replayer::sampleTexture(const Surface &original, const TextureSampler &sampler, float u, float v, float layer,
+                                                    const std::vector<std::uint8_t> *feedback, bool gather) const
     {
         if (original.dimension == 5) {
-            if (!std::isfinite(layer) || !original.sliceCount) return sampler.border();
-            const auto relative = static_cast<std::uint32_t>(std::clamp(std::floor(double(layer) + 0.5),
-                                                                       0.0, double(original.sliceCount - 1)));
+            if (!std::isfinite(layer) || !original.sliceCount)
+                return sampler.border();
+            const auto relative = static_cast<std::uint32_t>(std::clamp(std::floor(double(layer) + 0.5), 0.0, double(original.sliceCount - 1)));
             const auto slice = arraySlice(original, relative);
-            if (!slice) return sampler.border();
+            if (!slice)
+                return sampler.border();
             const auto &selected = *slice;
             // Only the base slice can reuse this draw's base-layer feedback snapshot.
-            const auto *selectedFeedback = selected.imagePtr == original.imagePtr && selected.swizzle == original.swizzle
-                ? feedback : nullptr;
+            const auto *selectedFeedback = selected.imagePtr == original.imagePtr && selected.swizzle == original.swizzle ? feedback : nullptr;
             return sampleTexture(selected, sampler, u, v, 0, selectedFeedback);
         }
         const Surface &s = original;
         auto fetch = [&](unsigned x, unsigned y) {
             if (s.format == 0x80E && !feedback && !findViewBacking(s) && m_mem && s.imagePtr) {
                 const auto offset = tiledElementOffset(x, y, s.pitch, 32, s.tileMode, s.swizzle);
-                if (std::uint64_t(offset) + 4 <= s.imageSize
-                    && std::uint64_t(s.imagePtr) + offset + 4 <= 0x100000000ull) {
+                if (std::uint64_t(offset) + 4 <= s.imageSize && std::uint64_t(s.imagePtr) + offset + 4 <= 0x100000000ull) {
                     const auto *p = m_mem->hostPtr(s.imagePtr + offset);
                     const auto *end = m_mem->hostPtr(s.imagePtr + offset + 3);
                     if (p && end && std::uintptr_t(end) - std::uintptr_t(p) == 3)
@@ -626,17 +655,19 @@ namespace Core::Gfx {
                     if (s.pitch && offset + 3 < feedback->size())
                         std::copy_n(feedback->data() + offset, 4, raw.begin());
                 } else {
-                    const float tu = (x + 0.5f) / s.width, tv = (y + 0.5f) / s.height;
+                    const float tu = (float(x) + 0.5f) / float(s.width), tv = (float(y) + 0.5f) / float(s.height);
                     raw = sample(s, tu, tv);
                 }
             }
             const auto mapped = mapTextureChannels(raw, s.compMap);
             std::array<float, 4> rgba{};
-            for (unsigned c = 0; c < 4; c++) rgba[c] = mapped[c] / 255.0f;
+            for (unsigned c = 0; c < 4; c++)
+                rgba[c] = float(mapped[c]) / 255.0f;
             return rgba;
         };
         // Unbound resources still honor constant component selectors.
-        if (!s.width || !s.height) return fetch(0, 0);
+        if (!s.width || !s.height)
+            return fetch(0, 0);
         return gather ? sampler.gather(s.width, s.height, u, v, fetch) : sampler.sample(s.width, s.height, u, v, fetch);
     }
 
@@ -645,38 +676,65 @@ namespace Core::Gfx {
     {
         const auto factor = [&](const std::uint32_t mode, const int c) -> int {
             switch (mode) {
-                case 0: return 0; // ZERO
-                case 1: return 255; // ONE
-                case 2: return src[c]; // SRC_COLOR
-                case 3: return 255 - src[c]; // INV_SRC_COLOR
-                case 4: return src[3]; // SRC_ALPHA
-                case 5: return 255 - src[3]; // INV_SRC_ALPHA
-                case 6: return dst[3]; // DST_ALPHA
-                case 7: return 255 - dst[3]; // INV_DST_ALPHA
-                case 8: return dst[c]; // DST_COLOR
-                case 9: return 255 - dst[c]; // INV_DST_COLOR
-                case 10: return c == 3 ? 255 : std::min<int>(src[3], 255 - dst[3]); // SRC_ALPHA_SAT
-                case 11: return src[3]; // BOTH_SRC_ALPHA
-                case 12: return 255 - src[3]; // BOTH_INV_SRC_ALPHA
-                case 13: return m_blendConstant[c]; // BLEND_FACTOR
-                case 14: return 255 - m_blendConstant[c]; // INV_BLEND_FACTOR
-                case 15: return 0; // SRC1_COLOR: unsupported dual-source blend
-                case 16: return 255; // INV_SRC1_COLOR: unsupported dual-source blend
-                case 17: return 0; // SRC1_ALPHA: unsupported dual-source blend
-                case 18: return 255; // INV_SRC1_ALPHA: unsupported dual-source blend
-                case 19: return m_blendConstant[3]; // CONSTANT_ALPHA
-                case 20: return 255 - m_blendConstant[3]; // INV_CONSTANT_ALPHA
-                default: return 255;
+                case 0:
+                    return 0; // ZERO
+                case 1:
+                    return 255; // ONE
+                case 2:
+                    return src[c]; // SRC_COLOR
+                case 3:
+                    return 255 - src[c]; // INV_SRC_COLOR
+                case 4:
+                    return src[3]; // SRC_ALPHA
+                case 5:
+                    return 255 - src[3]; // INV_SRC_ALPHA
+                case 6:
+                    return dst[3]; // DST_ALPHA
+                case 7:
+                    return 255 - dst[3]; // INV_DST_ALPHA
+                case 8:
+                    return dst[c]; // DST_COLOR
+                case 9:
+                    return 255 - dst[c]; // INV_DST_COLOR
+                case 10:
+                    return c == 3 ? 255 : std::min<int>(src[3], 255 - dst[3]); // SRC_ALPHA_SAT
+                case 11:
+                    return src[3]; // BOTH_SRC_ALPHA
+                case 12:
+                    return 255 - src[3]; // BOTH_INV_SRC_ALPHA
+                case 13:
+                    return m_blendConstant[c]; // BLEND_FACTOR
+                case 14:
+                    return 255 - m_blendConstant[c]; // INV_BLEND_FACTOR
+                case 15:
+                    return 0; // SRC1_COLOR: unsupported dual-source blend
+                case 16:
+                    return 255; // INV_SRC1_COLOR: unsupported dual-source blend
+                case 17:
+                    return 0; // SRC1_ALPHA: unsupported dual-source blend
+                case 18:
+                    return 255; // INV_SRC1_ALPHA: unsupported dual-source blend
+                case 19:
+                    return m_blendConstant[3]; // CONSTANT_ALPHA
+                case 20:
+                    return 255 - m_blendConstant[3]; // INV_CONSTANT_ALPHA
+                default:
+                    return 255;
             }
         };
         const auto apply = [&](const int s, const int d, const int sf, const int df, const std::uint32_t op) -> std::uint8_t {
             switch (op) {
-                case 1: return clampByte((s * sf - d * df) / 255); // SUB
-                case 2: return static_cast<std::uint8_t>(std::min(s, d)); // MIN
-                case 3: return static_cast<std::uint8_t>(std::max(s, d)); // MAX
-                case 4: return clampByte((d * df - s * sf) / 255); // REV_SUB
+                case 1:
+                    return clampByte((s * sf - d * df) / 255); // SUB
+                case 2:
+                    return static_cast<std::uint8_t>(std::min(s, d)); // MIN
+                case 3:
+                    return static_cast<std::uint8_t>(std::max(s, d)); // MAX
+                case 4:
+                    return clampByte((d * df - s * sf) / 255); // REV_SUB
                 case 0:
-                default: return clampByte((s * sf + d * df) / 255); // ADD
+                default:
+                    return clampByte((s * sf + d * df) / 255); // ADD
             }
         };
 
@@ -761,12 +819,12 @@ namespace Core::Gfx {
             if (!base || !m_mem->hostPtr(s.imagePtr + s.pitch * s.height * 4 - 1))
                 return;
         }
-        const auto toByte = [](float f) { return static_cast<std::uint8_t>(std::clamp(f, 0.0f, 1.0f) * 255.0f + 0.5f); };
+        const auto toByte = [](float f) { return static_cast<std::uint8_t>(std::lround(std::clamp(f, 0.0f, 1.0f) * 255.0f)); };
         const std::uint8_t px[4] = {toByte(rgba[0]), toByte(rgba[1]), toByte(rgba[2]), toByte(rgba[3])};
         for (std::uint32_t y = 0; y < s.height; y++) {
             std::uint8_t *row = base + static_cast<std::size_t>(y) * s.pitch * 4;
             for (std::uint32_t x = 0; x < s.width; x++)
-                std::memcpy(row + x * 4, px, 4);
+                std::memcpy(row + std::size_t(x) * 4, px, 4);
         }
     }
 
@@ -788,11 +846,11 @@ namespace Core::Gfx {
         // large positive distance ~ 850..900) whose two preceding rows are entirely zero (the
         // missing X/Y scale rows). Registers are vec4s at m_vsRegs[k*4].
         for (std::uint32_t k = 2; k < 63; k++) {
-            const float *z = &m_vsRegs[k * 4];
+            const float *z = &m_vsRegs[std::size_t(k) * 4];
             if (!(z[2] < -0.9f && z[2] > -1.1f && z[3] > 800.0f && z[3] < 950.0f))
                 continue;
-            float *rowX = &m_vsRegs[(k - 2) * 4];
-            float *rowY = &m_vsRegs[(k - 1) * 4];
+            float *rowX = &m_vsRegs[std::size_t(k - 2) * 4];
+            float *rowY = &m_vsRegs[std::size_t(k - 1) * 4];
             const bool xZero = rowX[0] == 0 && rowX[1] == 0 && rowX[2] == 0 && rowX[3] == 0;
             const bool yZero = rowY[0] == 0 && rowY[1] == 0 && rowY[2] == 0 && rowY[3] == 0;
             if (!xZero || !yZero)
@@ -812,8 +870,8 @@ namespace Core::Gfx {
         out.resize(static_cast<std::size_t>(tw) * th * 4);
         for (std::uint32_t y = 0; y < th; y++) {
             for (std::uint32_t x = 0; x < tw; x++) {
-                const auto t = sample(s, (static_cast<float>(x) + 0.5f) / static_cast<float>(tw),
-                                      (static_cast<float>(y) + 0.5f) / static_cast<float>(th));
+                const auto t =
+                        sample(s, (static_cast<float>(x) + 0.5f) / static_cast<float>(tw), (static_cast<float>(y) + 0.5f) / static_cast<float>(th));
                 const std::size_t o = (static_cast<std::size_t>(y) * tw + x) * 4;
                 out[o + 0] = t[0];
                 out[o + 1] = t[1];
@@ -927,8 +985,8 @@ namespace Core::Gfx {
                 endian = bytes == 4 ? 2 : 0;
             const std::uint32_t index = m_fetchLayout[i + 4] == 1 ? 0 : vertex;
             const std::uint64_t start = std::uint64_t(index) * binding.stride + offset;
-            if (!binding.addr || start + components * bytes > binding.size
-                || std::uint64_t(binding.addr) + start + components * bytes > 0x100000000ull)
+            if (!binding.addr || start + std::uint64_t(components) * bytes > binding.size ||
+                std::uint64_t(binding.addr) + start + std::uint64_t(components) * bytes > 0x100000000ull)
                 return false;
             const auto addr = binding.addr + static_cast<std::uint32_t>(start);
             const auto *p = m_mem->hostPtr(addr);
@@ -949,10 +1007,10 @@ namespace Core::Gfx {
                 else if (format & 0x100)
                     value[c] = asFloat((format & 0x200) ? static_cast<std::uint32_t>(static_cast<std::int8_t>(bits)) : bits);
                 else if (format & 0x200)
-                    value[c] = (format & 0x800) ? static_cast<std::int8_t>(bits)
-                        : std::max(-1.0f, static_cast<std::int8_t>(bits) / 127.0f);
+                    value[c] = (format & 0x800) ? float(static_cast<std::int8_t>(bits))
+                                                : std::max(-1.0f, float(static_cast<std::int8_t>(bits)) / 127.0f);
                 else
-                    value[c] = (format & 0x800) ? float(bits) : bits / 255.0f;
+                    value[c] = (format & 0x800) ? float(bits) : float(bits) / 255.0f;
             }
             auto &a = out[std::distance(m_vertexSemantics.begin(), semantic)];
             for (unsigned c = 0; c < 4; c++) {
@@ -988,7 +1046,7 @@ namespace Core::Gfx {
             if (((w1 >> 26) & 15) >= 8)
                 continue;
             if (((w1 >> 23) & 127) == 1 && std::uint64_t(w0) * 2 + 2 < m_psProgram.size()) {
-                const auto t0 = m_psProgram[w0 * 2], t2 = m_psProgram[w0 * 2 + 2];
+                const auto t0 = m_psProgram[std::size_t(w0) * 2], t2 = m_psProgram[std::size_t(w0) * 2 + 2];
                 textureUnit = (t0 >> 8) & 255;
                 const auto input = (t0 >> 16) & 127;
                 if (input < m_pixelInputSemantics.size()) {
@@ -1019,7 +1077,8 @@ namespace Core::Gfx {
         if (useViewBacking()) {
             if (residentTargetsEnabled && m_rasterBackend && m_rasterBackend->supportsRenderedTargets()) {
                 const auto pending = m_pendingReadbacks.find(makeSurfaceKey(m_color));
-                if (pending != m_pendingReadbacks.end()) renderedTarget = pending->second;
+                if (pending != m_pendingReadbacks.end())
+                    renderedTarget = pending->second;
             }
             target = renderedTarget ? m_viewBackings.at(makeSurfaceKey(m_color)).data() : viewBacking(m_color).data();
         } else {
@@ -1053,7 +1112,7 @@ namespace Core::Gfx {
                 return;
             const std::uint32_t indexBytes = type == 9 || type == 1 ? 4 : 2;
             for (std::uint32_t i = 0; i < count; i++) {
-                const std::uint64_t address = std::uint64_t(cmd.gpr[3]) + i * indexBytes;
+                const std::uint64_t address = std::uint64_t(cmd.gpr[3]) + std::uint64_t(i) * indexBytes;
                 if (address + indexBytes > 0x100000000ull)
                     return;
                 const std::uint8_t *p = m_mem->hostPtr(static_cast<std::uint32_t>(address));
@@ -1079,8 +1138,10 @@ namespace Core::Gfx {
         auto fetch = [&](std::uint32_t vi, float &x, float &y, float &u, float &v) -> bool {
             std::array<std::array<float, 4>, 4> attributes{};
             if (fetchAttributes(vi, attributes)) {
-                x = attributes[0][0]; y = attributes[0][1];
-                u = attributes[1][0]; v = attributes[1][1];
+                x = attributes[0][0];
+                y = attributes[0][1];
+                u = attributes[1][0];
+                v = attributes[1][1];
                 return true;
             }
             if (!m_fetchLayout.empty())
@@ -1089,7 +1150,8 @@ namespace Core::Gfx {
             if (!p || !m_mem->hostPtr(ab.addr + vi * ab.stride + ab.stride - 1))
                 return false;
             auto f = [&](std::uint32_t i) {
-                return asFloat(static_cast<std::uint32_t>(p[i * 4]) << 24 | p[i * 4 + 1] << 16 | p[i * 4 + 2] << 8 | p[i * 4 + 3]);
+                return asFloat(static_cast<std::uint32_t>(p[std::size_t(i) * 4]) << 24 | p[std::size_t(i) * 4 + 1] << 16 |
+                               p[std::size_t(i) * 4 + 2] << 8 | p[std::size_t(i) * 4 + 3]);
             };
             x = f(0);
             y = f(1);
@@ -1109,8 +1171,7 @@ namespace Core::Gfx {
         // Execute the real vertex shader for one vertex; returns false if unavailable so the
         // caller falls back to the [0,1]/matrix heuristics. PARAM exports are optionally returned
         // because the pixel shader consumes them as interpolated inputs.
-        auto runShader = [&](std::uint32_t vi, float &sx, float &sy, float &u, float &v,
-                             std::array<std::array<float, 4>, 4> *params = nullptr,
+        auto runShader = [&](std::uint32_t vi, float &sx, float &sy, float &u, float &v, std::array<std::array<float, 4>, 4> *params = nullptr,
                              std::array<bool, 4> *paramValid = nullptr) -> bool {
             // Real vertex-shader execution. ON by default: combined with the UI-composite fallback
             // it produces the placed, clean title screen (logo + background, no stray squares). Set
@@ -1130,7 +1191,8 @@ namespace Core::Gfx {
                 if (!p || !m_mem->hostPtr(ab.addr + vi * ab.stride + ab.stride - 1))
                     return false;
                 auto f = [&](std::uint32_t i) {
-                    return asFloat(static_cast<std::uint32_t>(p[i * 4]) << 24 | p[i * 4 + 1] << 16 | p[i * 4 + 2] << 8 | p[i * 4 + 3]);
+                    return asFloat(static_cast<std::uint32_t>(p[std::size_t(i) * 4]) << 24 | p[std::size_t(i) * 4 + 1] << 16 |
+                                   p[std::size_t(i) * 4 + 2] << 8 | p[std::size_t(i) * 4 + 3]);
                 };
                 attribs[0] = {f(0), f(1), nFloats >= 3 ? f(2) : 0.0f, nFloats >= 4 ? f(3) : 1.0f};
                 if (nFloats >= 8)
@@ -1179,17 +1241,15 @@ namespace Core::Gfx {
                 const char *e = std::getenv("WEMU_VS_DEBUG_TRACE_ONLY");
                 return e && e[0] == '1';
             }();
-            const bool dbg = ((dbgDraw >= 0 && static_cast<std::uint32_t>(dbgDraw) == m_stats.draws)
-                              || (dbgTex && m_texture.imagePtr == dbgTex))
-                             && vi == 0 && (!debugTraceOnly || m_trace);
+            const bool dbg = ((dbgDraw >= 0 && static_cast<std::uint32_t>(dbgDraw) == m_stats.draws) || (dbgTex && m_texture.imagePtr == dbgTex)) &&
+                             vi == 0 && (!debugTraceOnly || m_trace);
             const bool sum = summary && vi == 0 && (!debugTraceOnly || m_trace);
             if (dbg) {
-                std::fprintf(stderr, "[VSDBG] draw#%u regsFresh=%d prog=%zudw stride=%u attrib0=(%g,%g,%g,%g)\n", m_stats.draws,
-                             m_regsFresh ? 1 : 0, m_vsProgram.size(), ab.stride, attribs[0][0], attribs[0][1], attribs[0][2],
-                             attribs[0][3]);
+                std::fprintf(stderr, "[VSDBG] draw#%u regsFresh=%d prog=%zudw stride=%u attrib0=(%g,%g,%g,%g)\n", m_stats.draws, m_regsFresh ? 1 : 0,
+                             m_vsProgram.size(), ab.stride, attribs[0][0], attribs[0][1], attribs[0][2], attribs[0][3]);
                 for (int c = 0; c < 20; c++)
-                    std::fprintf(stderr, "[VSDBG]   c%-2d %g %g %g %g\n", c, m_vsRegs[c * 4], m_vsRegs[c * 4 + 1],
-                                 m_vsRegs[c * 4 + 2], m_vsRegs[c * 4 + 3]);
+                    std::fprintf(stderr, "[VSDBG]   c%-2d %g %g %g %g\n", c, m_vsRegs[std::size_t(c) * 4], m_vsRegs[std::size_t(c) * 4 + 1],
+                                 m_vsRegs[std::size_t(c) * 4 + 2], m_vsRegs[std::size_t(c) * 4 + 3]);
                 LatteVsInterp::setDebugOnce(true);
             }
             const auto vertexSample = [&](std::uint32_t resource, std::uint32_t sampler, const std::array<float, 4> &coords,
@@ -1207,8 +1267,8 @@ namespace Core::Gfx {
                 *paramValid = o.paramValid;
             if (dbg) {
                 LatteVsInterp::setDebugOnce(false);
-                std::fprintf(stderr, "[VSDBG] draw#%u -> valid=%d pos=(%g,%g,%g,%g)\n", m_stats.draws, o.valid ? 1 : 0, o.pos[0],
-                             o.pos[1], o.pos[2], o.pos[3]);
+                std::fprintf(stderr, "[VSDBG] draw#%u -> valid=%d pos=(%g,%g,%g,%g)\n", m_stats.draws, o.valid ? 1 : 0, o.pos[0], o.pos[1], o.pos[2],
+                             o.pos[3]);
             }
             if (sum) {
                 const std::uint32_t h = shaderHash(m_vsProgram);
@@ -1216,15 +1276,13 @@ namespace Core::Gfx {
                              "[VSSUM] draw#%02u tgt=0x%08X(%ux%u) prog=%zudw hash=%08X stride=%u tex=0x%08X %ux%u | pos=(%g,%g,%g,%g)"
                              " valid=%d p0=(%g,%g,%g,%g)%c p1=(%g,%g,%g,%g)%c | c4=(%g,%g,%g,%g) c5=(%g,%g,%g,%g) c7=(%g,%g,%g,%g) c8=(%g,%g,%g,%g)"
                              " c9=(%g,%g,%g,%g) c15=(%g,%g,%g,%g) c16=(%g,%g,%g,%g)\n",
-                             m_stats.draws, m_color.imagePtr, m_color.width, m_color.height, m_vsProgram.size(), h, ab.stride,
-                             m_texture.imagePtr, m_texture.width, m_texture.height,
-                             o.pos[0], o.pos[1], o.pos[2], o.pos[3], o.valid ? 1 : 0, o.params[0][0], o.params[0][1],
-                             o.params[0][2], o.params[0][3], o.paramValid[0] ? 'v' : '-', o.params[1][0], o.params[1][1],
-                             o.params[1][2], o.params[1][3], o.paramValid[1] ? 'v' : '-', m_vsRegs[16], m_vsRegs[17],
-                             m_vsRegs[18], m_vsRegs[19], m_vsRegs[20], m_vsRegs[21], m_vsRegs[22], m_vsRegs[23], m_vsRegs[28],
-                             m_vsRegs[29], m_vsRegs[30], m_vsRegs[31], m_vsRegs[32], m_vsRegs[33], m_vsRegs[34], m_vsRegs[35],
-                             m_vsRegs[36], m_vsRegs[37], m_vsRegs[38], m_vsRegs[39], m_vsRegs[60], m_vsRegs[61], m_vsRegs[62],
-                             m_vsRegs[63], m_vsRegs[64], m_vsRegs[65], m_vsRegs[66], m_vsRegs[67]);
+                             m_stats.draws, m_color.imagePtr, m_color.width, m_color.height, m_vsProgram.size(), h, ab.stride, m_texture.imagePtr,
+                             m_texture.width, m_texture.height, o.pos[0], o.pos[1], o.pos[2], o.pos[3], o.valid ? 1 : 0, o.params[0][0],
+                             o.params[0][1], o.params[0][2], o.params[0][3], o.paramValid[0] ? 'v' : '-', o.params[1][0], o.params[1][1],
+                             o.params[1][2], o.params[1][3], o.paramValid[1] ? 'v' : '-', m_vsRegs[16], m_vsRegs[17], m_vsRegs[18], m_vsRegs[19],
+                             m_vsRegs[20], m_vsRegs[21], m_vsRegs[22], m_vsRegs[23], m_vsRegs[28], m_vsRegs[29], m_vsRegs[30], m_vsRegs[31],
+                             m_vsRegs[32], m_vsRegs[33], m_vsRegs[34], m_vsRegs[35], m_vsRegs[36], m_vsRegs[37], m_vsRegs[38], m_vsRegs[39],
+                             m_vsRegs[60], m_vsRegs[61], m_vsRegs[62], m_vsRegs[63], m_vsRegs[64], m_vsRegs[65], m_vsRegs[66], m_vsRegs[67]);
             }
             if (!o.valid)
                 return false;
@@ -1241,15 +1299,15 @@ namespace Core::Gfx {
             }();
             const bool collapsed = o.pos[0] == 0.0f && o.pos[1] == 0.0f;
             if (degenModelFallback && collapsed && ab.stride == 8) {
-                const bool projectionXyMissing = m_vsRegs[32] == 0.0f && m_vsRegs[33] == 0.0f && m_vsRegs[34] == 0.0f
-                                                 && m_vsRegs[35] == 0.0f && m_vsRegs[36] == 0.0f && m_vsRegs[37] == 0.0f
-                                                 && m_vsRegs[42] < -0.9f && m_vsRegs[42] > -1.1f && m_vsRegs[43] > 100.0f;
+                const bool projectionXyMissing = m_vsRegs[32] == 0.0f && m_vsRegs[33] == 0.0f && m_vsRegs[34] == 0.0f && m_vsRegs[35] == 0.0f &&
+                                                 m_vsRegs[36] == 0.0f && m_vsRegs[37] == 0.0f && m_vsRegs[42] < -0.9f && m_vsRegs[42] > -1.1f &&
+                                                 m_vsRegs[43] > 100.0f;
                 const float *rowX = &m_vsRegs[16]; // c4
                 const float *rowY = &m_vsRegs[20]; // c5
                 const float *rect = &m_vsRegs[60]; // c15: local scale/offset in observed UI shaders
-                const bool plausibleRect = std::isfinite(rect[0]) && std::isfinite(rect[1]) && std::isfinite(rect[2])
-                                           && std::isfinite(rect[3]) && std::fabs(rect[0]) > 2.0f && std::fabs(rect[1]) > 2.0f
-                                           && std::fabs(rect[0]) < 4096.0f && std::fabs(rect[1]) < 4096.0f;
+                const bool plausibleRect = std::isfinite(rect[0]) && std::isfinite(rect[1]) && std::isfinite(rect[2]) && std::isfinite(rect[3]) &&
+                                           std::fabs(rect[0]) > 2.0f && std::fabs(rect[1]) > 2.0f && std::fabs(rect[0]) < 4096.0f &&
+                                           std::fabs(rect[1]) < 4096.0f;
                 if (projectionXyMissing && plausibleRect) {
                     const float lx = attribs[0][0] * rect[0] + rect[2];
                     const float ly = attribs[0][1] * rect[1] + rect[3];
@@ -1260,9 +1318,9 @@ namespace Core::Gfx {
                     const float cy = static_cast<float>(kHeight) * 0.5f;
                     const float tsx = cx + mx;
                     const float tsy = cy - my;
-                    if (std::isfinite(tsx) && std::isfinite(tsy) && tsx > -static_cast<float>(kWidth) * 2.0f
-                        && tsx < static_cast<float>(kWidth) * 3.0f && tsy > -static_cast<float>(kHeight) * 2.0f
-                        && tsy < static_cast<float>(kHeight) * 3.0f) {
+                    if (std::isfinite(tsx) && std::isfinite(tsy) && tsx > -static_cast<float>(kWidth) * 2.0f &&
+                        tsx < static_cast<float>(kWidth) * 3.0f && tsy > -static_cast<float>(kHeight) * 2.0f &&
+                        tsy < static_cast<float>(kHeight) * 3.0f) {
                         sx = tsx;
                         sy = tsy;
                         u = attribs[0][0];
@@ -1302,8 +1360,8 @@ namespace Core::Gfx {
             }
             // Other degenerate-projection draws (the fullscreen post-process passes): let the
             // caller fall back to its heuristic rather than smear them across the frame.
-            if (collapsed && m_vsRegs[32] == 0.0f && m_vsRegs[33] == 0.0f && m_vsRegs[34] == 0.0f && m_vsRegs[35] == 0.0f
-                && m_vsRegs[36] == 0.0f && m_vsRegs[37] == 0.0f)
+            if (collapsed && m_vsRegs[32] == 0.0f && m_vsRegs[33] == 0.0f && m_vsRegs[34] == 0.0f && m_vsRegs[35] == 0.0f && m_vsRegs[36] == 0.0f &&
+                m_vsRegs[37] == 0.0f)
                 return false;
             const float w = std::fabs(o.pos[3]) > 1e-6f ? o.pos[3] : 1.0f;
             sx = m_vp[0] + (o.pos[0] / w * 0.5f + 0.5f) * m_vp[2];
@@ -1356,11 +1414,11 @@ namespace Core::Gfx {
                 float u{0.0f};
                 float v{0.0f};
                 std::array<std::array<float, 4>, 4> params{
-                    {{1.0f, 1.0f, 1.0f, 1.0f}, {0.0f, 0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 0.0f, 1.0f}}};
+                        {{1.0f, 1.0f, 1.0f, 1.0f}, {0.0f, 0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 0.0f, 1.0f}}};
                 std::array<bool, 4> paramValid{};
         };
 
-        auto interpolateParams = [](const RasterVertex (&rv)[3], const float w0, const float w1, const float w2) {
+        auto interpolateParams = [](const RasterVertex(&rv)[3], const float w0, const float w1, const float w2) {
             std::array<std::array<float, 4>, 4> out{};
             for (int p = 0; p < 4; p++)
                 for (int c = 0; c < 4; c++)
@@ -1379,8 +1437,8 @@ namespace Core::Gfx {
             if (!idx.empty()) {
                 float su = 0, sv = 0;
                 if (runShader(idx[0], s0x, s0y, su, sv))
-                    Utils::Log::error("[GX2TRACE]   vs#{} out v0 screen=({:.1f},{:.1f}) uv=({:.3f},{:.3f}) prog={}dw", m_stats.draws,
-                                      s0x, s0y, su, sv, m_vsProgram.size());
+                    Utils::Log::error("[GX2TRACE]   vs#{} out v0 screen=({:.1f},{:.1f}) uv=({:.3f},{:.3f}) prog={}dw", m_stats.draws, s0x, s0y, su,
+                                      sv, m_vsProgram.size());
                 else
                     mapVertex(tx0, ty0, s0x, s0y);
                 // Snapshot the uniform register file per draw for offline interpreter debugging.
@@ -1399,27 +1457,26 @@ namespace Core::Gfx {
                         if (m_vsBlocks[b].empty())
                             continue;
                         std::fprintf(fp, "# block %zu (%zu words)\n", b, m_vsBlocks[b].size());
-                        for (std::size_t i = 0; i + 3 < m_vsBlocks[b].size() && i < 160 * 4; i += 4)
-                            std::fprintf(fp, "b%zu.%-3zu %g %g %g %g\n", b, i / 4, asFloat(m_vsBlocks[b][i]),
-                                         asFloat(m_vsBlocks[b][i + 1]), asFloat(m_vsBlocks[b][i + 2]), asFloat(m_vsBlocks[b][i + 3]));
+                        for (std::size_t i = 0; i + 3 < m_vsBlocks[b].size() && i < std::size_t{160} * 4; i += 4)
+                            std::fprintf(fp, "b%zu.%-3zu %g %g %g %g\n", b, i / 4, asFloat(m_vsBlocks[b][i]), asFloat(m_vsBlocks[b][i + 1]),
+                                         asFloat(m_vsBlocks[b][i + 2]), asFloat(m_vsBlocks[b][i + 3]));
                     }
                     std::fclose(fp);
                 }
             }
             Utils::Log::error("[GX2TRACE] draw#{} mode={} cnt={} stride={} tex=0x{:08X}(f{:02X},t{},{}x{}) tgt=0x{:08X}({}x{}) "
                               "v0=({:.2f},{:.2f})uv({:.2f},{:.2f})->({:.0f},{:.0f}) midTexel=({},{},{},{})",
-                              m_stats.draws, mode, count, ab.stride, m_texture.imagePtr, m_texture.format & 0x3F, m_texture.tileMode,
-                              m_texture.width, m_texture.height, m_color.imagePtr, m_color.width, m_color.height, tx0, ty0, tu0, tv0, s0x,
-                              s0y, mid[0], mid[1], mid[2], mid[3]);
+                              m_stats.draws, mode, count, ab.stride, m_texture.imagePtr, m_texture.format & 0x3F, m_texture.tileMode, m_texture.width,
+                              m_texture.height, m_color.imagePtr, m_color.width, m_color.height, tx0, ty0, tu0, tv0, s0x, s0y, mid[0], mid[1], mid[2],
+                              mid[3]);
             if (!m_psProgram.empty()) {
                 std::size_t psBlockWords = 0;
                 for (const auto &blk: m_psBlocks)
                     psBlockWords += blk.size();
-                Utils::Log::error(
-                    "[PSSUM] draw#{} psProg={}dw hash={:08X} psRegsFresh={} p0=({:.4g},{:.4g},{:.4g},{:.4g})"
-                    " p1=({:.4g},{:.4g},{:.4g},{:.4g}) psBlockWords={}",
-                    m_stats.draws, m_psProgram.size(), shaderHash(m_psProgram), m_psRegsFresh ? 1 : 0, m_psRegs[0], m_psRegs[1],
-                    m_psRegs[2], m_psRegs[3], m_psRegs[4], m_psRegs[5], m_psRegs[6], m_psRegs[7], psBlockWords);
+                Utils::Log::error("[PSSUM] draw#{} psProg={}dw hash={:08X} psRegsFresh={} p0=({:.4g},{:.4g},{:.4g},{:.4g})"
+                                  " p1=({:.4g},{:.4g},{:.4g},{:.4g}) psBlockWords={}",
+                                  m_stats.draws, m_psProgram.size(), shaderHash(m_psProgram), m_psRegsFresh ? 1 : 0, m_psRegs[0], m_psRegs[1],
+                                  m_psRegs[2], m_psRegs[3], m_psRegs[4], m_psRegs[5], m_psRegs[6], m_psRegs[7], psBlockWords);
             }
             // Dump the raw per-vertex positions: this reveals whether menu panes carry real screen
             // rectangles in their vertex data (positioned UI) or are all unit quads (position must
@@ -1439,10 +1496,10 @@ namespace Core::Gfx {
             const auto *value = std::getenv("WEMU_NATIVE_RESIDENT_TEXTURES");
             return value && std::string_view(value) == "1";
         }();
-        const bool residentTextures = residentTexturesEnabled && m_rasterBackend
-            && m_rasterBackend->supportsRenderedTextures();
+        const bool residentTextures = residentTexturesEnabled && m_rasterBackend && m_rasterBackend->supportsRenderedTextures();
         const auto textureBacking = [&](const Surface &surface) -> const std::vector<std::uint8_t> * {
-            if (!residentTextures) return findViewBacking(surface);
+            if (!residentTextures)
+                return findViewBacking(surface);
             const auto backing = m_viewBackings.find(makeSurfaceKey(surface));
             return backing == m_viewBackings.end() ? nullptr : &backing->second;
         };
@@ -1455,8 +1512,8 @@ namespace Core::Gfx {
         std::vector<std::uint8_t> textureSnapshot;
         if (texBacking) {
             texBase = texBacking->data();
-        } else if (m_texture.imagePtr && texTile <= 1 && texFmt != 0x01 && texFmt != 0x07 && texFmt != 0x31 && texFmt != 0x32
-                   && texFmt != 0x33 && texFmt != 0x34 && texFmt != 0x35) {
+        } else if (m_texture.imagePtr && texTile <= 1 && texFmt != 0x01 && texFmt != 0x07 && texFmt != 0x31 && texFmt != 0x32 && texFmt != 0x33 &&
+                   texFmt != 0x34 && texFmt != 0x35) {
             texBase = m_mem->hostPtr(m_texture.imagePtr);
             if (texBase && !m_mem->hostPtr(m_texture.imagePtr + (m_texture.pitch * (m_texture.height - 1) + m_texture.width) * 4 - 1))
                 texBase = nullptr;
@@ -1490,7 +1547,7 @@ namespace Core::Gfx {
             const auto semantic = m_pixelInputSemantics[i];
             const auto it = std::find(m_vertexOutputSemantics.begin(), m_vertexOutputSemantics.end(), semantic);
             if (semantic != 255 && it != m_vertexOutputSemantics.end())
-                pixelInputParams[i] = std::distance(m_vertexOutputSemantics.begin(), it);
+                pixelInputParams[i] = static_cast<int>(std::distance(m_vertexOutputSemantics.begin(), it));
         }
         // CPU feedback snapshots are created only if software rasterization runs.
         // Native inputs are consumed before committing output, or use GPU versions.
@@ -1502,7 +1559,8 @@ namespace Core::Gfx {
         }
         bool softwareInputsReady = false;
         const auto prepareSoftwareInputs = [&] {
-            if (softwareInputsReady) return;
+            if (softwareInputsReady)
+                return;
             resolvePendingBackings();
             if (texBacking && makeSurfaceKey(m_color) == makeSurfaceKey(m_texture)) {
                 textureSnapshot = *texBacking;
@@ -1512,7 +1570,8 @@ namespace Core::Gfx {
                 if (makeSurfaceKey(m_pixelTextures[i]) == makeSurfaceKey(m_color)) {
                     if (const auto *backing = findViewBacking(m_pixelTextures[i])) {
                         pixelFeedback[i] = *backing;
-                        if (!pixelFeedback[i].empty()) pixelBackings[i] = &pixelFeedback[i];
+                        if (!pixelFeedback[i].empty())
+                            pixelBackings[i] = &pixelFeedback[i];
                     }
                 }
             }
@@ -1523,9 +1582,7 @@ namespace Core::Gfx {
             if (resource >= m_pixelTextures.size() || sampler >= m_pixelSamplers.size())
                 return false;
             const auto &surface = m_pixelTextures[resource];
-            rgba = sampleTexture(surface, m_pixelSamplers[sampler], coords[0], coords[1],
-                                 coords[2],
-                                 pixelBackings[resource]);
+            rgba = sampleTexture(surface, m_pixelSamplers[sampler], coords[0], coords[1], coords[2], pixelBackings[resource]);
             return true;
         };
         const LatteVsInterp::KcacheFetch pixelConstants = [&](unsigned bank, unsigned index, unsigned channel) {
@@ -1537,10 +1594,10 @@ namespace Core::Gfx {
         };
         const LatteVsInterp::TextureGather pixelGather = [&](unsigned resource, unsigned sampler, const std::array<float, 4> &coords,
                                                              std::array<float, 4> &rgba) {
-            if (resource >= m_pixelTextures.size() || sampler >= m_pixelSamplers.size()
-                || !supportsGather(m_pixelTextures[resource], m_pixelSamplers[sampler])) return false;
-            rgba = sampleTexture(m_pixelTextures[resource], m_pixelSamplers[sampler], coords[0], coords[1], 0,
-                                 pixelBackings[resource], true);
+            if (resource >= m_pixelTextures.size() || sampler >= m_pixelSamplers.size() ||
+                !supportsGather(m_pixelTextures[resource], m_pixelSamplers[sampler]))
+                return false;
+            rgba = sampleTexture(m_pixelTextures[resource], m_pixelSamplers[sampler], coords[0], coords[1], 0, pixelBackings[resource], true);
             return true;
         };
         bool pixelFallbackReported = false;
@@ -1552,11 +1609,10 @@ namespace Core::Gfx {
                         inputs[i] = params[pixelInputParams[i]];
                 const auto pixel = LatteVsInterp::runPixel(*pixelProgram, inputs, m_psRegs, 64, pixelSample, pixelConstants, pixelGather);
                 if (pixel.colorValid)
-                    return std::array<std::uint8_t, 4>{byteFromUnit(pixel.color[0]), byteFromUnit(pixel.color[1]),
-                                                       byteFromUnit(pixel.color[2]), byteFromUnit(pixel.color[3])};
+                    return std::array<std::uint8_t, 4>{byteFromUnit(pixel.color[0]), byteFromUnit(pixel.color[1]), byteFromUnit(pixel.color[2]),
+                                                       byteFromUnit(pixel.color[3])};
                 if (m_trace && !pixelFallbackReported) {
-                    Utils::Log::error("[GX2TRACE] draw#{} unsupported pixel execution; using legacy texture approximation",
-                                      m_stats.draws);
+                    Utils::Log::error("[GX2TRACE] draw#{} unsupported pixel execution; using legacy texture approximation", m_stats.draws);
                     pixelFallbackReported = true;
                 }
             }
@@ -1594,12 +1650,12 @@ namespace Core::Gfx {
         // Array slices can alias a target without matching its base-view key.
         // Keep those draws and raw guest-memory targets serial until all aliases
         // participate in the same pre-draw snapshot scheme.
-        const bool parallelSafe = useViewBacking() && !m_trace && m_color.pitch >= m_color.width
-            && m_texture.dimension != 5
-            && std::none_of(m_pixelTextures.begin(), m_pixelTextures.end(),
-                            [](const auto &surface) { return surface.imagePtr && surface.dimension == 5; });
+        const bool parallelSafe = useViewBacking() && !m_trace && m_color.pitch >= m_color.width && m_texture.dimension != 5 &&
+                                  std::none_of(m_pixelTextures.begin(), m_pixelTextures.end(),
+                                               [](const auto &surface) { return surface.imagePtr && surface.dimension == 5; });
         const auto workerCount = [&] {
-            if (m_rasterWorkerCount) return m_rasterWorkerCount;
+            if (m_rasterWorkerCount)
+                return m_rasterWorkerCount;
             static const unsigned configured = [] {
                 const auto *value = std::getenv("WEMU_RASTER_WORKERS");
                 if (value) {
@@ -1614,7 +1670,8 @@ namespace Core::Gfx {
         }();
         static const std::uint64_t verifyEnvironment = [] {
             const auto *value = std::getenv("WEMU_RASTER_VERIFY_EVERY");
-            if (!value || *value < '0' || *value > '9') return std::uint64_t(0);
+            if (!value || *value < '0' || *value > '9')
+                return std::uint64_t(0);
             char *end = nullptr;
             const auto interval = std::strtoull(value, &end, 10);
             return end != value && *end == '\0' ? std::uint64_t(interval) : std::uint64_t(0);
@@ -1623,13 +1680,12 @@ namespace Core::Gfx {
 
         // Defer geometry only when vertex execution cannot sample an earlier
         // triangle's output. Vertex-texture draws retain immediate execution.
-        const bool collectBackend = m_rasterBackend && !m_gpuRenderer && pixelProgram && useViewBacking()
-            && m_color.pitch >= m_color.width && !m_color.aa
-            && std::none_of(m_vertexTextures.begin(), m_vertexTextures.end(),
-                            [&](const auto &surface) { return surface.imagePtr &&
-                                (surface.dimension == 5 || makeSurfaceKey(surface) == makeSurfaceKey(m_color)); });
+        const bool collectBackend = m_rasterBackend && !m_gpuRenderer && pixelProgram && useViewBacking() && m_color.pitch >= m_color.width &&
+                                    !m_color.aa && std::none_of(m_vertexTextures.begin(), m_vertexTextures.end(), [&](const auto &surface) {
+                                        return surface.imagePtr && (surface.dimension == 5 || makeSurfaceKey(surface) == makeSurfaceKey(m_color));
+                                    });
         std::vector<std::array<RasterVertex, 3>> preparedTriangles;
-        auto rasterPrepared = [&](const RasterVertex (&rv)[3]) {
+        auto rasterPrepared = [&](const RasterVertex(&rv)[3]) {
             prepareSoftwareInputs();
             const float area = (rv[1].x - rv[0].x) * (rv[2].y - rv[0].y) - (rv[2].x - rv[0].x) * (rv[1].y - rv[0].y);
             if (std::fabs(area) < 0.5f)
@@ -1657,8 +1713,8 @@ namespace Core::Gfx {
             // of the full edge-function evaluation (and no per-pixel divides).
             // Accumulate in double so long scanlines do not drift across texel
             // centers. Guest shader inputs are still converted to float below.
-            const double preciseArea = (double(rv[1].x) - rv[0].x) * (double(rv[2].y) - rv[0].y)
-                - (double(rv[2].x) - rv[0].x) * (double(rv[1].y) - rv[0].y);
+            const double preciseArea =
+                    (double(rv[1].x) - rv[0].x) * (double(rv[2].y) - rv[0].y) - (double(rv[2].x) - rv[0].x) * (double(rv[1].y) - rv[0].y);
             const double invArea = 1.0 / preciseArea;
             const double w0dx = (double(rv[1].y) - rv[2].y) * invArea, w0dy = (double(rv[2].x) - rv[1].x) * invArea;
             const double w1dx = (double(rv[2].y) - rv[0].y) * invArea, w1dy = (double(rv[0].x) - rv[2].x) * invArea;
@@ -1666,8 +1722,8 @@ namespace Core::Gfx {
             double w0row = ((rv[1].x - rx) * (rv[2].y - ry) - (rv[2].x - rx) * (rv[1].y - ry)) * invArea;
             double w1row = ((rv[2].x - rx) * (rv[0].y - ry) - (rv[0].x - rx) * (rv[2].y - ry)) * invArea;
             struct Row {
-                double w0, w1;
-                std::uint64_t pixels{}, alphaSum{};
+                    double w0, w1;
+                    std::uint64_t pixels{}, alphaSum{};
             };
             std::vector<Row> rows;
             rows.reserve(maxY - minY + 1);
@@ -1684,9 +1740,8 @@ namespace Core::Gfx {
                         const float w0 = float(weight0), w1 = float(weight1), w2 = float(1.0 - weight0 - weight1);
                         if (!coverage.contains(double(xx) + 0.5, double(yy) + 0.5))
                             continue;
-                        const auto texel = shadeTexel(w0 * rv[0].u + w1 * rv[1].u + w2 * rv[2].u,
-                                                     w0 * rv[0].v + w1 * rv[1].v + w2 * rv[2].v,
-                                                     interpolateParams(rv, w0, w1, w2));
+                        const auto texel = shadeTexel(w0 * rv[0].u + w1 * rv[1].u + w2 * rv[2].u, w0 * rv[0].v + w1 * rv[1].v + w2 * rv[2].v,
+                                                      interpolateParams(rv, w0, w1, w2));
                         std::uint8_t *dst = row + static_cast<std::size_t>(xx) * 4;
                         const std::uint32_t a = texel[3];
                         result.pixels++;
@@ -1705,12 +1760,14 @@ namespace Core::Gfx {
             };
             const auto areaPixels = std::uint64_t(maxX - minX + 1) * rows.size();
             if (parallelSafe && workerCount > 1 && rows.size() > 1 && areaPixels >= m_parallelMinPixels) {
-                if (!m_rasterWorkers) m_rasterWorkers = std::make_unique<RasterWorkers>(workerCount);
+                if (!m_rasterWorkers)
+                    m_rasterWorkers = std::make_unique<RasterWorkers>(workerCount);
                 const bool verify = verifyEvery && (m_parallelTriangles % verifyEvery == 0);
                 ++m_parallelTriangles;
                 std::vector<std::uint8_t> before;
                 const auto targetBytes = std::size_t(m_color.pitch) * m_color.height * 4;
-                if (verify) before.assign(target, target + targetBytes);
+                if (verify)
+                    before.assign(target, target + targetBytes);
                 m_rasterWorkers->run(unsigned(rows.size()), rasterRows);
                 if (verify) {
                     // Reuse the same shader inputs and immutable feedback snapshots.
@@ -1718,24 +1775,25 @@ namespace Core::Gfx {
                     const std::vector<std::uint8_t> parallelOutput(target, target + targetBytes);
                     const auto parallelRows = rows;
                     std::copy(before.begin(), before.end(), target);
-                    for (auto &row : rows) row.pixels = row.alphaSum = 0;
+                    for (auto &row: rows)
+                        row.pixels = row.alphaSum = 0;
                     rasterRows(0, unsigned(rows.size()));
                     const auto mismatch = std::mismatch(parallelOutput.begin(), parallelOutput.end(), target);
-                    const bool countersMatch = std::equal(rows.begin(), rows.end(), parallelRows.begin(),
-                        [](const Row &a, const Row &b) { return a.pixels == b.pixels && a.alphaSum == b.alphaSum; });
+                    const bool countersMatch = std::equal(rows.begin(), rows.end(), parallelRows.begin(), [](const Row &a, const Row &b) {
+                        return a.pixels == b.pixels && a.alphaSum == b.alphaSum;
+                    });
                     if (mismatch.first != parallelOutput.end() || !countersMatch)
-                        throw std::runtime_error(std::format(
-                            "Raster verification mismatch: frame={} draw={} triangle={} target=0x{:08X} byte={}",
-                            m_presentCount, m_stats.draws, m_stats.tris, m_color.imagePtr,
-                            std::distance(parallelOutput.begin(), mismatch.first)));
+                        throw std::runtime_error(std::format("Raster verification mismatch: frame={} draw={} triangle={} target=0x{:08X} byte={}",
+                                                             m_presentCount, m_stats.draws, m_stats.tris, m_color.imagePtr,
+                                                             std::distance(parallelOutput.begin(), mismatch.first)));
                     ++m_verifiedRasterTriangles;
-                    Utils::Log::error("[RASTER_VERIFY] matched={} eligible={} frame={} ps={:016X}",
-                                      m_verifiedRasterTriangles, m_parallelTriangles, m_presentCount, shaderHash(m_psProgram));
+                    Utils::Log::error("[RASTER_VERIFY] matched={} eligible={} frame={} ps={:016X}", m_verifiedRasterTriangles, m_parallelTriangles,
+                                      m_presentCount, shaderHash(m_psProgram));
                 }
             } else {
                 rasterRows(0, unsigned(rows.size()));
             }
-            for (const auto &row : rows) {
+            for (const auto &row: rows) {
                 m_stats.pixels += row.pixels;
                 m_stats.alphaSum += row.alphaSum;
             }
@@ -1775,7 +1833,8 @@ namespace Core::Gfx {
             const auto prepareStart = (profile || nativeAudit) ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
             std::vector<Latte::TextureType> resourceTypes(m_pixelTextures.size(), Latte::TextureType::TwoD);
             for (unsigned i = 0; i < m_pixelTextures.size(); ++i)
-                if (m_pixelTextures[i].dimension == 5) resourceTypes[i] = Latte::TextureType::TwoDArray;
+                if (m_pixelTextures[i].dimension == 5)
+                    resourceTypes[i] = Latte::TextureType::TwoDArray;
             const auto translatedShader = m_fragmentShaderCache.get(m_psProgram, resourceTypes);
             const auto &shader = *translatedShader;
             bool supported = bool(shader);
@@ -1797,12 +1856,15 @@ namespace Core::Gfx {
                 }
                 if (surface.dimension == 5) {
                     auto snapshot = arraySnapshot(surface);
-                    if (!snapshot) { supported = false; break; }
-                    textures.push_back({binding, surface.width, surface.height, m_pixelSamplers[binding.sampler],
-                        [&, surface](unsigned x, unsigned y) {
-                            return sampleTexture(surface, TextureSampler{}, (float(x) + 0.5f) / surface.width,
-                                                 (float(y) + 0.5f) / surface.height, 0, nullptr);
-                        }});
+                    if (!snapshot) {
+                        supported = false;
+                        break;
+                    }
+                    textures.push_back(
+                            {binding, surface.width, surface.height, m_pixelSamplers[binding.sampler], [&, surface](unsigned x, unsigned y) {
+                                 return sampleTexture(surface, TextureSampler{}, (float(x) + 0.5f) / float(surface.width),
+                                                      (float(y) + 0.5f) / float(surface.height), 0, nullptr);
+                             }});
                     textures.back().unorm8 = snapshot->rgba;
                     textures.back().unorm8Pitch = surface.width;
                     textures.back().unorm8Map = surface.compMap;
@@ -1810,8 +1872,8 @@ namespace Core::Gfx {
                     arrays.push_back(std::move(snapshot));
                     continue;
                 }
-                if (!surface.imagePtr || !surface.width || !surface.height || surface.dimension != 1 || surface.aa
-                    || surface.firstMip || surface.firstSlice || surface.sliceCount != 1) {
+                if (!surface.imagePtr || !surface.width || !surface.height || surface.dimension != 1 || surface.aa || surface.firstMip ||
+                    surface.firstSlice || surface.sliceCount != 1) {
                     supported = false;
                     break;
                 }
@@ -1821,13 +1883,13 @@ namespace Core::Gfx {
                 // conversion below. Other float/integer formats remain incomplete.
                 const bool rawBytes = format < 0x31 || format > 0x35;
                 const unsigned texelBytes = format == 1 ? 1 : format == 7 ? 2 : 4;
-                textures.push_back({binding, surface.width, surface.height, m_pixelSamplers[binding.sampler],
-                    [&, surface, backing](unsigned x, unsigned y) {
-                        if (x >= surface.width || y >= surface.height)
-                            throw std::out_of_range("Raster backend texel coordinate");
-                        return sampleTexture(surface, TextureSampler{}, (float(x) + 0.5f) / float(surface.width),
-                                             (float(y) + 0.5f) / float(surface.height), 0, backing);
-                    }});
+                textures.push_back(
+                        {binding, surface.width, surface.height, m_pixelSamplers[binding.sampler], [&, surface, backing](unsigned x, unsigned y) {
+                             if (x >= surface.width || y >= surface.height)
+                                 throw std::out_of_range("Raster backend texel coordinate");
+                             return sampleTexture(surface, TextureSampler{}, (float(x) + 0.5f) / float(surface.width),
+                                                  (float(y) + 0.5f) / float(surface.height), 0, backing);
+                         }});
                 if (residentTextures) {
                     const auto pending = m_pendingReadbacks.find(makeSurfaceKey(surface));
                     if (pending != m_pendingReadbacks.end()) {
@@ -1837,21 +1899,18 @@ namespace Core::Gfx {
                         continue;
                     }
                 }
-                if (backing && surface.pitch >= surface.width
-                    && std::uint64_t(surface.pitch) * surface.height * 4 <= backing->size()) {
+                if (backing && surface.pitch >= surface.width && std::uint64_t(surface.pitch) * surface.height * 4 <= backing->size()) {
                     textures.back().unorm8 = *backing;
                     textures.back().unorm8Pitch = surface.pitch;
                     textures.back().unorm8Map = surface.compMap;
-                } else if (rawBytes && surface.imageSize
-                           && (surface.tileMode <= 4 || surface.tileMode == 16)
-                           && std::uint64_t(surface.width) * surface.height * 4 <= 64ull * 1024 * 1024
-                           && std::uint64_t(surface.imagePtr) + surface.imageSize <= 0x100000000ull && m_mem) {
+                } else if (rawBytes && surface.imageSize && (surface.tileMode <= 4 || surface.tileMode == 16) &&
+                           std::uint64_t(surface.width) * surface.height * 4 <= 64ull * 1024 * 1024 &&
+                           std::uint64_t(surface.imagePtr) + surface.imageSize <= 0x100000000ull && m_mem) {
                     const auto *base = m_mem->hostPtr(surface.imagePtr);
                     const auto *last = m_mem->hostPtr(surface.imagePtr + surface.imageSize - 1);
                     if (base && last && std::uintptr_t(last) - std::uintptr_t(base) == surface.imageSize - 1) {
-                        if (surface.format != 0x80E && (surface.tileMode <= 1 || surface.tileMode == 16)
-                            && surface.pitch >= surface.width
-                            && std::uint64_t(surface.pitch) * surface.height * texelBytes <= surface.imageSize) {
+                        if (surface.format != 0x80E && (surface.tileMode <= 1 || surface.tileMode == 16) && surface.pitch >= surface.width &&
+                            std::uint64_t(surface.pitch) * surface.height * texelBytes <= surface.imageSize) {
                             textures.back().unorm8 = {base, std::size_t(surface.pitch) * surface.height * texelBytes};
                             textures.back().unorm8Pitch = surface.pitch;
                             textures.back().unorm8Map = surface.compMap;
@@ -1893,9 +1952,11 @@ namespace Core::Gfx {
             for (const auto &triangle: preparedTriangles) {
                 const auto &a = triangle[0], &b = triangle[1], &c = triangle[2];
                 const float area = (b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y);
-                if (std::fabs(area) < 0.5f) continue;
+                if (std::fabs(area) < 0.5f)
+                    continue;
                 for (const auto &rv: triangle) {
-                    if (!std::isfinite(rv.x) || !std::isfinite(rv.y)) supported = false;
+                    if (!std::isfinite(rv.x) || !std::isfinite(rv.y))
+                        supported = false;
                     RasterDraw::Vertex vertex{rv.x, rv.y, {}};
                     for (unsigned i = 0; i < pixelInputParams.size(); ++i)
                         if (pixelInputParams[i] >= 0)
@@ -1908,13 +1969,20 @@ namespace Core::Gfx {
                 nativePrepareUs = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - prepareStart).count();
             if (supported && !vertices.empty()) {
                 const auto targetBytes = std::size_t(m_color.pitch) * m_color.height * 4;
-                RasterDraw draw{shader, vertices, m_psRegs, textures, {target, targetBytes},
-                    m_color.width, m_color.height, m_color.pitch,
-                    {m_scissor[0], m_scissor[1], m_scissor[2], m_scissor[3]}, channelMask,
-                    {targetBlendEnabled, blend.colorSrcBlend, blend.colorDstBlend, blend.colorCombine,
-                     blend.useAlphaBlend ? blend.alphaSrcBlend : blend.colorSrcBlend,
-                     blend.useAlphaBlend ? blend.alphaDstBlend : blend.colorDstBlend,
-                     blend.useAlphaBlend ? blend.alphaCombine : blend.colorCombine, m_blendConstant}};
+                RasterDraw draw{shader,
+                                vertices,
+                                m_psRegs,
+                                textures,
+                                {target, targetBytes},
+                                m_color.width,
+                                m_color.height,
+                                m_color.pitch,
+                                {m_scissor[0], m_scissor[1], m_scissor[2], m_scissor[3]},
+                                channelMask,
+                                {targetBlendEnabled, blend.colorSrcBlend, blend.colorDstBlend, blend.colorCombine,
+                                 blend.useAlphaBlend ? blend.alphaSrcBlend : blend.colorSrcBlend,
+                                 blend.useAlphaBlend ? blend.alphaDstBlend : blend.colorDstBlend,
+                                 blend.useAlphaBlend ? blend.alphaCombine : blend.colorCombine, m_blendConstant}};
                 draw.renderedTarget = renderedTarget;
                 static const bool deferReadback = [] {
                     const auto *value = std::getenv("WEMU_NATIVE_DEFER_READBACK");
@@ -1931,7 +1999,8 @@ namespace Core::Gfx {
                         throw std::runtime_error("Raster backend returned an incomplete target");
                     static const std::uint64_t nativeVerifyEnvironment = [] {
                         const auto *value = std::getenv("WEMU_NATIVE_VERIFY_EVERY");
-                        if (!value || *value < '0' || *value > '9') return std::uint64_t(0);
+                        if (!value || *value < '0' || *value > '9')
+                            return std::uint64_t(0);
                         char *end = nullptr;
                         const auto interval = std::strtoull(value, &end, 10);
                         return end != value && *end == '\0' ? std::uint64_t(interval) : std::uint64_t(0);
@@ -1940,12 +2009,13 @@ namespace Core::Gfx {
                     const bool compare = interval && m_nativeDraws % interval == 0;
                     ++m_nativeDraws;
                     if (compare) {
-                        const auto verifyStart = (profile || nativeAudit) ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+                        const auto verifyStart =
+                                (profile || nativeAudit) ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
                         result->resolve();
                         // The backend has not changed target; feedback snapshots and
                         // prepared vertices are shared by both executions of this draw.
                         const auto savedStats = m_stats;
-                        for (const auto &triangle : preparedTriangles) {
+                        for (const auto &triangle: preparedTriangles) {
                             const RasterVertex rv[]{triangle[0], triangle[1], triangle[2]};
                             rasterPrepared(rv);
                         }
@@ -1971,32 +2041,30 @@ namespace Core::Gfx {
                         ++m_comparedNativeDraws;
                         m_differingNativeDraws += different != 0;
                         Utils::Log::error("[NATIVE_VERIFY] frame={} draw={} ps={:016X} bytes={} different={} over_one={} max_error={} first={}",
-                            m_presentCount, m_stats.draws, shaderHash(m_psProgram), targetBytes,
-                            different, overOne, maxError, first);
+                                          m_presentCount, m_stats.draws, shaderHash(m_psProgram), targetBytes, different, overOne, maxError, first);
                         if (different && (m_differingNativeDraws == 1 || maxError > m_nativeWorstError)) {
                             m_nativeWorstError = std::max(m_nativeWorstError, maxError);
                             const auto pixel = (worst / 4) * 4;
                             Utils::Log::error("[NATIVE_VERIFY_DETAIL] x={} y={} ref=({},{},{},{}) native=({},{},{},{}) "
-                                "channel_different=({},{},{},{}) channel_over_one=({},{},{},{}) vertices={} textures={}",
-                                (pixel / 4) % m_color.pitch, (pixel / 4) / m_color.pitch,
-                                target[pixel], target[pixel + 1], target[pixel + 2], target[pixel + 3],
-                                result->rgba[pixel], result->rgba[pixel + 1], result->rgba[pixel + 2], result->rgba[pixel + 3],
-                                channelDifferences[0], channelDifferences[1], channelDifferences[2], channelDifferences[3],
-                                channelOverOne[0], channelOverOne[1], channelOverOne[2], channelOverOne[3],
-                                vertices.size(), textures.size());
-                            for (const auto &texture : textures)
+                                              "channel_different=({},{},{},{}) channel_over_one=({},{},{},{}) vertices={} textures={}",
+                                              (pixel / 4) % m_color.pitch, (pixel / 4) / m_color.pitch, target[pixel], target[pixel + 1],
+                                              target[pixel + 2], target[pixel + 3], result->rgba[pixel], result->rgba[pixel + 1],
+                                              result->rgba[pixel + 2], result->rgba[pixel + 3], channelDifferences[0], channelDifferences[1],
+                                              channelDifferences[2], channelDifferences[3], channelOverOne[0], channelOverOne[1], channelOverOne[2],
+                                              channelOverOne[3], vertices.size(), textures.size());
+                            for (const auto &texture: textures)
                                 Utils::Log::error("[NATIVE_VERIFY_TEXTURE] resource={} sampler={} size={}x{} map={:08X} "
-                                    "sampler0={:08X} snapshot={} r32={} format={:X}", texture.binding.resource, texture.binding.sampler,
-                                    texture.width, texture.height, m_pixelTextures[texture.binding.resource].compMap,
-                                    texture.sampler.regs[0], !texture.unorm8.empty(), !texture.r32.empty(),
-                                    m_pixelTextures[texture.binding.resource].format);
-                            Utils::Log::error("[NATIVE_VERIFY_BLEND] enabled={} color=({},{},{}) alpha=({},{},{}) mask={:X}",
-                                draw.blend.enabled, draw.blend.colorSource, draw.blend.colorDestination, draw.blend.colorOperation,
-                                draw.blend.alphaSource, draw.blend.alphaDestination, draw.blend.alphaOperation, draw.channelMask);
+                                                  "sampler0={:08X} snapshot={} r32={} format={:X}",
+                                                  texture.binding.resource, texture.binding.sampler, texture.width, texture.height,
+                                                  m_pixelTextures[texture.binding.resource].compMap, texture.sampler.regs[0], !texture.unorm8.empty(),
+                                                  !texture.r32.empty(), m_pixelTextures[texture.binding.resource].format);
+                            Utils::Log::error("[NATIVE_VERIFY_BLEND] enabled={} color=({},{},{}) alpha=({},{},{}) mask={:X}", draw.blend.enabled,
+                                              draw.blend.colorSource, draw.blend.colorDestination, draw.blend.colorOperation, draw.blend.alphaSource,
+                                              draw.blend.alphaDestination, draw.blend.alphaOperation, draw.channelMask);
                             for (unsigned i = 0; i < std::min<std::size_t>(vertices.size(), 6); ++i)
-                                Utils::Log::error("[NATIVE_VERIFY_VERTEX] i={} pos=({:.5f},{:.5f}) param0=({:.5f},{:.5f},{:.5f},{:.5f})",
-                                    i, vertices[i].x, vertices[i].y, vertices[i].inputs[0][0], vertices[i].inputs[0][1],
-                                    vertices[i].inputs[0][2], vertices[i].inputs[0][3]);
+                                Utils::Log::error("[NATIVE_VERIFY_VERTEX] i={} pos=({:.5f},{:.5f}) param0=({:.5f},{:.5f},{:.5f},{:.5f})", i,
+                                                  vertices[i].x, vertices[i].y, vertices[i].inputs[0][0], vertices[i].inputs[0][1],
+                                                  vertices[i].inputs[0][2], vertices[i].inputs[0][3]);
                             if (const auto *dir = std::getenv("WEMU_NATIVE_VERIFY_DUMP_DIR")) {
                                 const auto dump = [&](const char *name, const std::uint8_t *rgba) {
                                     const auto path = std::format("{}/native_verify_{}_{}_{}.ppm", dir, m_presentCount, m_stats.draws, name);
@@ -2015,7 +2083,8 @@ namespace Core::Gfx {
                             }
                         }
                         if (profile || nativeAudit)
-                            nativeVerifyUs = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - verifyStart).count();
+                            nativeVerifyUs =
+                                    std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - verifyStart).count();
                     }
                     if (result->readback)
                         m_pendingReadbacks[makeSurfaceKey(m_color)] = std::move(result->readback);
@@ -2062,11 +2131,9 @@ namespace Core::Gfx {
                     it = m_texCache.emplace(m_texture.imagePtr, std::move(d)).first;
                 }
                 if (m_gpuGraph)
-                    m_gpuRenderer->gpuDrawTexture(m_texture.imagePtr, it->second.rgba.data(), it->second.w, it->second.h,
-                                                  m_gpuTri.data(), verts);
+                    m_gpuRenderer->gpuDrawTexture(m_texture.imagePtr, it->second.rgba.data(), it->second.w, it->second.h, m_gpuTri.data(), verts);
                 else
-                    m_gpuRenderer->gpuDrawTriangles(m_texture.imagePtr, it->second.rgba.data(), it->second.w, it->second.h,
-                                                    m_gpuTri.data(), verts);
+                    m_gpuRenderer->gpuDrawTriangles(m_texture.imagePtr, it->second.rgba.data(), it->second.w, it->second.h, m_gpuTri.data(), verts);
             }
             m_gpuTri.clear();
         }
@@ -2078,18 +2145,16 @@ namespace Core::Gfx {
         m_regsFresh = false; // uniform regs are per-draw: the next draw needs its own set
         m_psRegsFresh = false;
         if (profile || nativeAudit) {
-            const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
-                std::chrono::steady_clock::now() - profileStart).count();
+            const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - profileStart).count();
             std::uint64_t hash = 14695981039346656037ull;
-            for (const auto word : m_psProgram) {
+            for (const auto word: m_psProgram) {
                 for (unsigned shift = 0; shift < 32; shift += 8) {
                     hash ^= (word >> shift) & 255;
                     hash *= 1099511628211ull;
                 }
             }
-            Utils::Log::error("[RASTER] frame={} draw={} us={} pixels={} ps={:016X} words={} target={}x{}",
-                              m_presentCount, m_stats.draws, elapsed, m_stats.pixels - pixelsBefore,
-                              hash, m_psProgram.size(), m_color.width, m_color.height);
+            Utils::Log::error("[RASTER] frame={} draw={} us={} pixels={} ps={:016X} words={} target={}x{}", m_presentCount, m_stats.draws, elapsed,
+                              m_stats.pixels - pixelsBefore, hash, m_psProgram.size(), m_color.width, m_color.height);
             Utils::Log::error("[RASTER_STAGES] frame={} draw={} native={} prepare_us={} execute_us={} verify_us={} fallback_us={} other_us={}",
                               m_presentCount, m_stats.draws, nativeCommitted, nativePrepareUs, nativeExecuteUs, nativeVerifyUs, fallbackUs,
                               elapsed - nativePrepareUs - nativeExecuteUs - nativeVerifyUs - fallbackUs);
@@ -2100,21 +2165,18 @@ namespace Core::Gfx {
                         m_nativeAuditCache.clear();
                     found = m_nativeAuditCache.emplace(m_psProgram, Latte::lowerFragmentShader(*Latte::decodeProgram(m_psProgram))).first;
                     const auto &shader = found->second;
-                    Utils::Log::error("[NATIVEPS] ps={:016X} lowered={} textures={} base_only={} reason={}",
-                                      hash, bool(shader), shader.textures.size(), shader.requiresBaseLevelOnly,
-                                      shader ? "supported shader subset" : shader.error);
+                    Utils::Log::error("[NATIVEPS] ps={:016X} lowered={} textures={} base_only={} reason={}", hash, bool(shader),
+                                      shader.textures.size(), shader.requiresBaseLevelOnly, shader ? "supported shader subset" : shader.error);
                 }
                 const auto &shader = found->second;
                 const auto &blend = m_blend[m_colorTarget & 7];
-                Utils::Log::error("[NATIVEDRAW] frame={} draw={} ps={:016X} lowered={} target_fmt={:X} aa={} slot={} mask={:X} "
-                                  "blend={} color={},{},{} alpha={},{},{} scissor={},{},{},{}",
-                                  m_presentCount, m_stats.draws, hash, bool(shader), m_color.format, m_color.aa, m_colorTarget,
-                                  channelMask, targetBlendEnabled,
-                                  blend.colorSrcBlend, blend.colorDstBlend, blend.colorCombine,
-                                  blend.useAlphaBlend ? blend.alphaSrcBlend : blend.colorSrcBlend,
-                                  blend.useAlphaBlend ? blend.alphaDstBlend : blend.colorDstBlend,
-                                  blend.useAlphaBlend ? blend.alphaCombine : blend.colorCombine,
-                                  m_scissor[0], m_scissor[1], m_scissor[2], m_scissor[3]);
+                Utils::Log::error(
+                        "[NATIVEDRAW] frame={} draw={} ps={:016X} lowered={} target_fmt={:X} aa={} slot={} mask={:X} "
+                        "blend={} color={},{},{} alpha={},{},{} scissor={},{},{},{}",
+                        m_presentCount, m_stats.draws, hash, bool(shader), m_color.format, m_color.aa, m_colorTarget, channelMask, targetBlendEnabled,
+                        blend.colorSrcBlend, blend.colorDstBlend, blend.colorCombine, blend.useAlphaBlend ? blend.alphaSrcBlend : blend.colorSrcBlend,
+                        blend.useAlphaBlend ? blend.alphaDstBlend : blend.colorDstBlend,
+                        blend.useAlphaBlend ? blend.alphaCombine : blend.colorCombine, m_scissor[0], m_scissor[1], m_scissor[2], m_scissor[3]);
                 for (const auto &binding: shader.textures) {
                     if (binding.resource >= m_pixelTextures.size() || binding.sampler >= m_pixelSamplers.size()) {
                         Utils::Log::error("[NATIVETEX] resource={} sampler={} out_of_range=1", binding.resource, binding.sampler);
@@ -2124,9 +2186,9 @@ namespace Core::Gfx {
                     const auto &sampler = m_pixelSamplers[binding.sampler];
                     Utils::Log::error("[NATIVETEX] resource={} sampler={} size={}x{} dim={} fmt={:X} mip={} slice={} aa={} "
                                       "feedback={} regs={:08X},{:08X},{:08X}",
-                                      binding.resource, binding.sampler, texture.width, texture.height, texture.dimension,
-                                      texture.format, texture.firstMip, texture.firstSlice, texture.aa,
-                                      makeSurfaceKey(texture) == makeSurfaceKey(m_color), sampler.regs[0], sampler.regs[1], sampler.regs[2]);
+                                      binding.resource, binding.sampler, texture.width, texture.height, texture.dimension, texture.format,
+                                      texture.firstMip, texture.firstSlice, texture.aa, makeSurfaceKey(texture) == makeSurfaceKey(m_color),
+                                      sampler.regs[0], sampler.regs[1], sampler.regs[2]);
                 }
             }
         }
@@ -2191,8 +2253,7 @@ namespace Core::Gfx {
                     std::fwrite(px.data(), 1, 3, f);
                 }
             std::fclose(f);
-            Utils::Log::error("[GX2] surface dumped: {} pitch={} swizzle={:08X} compMap={:08X}",
-                              path, s.pitch, s.swizzle, s.compMap);
+            Utils::Log::error("[GX2] surface dumped: {} pitch={} swizzle={:08X} compMap={:08X}", path, s.pitch, s.swizzle, s.compMap);
         }
     }
 
@@ -2271,19 +2332,18 @@ namespace Core::Gfx {
                 return;
             const WrittenSurface &writtenInfo = it->second;
             const Surface &written = writtenInfo.surface;
-            if (written.width == view.width && written.height == view.height && written.pitch == view.pitch
-                && (written.format & 0x3F) == (view.format & 0x3F) && written.tileMode == view.tileMode)
+            if (written.width == view.width && written.height == view.height && written.pitch == view.pitch &&
+                (written.format & 0x3F) == (view.format & 0x3F) && written.tileMode == view.tileMode)
                 return;
             const std::uint32_t frame = m_presentCount + 1;
             const std::uint64_t kindBit = (kind && kind[0] == 't') ? 1ull : 0ull;
-            const std::uint64_t traceKey = (static_cast<std::uint64_t>(frame) << 33) ^ (static_cast<std::uint64_t>(view.imagePtr) << 1)
-                                           ^ kindBit;
+            const std::uint64_t traceKey = (static_cast<std::uint64_t>(frame) << 33) ^ (static_cast<std::uint64_t>(view.imagePtr) << 1) ^ kindBit;
             if (!m_surfaceAliasTraced.insert(traceKey).second)
                 return;
-            Utils::Log::error(
-                "[GX2] alias view frame#{} {} image=0x{:08X}: written@frame#{} writes={} {}x{} pitch={} f{:02X} t{} -> view {}x{} pitch={} f{:02X} t{}",
-                frame, kind, view.imagePtr, writtenInfo.frame, writtenInfo.writes, written.width, written.height, written.pitch,
-                written.format & 0x3F, written.tileMode, view.width, view.height, view.pitch, view.format & 0x3F, view.tileMode);
+            Utils::Log::error("[GX2] alias view frame#{} {} image=0x{:08X}: written@frame#{} writes={} {}x{} pitch={} f{:02X} t{} -> view {}x{} "
+                              "pitch={} f{:02X} t{}",
+                              frame, kind, view.imagePtr, writtenInfo.frame, writtenInfo.writes, written.width, written.height, written.pitch,
+                              written.format & 0x3F, written.tileMode, view.width, view.height, view.pitch, view.format & 0x3F, view.tileMode);
         };
         bool presented = false;
         for (const auto &cmd: stream.commands()) {
@@ -2316,7 +2376,8 @@ namespace Core::Gfx {
                         if (cmd.payload.size() == 3)
                             std::copy_n(cmd.payload.begin(), 3, regs.begin());
                         else if (m_mem && cmd.gpr[0])
-                            for (unsigned i = 0; i < 3; i++) regs[i] = m_mem->read<std::uint32_t>(cmd.gpr[0] + 4 * i);
+                            for (unsigned i = 0; i < 3; i++)
+                                regs[i] = m_mem->read<std::uint32_t>(cmd.gpr[0] + 4 * i);
                     }
                     break;
                 }
@@ -2324,21 +2385,22 @@ namespace Core::Gfx {
                 case Gx2Cmd::SetVertexSamplerBorderColor: {
                     auto &samplers = cmd.type == Gx2Cmd::SetVertexSamplerBorderColor ? m_vertexSamplers : m_pixelSamplers;
                     if (cmd.gpr[0] < samplers.size())
-                        for (unsigned i = 0; i < 4; i++) samplers[cmd.gpr[0]].customBorder[i] = cmd.fpr[i];
+                        for (unsigned i = 0; i < 4; i++)
+                            samplers[cmd.gpr[0]].customBorder[i] = static_cast<float>(cmd.fpr[i]);
                     break;
                 }
                 case Gx2Cmd::SetVertexTexture:
                 case Gx2Cmd::SetPixelTexture: {
                     if (m_trace) { // UI panes may bind textures on units > 0 — log them all
                         const Surface t = parseSurface(cmd);
-                        Utils::Log::error("[GX2TRACE] setPixTex unit={} img=0x{:08X} {}x{} f{:02X} t{}", cmd.gpr[1], t.imagePtr,
-                                          t.width, t.height, t.format & 0x3F, t.tileMode);
+                        Utils::Log::error("[GX2TRACE] setPixTex unit={} img=0x{:08X} {}x{} f{:02X} t{}", cmd.gpr[1], t.imagePtr, t.width, t.height,
+                                          t.format & 0x3F, t.tileMode);
                         if (cmd.payload.size() >= 0x9C / 4)
-                            Utils::Log::error("[GX2TRACE] texture ptr={:08X} dim={} depth={} mip={}/{} slice={}/{} compMap={:08X} regs={:08X},{:08X},{:08X},{:08X},{:08X}",
-                                              cmd.gpr[0], cmd.payload[0], cmd.payload[0xC / 4], cmd.payload[0x74 / 4],
-                                              cmd.payload[0x78 / 4], cmd.payload[0x7C / 4], cmd.payload[0x80 / 4],
-                                              cmd.payload[0x84 / 4], cmd.payload[0x88 / 4], cmd.payload[0x8C / 4],
-                                              cmd.payload[0x90 / 4], cmd.payload[0x94 / 4], cmd.payload[0x98 / 4]);
+                            Utils::Log::error("[GX2TRACE] texture ptr={:08X} dim={} depth={} mip={}/{} slice={}/{} compMap={:08X} "
+                                              "regs={:08X},{:08X},{:08X},{:08X},{:08X}",
+                                              cmd.gpr[0], cmd.payload[0], cmd.payload[0xC / 4], cmd.payload[0x74 / 4], cmd.payload[0x78 / 4],
+                                              cmd.payload[0x7C / 4], cmd.payload[0x80 / 4], cmd.payload[0x84 / 4], cmd.payload[0x88 / 4],
+                                              cmd.payload[0x8C / 4], cmd.payload[0x90 / 4], cmd.payload[0x94 / 4], cmd.payload[0x98 / 4]);
                     }
                     auto &textures = cmd.type == Gx2Cmd::SetVertexTexture ? m_vertexTextures : m_pixelTextures;
                     if (cmd.gpr[1] < textures.size()) {
@@ -2371,9 +2433,9 @@ namespace Core::Gfx {
                     m_fetchLayout = cmd.payload;
                     if (m_trace)
                         for (std::size_t i = 0; i + 7 < m_fetchLayout.size(); i += 8)
-                            Utils::Log::error("[GX2FETCH] loc={} buf={} off={} fmt={:X} mask={:08X} endian={}",
-                                              m_fetchLayout[i], m_fetchLayout[i+1], m_fetchLayout[i+2], m_fetchLayout[i+3],
-                                              m_fetchLayout[i+6], m_fetchLayout[i+7]);
+                            Utils::Log::error("[GX2FETCH] loc={} buf={} off={} fmt={:X} mask={:08X} endian={}", m_fetchLayout[i],
+                                              m_fetchLayout[i + 1], m_fetchLayout[i + 2], m_fetchLayout[i + 3], m_fetchLayout[i + 6],
+                                              m_fetchLayout[i + 7]);
                     break;
                 case Gx2Cmd::SetVertexShader: {
                     // Capture the shader bytecode (GX2VertexShader: size @+0xD0, program @+0xD4)
@@ -2407,8 +2469,7 @@ namespace Core::Gfx {
                         } catch (const Core::MemoryException &) {
                             prog.clear();
                         }
-                        Utils::Log::error("[GX2] VS 0x{:08X}: size={} program=0x{:08X} -> {} dwords captured", sh, size, ptr,
-                                          prog.size());
+                        Utils::Log::error("[GX2] VS 0x{:08X}: size={} program=0x{:08X} -> {} dwords captured", sh, size, ptr, prog.size());
                         it = m_vsCache.emplace(sh, std::move(prog)).first;
                     }
                     m_vsProgram = it->second;
@@ -2448,8 +2509,7 @@ namespace Core::Gfx {
                         } catch (const Core::MemoryException &) {
                             prog.clear();
                         }
-                        Utils::Log::error("[GX2] PS 0x{:08X}: size={} program=0x{:08X} -> {} dwords captured", sh, size, ptr,
-                                          prog.size());
+                        Utils::Log::error("[GX2] PS 0x{:08X}: size={} program=0x{:08X} -> {} dwords captured", sh, size, ptr, prog.size());
                         summarizePixelShaderBytecode(prog, sh);
                         it = m_psCache.emplace(sh, std::move(prog)).first;
                     }
@@ -2511,9 +2571,8 @@ namespace Core::Gfx {
                                 if ((i % 4) == 3)
                                     data += " |";
                             }
-                            Utils::Log::error(
-                                "[GX2TRACE] [beforeDraw#{}] setVsRegs off={} cnt={} (c{}..) ptr=0x{:08X} LR=0x{:08X} payload:{}",
-                                m_stats.draws, off, n, off / 4, cmd.gpr[2], cmd.callerLr, data);
+                            Utils::Log::error("[GX2TRACE] [beforeDraw#{}] setVsRegs off={} cnt={} (c{}..) ptr=0x{:08X} LR=0x{:08X} payload:{}",
+                                              m_stats.draws, off, n, off / 4, cmd.gpr[2], cmd.callerLr, data);
                             // For the suspicious all-zero projection upload, show the guest memory
                             // AROUND the pointer: if the real matrix lives adjacent, the captured
                             // base address (not the contents) is what is wrong.
@@ -2547,9 +2606,8 @@ namespace Core::Gfx {
                                 if ((i % 4) == 3)
                                     data += " |";
                             }
-                            Utils::Log::error(
-                                "[GX2TRACE] [beforeDraw#{}] setPsRegs off={} cnt={} (p{}..) ptr=0x{:08X} LR=0x{:08X} payload:{}",
-                                m_stats.draws, off, n, off / 4, cmd.gpr[2], cmd.callerLr, data);
+                            Utils::Log::error("[GX2TRACE] [beforeDraw#{}] setPsRegs off={} cnt={} (p{}..) ptr=0x{:08X} LR=0x{:08X} payload:{}",
+                                              m_stats.draws, off, n, off / 4, cmd.gpr[2], cmd.callerLr, data);
                         }
                     }
                     break;
@@ -2574,16 +2632,16 @@ namespace Core::Gfx {
                     b.alphaCombine = cmd.gpr[7];
                     if (m_trace)
                         Utils::Log::error("[GX2TRACE] blend target={} cSrc={} cDst={} cComb={} useA={} aSrc={} aDst={} aComb={}", target,
-                                          b.colorSrcBlend, b.colorDstBlend, b.colorCombine, b.useAlphaBlend ? 1 : 0, b.alphaSrcBlend,
-                                          b.alphaDstBlend, b.alphaCombine);
+                                          b.colorSrcBlend, b.colorDstBlend, b.colorCombine, b.useAlphaBlend ? 1 : 0, b.alphaSrcBlend, b.alphaDstBlend,
+                                          b.alphaCombine);
                     break;
                 }
                 case Gx2Cmd::SetBlendConstantColor:
                     for (std::size_t i = 0; i < m_blendConstant.size(); i++)
                         m_blendConstant[i] = byteFromUnit(cmd.fpr[i]);
                     if (m_trace)
-                        Utils::Log::error("[GX2TRACE] blendConstant {} {} {} {}", m_blendConstant[0], m_blendConstant[1],
-                                          m_blendConstant[2], m_blendConstant[3]);
+                        Utils::Log::error("[GX2TRACE] blendConstant {} {} {} {}", m_blendConstant[0], m_blendConstant[1], m_blendConstant[2],
+                                          m_blendConstant[3]);
                     break;
                 case Gx2Cmd::SetColorControl:
                     m_targetBlendEnable = cmd.gpr[1] & 0xFF;
@@ -2596,9 +2654,8 @@ namespace Core::Gfx {
                     for (std::size_t i = 0; i < m_channelMask.size(); i++)
                         m_channelMask[i] = cmd.gpr[i] & 0xF;
                     if (m_trace)
-                        Utils::Log::error("[GX2TRACE] channelMasks {:X} {:X} {:X} {:X} {:X} {:X} {:X} {:X}", m_channelMask[0],
-                                          m_channelMask[1], m_channelMask[2], m_channelMask[3], m_channelMask[4], m_channelMask[5],
-                                          m_channelMask[6], m_channelMask[7]);
+                        Utils::Log::error("[GX2TRACE] channelMasks {:X} {:X} {:X} {:X} {:X} {:X} {:X} {:X}", m_channelMask[0], m_channelMask[1],
+                                          m_channelMask[2], m_channelMask[3], m_channelMask[4], m_channelMask[5], m_channelMask[6], m_channelMask[7]);
                     break;
                 case Gx2Cmd::DrawEx:
                     drawPrimitives(cmd, false);
@@ -2645,10 +2702,9 @@ namespace Core::Gfx {
                             dumpSurface(m_lastScan, "scan_cmp", true);
                             dumpSurface(m_color, "color_cmp", true);
                             dumpSurface(m_lastDrawColor, "lastdraw_cmp", true);
-                            Utils::Log::error(
-                                "[GX2] target compare at frame #{} draws={} tris={} scan=0x{:08X} color=0x{:08X} lastDraw=0x{:08X}",
-                                m_presentCount + 1, m_stats.draws, m_stats.tris, m_lastScan.imagePtr, m_color.imagePtr,
-                                m_lastDrawColor.imagePtr);
+                            Utils::Log::error("[GX2] target compare at frame #{} draws={} tris={} scan=0x{:08X} color=0x{:08X} lastDraw=0x{:08X}",
+                                              m_presentCount + 1, m_stats.draws, m_stats.tris, m_lastScan.imagePtr, m_color.imagePtr,
+                                              m_lastDrawColor.imagePtr);
                         }
                     }
                     if (m_gpuGraph && m_gpuRenderer) {
@@ -2678,10 +2734,9 @@ namespace Core::Gfx {
                     }
                     m_presentCount++;
                     if ((m_presentCount % 100) == 0)
-                        Utils::Log::error("[GX2] replay #{}: draws={} tris={} px={} avgA={} skip(t/a/p)={}/{}/{} scan=0x{:08X} nz={}",
-                                          m_presentCount, m_stats.draws, m_stats.tris, m_stats.pixels,
-                                          m_stats.pixels ? m_stats.alphaSum / m_stats.pixels : 0, m_stats.skipNoTarget,
-                                          m_stats.skipNoAttrib, m_stats.skipBadPtr, m_stats.scanPtr, m_stats.scanNonZero);
+                        Utils::Log::error("[GX2] replay #{}: draws={} tris={} px={} avgA={} skip(t/a/p)={}/{}/{} scan=0x{:08X} nz={}", m_presentCount,
+                                          m_stats.draws, m_stats.tris, m_stats.pixels, m_stats.pixels ? m_stats.alphaSum / m_stats.pixels : 0,
+                                          m_stats.skipNoTarget, m_stats.skipNoAttrib, m_stats.skipBadPtr, m_stats.scanPtr, m_stats.scanNonZero);
                     // WEMU_FB_DUMP_RICH=1: snapshot the frame whenever it beats the most triangles
                     // seen so far, to a distinctly-named PPM. The steady state is a 55-tri
                     // post-process pattern; any menu/scene geometry produces far more, and those
@@ -2689,15 +2744,13 @@ namespace Core::Gfx {
                     if (std::getenv("WEMU_FB_DUMP_RICH") && m_stats.tris > m_richestTris && !m_fb.empty()) {
                         m_richestTris = m_stats.tris;
                         const char *dir = std::getenv("WEMU_FB_DUMP_DIR");
-                        const std::string path =
-                            std::string(dir ? dir : ".") + "/wemu_rich_" + std::to_string(m_stats.tris) + "tris.ppm";
+                        const std::string path = std::string(dir ? dir : ".") + "/wemu_rich_" + std::to_string(m_stats.tris) + "tris.ppm";
                         if (FILE *f = std::fopen(path.c_str(), "wb")) {
                             std::fprintf(f, "P6\n%u %u\n255\n", kWidth, kHeight);
                             for (std::size_t i = 0; i < m_fb.size(); i += 4)
                                 std::fwrite(m_fb.data() + i, 1, 3, f);
                             std::fclose(f);
-                            Utils::Log::error("[GX2] RICH frame #{}: {} tris, {} draws -> {}", m_presentCount, m_stats.tris,
-                                              m_stats.draws, path);
+                            Utils::Log::error("[GX2] RICH frame #{}: {} tris, {} draws -> {}", m_presentCount, m_stats.tris, m_stats.draws, path);
                         }
                     }
                     m_stats = {};

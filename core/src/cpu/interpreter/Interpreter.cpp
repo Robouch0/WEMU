@@ -15,12 +15,12 @@
 #include <utility>
 
 #include "gfx/Renderer.hpp"
-#include "hle/Ax.hpp"
 #include "hle/AsyncCallbacks.hpp"
+#include "hle/Ax.hpp"
 #include "utils/Diagnostics.hpp"
 #include "utils/Logger.hpp"
 #ifdef WEMU_HAS_LLVM
-#include "cpu/recompiler/Dispatcher.hpp"
+    #include "cpu/recompiler/Dispatcher.hpp"
 #endif
 
 Core::Interpreter::Interpreter(Core::Binary binary) : m_binary(std::move(binary))
@@ -130,9 +130,10 @@ void Core::Interpreter::run()
         const char *e = std::getenv("WEMU_JIT");
         return !e || e[0] != '0';
     }();
-    const bool jitFastPath = m_jitEnabled && !haveWatchPcs && !haveWatchWords && !haveWatchCstrs && !haveWatchRegs && !haveHeartbeat && !haveCountPcs
-        && !haveOrderFix && !haveResourceLookupTrace && !haveReadinessTrace && !haveItemResourceTrace && !haveFlvcNullTrace && !haveMk8UiArrayZeroFill
-        && !haveMk8WorkQueueTrace && !haveSeadHeapTrace && !haveSeadHeapContextTrace && !haveDriveMenuExperiment;
+    const bool jitFastPath = m_jitEnabled && !haveWatchPcs && !haveWatchWords && !haveWatchCstrs && !haveWatchRegs && !haveHeartbeat &&
+                             !haveCountPcs && !haveOrderFix && !haveResourceLookupTrace && !haveReadinessTrace && !haveItemResourceTrace &&
+                             !haveFlvcNullTrace && !haveMk8UiArrayZeroFill && !haveMk8WorkQueueTrace && !haveSeadHeapTrace &&
+                             !haveSeadHeapContextTrace && !haveDriveMenuExperiment;
 #ifdef WEMU_HAS_LLVM
     const bool profileNative = [] {
         const auto *value = std::getenv("WEMU_NATIVE_PROFILE");
@@ -159,7 +160,8 @@ void Core::Interpreter::run()
     const bool reportIps = [&]() {
         const char *e = std::getenv("WEMU_IPS");
 #ifdef WEMU_HAS_LLVM
-        if (profileNative) return true;
+        if (profileNative)
+            return true;
 #endif
         return e && e[0] == '1';
     }();
@@ -216,7 +218,7 @@ void Core::Interpreter::run()
             m_gqr[i] = inlineDriveMenuCall.gqr[i];
     };
     const auto startInlineDriveMenuCall = [&](const std::uint32_t func, const std::uint32_t task, const std::uint32_t returnPc,
-                                                const std::uint32_t drainFunc, const std::uint32_t forcedTask0) {
+                                              const std::uint32_t drainFunc, const std::uint32_t forcedTask0) {
         if (inlineDriveMenuCall.active)
             return;
         saveInlineDriveMenuState();
@@ -252,33 +254,34 @@ void Core::Interpreter::run()
                 const auto now = std::chrono::steady_clock::now();
                 const double secs = std::chrono::duration<double>(now - ipsMark).count();
                 if (reportIps && secs >= 2.0) {
-                    Utils::Log::error("[IPS] {:.1f}M instr/sec ({} blocks cached)",
-                                      (m_retired - ipsLast) / secs / 1e6, m_blockCache.size());
+                    Utils::Log::error("[IPS] {:.1f}M instr/sec ({} blocks cached)", static_cast<double>(m_retired - ipsLast) / secs / 1e6,
+                                      m_blockCache.size());
 #ifdef WEMU_HAS_LLVM
                     if (profileNative) {
                         for (unsigned i = 0; i < prefixCounts.size(); ++i)
-                            if (prefixCounts[i]) Utils::Log::error("[NATIVEPREFIX] length={} dispatches={}", i, prefixCounts[i]);
+                            if (prefixCounts[i])
+                                Utils::Log::error("[NATIVEPREFIX] length={} dispatches={}", i, prefixCounts[i]);
                         for (unsigned i = 0; i < prefixStops.size(); ++i)
-                            if (prefixStops[i]) Utils::Log::error("[NATIVESTOP] opcode={} dispatches={}", i, prefixStops[i]);
+                            if (prefixStops[i])
+                                Utils::Log::error("[NATIVESTOP] opcode={} dispatches={}", i, prefixStops[i]);
                         for (unsigned i = 0; i < prefixExtendedStops.size(); ++i)
-                            if (prefixExtendedStops[i]) Utils::Log::error("[NATIVESTOP31] xo={} rc={} dispatches={}",
-                                i / 2, i % 2, prefixExtendedStops[i]);
+                            if (prefixExtendedStops[i])
+                                Utils::Log::error("[NATIVESTOP31] xo={} rc={} dispatches={}", i / 2, i % 2, prefixExtendedStops[i]);
                     }
                     if (native) {
                         const auto &s = native->stats();
-                        Utils::Log::error("[NATIVECPU] compiled={} calls={} instructions={} invalidations={} evictions={} entries={}",
-                            s.compiled, s.calls, s.instructions, s.invalidations, s.evictions, native->size());
+                        Utils::Log::error("[NATIVECPU] compiled={} calls={} instructions={} invalidations={} evictions={} entries={}", s.compiled,
+                                          s.calls, s.instructions, s.invalidations, s.evictions, native->size());
                         if (native->cacheEnabled())
-                            Utils::Log::error("[NATIVECACHE] hits={} misses={} writes={} link_failures={}",
-                                s.cacheHits, s.cacheMisses, s.cacheWrites, s.cacheLinkFailures);
+                            Utils::Log::error("[NATIVECACHE] hits={} misses={} writes={} link_failures={}", s.cacheHits, s.cacheMisses, s.cacheWrites,
+                                              s.cacheLinkFailures);
                     }
 #endif
                     ipsMark = now;
                     ipsLast = m_retired;
                 }
                 if (threadDumpPeriod.count() > 0 && now - threadDumpMark >= threadDumpPeriod) {
-                    std::fprintf(stderr, "[DIAG] threads @ retired=%llu (wall-time snapshot):\n",
-                                 static_cast<unsigned long long>(m_retired));
+                    std::fprintf(stderr, "[DIAG] threads @ retired=%llu (wall-time snapshot):\n", static_cast<unsigned long long>(m_retired));
                     Diag::dumpThreads(*this, "    ");
                     threadDumpMark = now;
                 }
@@ -428,7 +431,8 @@ void Core::Interpreter::run()
                         }
                     }
                 }
-            } catch (...) {
+            } catch (const Core::MemoryException &e) {
+                Utils::Log::debug("[DIAG] Cannot inspect drive-menu state: {}", e.what());
             }
         }
         if (ppc_pc >= m_hooks_min && ppc_pc <= m_hooks_max) {
@@ -449,12 +453,13 @@ void Core::Interpreter::run()
                     if (blk.nativePrefixLength < blk.instrs.size()) {
                         const auto word = blk.instrs[blk.nativePrefixLength].instr.raw;
                         ++prefixStops[word >> 26];
-                        if ((word >> 26) == 31) ++prefixExtendedStops[word & 2047];
+                        if ((word >> 26) == 31)
+                            ++prefixExtendedStops[word & 2047];
                     }
                 }
                 if (native && !blk.nativeWords.empty()) {
-                    const auto budget = static_cast<unsigned>(std::min<std::uint64_t>(64,
-                        nextServiceTickAt > m_retired ? nextServiceTickAt - m_retired : 0));
+                    const auto budget =
+                            static_cast<unsigned>(std::min<std::uint64_t>(64, nextServiceTickAt > m_retired ? nextServiceTickAt - m_retired : 0));
                     try {
                         const unsigned n = native->execute(ppc_pc, blk.nativeWords, m_gpr, budget);
                         if (n) {
@@ -518,12 +523,13 @@ const Core::Interpreter::Block &Core::Interpreter::getBlock(Utils::BeDecoder &de
     if (const auto it = m_blockCache.find(startPc); it != m_blockCache.end()) {
         decoder.seek(startPc);
         bool unchanged = !it->second.instrs.empty();
-        for (const auto &instruction : it->second.instrs)
+        for (const auto &instruction: it->second.instrs)
             if (decoder.extractSwap<std::uint32_t>() != instruction.instr.raw) {
                 unchanged = false;
                 break;
             }
-        if (unchanged) return it->second;
+        if (unchanged)
+            return it->second;
         m_blockCache.erase(it);
     }
 
@@ -559,15 +565,39 @@ const Core::Interpreter::Block &Core::Interpreter::getBlock(Utils::BeDecoder &de
         // before executing any instruction after a guest memory write.
         bool stores = false;
         switch (id) {
-            case E_STHX: case E_STBX: case E_STB: case E_STH: case E_STMW:
-            case E_STW: case E_STWU: case E_STWX: case E_STBU: case E_STHU:
-            case E_STWUX: case E_STBUX: case E_STHUX: case E_STSWI: case E_STWCX_:
-            case E_STWBRX: case E_DCBZ: case E_STFS: case E_STFSU: case E_STFD:
-            case E_STFDU: case E_STFSX: case E_STFSUX: case E_STFDX: case E_STFIWX:
-            case E_PSQ_ST: stores = true; break;
-            default: break;
+            case E_STHX:
+            case E_STBX:
+            case E_STB:
+            case E_STH:
+            case E_STMW:
+            case E_STW:
+            case E_STWU:
+            case E_STWX:
+            case E_STBU:
+            case E_STHU:
+            case E_STWUX:
+            case E_STBUX:
+            case E_STHUX:
+            case E_STSWI:
+            case E_STWCX_:
+            case E_STWBRX:
+            case E_DCBZ:
+            case E_STFS:
+            case E_STFSU:
+            case E_STFD:
+            case E_STFDU:
+            case E_STFSX:
+            case E_STFSUX:
+            case E_STFDX:
+            case E_STFIWX:
+            case E_PSQ_ST:
+                stores = true;
+                break;
+            default:
+                break;
         }
-        if (stores) break;
+        if (stores)
+            break;
         // Stop just before a hooked address so run()'s HLE hook dispatch still fires for it.
         const std::uint32_t ppc = pc + Core::Memory::MemoryMap::ApplicationCode;
         if (ppc >= m_hooks_min && ppc <= m_hooks_max && m_hooks.contains(ppc))
@@ -576,12 +606,14 @@ const Core::Interpreter::Block &Core::Interpreter::getBlock(Utils::BeDecoder &de
 #ifdef WEMU_HAS_LLVM
     // Compute eligibility once per decoded version, not on every dispatch.
     // getBlock's live-word validation invalidates this prefix along with instrs.
-    for (const auto &instruction : b.instrs) {
-        if (!Ppc::Block::supports(instruction.instr.raw)) break;
+    for (const auto &instruction: b.instrs) {
+        if (!Ppc::Block::supports(instruction.instr.raw))
+            break;
         ++b.nativePrefixLength;
     }
     if (b.nativePrefixLength >= 2)
-        for (unsigned i = 0; i < b.nativePrefixLength; ++i) b.nativeWords.push_back(b.instrs[i].instr.raw);
+        for (unsigned i = 0; i < b.nativePrefixLength; ++i)
+            b.nativeWords.push_back(b.instrs[i].instr.raw);
 #endif
     return m_blockCache.emplace(startPc, std::move(b)).first->second;
 }

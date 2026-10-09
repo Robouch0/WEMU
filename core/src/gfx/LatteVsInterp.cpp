@@ -1,5 +1,4 @@
 #include "gfx/LatteVsInterp.hpp"
-#include "gfx/LatteProgram.hpp"
 
 #include <cmath>
 #include <cstdio>
@@ -7,6 +6,8 @@
 #include <cstring>
 #include <limits>
 #include <unordered_map>
+
+#include "gfx/LatteProgram.hpp"
 
 // WEMU_VS_DEBUG=1: print every ALU group and export (offline harness diagnostics).
 // setDebugOnce() additionally arms the trace for a single run() so one draw can be isolated.
@@ -47,21 +48,28 @@ namespace Core::Gfx {
 
         float roundNearestEven(float value)
         {
-            if (!std::isfinite(value) || std::fabs(value) >= 8388608.0f) return value;
+            if (!std::isfinite(value) || std::fabs(value) >= 8388608.0f)
+                return value;
             const float lower = std::floor(value);
             const float fraction = value - lower;
-            const float rounded = fraction < 0.5f ? lower : fraction > 0.5f ? lower + 1.0f
-                : std::fmod(lower, 2.0f) == 0.0f ? lower : lower + 1.0f;
+            const float rounded = fraction < 0.5f ? lower : fraction > 0.5f ? lower + 1.0f : std::fmod(lower, 2.0f) == 0.0f ? lower : lower + 1.0f;
             return rounded == 0.0f ? std::copysign(0.0f, value) : rounded;
         }
 
         float applyOmodClamp(float v, std::uint32_t omod, bool clamp)
         {
             switch (omod) {
-                case 1: v *= 2.0f; break;
-                case 2: v *= 4.0f; break;
-                case 3: v *= 0.5f; break;
-                default: break;
+                case 1:
+                    v *= 2.0f;
+                    break;
+                case 2:
+                    v *= 4.0f;
+                    break;
+                case 3:
+                    v *= 0.5f;
+                    break;
+                default:
+                    break;
             }
             if (clamp)
                 v = std::fmin(1.0f, std::fmax(0.0f, v));
@@ -87,28 +95,23 @@ namespace Core::Gfx {
 
     void LatteVsInterp::setDebugOnce(bool on) { g_vsDebugOnce = on; }
 
-    LatteVsInterp::Output LatteVsInterp::run(const std::vector<std::uint32_t> &program,
-                                             const std::array<std::array<float, 4>, 4> &attribs, const float *consts,
-                                             const std::uint32_t constCount, const KcacheFetch &kcache,
+    LatteVsInterp::Output LatteVsInterp::run(const std::vector<std::uint32_t> &program, const std::array<std::array<float, 4>, 4> &attribs,
+                                             const float *consts, const std::uint32_t constCount, const KcacheFetch &kcache,
                                              const TextureSample &textureSample)
     {
         return execute(*compile(program), attribs, consts, constCount, kcache, textureSample, false);
     }
 
-    LatteVsInterp::Output LatteVsInterp::runPixel(const Program &program,
-                                                  const std::array<std::array<float, 4>, 4> &inputs,
-                                                  const float *consts, std::uint32_t constCount,
-                                                  const TextureSample &textureSample, const KcacheFetch &kcache,
+    LatteVsInterp::Output LatteVsInterp::runPixel(const Program &program, const std::array<std::array<float, 4>, 4> &inputs, const float *consts,
+                                                  std::uint32_t constCount, const TextureSample &textureSample, const KcacheFetch &kcache,
                                                   const TextureGather &textureGather)
     {
         return execute(program, inputs, consts, constCount, kcache, textureSample, true, textureGather);
     }
 
-    LatteVsInterp::Output LatteVsInterp::execute(const Program &compiled,
-                                                const std::array<std::array<float, 4>, 4> &attribs,
-                                                const float *consts, std::uint32_t constCount,
-                                                const KcacheFetch &kcache, const TextureSample &textureSample,
-                                                bool pixelStage, const TextureGather &textureGather)
+    LatteVsInterp::Output LatteVsInterp::execute(const Program &compiled, const std::array<std::array<float, 4>, 4> &attribs, const float *consts,
+                                                 std::uint32_t constCount, const KcacheFetch &kcache, const TextureSample &textureSample,
+                                                 bool pixelStage, const TextureGather &textureGather)
     {
         const auto &program = compiled.words;
         Output out;
@@ -152,14 +155,30 @@ namespace Core::Gfx {
                 v = idx < constCount * 4 ? consts[idx] : 0.0f;
             } else {
                 switch (s.sel) {
-                    case SRC_0: v = 0.0f; break;
-                    case SRC_1: v = 1.0f; break;
-                    case SRC_1_INT: v = fromU32(1u); break;
-                    case SRC_HALF: v = 0.5f; break;
-                    case SRC_LITERAL: v = inst.literal[s.chan & 3]; break;
-                    case SRC_PV: v = regs.pv[s.chan]; break;
-                    case SRC_PS: v = regs.ps; break;
-                    default: v = 0.0f; break;
+                    case SRC_0:
+                        v = 0.0f;
+                        break;
+                    case SRC_1:
+                        v = 1.0f;
+                        break;
+                    case SRC_1_INT:
+                        v = fromU32(1u);
+                        break;
+                    case SRC_HALF:
+                        v = 0.5f;
+                        break;
+                    case SRC_LITERAL:
+                        v = inst.literal[s.chan & 3];
+                        break;
+                    case SRC_PV:
+                        v = regs.pv[s.chan];
+                        break;
+                    case SRC_PS:
+                        v = regs.ps;
+                        break;
+                    default:
+                        v = 0.0f;
+                        break;
                 }
             }
             if (s.abs)
@@ -177,8 +196,10 @@ namespace Core::Gfx {
             for (const auto &group: clause->second) {
                 bool nextPred = pred, nextActive = active;
                 auto predicateResult = [&](bool condition, const AluInst &in, bool integer = false) {
-                    if (in.raw1 & (1u << 3)) nextPred = condition;
-                    if (in.raw1 & (1u << 2)) nextActive = condition;
+                    if (in.raw1 & (1u << 3))
+                        nextPred = condition;
+                    if (in.raw1 & (1u << 2))
+                        nextActive = condition;
                     return integer ? fromU32(condition ? 0xFFFFFFFFu : 0u) : (condition ? 1.0f : 0.0f);
                 };
                 // DOT4: the group's four vector slots supply the four component products.
@@ -224,90 +245,189 @@ namespace Core::Gfx {
                             const float c = readSrc(in.src[2], in);
                             switch (in.op) {
                                 case OP3_MULADD:
-                                case OP3_MULADD_IEEE: v = a * b + c; break;
+                                case OP3_MULADD_IEEE:
+                                    v = a * b + c;
+                                    break;
                                 case OP3_MULADD_M2:
-                                case OP3_MULADD_IEEE_M2: v = (a * b + c) * 2.0f; break;
+                                case OP3_MULADD_IEEE_M2:
+                                    v = (a * b + c) * 2.0f;
+                                    break;
                                 case OP3_MULADD_M4:
-                                case OP3_MULADD_IEEE_M4: v = (a * b + c) * 4.0f; break;
+                                case OP3_MULADD_IEEE_M4:
+                                    v = (a * b + c) * 4.0f;
+                                    break;
                                 case OP3_MULADD_D2:
-                                case OP3_MULADD_IEEE_D2: v = (a * b + c) * 0.5f; break;
-                                case OP3_CNDE: v = (a == 0.0f) ? b : c; break;
-                                case OP3_CNDGT: v = (a > 0.0f) ? b : c; break;
-                                case OP3_CNDGE: v = (a >= 0.0f) ? b : c; break;
-                                case OP3_CNDE_INT: v = (asU32(a) == 0u) ? b : c; break;
-                                case OP3_CNDGT_INT: v = (static_cast<std::int32_t>(asU32(a)) > 0) ? b : c; break;
-                                case OP3_CNDGE_INT: v = (static_cast<std::int32_t>(asU32(a)) >= 0) ? b : c; break;
-                                default: if (pixelStage) return false; break;
+                                case OP3_MULADD_IEEE_D2:
+                                    v = (a * b + c) * 0.5f;
+                                    break;
+                                case OP3_CNDE:
+                                    v = (a == 0.0f) ? b : c;
+                                    break;
+                                case OP3_CNDGT:
+                                    v = (a > 0.0f) ? b : c;
+                                    break;
+                                case OP3_CNDGE:
+                                    v = (a >= 0.0f) ? b : c;
+                                    break;
+                                case OP3_CNDE_INT:
+                                    v = (asU32(a) == 0u) ? b : c;
+                                    break;
+                                case OP3_CNDGT_INT:
+                                    v = (static_cast<std::int32_t>(asU32(a)) > 0) ? b : c;
+                                    break;
+                                case OP3_CNDGE_INT:
+                                    v = (static_cast<std::int32_t>(asU32(a)) >= 0) ? b : c;
+                                    break;
+                                default:
+                                    if (pixelStage)
+                                        return false;
+                                    break;
                             }
                         } else {
                             switch (in.op) {
-                                case OP2_ADD: v = a + b; break;
+                                case OP2_ADD:
+                                    v = a + b;
+                                    break;
                                 case OP2_MUL:
-                                case OP2_MUL_IEEE: v = a * b; break;
+                                case OP2_MUL_IEEE:
+                                    v = a * b;
+                                    break;
                                 case OP2_MAX:
-                                case OP2_MAX_DX10: v = std::fmax(a, b); break;
+                                case OP2_MAX_DX10:
+                                    v = std::fmax(a, b);
+                                    break;
                                 case OP2_MIN:
-                                case OP2_MIN_DX10: v = std::fmin(a, b); break;
-                                case OP2_SETE: v = (a == b) ? 1.0f : 0.0f; break;
-                                case OP2_SETGT: v = (a > b) ? 1.0f : 0.0f; break;
-                                case OP2_SETGE: v = (a >= b) ? 1.0f : 0.0f; break;
-                                case OP2_SETNE: v = (a != b) ? 1.0f : 0.0f; break;
-                                case OP2_SETGT_DX10: v = fromU32(a > b ? 0xFFFFFFFFu : 0u); break;
-                                case OP2_MOV: v = a; break;
-                                case OP2_FRACT: v = a - std::floor(a); break;
-                                case OP2_FLOOR: v = std::floor(a); break;
-                                case OP2_RNDNE: v = roundNearestEven(a); break;
-                                case OP2_EXP_IEEE: v = std::exp2(a); break;
-                                case OP2_LOG_IEEE: v = std::log2(a); break;
+                                case OP2_MIN_DX10:
+                                    v = std::fmin(a, b);
+                                    break;
+                                case OP2_SETE:
+                                    v = (a == b) ? 1.0f : 0.0f;
+                                    break;
+                                case OP2_SETGT:
+                                    v = (a > b) ? 1.0f : 0.0f;
+                                    break;
+                                case OP2_SETGE:
+                                    v = (a >= b) ? 1.0f : 0.0f;
+                                    break;
+                                case OP2_SETNE:
+                                    v = (a != b) ? 1.0f : 0.0f;
+                                    break;
+                                case OP2_SETGT_DX10:
+                                    v = fromU32(a > b ? 0xFFFFFFFFu : 0u);
+                                    break;
+                                case OP2_MOV:
+                                    v = a;
+                                    break;
+                                case OP2_FRACT:
+                                    v = a - std::floor(a);
+                                    break;
+                                case OP2_FLOOR:
+                                    v = std::floor(a);
+                                    break;
+                                case OP2_RNDNE:
+                                    v = roundNearestEven(a);
+                                    break;
+                                case OP2_EXP_IEEE:
+                                    v = std::exp2(a);
+                                    break;
+                                case OP2_LOG_IEEE:
+                                    v = std::log2(a);
+                                    break;
                                 case OP2_LOG_CLAMPED:
                                     v = std::log2(a);
                                     if (v == -std::numeric_limits<float>::infinity())
                                         v = -std::numeric_limits<float>::max();
                                     break;
-                                case OP2_RECIP_IEEE: v = (a != 0.0f) ? 1.0f / a : 0.0f; break;
-                                case OP2_RECIPSQRT_IEEE: v = (a > 0.0f) ? 1.0f / std::sqrt(a) : 0.0f; break;
-                                case OP2_FLT_TO_INT: v = fromU32(static_cast<std::uint32_t>(static_cast<std::int32_t>(a))); break;
-                                case OP2_INT_TO_FLT: v = static_cast<float>(static_cast<std::int32_t>(asU32(a))); break;
-                                case OP2_UINT_TO_FLT: v = static_cast<float>(asU32(a)); break;
-                                case OP2_FLT_TO_UINT: v = fromU32(static_cast<std::uint32_t>(a < 0.0f ? 0.0f : a)); break;
-                                case OP2_AND_INT: v = fromU32(asU32(a) & asU32(b)); break;
-                                case OP2_OR_INT: v = fromU32(asU32(a) | asU32(b)); break;
-                                case OP2_XOR_INT: v = fromU32(asU32(a) ^ asU32(b)); break;
-                                case OP2_ADD_INT: v = fromU32(asU32(a) + asU32(b)); break;
-                                case OP2_SUB_INT: v = fromU32(asU32(a) - asU32(b)); break;
+                                case OP2_RECIP_IEEE:
+                                    v = (a != 0.0f) ? 1.0f / a : 0.0f;
+                                    break;
+                                case OP2_RECIPSQRT_IEEE:
+                                    v = (a > 0.0f) ? 1.0f / std::sqrt(a) : 0.0f;
+                                    break;
+                                case OP2_FLT_TO_INT:
+                                    v = fromU32(static_cast<std::uint32_t>(static_cast<std::int32_t>(a)));
+                                    break;
+                                case OP2_INT_TO_FLT:
+                                    v = static_cast<float>(static_cast<std::int32_t>(asU32(a)));
+                                    break;
+                                case OP2_UINT_TO_FLT:
+                                    v = static_cast<float>(asU32(a));
+                                    break;
+                                case OP2_FLT_TO_UINT:
+                                    v = fromU32(static_cast<std::uint32_t>(a < 0.0f ? 0.0f : a));
+                                    break;
+                                case OP2_AND_INT:
+                                    v = fromU32(asU32(a) & asU32(b));
+                                    break;
+                                case OP2_OR_INT:
+                                    v = fromU32(asU32(a) | asU32(b));
+                                    break;
+                                case OP2_XOR_INT:
+                                    v = fromU32(asU32(a) ^ asU32(b));
+                                    break;
+                                case OP2_ADD_INT:
+                                    v = fromU32(asU32(a) + asU32(b));
+                                    break;
+                                case OP2_SUB_INT:
+                                    v = fromU32(asU32(a) - asU32(b));
+                                    break;
                                 case OP2_ASHR:
                                     v = fromU32(static_cast<std::uint32_t>(static_cast<std::int32_t>(asU32(a)) >> (asU32(b) & 31u)));
                                     break;
-                                case OP2_LSHR: v = fromU32(asU32(a) >> (asU32(b) & 31u)); break;
-                                case OP2_LSHL: v = fromU32(asU32(a) << (asU32(b) & 31u)); break;
-                                case OP2_SETE_INT: v = fromU32(asU32(a) == asU32(b) ? 0xFFFFFFFFu : 0u); break;
-                                case OP2_SETNE_INT: v = fromU32(asU32(a) != asU32(b) ? 0xFFFFFFFFu : 0u); break;
+                                case OP2_LSHR:
+                                    v = fromU32(asU32(a) >> (asU32(b) & 31u));
+                                    break;
+                                case OP2_LSHL:
+                                    v = fromU32(asU32(a) << (asU32(b) & 31u));
+                                    break;
+                                case OP2_SETE_INT:
+                                    v = fromU32(asU32(a) == asU32(b) ? 0xFFFFFFFFu : 0u);
+                                    break;
+                                case OP2_SETNE_INT:
+                                    v = fromU32(asU32(a) != asU32(b) ? 0xFFFFFFFFu : 0u);
+                                    break;
                                 case OP2_SETGT_INT:
-                                    v = fromU32(static_cast<std::int32_t>(asU32(a)) > static_cast<std::int32_t>(asU32(b)) ? 0xFFFFFFFFu
-                                                                                                                          : 0u);
+                                    v = fromU32(static_cast<std::int32_t>(asU32(a)) > static_cast<std::int32_t>(asU32(b)) ? 0xFFFFFFFFu : 0u);
                                     break;
                                 case OP2_SETGE_INT:
-                                    v = fromU32(static_cast<std::int32_t>(asU32(a)) >= static_cast<std::int32_t>(asU32(b)) ? 0xFFFFFFFFu
-                                                                                                                           : 0u);
+                                    v = fromU32(static_cast<std::int32_t>(asU32(a)) >= static_cast<std::int32_t>(asU32(b)) ? 0xFFFFFFFFu : 0u);
                                     break;
                                 case OP2_PRED_SETE:
-                                case OP2_PRED_SETE_PUSH: v = predicateResult(a == b, in); break;
+                                case OP2_PRED_SETE_PUSH:
+                                    v = predicateResult(a == b, in);
+                                    break;
                                 case OP2_PRED_SETGT:
-                                case OP2_PRED_SETGT_PUSH: v = predicateResult(a > b, in); break;
+                                case OP2_PRED_SETGT_PUSH:
+                                    v = predicateResult(a > b, in);
+                                    break;
                                 case OP2_PRED_SETGE:
-                                case OP2_PRED_SETGE_PUSH: v = predicateResult(a >= b, in); break;
+                                case OP2_PRED_SETGE_PUSH:
+                                    v = predicateResult(a >= b, in);
+                                    break;
                                 case OP2_PRED_SETNE:
-                                case OP2_PRED_SETNE_PUSH: v = predicateResult(a != b, in); break;
-                                case OP2_PRED_SETE_INT: v = predicateResult(asU32(a) == asU32(b), in, true); break;
+                                case OP2_PRED_SETNE_PUSH:
+                                    v = predicateResult(a != b, in);
+                                    break;
+                                case OP2_PRED_SETE_INT:
+                                    v = predicateResult(asU32(a) == asU32(b), in, true);
+                                    break;
                                 case OP2_PRED_SETGT_INT:
                                     v = predicateResult(static_cast<std::int32_t>(asU32(a)) > static_cast<std::int32_t>(asU32(b)), in, true);
                                     break;
                                 case OP2_PRED_SETGE_INT:
                                     v = predicateResult(static_cast<std::int32_t>(asU32(a)) >= static_cast<std::int32_t>(asU32(b)), in, true);
                                     break;
-                                case OP2_PRED_SETNE_INT: v = predicateResult(asU32(a) != asU32(b), in, true); break;
-                                case OP2_NOP: v = 0.0f; break;
-                                default: if (pixelStage) return false; v = 0.0f; break;
+                                case OP2_PRED_SETNE_INT:
+                                    v = predicateResult(asU32(a) != asU32(b), in, true);
+                                    break;
+                                case OP2_NOP:
+                                    v = 0.0f;
+                                    break;
+                                default:
+                                    if (pixelStage)
+                                        return false;
+                                    v = 0.0f;
+                                    break;
                             }
                         }
                         v = applyOmodClamp(v, in.op3 ? 0 : in.omod, in.clamp);
@@ -324,11 +444,9 @@ namespace Core::Gfx {
                         const float a = readSrc(in.src[0], in);
                         const float b = readSrc(in.src[1], in);
                         const float c = in.op3 ? readSrc(in.src[2], in) : 0.0f;
-                        std::fprintf(stderr,
-                                     "  alu %s op=0x%02X src0=%u.%u(%g) src1=%u.%u(%g) src2=%u.%u(%g) -> R%u.%u wm=%d lit=(%g,%g)\n",
-                                     in.op3 ? "OP3" : "OP2", in.op, in.src[0].sel, in.src[0].chan, a, in.src[1].sel, in.src[1].chan,
-                                     b, in.src[2].sel, in.src[2].chan, c, in.dstGpr, in.dstChan, in.writeMask, in.literal[0],
-                                     in.literal[1]);
+                        std::fprintf(stderr, "  alu %s op=0x%02X src0=%u.%u(%g) src1=%u.%u(%g) src2=%u.%u(%g) -> R%u.%u wm=%d lit=(%g,%g)\n",
+                                     in.op3 ? "OP3" : "OP2", in.op, in.src[0].sel, in.src[0].chan, a, in.src[1].sel, in.src[1].chan, b, in.src[2].sel,
+                                     in.src[2].chan, c, in.dstGpr, in.dstChan, in.writeMask, in.literal[0], in.literal[1]);
                     }
                 }
                 for (const auto &w: writes)
@@ -366,8 +484,8 @@ namespace Core::Gfx {
                 kc[0] = {(w0 >> 22) & 0xF, (w1 >> 2) & 0xFF, (w0 >> 30) & 3};
                 kc[1] = {(w0 >> 26) & 0xF, (w1 >> 10) & 0xFF, w1 & 3};
                 if (vsDebug())
-                    std::fprintf(stderr, "CF%u: ALU kind=%u addr=%u count=%u pred=%d kc0={b%u a%u m%u} kc1={b%u a%u m%u}\n", cf, kind,
-                                 addr, count, pred, kc[0].bank, kc[0].addr, kc[0].mode, kc[1].bank, kc[1].addr, kc[1].mode);
+                    std::fprintf(stderr, "CF%u: ALU kind=%u addr=%u count=%u pred=%d kc0={b%u a%u m%u} kc1={b%u a%u m%u}\n", cf, kind, addr, count,
+                                 pred, kc[0].bank, kc[0].addr, kc[0].mode, kc[1].bank, kc[1].addr, kc[1].mode);
                 if (kind == 0x9) { // ALU_PUSH_BEFORE
                     if (activeDepth == activeStack.size())
                         return {};
@@ -387,7 +505,8 @@ namespace Core::Gfx {
                 std::fprintf(stderr, "CF%u: inst=0x%02X w0=%08X pred=%d\n", cf, inst, w0, pred);
             if (inst == CF_EXP || inst == CF_EXP_DONE) {
                 if (!active) {
-                    if (cfEop(w1)) break;
+                    if (cfEop(w1))
+                        break;
                     continue;
                 }
                 const std::uint32_t arrayBase = w0 & 0x1FFF;
@@ -398,16 +517,14 @@ namespace Core::Gfx {
                 for (int i = 0; i < 4; i++) {
                     if (sel[i] < 4)
                         v[i] = rwGpr < 128 ? regs.gpr[rwGpr][sel[i]] : 0.0f;
-                    else if (sel[i] == 4)
-                        v[i] = 0.0f;
                     else if (sel[i] == 5)
                         v[i] = 1.0f;
                     else
                         v[i] = 0.0f;
                 }
                 if (vsDebug())
-                    std::fprintf(stderr, "  export type=%u base=%u gpr=%u sel=(%u,%u,%u,%u) v=(%g,%g,%g,%g)\n", type, arrayBase, rwGpr,
-                                 sel[0], sel[1], sel[2], sel[3], v[0], v[1], v[2], v[3]);
+                    std::fprintf(stderr, "  export type=%u base=%u gpr=%u sel=(%u,%u,%u,%u) v=(%g,%g,%g,%g)\n", type, arrayBase, rwGpr, sel[0],
+                                 sel[1], sel[2], sel[3], v[0], v[1], v[2], v[3]);
                 if (type == 1 && arrayBase >= 60) { // POS export
                     std::memcpy(out.pos.data(), v, 16);
                     out.valid = true;
@@ -424,12 +541,13 @@ namespace Core::Gfx {
             }
             if (inst == CF_TEX) {
                 if (!active) {
-                    if (cfEop(w1)) break;
+                    if (cfEop(w1))
+                        break;
                     continue;
                 }
                 const auto count = (((w1 >> 10) & 7) | ((w1 >> 16) & 8)) + 1;
                 for (unsigned i = 0; i < count; i++) {
-                    const std::uint64_t offset = std::uint64_t(w0) * 2 + i * 4;
+                    const std::uint64_t offset = std::uint64_t(w0) * 2 + std::uint64_t(i) * 4;
                     if (offset + 3 >= program.size())
                         return {};
                     const auto t0 = program[offset], t1 = program[offset + 1], t2 = program[offset + 2];
@@ -438,25 +556,26 @@ namespace Core::Gfx {
                     const auto op = t0 & 31;
                     const bool gather = pixelStage && op == 0x0F;
                     const auto &fetch = gather ? textureGather : textureSample;
-                    if (!fetch || (op != 0x13 && !(pixelStage && op == 0x10) && !gather) || (t0 & (1u << 23)) || (t1 & (1u << 7))
-                        || (t1 & 0x30000000) != 0x30000000 || (t2 & 0x7FFF))
+                    if (!fetch || (op != 0x13 && !(pixelStage && op == 0x10) && !gather) || (t0 & (1u << 23)) || (t1 & (1u << 7)) ||
+                        (t1 & 0x30000000) != 0x30000000 || (t2 & 0x7FFF))
                         return {};
                     // Gather currently accepts only direct, normalized, zero-offset TEX.
-                    if (gather && ((t0 & ~(31u | (255u << 8) | (127u << 16))) ||
-                                   (t1 & ~(127u | (0xFFFu << 9) | (15u << 28)))))
+                    if (gather && ((t0 & ~(31u | (255u << 8) | (127u << 16))) || (t1 & ~(127u | (0xFFFu << 9) | (15u << 28)))))
                         return {};
                     const auto src = (t0 >> 16) & 127, dst = t1 & 127;
                     std::array<float, 4> coords{}, rgba{};
                     for (unsigned c = 0; c < 4; c++) {
                         const auto select = (t2 >> (20 + c * 3)) & 7;
-                        if (gather && select > 5) return {};
+                        if (gather && select > 5)
+                            return {};
                         coords[c] = select < 4 ? regs.gpr[src][select] : select == 5 ? 1.0f : 0.0f;
                     }
                     if (!fetch((t0 >> 8) & 255, (t2 >> 15) & 31, coords, rgba))
                         return {};
                     for (unsigned c = 0; c < 4; c++) {
                         const auto select = (t1 >> (9 + c * 3)) & 7;
-                        if (gather && select == 6) return {};
+                        if (gather && select == 6)
+                            return {};
                         if (select != 7)
                             regs.gpr[dst][c] = select < 4 ? rgba[select] : select == 5 ? 1.0f : 0.0f;
                     }
@@ -499,7 +618,8 @@ namespace Core::Gfx {
                 continue;
             }
             if (inst == 0x0B) { // PUSH
-                if (activeDepth == activeStack.size()) return {};
+                if (activeDepth == activeStack.size())
+                    return {};
                 activeStack[activeDepth++] = active;
                 continue;
             }

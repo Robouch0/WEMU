@@ -88,6 +88,10 @@ target_include_directories(wemu_library_tests PRIVATE src/library)
 target_link_libraries(wemu_library_tests PRIVATE Qt6::Core Qt6::Gui SDL2::SDL2 SDL2_image::SDL2_image)
 enable_testing()
 add_test(NAME wemu_library_tests COMMAND wemu_library_tests)
+add_executable(wemu_launch_environment_tests tests/LaunchEnvironmentTest.cpp)
+target_include_directories(wemu_launch_environment_tests PRIVATE src/emulator)
+target_link_libraries(wemu_launch_environment_tests PRIVATE Qt6::Core)
+add_test(NAME wemu_launch_environment_tests COMMAND wemu_launch_environment_tests)
 
 include(GNUInstallDirs)
 install(TARGETS appgui

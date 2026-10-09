@@ -353,9 +353,10 @@ namespace {
                     std::fseek(f, 0, SEEK_END);
                     const long sz = std::ftell(f);
                     std::fseek(f, 0, SEEK_SET);
-                    if (sz > 0 && sz < 64 * 1024 * 1024) {
+                    if (sz > 0 && sz < 64L * 1024 * 1024) {
                         fontPtr = cpu.m_memory.heapAllocate(static_cast<std::uint32_t>(sz), 0x100);
-                        if (std::uint8_t *host = cpu.m_memory.hostPtr(fontPtr); host && std::fread(host, 1, static_cast<std::size_t>(sz), f) == static_cast<std::size_t>(sz))
+                        if (std::uint8_t *host = cpu.m_memory.hostPtr(fontPtr);
+                            host && std::fread(host, 1, static_cast<std::size_t>(sz), f) == static_cast<std::size_t>(sz))
                             fontSize = static_cast<std::uint32_t>(sz);
                         else
                             fontPtr = 0;
@@ -468,10 +469,7 @@ namespace {
         zSyncOut(cpu, g, it->second, inBefore, outBefore);
         cpu.m_gpr[3] = static_cast<std::uint32_t>(rc);
     }
-    void hle_deflateBound(Core::Interpreter &cpu)
-    {
-        cpu.m_gpr[3] = static_cast<std::uint32_t>(deflateBound(nullptr, cpu.m_gpr[4]));
-    }
+    void hle_deflateBound(Core::Interpreter &cpu) { cpu.m_gpr[3] = static_cast<std::uint32_t>(deflateBound(nullptr, cpu.m_gpr[4])); }
     void hle_deflateEnd(Core::Interpreter &cpu)
     {
         if (auto it = g_zstreams.find(cpu.m_gpr[3]); it != g_zstreams.end()) {
@@ -541,8 +539,8 @@ namespace {
         }();
         const std::uint32_t n = ++g_mvSlotCalls[slot];
         if (trace && n <= 3)
-            Utils::Log::error("[MVP] slot#{:>3} call#{} r3=0x{:08X} r4=0x{:08X} r5=0x{:08X} r6=0x{:08X}", slot, n, cpu.m_gpr[3],
-                              cpu.m_gpr[4], cpu.m_gpr[5], cpu.m_gpr[6]);
+            Utils::Log::error("[MVP] slot#{:>3} call#{} r3=0x{:08X} r4=0x{:08X} r5=0x{:08X} r6=0x{:08X}", slot, n, cpu.m_gpr[3], cpu.m_gpr[4],
+                              cpu.m_gpr[5], cpu.m_gpr[6]);
         // WEMU_MVPLAYER_RET1=1: diagnostic only. Some callers may treat these method returns as
         // boolean success/ready state; keep the default as the original conservative return-0 stub
         // while allowing one-run validation without patching the title binary.
@@ -614,8 +612,7 @@ namespace {
 
 std::uint32_t Core::Hle::exportFunction(Core::Interpreter &cpu, const std::string &name)
 {
-    const auto [it, inserted] = g_dynExportSentinels.try_emplace(
-        name, 0xC0F00000u + static_cast<std::uint32_t>(g_dynExportSentinels.size()) * 4);
+    const auto [it, inserted] = g_dynExportSentinels.try_emplace(name, 0xC0F00000u + static_cast<std::uint32_t>(g_dynExportSentinels.size()) * 4);
     // unordered_map element references survive rehash. Attach to each interpreter,
     // including when a name was already exported by a previous instance.
     cpu.m_importBySentinel[it->second] = &it->first;
@@ -716,8 +713,8 @@ void InstallTitleSeqPoolFix(Core::Interpreter &interp)
         }();
         if (trace) {
             const auto &state = g_seqPools[allocator];
-            Utils::Log::error("[SEQPOOL] refill allocator=0x{:08X} lr=0x{:08X} retry={} buf=0x{:08X} slot={}/{}",
-                              allocator, lr, allocationRetry ? 1 : 0, buf, state.current, state.count);
+            Utils::Log::error("[SEQPOOL] refill allocator=0x{:08X} lr=0x{:08X} retry={} buf=0x{:08X} slot={}/{}", allocator, lr,
+                              allocationRetry ? 1 : 0, buf, state.current, state.count);
         }
     };
     Utils::Log::info("[HLE] title-sequence frame-pool fix armed at 0x{:08X}", kSeqRefillPc);

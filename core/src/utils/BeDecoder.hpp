@@ -11,8 +11,8 @@
 #include <cstring>
 #include <fstream>
 #include <iostream>
-#include <string_view>
 #include <span>
+#include <string_view>
 #include <vector>
 
 #include "exception/Exception.hpp"
@@ -56,7 +56,8 @@ namespace Utils {
             template<typename Type>
             const Type *extract(std::size_t count)
             {
-                if (count > m_view.size() / sizeof(Type)) throw BeDecoderException("Read exceeds decoder buffer");
+                if (count > m_view.size() / sizeof(Type))
+                    throw BeDecoderException("Read exceeds decoder buffer");
                 require(sizeof(Type) * count);
                 auto ptr = reinterpret_cast<const Type *>(m_view.data() + m_offset);
                 m_offset += sizeof(Type) * count;

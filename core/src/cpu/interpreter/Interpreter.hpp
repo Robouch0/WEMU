@@ -20,8 +20,8 @@
 #include "cpu/types/EncodedInstruction.hpp"
 #include "cpu/types/Instruction.hpp"
 #include "gfx/Renderer.hpp"
-#include "hle/Scheduler.hpp"
 #include "hle/H264.hpp"
+#include "hle/Scheduler.hpp"
 #include "utils/BeDecoder.hpp"
 #include "utils/Logger.hpp"
 

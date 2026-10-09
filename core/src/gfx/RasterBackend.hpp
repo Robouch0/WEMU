@@ -2,12 +2,12 @@
 
 #include <array>
 #include <cstdint>
-#include <functional>
-#include <optional>
-#include <memory>
 #include <exception>
-#include <stdexcept>
+#include <functional>
+#include <memory>
+#include <optional>
 #include <span>
+#include <stdexcept>
 #include <vector>
 
 #include "gfx/LatteShaderLowering.hpp"
@@ -17,7 +17,7 @@ namespace Core::Gfx {
     class RasterReadback;
     // Backend-specific, versioned image identity. Never exposes a borrowed handle.
     struct RasterImage {
-        virtual ~RasterImage() = default;
+            virtual ~RasterImage() = default;
     };
     // Synchronous reference-raster ABI. All borrowed data expires when render returns.
     // Positions and varyings are screen-space/affine, matching the current software
@@ -79,17 +79,18 @@ namespace Core::Gfx {
     // is idempotent, and a failed/incomplete readback never becomes a valid surface.
     class RasterReadback {
         public:
-            RasterReadback(std::size_t bytes, std::function<std::vector<std::uint8_t>()> read,
-                           std::shared_ptr<const RasterImage> image = {}) :
+            RasterReadback(std::size_t bytes, std::function<std::vector<std::uint8_t>()> read, std::shared_ptr<const RasterImage> image = {}) :
                 m_size(bytes), m_read(std::move(read)), m_image(std::move(image))
             {
-                if (!m_read) throw std::invalid_argument("Missing raster readback operation");
+                if (!m_read)
+                    throw std::invalid_argument("Missing raster readback operation");
             }
             std::size_t size() const { return m_size; }
             const std::shared_ptr<const RasterImage> &image() const { return m_image; }
             const std::vector<std::uint8_t> &resolve()
             {
-                if (m_error) std::rethrow_exception(m_error);
+                if (m_error)
+                    std::rethrow_exception(m_error);
                 try {
                     if (m_read) {
                         auto pixels = m_read();
@@ -105,6 +106,7 @@ namespace Core::Gfx {
                 }
                 return m_pixels;
             }
+
         private:
             std::size_t m_size;
             std::function<std::vector<std::uint8_t>()> m_read;

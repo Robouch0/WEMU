@@ -1,8 +1,9 @@
 #pragma once
 
-#include "Block.hpp"
 #include <memory>
 #include <string>
+
+#include "Block.hpp"
 
 namespace Core::Ppc {
     class NativeCompiler {
@@ -11,6 +12,7 @@ namespace Core::Ppc {
             ~NativeCompiler();
             NativeCompiler(const NativeCompiler &) = delete;
             NativeCompiler &operator=(const NativeCompiler &) = delete;
+
         private:
             friend class NativeBlock;
             struct Impl;
@@ -26,6 +28,7 @@ namespace Core::Ppc {
             NativeBlock(const NativeBlock &) = delete;
             NativeBlock &operator=(const NativeBlock &) = delete;
             void execute(std::span<std::uint32_t, 32> registers) const;
+
         private:
             struct Impl;
             std::unique_ptr<Impl> m_impl;
@@ -34,4 +37,4 @@ namespace Core::Ppc {
     // Host-specific relocatable object, not a standalone game or a validated cache.
     std::vector<std::uint8_t> emitObject(const Block &block);
     std::string nativeObjectIdentity();
-}
+} // namespace Core::Ppc

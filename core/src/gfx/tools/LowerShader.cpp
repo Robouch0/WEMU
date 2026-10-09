@@ -1,7 +1,7 @@
-#include <fstream>
-#include <iostream>
 #include <charconv>
 #include <format>
+#include <fstream>
+#include <iostream>
 #include <string_view>
 
 #include "gfx/LatteShaderLowering.hpp"
@@ -43,28 +43,30 @@ int main(int argc, char **argv)
             const auto w0 = words[cf], w1 = words[cf + 1];
             if (isAluClause(w1)) {
                 const auto address = w0 & 0x3FFFFF, count = ((w1 >> 18) & 127) + 1;
-                std::cout << std::format("CF{} ALU kind={} addr={} count={} whole_quad={} banks={},{} modes={},{} windows={},{}\n",
-                    cf / 2, cfAluInst(w1), address, count, (w1 >> 30) & 1, (w0 >> 22) & 15, (w0 >> 26) & 15,
-                    w0 >> 30, w1 & 3, (w1 >> 2) & 255, (w1 >> 10) & 255);
+                std::cout << std::format("CF{} ALU kind={} addr={} count={} whole_quad={} banks={},{} modes={},{} windows={},{}\n", cf / 2,
+                                         cfAluInst(w1), address, count, (w1 >> 30) & 1, (w0 >> 22) & 15, (w0 >> 26) & 15, w0 >> 30, w1 & 3,
+                                         (w1 >> 2) & 255, (w1 >> 10) & 255);
                 const auto clause = program->clauses.find((std::uint64_t(address) << 32) | count);
                 if (clause == program->clauses.end()) {
                     std::cerr << "Missing decoded clause\n";
                     return 1;
                 }
                 unsigned groupIndex = 0;
-                for (const auto &group : clause->second) {
-                    for (const auto &in : group) {
-                        std::cout << std::format("  group={} slot={} {} op={:02X} dst=R{}.{} write={} pred_sel={} update_exec={} update_pred={} raw={:08X},{:08X}\n",
-                            groupIndex, in.scalarSlot ? "T" : "V", in.op3 ? "OP3" : "OP2", in.op, in.dstGpr, in.dstChan,
-                            in.writeMask, in.predSel, !in.op3 && bool(in.raw1 & 4), !in.op3 && bool(in.raw1 & 8), in.raw0, in.raw1);
+                for (const auto &group: clause->second) {
+                    for (const auto &in: group) {
+                        std::cout << std::format(
+                                "  group={} slot={} {} op={:02X} dst=R{}.{} write={} pred_sel={} update_exec={} update_pred={} raw={:08X},{:08X}\n",
+                                groupIndex, in.scalarSlot ? "T" : "V", in.op3 ? "OP3" : "OP2", in.op, in.dstGpr, in.dstChan, in.writeMask, in.predSel,
+                                !in.op3 && bool(in.raw1 & 4), !in.op3 && bool(in.raw1 & 8), in.raw0, in.raw1);
                     }
                     ++groupIndex;
                 }
             } else {
                 const auto op = cfInst(w1);
-                std::cout << std::format("CF{} op={:02X} addr={} pop={} cond={} whole_quad={} eop={} raw={:08X},{:08X}\n",
-                    cf / 2, op, w0, w1 & 7, (w1 >> 8) & 3, (w1 >> 30) & 1, cfEop(w1), w0, w1);
-                if (cfEop(w1) || op == CF_RETURN) break;
+                std::cout << std::format("CF{} op={:02X} addr={} pop={} cond={} whole_quad={} eop={} raw={:08X},{:08X}\n", cf / 2, op, w0, w1 & 7,
+                                         (w1 >> 8) & 3, (w1 >> 30) & 1, cfEop(w1), w0, w1);
+                if (cfEop(w1) || op == CF_RETURN)
+                    break;
             }
         }
         return 0;

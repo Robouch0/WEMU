@@ -230,12 +230,10 @@ void Renderer::gpuClearTarget(std::uint32_t addr, std::uint32_t w, std::uint32_t
 
 bool Renderer::gpuIsTarget(std::uint32_t addr) const { return m_gpuGraph && m_gpuGraph->isTarget(addr); }
 
-void Renderer::gpuDrawTexture(std::uint64_t key, const std::uint8_t *rgba, std::uint32_t tw, std::uint32_t th, const float *xyuv,
-                              std::uint32_t count)
+void Renderer::gpuDrawTexture(std::uint64_t key, const std::uint8_t *rgba, std::uint32_t tw, std::uint32_t th, const float *xyuv, std::uint32_t count)
 {
     if (m_gpuGraph)
-        m_gpuGraph->draw(static_cast<std::uint32_t>(key), rgba, tw, th,
-                         reinterpret_cast<const Core::Gfx::GpuRenderGraph::Vertex *>(xyuv), count);
+        m_gpuGraph->draw(static_cast<std::uint32_t>(key), rgba, tw, th, reinterpret_cast<const Core::Gfx::GpuRenderGraph::Vertex *>(xyuv), count);
 }
 
 void Renderer::gpuDrawTarget(std::uint32_t srcAddr, const float *xyuv, std::uint32_t count)

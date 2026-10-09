@@ -9,6 +9,7 @@ These dependencies are provided by the system; their source is not vendored in W
 | LLVM 19.1 (optional, `WEMU_ENABLE_LLVM`) | PowerPC native compilation | [Apache-2.0 with LLVM exceptions](https://llvm.org/docs/DeveloperPolicy.html#license) |
 | glslang (`glslangValidator`, optional runtime tool) | Compile lowered Latte shaders to SPIR-V | [BSD-3-Clause and component licenses](https://github.com/KhronosGroup/glslang/blob/main/LICENSE.txt) |
 | SPIRV-Tools (`spirv-val`, optional runtime tool) | Validate generated SPIR-V | [Apache-2.0](https://github.com/KhronosGroup/SPIRV-Tools/blob/main/LICENSE) |
+| Capstone (optional Python package) | RPX diagnostic disassembly | [BSD-3-Clause](https://github.com/capstone-engine/capstone/blob/master/LICENSE.TXT) |
 
 Permissively licensed dependencies and LGPL FFmpeg libraries can be used alongside
 WEMU's MIT-licensed source subject to their respective terms. FFmpeg's license

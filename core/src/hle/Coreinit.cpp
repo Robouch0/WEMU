@@ -19,11 +19,11 @@
 #include "cpu/interpreter/SyscallHandler.hpp"
 #include "cpu/memory/Memory.hpp"
 #include "gfx/Renderer.hpp"
-#include "hle/Ax.hpp"
 #include "hle/AsyncCallbacks.hpp"
+#include "hle/Ax.hpp"
 #include "hle/CoreinitExtra.hpp"
-#include "hle/NnOnline.hpp"
 #include "hle/MemHeap.hpp"
+#include "hle/NnOnline.hpp"
 #include "utils/Diagnostics.hpp"
 
 // ── Framebuffer addresses (TV=0, DRC=1) ──────────────────────────────────────
@@ -337,7 +337,7 @@ namespace Core {
         if (on)
             cpu.m_scheduler.advanceFrame(1035937ull); // busSpeed / 4 / 60
     }
-}
+} // namespace Core
 
 static void hle_OSGetTick(Core::Interpreter &cpu) { cpu.m_gpr[3] = static_cast<std::uint32_t>(cpu.m_scheduler.now()); }
 static void hle_OSGetTime(Core::Interpreter &cpu)
@@ -787,8 +787,8 @@ static void hle_OSPeekMessage(Core::Interpreter &cpu)
 // scheduling interrupts are meaningless, so disable returns "previously enabled" and restore is a
 // no-op. OSDynLoad_Acquire must write a non-zero module handle to *outHandle (r4) or callers
 // null-deref the returned handle.
-static void hle___OSReadRegister32Ex(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
-static void hle___OSWriteRegister32Ex(Core::Interpreter &cpu) { (void) cpu; }
+static void hle_OSReadRegister32Ex(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
+static void hle_OSWriteRegister32Ex(Core::Interpreter &cpu) { (void) cpu; }
 static void hle_OSReadRegister16(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
 static void hle_OSWriteRegister16(Core::Interpreter &cpu) { (void) cpu; }
 // Track the disable window so the timeslice preemption doesn't fire inside guest critical
@@ -887,7 +887,7 @@ static void hle_nn_act_GetTransferableIdEx(Core::Interpreter &cpu) // (u64* out,
 static void hle_OSIsHomeButtonMenuEnabled(Core::Interpreter &cpu) { cpu.m_gpr[3] = 1; }
 
 // _SYSGetSystemApplicationTitleId(SYSTEM_APP_ID id) -> u64 title id in r3:r4.
-static void hle__SYSGetSystemApplicationTitleId(Core::Interpreter &cpu)
+static void hle_SYSGetSystemApplicationTitleId(Core::Interpreter &cpu)
 {
     cpu.m_gpr[4] = 0x10040200u | (cpu.m_gpr[3] << 8);
     cpu.m_gpr[3] = 0x00050010u;
@@ -1005,7 +1005,7 @@ static void hle_VPADRead(Core::Interpreter &cpu)
     // One complete sample: centered sticks, no touch/motion, and an identity orientation.
     for (std::uint32_t offset = 0; offset < 0xAC; offset += 4)
         cpu.m_memory.write<std::uint32_t>(buf_addr + offset, 0);
-    for (const auto offset : {0x6Cu, 0x7Cu, 0x8Cu})
+    for (const auto offset: {0x6Cu, 0x7Cu, 0x8Cu})
         cpu.m_memory.write<std::uint32_t>(buf_addr + offset, 0x3F800000);
 
     cpu.m_memory.write<std::uint32_t>(buf_addr + 0, hold);
@@ -1073,8 +1073,8 @@ void RegisterCoreinitFunctions()
     Core::syscallHandler.registerSyscall("OSReceiveMessage", hle_OSReceiveMessage);
     Core::syscallHandler.registerSyscall("OSPeekMessage", hle_OSPeekMessage);
     Core::syscallHandler.registerSyscall("OSJamMessage", hle_OSJamMessage);
-    Core::syscallHandler.registerSyscall("__OSReadRegister32Ex", hle___OSReadRegister32Ex);
-    Core::syscallHandler.registerSyscall("__OSWriteRegister32Ex", hle___OSWriteRegister32Ex);
+    Core::syscallHandler.registerSyscall("__OSReadRegister32Ex", hle_OSReadRegister32Ex);
+    Core::syscallHandler.registerSyscall("__OSWriteRegister32Ex", hle_OSWriteRegister32Ex);
     Core::syscallHandler.registerSyscall("OSReadRegister16", hle_OSReadRegister16);
     Core::syscallHandler.registerSyscall("OSWriteRegister16", hle_OSWriteRegister16);
     Core::syscallHandler.registerSyscall("OSDisableInterrupts", hle_OSDisableInterrupts);
@@ -1103,7 +1103,7 @@ void RegisterCoreinitFunctions()
     Core::syscallHandler.registerSyscall("GetTransferableIdEx__Q2_2nn3actFPULUiUc", hle_nn_act_GetTransferableIdEx);
     Core::syscallHandler.registerSyscall("OSIsHomeButtonMenuEnabled", hle_OSIsHomeButtonMenuEnabled);
     Core::syscallHandler.registerSyscall("OSEnableHomeButtonMenu", hle_OSEnableHomeButtonMenu);
-    Core::syscallHandler.registerSyscall("_SYSGetSystemApplicationTitleId", hle__SYSGetSystemApplicationTitleId);
+    Core::syscallHandler.registerSyscall("_SYSGetSystemApplicationTitleId", hle_SYSGetSystemApplicationTitleId);
     Core::syscallHandler.registerSyscall("SAVEInit", hle_SAVEInit);
     Core::syscallHandler.registerSyscall("KPADInitEx", hle_KPADInitEx);
     Core::syscallHandler.registerSyscall("KPADGetMplsWorkSize", hle_KPADGetMplsWorkSize);

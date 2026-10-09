@@ -21,7 +21,7 @@ const std::vector<const char *> deviceExtensions = {VK_KHR_SWAPCHAIN_EXTENSION_N
 namespace Core::Gfx {
     class GpuQuadRasterizer;
     class GpuRenderGraph;
-}
+} // namespace Core::Gfx
 
 class Renderer {
     public:
@@ -60,8 +60,7 @@ class Renderer {
         void gpuBindTarget(std::uint32_t addr, std::uint32_t w, std::uint32_t h);
         void gpuClearTarget(std::uint32_t addr, std::uint32_t w, std::uint32_t h, const float rgba[4]);
         [[nodiscard]] bool gpuIsTarget(std::uint32_t addr) const;
-        void gpuDrawTexture(std::uint64_t key, const std::uint8_t *rgba, std::uint32_t tw, std::uint32_t th, const float *xyuv,
-                            std::uint32_t count);
+        void gpuDrawTexture(std::uint64_t key, const std::uint8_t *rgba, std::uint32_t tw, std::uint32_t th, const float *xyuv, std::uint32_t count);
         void gpuDrawTarget(std::uint32_t srcAddr, const float *xyuv, std::uint32_t count);
         void gpuPresentTarget(std::uint32_t scanAddr, std::uint8_t *outRgbx);
 
@@ -255,7 +254,7 @@ class Renderer {
         VkDeviceMemory m_tvImageMemory = VK_NULL_HANDLE;
 
         Core::Gfx::GpuQuadRasterizer *m_gpuQuad = nullptr; // lazily created on first gpuBegin(); freed in cleanup()
-        Core::Gfx::GpuRenderGraph *m_gpuGraph = nullptr;   // lazily created on first gpuBeginFrame(); freed in cleanup()
+        Core::Gfx::GpuRenderGraph *m_gpuGraph = nullptr; // lazily created on first gpuBeginFrame(); freed in cleanup()
 
         bool m_framebufferResized = false;
         bool m_open = true;

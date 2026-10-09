@@ -10,9 +10,9 @@
 #include "cpu/memory/Memory.hpp"
 #include "gfx/Gx2CommandStream.hpp"
 #include "gfx/Gx2Replayer.hpp"
-#include "gfx/VulkanRasterBackend.hpp"
 #include "gfx/Renderer.hpp"
 #include "gfx/SurfaceLayout.hpp"
+#include "gfx/VulkanRasterBackend.hpp"
 #include "utils/Diagnostics.hpp"
 #include "utils/Logger.hpp"
 
@@ -42,7 +42,8 @@ namespace {
         switch (format & 0x3F) {
             case 0x01:
             case 0x02:
-            case 0x03: return 1; // 8 / 4_4 / 3_3_2
+            case 0x03:
+                return 1; // 8 / 4_4 / 3_3_2
             case 0x05:
             case 0x06:
             case 0x07:
@@ -50,21 +51,27 @@ namespace {
             case 0x09:
             case 0x0A:
             case 0x0B:
-            case 0x0C: return 2;
+            case 0x0C:
+                return 2;
             case 0x1C: // X24_8_32_FLOAT
             case 0x1D: // 32_32
             case 0x1E: // 32_32_FLOAT
             case 0x1F: // 16_16_16_16
-            case 0x20: return 8; // 16_16_16_16_FLOAT
+            case 0x20:
+                return 8; // 16_16_16_16_FLOAT
             case 0x22: // 32_32_32_32
             case 0x23: // 32_32_32_32_FLOAT (GX2 0x823, RGBA32F)
-            case 0x30: return 16;
+            case 0x30:
+                return 16;
             case 0x31: // BC1
-            case 0x34: return 8; // BC4
+            case 0x34:
+                return 8; // BC4
             case 0x32: // BC2
             case 0x33: // BC3
-            case 0x35: return 16; // BC5
-            default: return 4;
+            case 0x35:
+                return 16; // BC5
+            default:
+                return 4;
         }
     }
 
@@ -123,29 +130,25 @@ namespace {
 
     // Bring-up telemetry: how much geometry actually flows through the display-list path.
     struct DlStats {
-        std::uint64_t begins = 0, ends = 0, recorded = 0, emptyLists = 0;
-        std::uint64_t calls = 0, hits = 0, misses = 0, spliced = 0, nested = 0;
-        std::uint64_t recDraws = 0, splicedDraws = 0, directDraws = 0;
+            std::uint64_t begins = 0, ends = 0, recorded = 0, emptyLists = 0;
+            std::uint64_t calls = 0, hits = 0, misses = 0, spliced = 0, nested = 0;
+            std::uint64_t recDraws = 0, splicedDraws = 0, directDraws = 0;
     } g_dlStats;
 
-    bool isDrawCmd(Core::Gfx::Gx2Cmd t)
-    {
-        return t == Core::Gfx::Gx2Cmd::DrawEx || t == Core::Gfx::Gx2Cmd::DrawIndexedEx;
-    }
+    bool isDrawCmd(Core::Gfx::Gx2Cmd t) { return t == Core::Gfx::Gx2Cmd::DrawEx || t == Core::Gfx::Gx2Cmd::DrawIndexedEx; }
 
     void dlReport()
     {
         std::fprintf(stderr,
-            "[GX2DL] begin=%llu end=%llu rec=%llu empty=%llu | call=%llu hit=%llu miss=%llu spliced=%llu nested=%llu lists=%zu"
-            " | draws rec=%llu spliced=%llu toStream=%llu\n",
-            (unsigned long long) g_dlStats.begins, (unsigned long long) g_dlStats.ends,
-            (unsigned long long) g_dlStats.recorded, (unsigned long long) g_dlStats.emptyLists,
-            (unsigned long long) g_dlStats.calls, (unsigned long long) g_dlStats.hits,
-            (unsigned long long) g_dlStats.misses, (unsigned long long) g_dlStats.spliced,
-            (unsigned long long) g_dlStats.nested, g_displayLists.size(),
-            // toStream counts every draw that reached the frame stream, spliced ones included.
-            (unsigned long long) g_dlStats.recDraws, (unsigned long long) g_dlStats.splicedDraws,
-            (unsigned long long) g_dlStats.directDraws);
+                     "[GX2DL] begin=%llu end=%llu rec=%llu empty=%llu | call=%llu hit=%llu miss=%llu spliced=%llu nested=%llu lists=%zu"
+                     " | draws rec=%llu spliced=%llu toStream=%llu\n",
+                     (unsigned long long) g_dlStats.begins, (unsigned long long) g_dlStats.ends, (unsigned long long) g_dlStats.recorded,
+                     (unsigned long long) g_dlStats.emptyLists, (unsigned long long) g_dlStats.calls, (unsigned long long) g_dlStats.hits,
+                     (unsigned long long) g_dlStats.misses, (unsigned long long) g_dlStats.spliced, (unsigned long long) g_dlStats.nested,
+                     g_displayLists.size(),
+                     // toStream counts every draw that reached the frame stream, spliced ones included.
+                     (unsigned long long) g_dlStats.recDraws, (unsigned long long) g_dlStats.splicedDraws,
+                     (unsigned long long) g_dlStats.directDraws);
     }
 
     void pushCmd(const Core::Gfx::Gx2Command &c)
@@ -189,10 +192,9 @@ namespace {
         } else if (type == Core::Gfx::Gx2Cmd::SetPixelSampler || type == Core::Gfx::Gx2Cmd::SetVertexSampler) {
             ptr = c.gpr[0];
             words = 3;
-        } else if (type == Core::Gfx::Gx2Cmd::SetColorBuffer || type == Core::Gfx::Gx2Cmd::SetDepthBuffer
-                   || type == Core::Gfx::Gx2Cmd::SetPixelTexture || type == Core::Gfx::Gx2Cmd::SetVertexTexture
-                   || type == Core::Gfx::Gx2Cmd::ClearColor
-                   || type == Core::Gfx::Gx2Cmd::CopyColorBufferToScanBuffer) {
+        } else if (type == Core::Gfx::Gx2Cmd::SetColorBuffer || type == Core::Gfx::Gx2Cmd::SetDepthBuffer ||
+                   type == Core::Gfx::Gx2Cmd::SetPixelTexture || type == Core::Gfx::Gx2Cmd::SetVertexTexture ||
+                   type == Core::Gfx::Gx2Cmd::ClearColor || type == Core::Gfx::Gx2Cmd::CopyColorBufferToScanBuffer) {
             // r3 points at a GX2ColorBuffer/DepthBuffer/Texture whose leading GX2Surface fields
             // the replay stage parses. The title often builds these structs on its STACK, so the
             // pointer is stale by frame-end replay — snapshot the struct now, at call time.
@@ -221,8 +223,7 @@ namespace {
                     nz |= (c.payload[w - off] != 0 && c.payload[w - off] != 0x80000000u);
                 if (nz) {
                     hits++;
-                    Utils::Log::error("[GX2PROBE] nonzero c7/c8 upload! off={} cnt={} ptr=0x{:08X} LR=0x{:08X}", off, c.gpr[1],
-                                      c.gpr[2], c.callerLr);
+                    Utils::Log::error("[GX2PROBE] nonzero c7/c8 upload! off={} cnt={} ptr=0x{:08X} LR=0x{:08X}", off, c.gpr[1], c.gpr[2], c.callerLr);
                 }
             }
         }
@@ -264,8 +265,7 @@ namespace {
             // Probe: if a reg upload's source memory holds different data at frame end than it
             // did at call time, the title fills the buffer after binding (would need frame-end
             // snapshots for regs too). Logs first few diffs.
-            if ((c.type == Core::Gfx::Gx2Cmd::SetVertexUniformReg || c.type == Core::Gfx::Gx2Cmd::SetPixelUniformReg)
-                && !c.payload.empty()) {
+            if ((c.type == Core::Gfx::Gx2Cmd::SetVertexUniformReg || c.type == Core::Gfx::Gx2Cmd::SetPixelUniformReg) && !c.payload.empty()) {
                 static int regDiffs = 0;
                 if (regDiffs < 8) {
                     try {
@@ -273,12 +273,13 @@ namespace {
                             const auto now = cpu.m_memory.read<std::uint32_t>(c.gpr[2] + i * 4);
                             if (now != c.payload[i]) {
                                 regDiffs++;
-                                Utils::Log::error("[GX2PROBE] reg upload off={} ptr=0x{:08X} changed after call: word{} {:08X}->{:08X}",
-                                                  c.gpr[0], c.gpr[2], i, c.payload[i], now);
+                                Utils::Log::error("[GX2PROBE] reg upload off={} ptr=0x{:08X} changed after call: word{} {:08X}->{:08X}", c.gpr[0],
+                                                  c.gpr[2], i, c.payload[i], now);
                                 break;
                             }
                         }
-                    } catch (const Core::MemoryException &) {
+                    } catch (const Core::MemoryException &e) {
+                        Utils::Log::debug("[GX2PROBE] Cannot inspect guest memory: {}", e.what());
                     }
                 }
                 continue;
@@ -311,14 +312,15 @@ namespace {
         static const bool nativeInitialized = [&] {
             const auto *enabled = std::getenv("WEMU_NATIVE_RASTER");
             if (!gpuMode && enabled && enabled[0] == '1') {
-                replayer.setRasterBackend(std::make_shared<Core::Gfx::VulkanRasterBackend>(
-                    !std::getenv("WEMU_NATIVE_TEXTURE_REUSE") || std::string_view(std::getenv("WEMU_NATIVE_TEXTURE_REUSE")) != "0",
-                    std::getenv("WEMU_NATIVE_LAZY_READBACK") && std::string_view(std::getenv("WEMU_NATIVE_LAZY_READBACK")) == "1"));
+                const char *textureReuse = std::getenv("WEMU_NATIVE_TEXTURE_REUSE");
+                const char *lazyReadback = std::getenv("WEMU_NATIVE_LAZY_READBACK");
+                replayer.setRasterBackend(std::make_shared<Core::Gfx::VulkanRasterBackend>(!textureReuse || std::string_view(textureReuse) != "0",
+                                                                                           lazyReadback && std::string_view(lazyReadback) == "1"));
                 Utils::Log::error("[GX2] experimental translated Vulkan raster backend enabled; unsupported draws remain software");
             }
             return true;
         }();
-        (void)nativeInitialized;
+        (void) nativeInitialized;
         // Frame-content telemetry: how much GX2 work the title recorded this frame.
         if (g_swapCount < 3 || (g_swapCount % 300) == 0)
             Utils::Log::error("[GX2] swap #{}: {} cmds, {} draws this frame", g_swapCount, Core::Gfx::gx2Stream().size(),
@@ -352,8 +354,8 @@ namespace {
                     f150 = cpu.m_memory.read<std::uint8_t>(obj + 0x150);
                 }
                 Utils::Log::error(
-                    "[SCENE] swap #{}: state={} pending138={} f134=0x{:08X} f144={} | adv143={} f140={} f145={} f150={} gateWord=0x{:08X}",
-                    g_swapCount, st, f138, f134, f144, f143, f140, f145, f150, gateWord);
+                        "[SCENE] swap #{}: state={} pending138={} f134=0x{:08X} f144={} | adv143={} f140={} f145={} f150={} gateWord=0x{:08X}",
+                        g_swapCount, st, f138, f134, f144, f143, f140, f145, f150, gateWord);
                 // WEMU_FORCE_ADVANCE=1: while a transition is stuck at state 3, force the advance-
                 // requested flag (smObj+0x143=1) each swap, to test whether pushing the transition
                 // completes it (revealing the next scene) or exposes the next gate.
@@ -388,7 +390,8 @@ namespace {
                         const std::uint32_t cnt = tbl ? cpu.m_memory.read<std::uint32_t>(tbl + 0) : 0;
                         const std::uint32_t base = tbl ? cpu.m_memory.read<std::uint32_t>(tbl + 4) : 0;
                         const std::uint32_t dpause = dir ? cpu.m_memory.read<std::uint8_t>(dir + 0x28) : 0;
-                        Utils::Log::error("[SCENE] director=0x{:08X} table=0x{:08X} count={} base=0x{:08X} pause[+0x28]={}", dir, tbl, cnt, base, dpause);
+                        Utils::Log::error("[SCENE] director=0x{:08X} table=0x{:08X} count={} base=0x{:08X} pause[+0x28]={}", dir, tbl, cnt, base,
+                                          dpause);
                         for (std::uint32_t i = 0; base && i < cnt && i < 16; i++)
                             Utils::Log::error("[SCENE]   table[{}] = 0x{:08X}", i, cpu.m_memory.read<std::uint32_t>(base + i * 4));
                     } catch (const Core::MemoryException &) {
@@ -410,7 +413,8 @@ namespace {
                         const std::uint32_t dir = cpu.m_memory.read<std::uint32_t>(0x1018A18C);
                         if (dir && cpu.m_memory.read<std::uint8_t>(dir + 0x28) != 0)
                             cpu.m_memory.write<std::uint8_t>(dir + 0x28, 0);
-                    } catch (const Core::MemoryException &) {
+                    } catch (const Core::MemoryException &e) {
+                        Utils::Log::debug("[GX2PROBE] Cannot inspect guest memory: {}", e.what());
                     }
                 }
                 static bool kicked = false;
@@ -441,13 +445,17 @@ namespace {
                 if (driveThis && obj && st == 3 && f138 == 3) {
                     const std::uint32_t incoming = driveThis + 0xDC;
                     std::uint32_t sub34 = 0;
-                    try { sub34 = cpu.m_memory.read<std::uint32_t>(incoming + 0x34); } catch (...) {}
+                    try {
+                        sub34 = cpu.m_memory.read<std::uint32_t>(incoming + 0x34);
+                    } catch (const Core::MemoryException &) {
+                        sub34 = 0; // An unreadable sub-object is not ready for the transition.
+                    }
                     if (!inlineScene) {
                         Core::Async::enqueue(0x025467D0, driveThis); // progress construction each frame
                         if (drainActive && (g_swapCount % 30) == 0)
                             Core::Async::enqueue(0x0253A3C4, driveThis); // diagnostic: drain late active-list entries
                     }
-                    if (sub34 == 0 && f143 != 0)                 // not built yet -> hold the advance
+                    if (sub34 == 0 && f143 != 0) // not built yet -> hold the advance
                         cpu.m_memory.write<std::uint8_t>(obj + 0x143, 0);
                     if ((g_swapCount % 30) == 0)
                         Utils::Log::error("[SCENE] drive: incoming=0x{:08X} +0x34=0x{:08X} adv143={} state={}", incoming, sub34, f143, st);
@@ -473,20 +481,46 @@ namespace {
             return env ? static_cast<std::uint32_t>(std::strtoul(env, nullptr, 10)) : 0xFFFFFFFFu;
         }();
         if (g_swapCount == dumpAt) {
-            static constexpr const char *kCmdNames[] = {
-                "Init", "SetContextState", "SetColorBuffer", "SetDepthBuffer", "ClearColor", "ClearDepthStencilEx", "ClearBuffersEx",
-                "SetViewport", "SetScissor", "SetFetchShader", "SetVertexShader", "SetPixelShader", "SetGeometryShader", "SetAttribBuffer",
-                "SetVertexUniformBlock", "SetPixelUniformBlock", "SetPixelTexture", "SetPixelSampler", "SetBlendControl", "SetColorControl",
-                "SetDepthStencilControl", "DrawEx", "DrawIndexedEx", "CopyColorBufferToScanBuffer", "SwapScanBuffers",
-                "SetVertexUniformReg", "SetPixelUniformReg", "SetBlendConstantColor", "SetTargetChannelMasks", "SetVertexTexture",
-                "SetVertexSampler", "SetPixelSamplerBorderColor", "SetVertexSamplerBorderColor"};
+            static constexpr const char *kCmdNames[] = {"Init",
+                                                        "SetContextState",
+                                                        "SetColorBuffer",
+                                                        "SetDepthBuffer",
+                                                        "ClearColor",
+                                                        "ClearDepthStencilEx",
+                                                        "ClearBuffersEx",
+                                                        "SetViewport",
+                                                        "SetScissor",
+                                                        "SetFetchShader",
+                                                        "SetVertexShader",
+                                                        "SetPixelShader",
+                                                        "SetGeometryShader",
+                                                        "SetAttribBuffer",
+                                                        "SetVertexUniformBlock",
+                                                        "SetPixelUniformBlock",
+                                                        "SetPixelTexture",
+                                                        "SetPixelSampler",
+                                                        "SetBlendControl",
+                                                        "SetColorControl",
+                                                        "SetDepthStencilControl",
+                                                        "DrawEx",
+                                                        "DrawIndexedEx",
+                                                        "CopyColorBufferToScanBuffer",
+                                                        "SwapScanBuffers",
+                                                        "SetVertexUniformReg",
+                                                        "SetPixelUniformReg",
+                                                        "SetBlendConstantColor",
+                                                        "SetTargetChannelMasks",
+                                                        "SetVertexTexture",
+                                                        "SetVertexSampler",
+                                                        "SetPixelSamplerBorderColor",
+                                                        "SetVertexSamplerBorderColor"};
             std::size_t idx = 0;
             for (const auto &c: Core::Gfx::gx2Stream().commands()) {
                 const auto ti = static_cast<std::size_t>(c.type);
-                Utils::Log::error("[GX2DUMP] #{:04} {} r3..r10= {:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X} f1..f4= {} {} {} {}",
-                                  idx++, ti < std::size(kCmdNames) ? kCmdNames[ti] : "?", c.gpr[0], c.gpr[1], c.gpr[2], c.gpr[3], c.gpr[4],
-                                  c.gpr[5], c.gpr[6], c.gpr[7], static_cast<float>(c.fpr[0]), static_cast<float>(c.fpr[1]),
-                                  static_cast<float>(c.fpr[2]), static_cast<float>(c.fpr[3]));
+                Utils::Log::error("[GX2DUMP] #{:04} {} r3..r10= {:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X} f1..f4= {} {} {} {}", idx++,
+                                  ti < std::size(kCmdNames) ? kCmdNames[ti] : "?", c.gpr[0], c.gpr[1], c.gpr[2], c.gpr[3], c.gpr[4], c.gpr[5],
+                                  c.gpr[6], c.gpr[7], static_cast<float>(c.fpr[0]), static_cast<float>(c.fpr[1]), static_cast<float>(c.fpr[2]),
+                                  static_cast<float>(c.fpr[3]));
                 try {
                     if (c.type == Core::Gfx::Gx2Cmd::SetAttribBuffer) {
                         // GX2SetAttribBuffer(index, size, stride, data): peek the first 16 words.
@@ -585,9 +619,7 @@ namespace {
 
     void gx2_CopySurface(Core::Interpreter &cpu)
     {
-        const auto read = [&](std::uint32_t surface, std::uint32_t offset) {
-            return cpu.m_memory.read<std::uint32_t>(surface + offset);
-        };
+        const auto read = [&](std::uint32_t surface, std::uint32_t offset) { return cpu.m_memory.read<std::uint32_t>(surface + offset); };
         const std::uint32_t src = cpu.m_gpr[3], dst = cpu.m_gpr[6];
         const std::uint32_t srcFormat = read(src, SURF_FORMAT), dstFormat = read(dst, SURF_FORMAT);
         const std::uint32_t srcTile = read(src, 0x30), dstTile = read(dst, 0x30);
@@ -596,18 +628,16 @@ namespace {
         const auto supportedTile = [](std::uint32_t tile) { return tile <= 2 || tile == 4 || tile == 16; };
         static const bool trace = std::getenv("WEMU_GX2_COPY_TRACE") != nullptr;
         if (trace)
-            Utils::Log::error("[GX2COPY] {}x{} f{:X}/f{:X} t{}/t{} pitch={}/{} image={:08X}/{:08X} level={}/{} slice={}/{}",
-                              width, height, srcFormat, dstFormat, srcTile, dstTile, read(src, SURF_PITCH), read(dst, SURF_PITCH),
-                              read(src, 0x24), read(dst, 0x24), cpu.m_gpr[4], cpu.m_gpr[7], cpu.m_gpr[5], cpu.m_gpr[8]);
+            Utils::Log::error("[GX2COPY] {}x{} f{:X}/f{:X} t{}/t{} pitch={}/{} image={:08X}/{:08X} level={}/{} slice={}/{}", width, height, srcFormat,
+                              dstFormat, srcTile, dstTile, read(src, SURF_PITCH), read(dst, SURF_PITCH), read(src, 0x24), read(dst, 0x24),
+                              cpu.m_gpr[4], cpu.m_gpr[7], cpu.m_gpr[5], cpu.m_gpr[8]);
         // Initial transfer coverage: matching uncompressed base-level 2D images.
         // Keep unsupported subresource/AA transfers visible instead of reading the wrong layout.
-        if (!width || !height || width > 8192 || height > 8192 || srcFormat != dstFormat
-            || isBlockCompressed(srcFormat) || !supportedTile(srcTile) || !supportedTile(dstTile)
-            || cpu.m_gpr[4] || cpu.m_gpr[5] || cpu.m_gpr[7] || cpu.m_gpr[8] || read(src, 0x18) || read(dst, 0x18)) {
+        if (!width || !height || width > 8192 || height > 8192 || srcFormat != dstFormat || isBlockCompressed(srcFormat) || !supportedTile(srcTile) ||
+            !supportedTile(dstTile) || cpu.m_gpr[4] || cpu.m_gpr[5] || cpu.m_gpr[7] || cpu.m_gpr[8] || read(src, 0x18) || read(dst, 0x18)) {
             static unsigned warnings = 0;
             if (warnings++ < 8)
-                Utils::Log::error("[GX2COPY] unsupported transfer {}x{} f{:X}/f{:X} t{}/t{}", width, height,
-                                  srcFormat, dstFormat, srcTile, dstTile);
+                Utils::Log::error("[GX2COPY] unsupported transfer {}x{} f{:X}/f{:X} t{}/t{}", width, height, srcFormat, dstFormat, srcTile, dstTile);
             cpu.m_gpr[3] = 0;
             return;
         }
@@ -617,14 +647,14 @@ namespace {
         const std::uint32_t srcImage = read(src, 0x24), dstImage = read(dst, 0x24);
         const std::uint32_t srcSize = read(src, SURF_IMAGE_SIZE), dstSize = read(dst, SURF_IMAGE_SIZE);
         const auto offset = [&](std::uint32_t x, std::uint32_t y, bool source) {
-            return Core::Gfx::tiledElementOffset(x, y, source ? srcPitch : dstPitch, bytes * 8,
-                                                source ? srcTile : dstTile, source ? srcSwizzle : dstSwizzle);
+            return Core::Gfx::tiledElementOffset(x, y, source ? srcPitch : dstPitch, bytes * 8, source ? srcTile : dstTile,
+                                                 source ? srcSwizzle : dstSwizzle);
         };
         auto *source = cpu.m_memory.hostPtr(srcImage);
         auto *dest = cpu.m_memory.hostPtr(dstImage);
-        if (!source || !dest || !srcSize || !dstSize || srcPitch < width || dstPitch < width
-            || std::uint64_t(srcImage) + srcSize > 0x100000000ull || std::uint64_t(dstImage) + dstSize > 0x100000000ull
-            || !cpu.m_memory.hostPtr(srcImage + srcSize - 1) || !cpu.m_memory.hostPtr(dstImage + dstSize - 1)) {
+        if (!source || !dest || !srcSize || !dstSize || srcPitch < width || dstPitch < width || std::uint64_t(srcImage) + srcSize > 0x100000000ull ||
+            std::uint64_t(dstImage) + dstSize > 0x100000000ull || !cpu.m_memory.hostPtr(srcImage + srcSize - 1) ||
+            !cpu.m_memory.hostPtr(dstImage + dstSize - 1)) {
             Utils::Log::error("[GX2COPY] invalid image range");
             cpu.m_gpr[3] = 0;
             return;
@@ -656,9 +686,8 @@ namespace {
         if (cpu.m_gpr[7])
             cpu.m_memory.write<std::uint32_t>(cpu.m_gpr[7], GX2_BUFFER_ALIGN);
         if (gx2SizeTrace() && size >= gx2SizeTraceMin() && gx2SizeTraceTake())
-            Utils::Log::error("[GX2SIZE] TV mode={} fmt=0x{:X} buffering={} -> size=0x{:X} align=0x{:X} LR={}", cpu.m_gpr[3],
-                              cpu.m_gpr[4], cpu.m_gpr[5], size, GX2_BUFFER_ALIGN,
-                              Core::Diag::symbolize(cpu, cpu.m_lr + Core::Memory::MemoryMap::ApplicationCode));
+            Utils::Log::error("[GX2SIZE] TV mode={} fmt=0x{:X} buffering={} -> size=0x{:X} align=0x{:X} LR={}", cpu.m_gpr[3], cpu.m_gpr[4],
+                              cpu.m_gpr[5], size, GX2_BUFFER_ALIGN, Core::Diag::symbolize(cpu, cpu.m_lr + Core::Memory::MemoryMap::ApplicationCode));
         cpu.m_gpr[3] = 0;
     }
 
@@ -670,9 +699,8 @@ namespace {
         if (cpu.m_gpr[7])
             cpu.m_memory.write<std::uint32_t>(cpu.m_gpr[7], GX2_BUFFER_ALIGN);
         if (gx2SizeTrace() && size >= gx2SizeTraceMin() && gx2SizeTraceTake())
-            Utils::Log::error("[GX2SIZE] DRC mode={} fmt=0x{:X} buffering={} -> size=0x{:X} align=0x{:X} LR={}", cpu.m_gpr[3],
-                              cpu.m_gpr[4], cpu.m_gpr[5], size, GX2_BUFFER_ALIGN,
-                              Core::Diag::symbolize(cpu, cpu.m_lr + Core::Memory::MemoryMap::ApplicationCode));
+            Utils::Log::error("[GX2SIZE] DRC mode={} fmt=0x{:X} buffering={} -> size=0x{:X} align=0x{:X} LR={}", cpu.m_gpr[3], cpu.m_gpr[4],
+                              cpu.m_gpr[5], size, GX2_BUFFER_ALIGN, Core::Diag::symbolize(cpu, cpu.m_lr + Core::Memory::MemoryMap::ApplicationCode));
         cpu.m_gpr[3] = 0;
     }
 
@@ -705,16 +733,15 @@ namespace {
             // Base layout is independent of the requested mip count. Mip storage is still unimplemented.
             // Other dimensions, depth/scan usage and AA still use the legacy calculation.
             if ((dim == 1 || dim == 5) && !aa && !(use & (4u | 8u))) {
-                if (const auto layout = Core::Gfx::baseSurfaceLayout(width, height, dim == 1 ? 1 : depth,
-                        bytesPerElement(format), tileMode, rawWidth, rawHeight)) {
+                if (const auto layout = Core::Gfx::baseSurfaceLayout(width, height, dim == 1 ? 1 : depth, bytesPerElement(format), tileMode, rawWidth,
+                                                                     rawHeight)) {
                     tileMode = layout->tileMode;
                     pitch = layout->pitch;
                     imageSize = layout->imageSize;
                     surfaceAlign = layout->alignment;
                     cpu.m_memory.write<std::uint32_t>(s + 0x30, tileMode);
                     const auto swizzle = cpu.m_memory.read<std::uint32_t>(s + 0x34);
-                    cpu.m_memory.write<std::uint32_t>(s + 0x34,
-                        (swizzle & 0xFF00FFFF) | (tileMode == 4 ? 0xD0000 : 0));
+                    cpu.m_memory.write<std::uint32_t>(s + 0x34, (swizzle & 0xFF00FFFF) | (tileMode == 4 ? 0xD0000 : 0));
                     if (!mipLevels)
                         cpu.m_memory.write<std::uint32_t>(s + 0x10, 1);
                 }
@@ -724,11 +751,11 @@ namespace {
             cpu.m_memory.write<std::uint32_t>(s + SURF_MIPMAP_SIZE, 0);
             cpu.m_memory.write<std::uint32_t>(s + SURF_ALIGNMENT, surfaceAlign);
             if (gx2SizeTrace() && imageSize >= gx2SizeTraceMin() && gx2SizeTraceTake())
-                Utils::Log::error(
-                    "[GX2SIZE] Surface @0x{:08X} dim={} raw={}x{} depth={} mip={} fmt=0x{:X} aa={} use=0x{:X} tile={} -> calc={}x{} pitch={} elem={} image=0x{:X} mip=0 align=0x{:X} LR={}",
-                    s, dim, rawWidth, rawHeight, depth, mipLevels, format, aa, use, tileMode, width, height, pitch,
-                    bytesPerElement(format), imageSize, surfaceAlign,
-                    Core::Diag::symbolize(cpu, cpu.m_lr + Core::Memory::MemoryMap::ApplicationCode));
+                Utils::Log::error("[GX2SIZE] Surface @0x{:08X} dim={} raw={}x{} depth={} mip={} fmt=0x{:X} aa={} use=0x{:X} tile={} -> calc={}x{} "
+                                  "pitch={} elem={} image=0x{:X} mip=0 align=0x{:X} LR={}",
+                                  s, dim, rawWidth, rawHeight, depth, mipLevels, format, aa, use, tileMode, width, height, pitch,
+                                  bytesPerElement(format), imageSize, surfaceAlign,
+                                  Core::Diag::symbolize(cpu, cpu.m_lr + Core::Memory::MemoryMap::ApplicationCode));
         }
         cpu.m_gpr[3] = 0;
     }
@@ -862,7 +889,8 @@ namespace {
 
     void gx2_InitSamplerClamping(Core::Interpreter &cpu)
     {
-        for (unsigned i = 0; i < 3; i++) samplerField(cpu, 0, i * 3, 3, cpu.m_gpr[4 + i]);
+        for (unsigned i = 0; i < 3; i++)
+            samplerField(cpu, 0, i * 3, 3, cpu.m_gpr[4 + i]);
     }
     void gx2_InitSamplerXYFilter(Core::Interpreter &cpu)
     {
@@ -878,8 +906,8 @@ namespace {
     void gx2_InitSamplerLOD(Core::Interpreter &cpu)
     {
         auto fixed = [](double value, int low, int high) {
-            return static_cast<std::uint32_t>(static_cast<std::int32_t>(std::isfinite(value)
-                ? std::clamp(value * 64.0, double(low), double(high)) : 0));
+            return static_cast<std::uint32_t>(
+                    static_cast<std::int32_t>(std::isfinite(value) ? std::clamp(value * 64.0, double(low), double(high)) : 0));
         };
         samplerField(cpu, 1, 0, 10, fixed(cpu.m_fpr[1], 0, 1023));
         samplerField(cpu, 1, 10, 10, fixed(cpu.m_fpr[2], 0, 1023));
@@ -889,34 +917,92 @@ namespace {
     // No-op GX2 functions (the title fills these structs itself; only the GPU reads the registers).
     const char *const kNoops[] = {
             "GX2DrawDone",
-            "GX2ExpandAAColorBuffer", "GX2ExpandDepthBuffer", "GX2Flush",
-            "GX2InitColorBufferRegs", "GX2InitDepthBufferHiZEnable", "GX2InitDepthBufferRegs",
-            "GX2InitSampler", "GX2InitSamplerBorderType", "GX2InitSamplerClamping",
-            "GX2InitSamplerDepthCompare", "GX2InitSamplerLOD", "GX2InitSamplerXYFilter", "GX2InitSamplerZMFilter",
-            "GX2InitTextureRegs", "GX2Invalidate", "GX2QueryBegin", "GX2QueryBeginConditionalRender",
-            "GX2QueryEnd", "GX2QueryEndConditionalRender", "GX2SampleBottomGPUCycle", "GX2SampleTopGPUCycle",
-            "GX2SaveStreamOutContext", "GX2SetAlphaTest", "GX2SetAlphaTestReg", "GX2SetAlphaToMask",
-            "GX2SetBlendConstantColorReg", "GX2SetBlendControlReg",
-            "GX2SetClearDepthStencil", "GX2SetColorControlReg", "GX2SetCullOnlyControl", "GX2SetDefaultState",
-            "GX2SetDepthOnlyControl", "GX2SetDepthStencilControlReg", "GX2SetDRCBuffer", "GX2SetDRCEnable",
-            "GX2SetDRCGamma", "GX2SetDRCScale", "GX2SetGeometrySampler", "GX2SetGeometrySamplerBorderColor",
-            "GX2SetGeometryShaderInputRingBuffer", "GX2SetGeometryShaderOutputRingBuffer", "GX2SetGeometryTexture",
-            "GX2SetGeometryUniformBlock", "GX2SetLineWidth", "GX2SetMaxTessellationLevel", "GX2SetMinTessellationLevel",
-            "GX2SetPixelSamplerBorderColor", "GX2SetPointLimits", "GX2SetPointSize",
-            "GX2SetPolygonControl", "GX2SetPolygonControlReg", "GX2SetPolygonOffset", "GX2SetPolygonOffsetReg",
-            "GX2SetPrimitiveRestartIndex", "GX2SetRasterizerClipControl", "GX2SetShaderModeEx", "GX2SetStencilMask",
-            "GX2SetStencilMaskReg", "GX2SetStreamOutBuffer", "GX2SetStreamOutContext", "GX2SetStreamOutEnable",
-            "GX2SetSurfaceSwizzle", "GX2SetSwapInterval", "GX2SetTargetChannelMasksReg",
-            "GX2SetTessellation", "GX2SetTVBuffer", "GX2SetTVEnable", "GX2SetTVGamma", "GX2SetTVScale",
-            "GX2SetupContextStateEx", "GX2SetVertexSampler", "GX2SetVertexSamplerBorderColor", "GX2SetVertexTexture",
+            "GX2ExpandAAColorBuffer",
+            "GX2ExpandDepthBuffer",
+            "GX2Flush",
+            "GX2InitColorBufferRegs",
+            "GX2InitDepthBufferHiZEnable",
+            "GX2InitDepthBufferRegs",
+            "GX2InitSampler",
+            "GX2InitSamplerBorderType",
+            "GX2InitSamplerClamping",
+            "GX2InitSamplerDepthCompare",
+            "GX2InitSamplerLOD",
+            "GX2InitSamplerXYFilter",
+            "GX2InitSamplerZMFilter",
+            "GX2InitTextureRegs",
+            "GX2Invalidate",
+            "GX2QueryBegin",
+            "GX2QueryBeginConditionalRender",
+            "GX2QueryEnd",
+            "GX2QueryEndConditionalRender",
+            "GX2SampleBottomGPUCycle",
+            "GX2SampleTopGPUCycle",
+            "GX2SaveStreamOutContext",
+            "GX2SetAlphaTest",
+            "GX2SetAlphaTestReg",
+            "GX2SetAlphaToMask",
+            "GX2SetBlendConstantColorReg",
+            "GX2SetBlendControlReg",
+            "GX2SetClearDepthStencil",
+            "GX2SetColorControlReg",
+            "GX2SetCullOnlyControl",
+            "GX2SetDefaultState",
+            "GX2SetDepthOnlyControl",
+            "GX2SetDepthStencilControlReg",
+            "GX2SetDRCBuffer",
+            "GX2SetDRCEnable",
+            "GX2SetDRCGamma",
+            "GX2SetDRCScale",
+            "GX2SetGeometrySampler",
+            "GX2SetGeometrySamplerBorderColor",
+            "GX2SetGeometryShaderInputRingBuffer",
+            "GX2SetGeometryShaderOutputRingBuffer",
+            "GX2SetGeometryTexture",
+            "GX2SetGeometryUniformBlock",
+            "GX2SetLineWidth",
+            "GX2SetMaxTessellationLevel",
+            "GX2SetMinTessellationLevel",
+            "GX2SetPixelSamplerBorderColor",
+            "GX2SetPointLimits",
+            "GX2SetPointSize",
+            "GX2SetPolygonControl",
+            "GX2SetPolygonControlReg",
+            "GX2SetPolygonOffset",
+            "GX2SetPolygonOffsetReg",
+            "GX2SetPrimitiveRestartIndex",
+            "GX2SetRasterizerClipControl",
+            "GX2SetShaderModeEx",
+            "GX2SetStencilMask",
+            "GX2SetStencilMaskReg",
+            "GX2SetStreamOutBuffer",
+            "GX2SetStreamOutContext",
+            "GX2SetStreamOutEnable",
+            "GX2SetSurfaceSwizzle",
+            "GX2SetSwapInterval",
+            "GX2SetTargetChannelMasksReg",
+            "GX2SetTessellation",
+            "GX2SetTVBuffer",
+            "GX2SetTVEnable",
+            "GX2SetTVGamma",
+            "GX2SetTVScale",
+            "GX2SetupContextStateEx",
+            "GX2SetVertexSampler",
+            "GX2SetVertexSamplerBorderColor",
+            "GX2SetVertexTexture",
             "GX2GetContextStateDisplayList",
     };
 
     const char *const kRetSize[] = {
             "GX2CalcGeometryShaderInputRingBufferSize",
-            "GX2CalcGeometryShaderOutputRingBufferSize", "GX2GetGeometryShaderGPRs",
-            "GX2GetGeometryShaderStackEntries", "GX2GetPixelShaderGPRs", "GX2GetPixelShaderStackEntries",
-            "GX2GetVertexShaderGPRs", "GX2GetVertexShaderStackEntries", "GX2GPUTimeToCPUTime",
+            "GX2CalcGeometryShaderOutputRingBufferSize",
+            "GX2GetGeometryShaderGPRs",
+            "GX2GetGeometryShaderStackEntries",
+            "GX2GetPixelShaderGPRs",
+            "GX2GetPixelShaderStackEntries",
+            "GX2GetVertexShaderGPRs",
+            "GX2GetVertexShaderStackEntries",
+            "GX2GPUTimeToCPUTime",
     };
 
 } // namespace

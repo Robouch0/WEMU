@@ -2,18 +2,18 @@
 
 #include <array>
 #include <cstdint>
-#include <memory>
 #include <map>
+#include <memory>
 #include <optional>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
 #include "gfx/Gx2CommandStream.hpp"
-#include "gfx/TextureSampler.hpp"
-#include "gfx/RasterWorkers.hpp"
 #include "gfx/LatteShaderLowering.hpp"
 #include "gfx/RasterBackend.hpp"
+#include "gfx/RasterWorkers.hpp"
+#include "gfx/TextureSampler.hpp"
 
 namespace Core {
     class Memory;
@@ -38,6 +38,7 @@ namespace Core::Gfx {
 
     class Gx2Replayer {
             std::array<TextureSampler, 18> m_pixelSamplers{}, m_vertexSamplers{};
+
         public:
             static constexpr std::uint32_t kWidth = 1280;
             static constexpr std::uint32_t kHeight = 720;
@@ -138,8 +139,7 @@ namespace Core::Gfx {
             bool fetchAttributes(std::uint32_t vertex, std::array<std::array<float, 4>, 4> &out) const;
             void copyToScanBuffer(const Surface &s);
             void maybeDumpFrame();
-            [[nodiscard]] std::array<std::uint8_t, 4> blendTexel(const std::array<std::uint8_t, 4> &src,
-                                                                 const std::uint8_t *dst,
+            [[nodiscard]] std::array<std::uint8_t, 4> blendTexel(const std::array<std::uint8_t, 4> &src, const std::uint8_t *dst,
                                                                  const BlendState &blend) const;
             static bool useViewBacking();
             static SurfaceKey makeSurfaceKey(const Surface &s);
@@ -147,14 +147,13 @@ namespace Core::Gfx {
             void resolveViewBacking(const Surface &s) const;
             void resolvePendingBackings() const;
             [[nodiscard]] const std::vector<std::uint8_t> *findViewBacking(const Surface &s) const;
-            [[nodiscard]] std::array<std::uint8_t, 4> sampleViewBacking(const Surface &s, const std::vector<std::uint8_t> &backing,
-                                                                        float u, float v) const;
+            [[nodiscard]] std::array<std::uint8_t, 4> sampleViewBacking(const Surface &s, const std::vector<std::uint8_t> &backing, float u,
+                                                                        float v) const;
 
             // Nearest-neighbour sample of a guest surface at normalized uv (RGBA out, 0..255).
             std::array<std::uint8_t, 4> sample(const Surface &s, float u, float v) const;
-            std::array<float, 4> sampleTexture(const Surface &s, const TextureSampler &sampler, float u, float v,
-                                             float layer = 0,
-                                             const std::vector<std::uint8_t> *feedback = nullptr, bool gather = false) const;
+            std::array<float, 4> sampleTexture(const Surface &s, const TextureSampler &sampler, float u, float v, float layer = 0,
+                                               const std::vector<std::uint8_t> *feedback = nullptr, bool gather = false) const;
             static bool supportsGather(const Surface &surface, const TextureSampler &sampler);
 
             // Decode a whole guest surface to a linear RGBA8 image (reuses sample() per texel, so it

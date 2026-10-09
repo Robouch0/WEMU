@@ -1,9 +1,9 @@
-    /*
-** EPITECH PROJECT, 2026
-** core
-** File description:
-** Diagnostics -- boot-triage tooling: unknown-import tracking, HLE call trace, crash backtrace
-*/
+/*
+ ** EPITECH PROJECT, 2026
+ ** core
+ ** File description:
+ ** Diagnostics -- boot-triage tooling: unknown-import tracking, HLE call trace, crash backtrace
+ */
 
 #include "Diagnostics.hpp"
 
@@ -96,22 +96,22 @@ namespace Core::Diag {
     }
 
     struct WatchCstrSpec {
-        std::uint32_t pc = 0;
-        std::uint8_t gpr = 0;
-        bool deref = false;
-        bool literal = false;
-        std::uint32_t literalAddr = 0;
+            std::uint32_t pc = 0;
+            std::uint8_t gpr = 0;
+            bool deref = false;
+            bool literal = false;
+            std::uint32_t literalAddr = 0;
     };
 
     struct WatchRegSpec {
-        std::uint32_t pc = 0;
-        std::uint8_t gpr = 0;
-        std::uint32_t value = 0;
+            std::uint32_t pc = 0;
+            std::uint8_t gpr = 0;
+            std::uint32_t value = 0;
     };
 
     struct WatchDerefSpec {
-        std::uint8_t gpr = 0;
-        std::uint32_t offset = 0;
+            std::uint8_t gpr = 0;
+            std::uint32_t offset = 0;
     };
 
     static std::vector<WatchCstrSpec> parseWatchCstrs()
@@ -136,7 +136,7 @@ namespace Core::Diag {
                 const auto addr = static_cast<std::uint32_t>(std::strtoul(p, &end, 16));
                 if (end == p)
                     break;
-                out.push_back(WatchCstrSpec {pc, 0, false, true, addr});
+                out.push_back(WatchCstrSpec{pc, 0, false, true, addr});
                 p = (*end == ',') ? end + 1 : end;
                 continue;
             }
@@ -146,7 +146,7 @@ namespace Core::Diag {
             const auto gpr = static_cast<unsigned long>(std::strtoul(p, &end, 10));
             if (end == p || gpr > 31)
                 break;
-            out.push_back(WatchCstrSpec {pc, static_cast<std::uint8_t>(gpr), deref, false, 0});
+            out.push_back(WatchCstrSpec{pc, static_cast<std::uint8_t>(gpr), deref, false, 0});
             p = (*end == ',') ? end + 1 : end;
         }
         return out;
@@ -177,7 +177,7 @@ namespace Core::Diag {
                 if (end == p)
                     break;
             }
-            out.push_back(WatchRegSpec {pc, static_cast<std::uint8_t>(gpr), value});
+            out.push_back(WatchRegSpec{pc, static_cast<std::uint8_t>(gpr), value});
             p = (*end == ',') ? end + 1 : end;
         }
         return out;
@@ -203,7 +203,7 @@ namespace Core::Diag {
                 end = offEnd;
             }
             if (reg >= 0 && reg < 32)
-                out.push_back(WatchDerefSpec {static_cast<std::uint8_t>(reg), off});
+                out.push_back(WatchDerefSpec{static_cast<std::uint8_t>(reg), off});
             if (*end != ',')
                 break;
             p = end + 1;
@@ -252,15 +252,9 @@ namespace Core::Diag {
         return words;
     }
 
-    bool hasWatchCstrs()
-    {
-        return !watchCstrs().empty();
-    }
+    bool hasWatchCstrs() { return !watchCstrs().empty(); }
 
-    bool hasWatchRegs()
-    {
-        return !watchRegs().empty();
-    }
+    bool hasWatchRegs() { return !watchRegs().empty(); }
 
     const std::vector<std::uint32_t> &countPcs()
     {
@@ -470,7 +464,7 @@ namespace Core::Diag {
         for (const auto &spec: watchCstrs()) {
             if (spec.pc != ppcPc)
                 continue;
-            const auto key = std::tuple {spec.pc, spec.gpr, spec.deref, spec.literalAddr};
+            const auto key = std::tuple{spec.pc, spec.gpr, spec.deref, spec.literalAddr};
             const auto count = ++hits[key];
             if (count > maxHits)
                 continue;
@@ -479,14 +473,15 @@ namespace Core::Diag {
             if (spec.deref && !spec.literal) {
                 try {
                     addr = mut.m_memory.read<std::uint32_t>(addr);
-                    source = "*" + source;
+                    source.insert(0, "*");
                 } catch (...) {
-                    source = "*" + source + "<unreadable>";
+                    source.insert(0, "*");
+                    source += "<unreadable>";
                     addr = 0;
                 }
             }
-            std::cout << std::format("[DIAG] watch cstr PC=0x{:08X} {} -> 0x{:08X} hit #{} \"{}\" thread=0x{:08X} LR=",
-                                     ppcPc, source, addr, count, readGuestCString(mut, addr), cpu.m_scheduler.currentHandle())
+            std::cout << std::format("[DIAG] watch cstr PC=0x{:08X} {} -> 0x{:08X} hit #{} \"{}\" thread=0x{:08X} LR=", ppcPc, source, addr, count,
+                                     readGuestCString(mut, addr), cpu.m_scheduler.currentHandle())
                       << symbolize(cpu, cpu.m_lr + Memory::MemoryMap::ApplicationCode) << std::endl;
             dumpBacktrace(cpu, "       ");
         }
@@ -502,17 +497,16 @@ namespace Core::Diag {
         for (const auto &spec: watchRegs()) {
             if (spec.pc != ppcPc || cpu.m_gpr[spec.gpr] != spec.value)
                 continue;
-            const auto key = std::tuple {spec.pc, spec.gpr, spec.value};
+            const auto key = std::tuple{spec.pc, spec.gpr, spec.value};
             const auto count = ++hits[key];
             if (count > maxHits)
                 continue;
-            std::cout << std::format("[DIAG] watch reg PC=0x{:08X} r{}==0x{:08X} hit #{} thread=0x{:08X} LR=",
-                                     ppcPc, spec.gpr, spec.value, count, cpu.m_scheduler.currentHandle())
+            std::cout << std::format("[DIAG] watch reg PC=0x{:08X} r{}==0x{:08X} hit #{} thread=0x{:08X} LR=", ppcPc, spec.gpr, spec.value, count,
+                                     cpu.m_scheduler.currentHandle())
                       << symbolize(cpu, cpu.m_lr + Memory::MemoryMap::ApplicationCode) << std::endl;
             for (int i = 0; i < 32; i += 8)
-                std::cout << std::format("       r{:<2}: {:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X}", i, cpu.m_gpr[i],
-                                         cpu.m_gpr[i + 1], cpu.m_gpr[i + 2], cpu.m_gpr[i + 3], cpu.m_gpr[i + 4], cpu.m_gpr[i + 5],
-                                         cpu.m_gpr[i + 6], cpu.m_gpr[i + 7])
+                std::cout << std::format("       r{:<2}: {:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X}", i, cpu.m_gpr[i], cpu.m_gpr[i + 1],
+                                         cpu.m_gpr[i + 2], cpu.m_gpr[i + 3], cpu.m_gpr[i + 4], cpu.m_gpr[i + 5], cpu.m_gpr[i + 6], cpu.m_gpr[i + 7])
                           << std::endl;
             dumpBacktrace(cpu, "       ");
         }
@@ -539,15 +533,13 @@ namespace Core::Diag {
                 if (logInitial) {
                     std::cout << std::format("[DIAG] watch word 0x{:08X}: initial 0x{:08X} thread=0x{:08X} LR=", addr, v,
                                              cpu.m_scheduler.currentHandle())
-                              << symbolize(cpu, cpu.m_lr + Memory::MemoryMap::ApplicationCode) << " at PC="
-                              << symbolize(cpu, ppcPc) << std::endl;
+                              << symbolize(cpu, cpu.m_lr + Memory::MemoryMap::ApplicationCode) << " at PC=" << symbolize(cpu, ppcPc) << std::endl;
                     dumpBacktrace(cpu, "       ");
                 }
             } else if (it->second != v) {
                 std::cout << std::format("[DIAG] watch word 0x{:08X}: 0x{:08X} -> 0x{:08X} thread=0x{:08X} LR=", addr, it->second, v,
                                          cpu.m_scheduler.currentHandle())
-                          << symbolize(cpu, cpu.m_lr + Memory::MemoryMap::ApplicationCode) << " at PC=" << symbolize(cpu, ppcPc)
-                          << std::endl;
+                          << symbolize(cpu, cpu.m_lr + Memory::MemoryMap::ApplicationCode) << " at PC=" << symbolize(cpu, ppcPc) << std::endl;
                 dumpBacktrace(cpu, "       ");
                 it->second = v;
             }
@@ -566,16 +558,17 @@ namespace Core::Diag {
     void pollHeartbeat(const Interpreter &cpu, const std::uint32_t ppcPc)
     {
         static std::uint64_t count = 0;
-        if (++count % heartbeatInterval() != 0)
+        const auto interval = heartbeatInterval();
+        if (!interval || ++count % interval != 0)
             return;
-        std::cout << std::format("[DIAG] heartbeat {}M instr, PC=", count / 1000000) << symbolize(cpu, ppcPc) << " LR="
-                  << symbolize(cpu, cpu.m_lr + Memory::MemoryMap::ApplicationCode) << std::endl;
+        std::cout << std::format("[DIAG] heartbeat {}M instr, PC=", count / 1000000) << symbolize(cpu, ppcPc)
+                  << " LR=" << symbolize(cpu, cpu.m_lr + Memory::MemoryMap::ApplicationCode) << std::endl;
         static constexpr const char *stateNames[] = {"Ready", "Running", "Sleeping", "Waiting", "Finished", "Paused"};
         for (const auto &t: cpu.m_scheduler.threads()) {
             if (t->state == ThreadContext::State::Finished)
                 continue;
-            std::string line = std::format("       thread 0x{:08X} \"{}\" prio={} aff={} {}", t->osThreadPtr, t->name, t->priority,
-                                           t->affinity, stateNames[static_cast<int>(t->state)]);
+            std::string line = std::format("       thread 0x{:08X} \"{}\" prio={} aff={} {}", t->osThreadPtr, t->name, t->priority, t->affinity,
+                                           stateNames[static_cast<int>(t->state)]);
             if (t->state == ThreadContext::State::Waiting)
                 line += t->joinTarget ? std::format(" join=0x{:08X}", t->joinTarget) : std::format(" key=0x{:08X}", t->waitKey);
             if (t.get() != cpu.m_scheduler.current())
@@ -621,13 +614,13 @@ namespace Core::Diag {
             const std::uint32_t pending = current ? mut.m_memory.read<std::uint32_t>(current + 0x138) : 0;
             const std::uint32_t flags134 = current ? mut.m_memory.read<std::uint32_t>(current + 0x134) : 0;
             const std::uint32_t decoded = encoded ^ 0x37F1B26Bu;
-            std::cout << std::format(
-                "[DIAG] resLookup#{} base=0x{:08X} index={} encoded=0x{:08X} decoded=0x{:08X} disabled55={} validFlag={} current=0x{:08X} pending138={} f134=0x{:08X} thread=0x{:08X} LR=",
-                hits, base, index, encoded, decoded, disabled, validFlag, current, pending, flags134, cpu.m_scheduler.currentHandle())
+            std::cout << std::format("[DIAG] resLookup#{} base=0x{:08X} index={} encoded=0x{:08X} decoded=0x{:08X} disabled55={} validFlag={} "
+                                     "current=0x{:08X} pending138={} f134=0x{:08X} thread=0x{:08X} LR=",
+                                     hits, base, index, encoded, decoded, disabled, validFlag, current, pending, flags134,
+                                     cpu.m_scheduler.currentHandle())
                       << symbolize(cpu, guestLr) << std::endl;
         } catch (...) {
-            std::cout << std::format("[DIAG] resLookup#{} <unreadable> base=0x{:08X} indexPtr=0x{:08X}", hits, base, indexPtr)
-                      << std::endl;
+            std::cout << std::format("[DIAG] resLookup#{} <unreadable> base=0x{:08X} indexPtr=0x{:08X}", hits, base, indexPtr) << std::endl;
         }
     }
 
@@ -698,10 +691,7 @@ namespace Core::Diag {
         }
     }
 
-    static bool cstrContains(const std::string &text, const char *needle)
-    {
-        return !needle || !needle[0] || text.find(needle) != std::string::npos;
-    }
+    static bool cstrContains(const std::string &text, const char *needle) { return !needle || !needle[0] || text.find(needle) != std::string::npos; }
 
     static bool isItemResourceTracePc(const std::uint32_t ppcPc)
     {
@@ -724,8 +714,8 @@ namespace Core::Diag {
 
     static std::uint32_t itemResourceCandidate(const Interpreter &cpu, const std::uint32_t ppcPc)
     {
-        if (ppcPc == 0x020E3D8C || ppcPc == 0x020E3F14 || ppcPc == 0x020E3F8C || ppcPc == 0x020E3FA4 || ppcPc == 0x020E3FB8
-            || ppcPc == 0x020E4030 || ppcPc == 0x020E4054 || ppcPc == 0x020E406C || ppcPc == 0x020E4070)
+        if (ppcPc == 0x020E3D8C || ppcPc == 0x020E3F14 || ppcPc == 0x020E3F8C || ppcPc == 0x020E3FA4 || ppcPc == 0x020E3FB8 || ppcPc == 0x020E4030 ||
+            ppcPc == 0x020E4054 || ppcPc == 0x020E406C || ppcPc == 0x020E4070)
             return cpu.m_gpr[30];
         return cpu.m_gpr[3];
     }
@@ -758,14 +748,12 @@ namespace Core::Diag {
         }
     }
 
-    static void appendEflkTableSummary(std::string &line, Interpreter &cpu, const std::uint32_t manager,
-                                       const std::string &needle)
+    static void appendEflkTableSummary(std::string &line, Interpreter &cpu, const std::uint32_t manager, const std::string &needle)
     {
         const std::uint32_t table = readWordOrZero(cpu, manager + 0x2C);
         const std::uint32_t sectionCount = readWordOrZero(cpu, table + 0x4);
         const std::uint32_t sectionArray = readWordOrZero(cpu, table + 0x8);
-        line += std::format(" eflkMgr=0x{:08X} table=0x{:08X} sections={} array=0x{:08X}", manager, table, sectionCount,
-                            sectionArray);
+        line += std::format(" eflkMgr=0x{:08X} table=0x{:08X} sections={} array=0x{:08X}", manager, table, sectionCount, sectionArray);
         if (!table || !sectionArray || sectionCount > 256)
             return;
 
@@ -781,9 +769,9 @@ namespace Core::Diag {
             const std::uint32_t section = readWordOrZero(cpu, sectionArray + s * 4);
             const std::uint32_t magic = readWordOrZero(cpu, section);
             if (rawSlots.size() < 8)
-                rawSlots.push_back(std::format("#{}:ptr=0x{:08X} magic=0x{:08X} w4=0x{:08X} w8=0x{:08X} wC=0x{:08X}", s,
-                                               section, magic, readWordOrZero(cpu, section + 0x4),
-                                               readWordOrZero(cpu, section + 0x8), readWordOrZero(cpu, section + 0xC)));
+                rawSlots.push_back(std::format("#{}:ptr=0x{:08X} magic=0x{:08X} w4=0x{:08X} w8=0x{:08X} wC=0x{:08X}", s, section, magic,
+                                               readWordOrZero(cpu, section + 0x4), readWordOrZero(cpu, section + 0x8),
+                                               readWordOrZero(cpu, section + 0xC)));
             if (magic != 0x65666C6Bu) // "eflk"
                 continue;
             eflkSections++;
@@ -807,14 +795,13 @@ namespace Core::Diag {
                     exactMatches++;
                 if (contains)
                     containsMatches++;
-                if ((exact || contains || name.find("Horn") != std::string::npos || name.find("horn") != std::string::npos)
-                    && matches.size() < 8)
+                if ((exact || contains || name.find("Horn") != std::string::npos || name.find("horn") != std::string::npos) && matches.size() < 8)
                     matches.push_back(std::format("#{}:{}", i, name));
             }
         }
 
-        line += std::format(" eflkSections={} names={} needle=\"{}\" exact={} contains={}", eflkSections, scannedNames,
-                            needle, exactMatches, containsMatches);
+        line += std::format(" eflkSections={} names={} needle=\"{}\" exact={} contains={}", eflkSections, scannedNames, needle, exactMatches,
+                            containsMatches);
         if (!rawSlots.empty()) {
             line += " rawSlots=[";
             for (std::size_t i = 0; i < rawSlots.size(); i++) {
@@ -860,14 +847,14 @@ namespace Core::Diag {
 
         auto &mut = const_cast<Interpreter &>(cpu);
         const std::uint32_t res = itemResourceCandidate(cpu, ppcPc);
-        std::string requested = (ppcPc == 0x020E3D8C) ? readGuestCString(mut, cpu.m_gpr[5]) : std::string {};
+        std::string requested = (ppcPc == 0x020E3D8C) ? readGuestCString(mut, cpu.m_gpr[5]) : std::string{};
         if (ppcPc == 0x020E3D8C && res)
             resourceNames[res] = requested;
         else if (res) {
             if (const auto it = resourceNames.find(res); it != resourceNames.end())
                 requested = it->second;
         }
-        const std::string cachedName = res ? readGuestCString(mut, res + 0xB8) : std::string {};
+        const std::string cachedName = res ? readGuestCString(mut, res + 0xB8) : std::string{};
         const bool matchesName = cstrContains(requested, nameFilter) || cstrContains(cachedName, nameFilter);
         const bool alreadyTracked = std::ranges::find(trackedResources, res) != trackedResources.end();
         if (nameFilter && nameFilter[0]) {
@@ -889,20 +876,20 @@ namespace Core::Diag {
         const std::uint32_t secondary = readWordOrZero(mut, res + 0x184);
         const std::uint32_t aux188 = readWordOrZero(mut, res + 0x188);
         std::string line = std::format(
-            "[DIAG] itemRes#{} {} PC=0x{:08X} res=0x{:08X} req=\"{}\" cached=\"{}\" flags17c=0x{:08X}/{}/{}/{}/{} +180=0x{:08X} +184=0x{:08X} +188=0x{:08X} r3=0x{:08X} r4=0x{:08X} r5=0x{:08X} r29=0x{:08X} r30=0x{:08X} r31=0x{:08X} thread=0x{:08X} LR=",
-            hits, itemResourcePcLabel(ppcPc), ppcPc, res, requested, cachedName, flagsWord, flag17c, flag17d, flag17e,
-            flag17f, primary, secondary, aux188, cpu.m_gpr[3], cpu.m_gpr[4], cpu.m_gpr[5], cpu.m_gpr[29],
-            cpu.m_gpr[30], cpu.m_gpr[31], cpu.m_scheduler.currentHandle());
+                "[DIAG] itemRes#{} {} PC=0x{:08X} res=0x{:08X} req=\"{}\" cached=\"{}\" flags17c=0x{:08X}/{}/{}/{}/{} +180=0x{:08X} +184=0x{:08X} "
+                "+188=0x{:08X} r3=0x{:08X} r4=0x{:08X} r5=0x{:08X} r29=0x{:08X} r30=0x{:08X} r31=0x{:08X} thread=0x{:08X} LR=",
+                hits, itemResourcePcLabel(ppcPc), ppcPc, res, requested, cachedName, flagsWord, flag17c, flag17d, flag17e, flag17f, primary,
+                secondary, aux188, cpu.m_gpr[3], cpu.m_gpr[4], cpu.m_gpr[5], cpu.m_gpr[29], cpu.m_gpr[30], cpu.m_gpr[31],
+                cpu.m_scheduler.currentHandle());
         line += symbolize(cpu, guestLr);
         if (ppcPc == 0x020E3F14) {
-            const std::string needle = !requested.empty() ? requested : (!cachedName.empty() ? cachedName : std::string {});
+            const std::string needle = !requested.empty() ? requested : (!cachedName.empty() ? cachedName : std::string{});
             appendEflkTableSummary(line, mut, cpu.m_gpr[31], needle);
         }
         std::cout << line << std::endl;
     }
 
-    static void appendReadinessList(std::string &line, Interpreter &cpu, const char *name, const std::uint32_t list,
-                                    const std::uint32_t count)
+    static void appendReadinessList(std::string &line, Interpreter &cpu, const char *name, const std::uint32_t list, const std::uint32_t count)
     {
         line += std::format(" {}=0x{:08X}[{}]", name, list, count);
         const std::uint32_t limit = std::min<std::uint32_t>(count, 4);
@@ -916,16 +903,15 @@ namespace Core::Diag {
             const std::uint32_t a30 = readWordOrZero(cpu, entryPtr + 0x30);
             const std::uint32_t a34 = readWordOrZero(cpu, entryPtr + 0x34);
             const std::uint32_t a38 = readWordOrZero(cpu, entryPtr + 0x38);
-            line += std::format(
-                " #{}:obj=0x{:08X} vt=0x{:08X} +14=0x{:08X} +98={} +9c={} +b0=0x{:08X} +30/34/38={}/{}/{}",
-                i, entryPtr, vtbl, mask14, pending98, busy9c, flagsB0, a30, a34, a38);
+            line += std::format(" #{}:obj=0x{:08X} vt=0x{:08X} +14=0x{:08X} +98={} +9c={} +b0=0x{:08X} +30/34/38={}/{}/{}", i, entryPtr, vtbl, mask14,
+                                pending98, busy9c, flagsB0, a30, a34, a38);
         }
     }
 
     void noteReadinessGate(const Interpreter &cpu, const std::uint32_t ppcPc)
     {
-        if (ppcPc != 0x02740478 && ppcPc != 0x027404E0 && ppcPc != 0x02740644 && ppcPc != 0x02740694
-            && ppcPc != 0x027406A8 && ppcPc != 0x027406C4 && ppcPc != 0x027406C8 && ppcPc != 0x02740764)
+        if (ppcPc != 0x02740478 && ppcPc != 0x027404E0 && ppcPc != 0x02740644 && ppcPc != 0x02740694 && ppcPc != 0x027406A8 && ppcPc != 0x027406C4 &&
+            ppcPc != 0x027406C8 && ppcPc != 0x02740764)
             return;
         static const std::uint32_t lrFilter = []() -> std::uint32_t {
             const char *env = std::getenv("WEMU_READY_TRACE_LR");
@@ -943,11 +929,10 @@ namespace Core::Diag {
             return;
 
         auto &mut = const_cast<Interpreter &>(cpu);
-        const std::uint32_t obj =
-            (ppcPc == 0x02740644 || ppcPc == 0x02740694 || ppcPc == 0x027406A8 || ppcPc == 0x027406C4
-             || ppcPc == 0x027406C8 || ppcPc == 0x02740764)
-                ? cpu.m_gpr[30]
-                : cpu.m_gpr[3];
+        const std::uint32_t obj = (ppcPc == 0x02740644 || ppcPc == 0x02740694 || ppcPc == 0x027406A8 || ppcPc == 0x027406C4 || ppcPc == 0x027406C8 ||
+                                   ppcPc == 0x02740764)
+                                          ? cpu.m_gpr[30]
+                                          : cpu.m_gpr[3];
         const std::uint32_t list40Count = readWordOrZero(mut, obj + 0x40);
         const std::uint32_t list40 = readWordOrZero(mut, obj + 0x44);
         const std::uint32_t list48Count = readWordOrZero(mut, obj + 0x48);
@@ -955,10 +940,10 @@ namespace Core::Diag {
         const std::uint32_t total50 = readWordOrZero(mut, obj + 0x50);
         const std::uint8_t started54 = readByteOrZero(mut, obj + 0x54);
         const std::uint32_t current58 = readWordOrZero(mut, obj + 0x58);
-        std::string line = std::format(
-            "[DIAG] readyGate#{} PC=0x{:08X} obj=0x{:08X} r3=0x{:08X} +40={} +44=0x{:08X} +48={} +4c=0x{:08X} +50={} +54={} +58=0x{:08X} thread=0x{:08X} LR=",
-            hits, ppcPc, obj, cpu.m_gpr[3], list40Count, list40, list48Count, list48, total50, started54, current58,
-            cpu.m_scheduler.currentHandle());
+        std::string line = std::format("[DIAG] readyGate#{} PC=0x{:08X} obj=0x{:08X} r3=0x{:08X} +40={} +44=0x{:08X} +48={} +4c=0x{:08X} +50={} "
+                                       "+54={} +58=0x{:08X} thread=0x{:08X} LR=",
+                                       hits, ppcPc, obj, cpu.m_gpr[3], list40Count, list40, list48Count, list48, total50, started54, current58,
+                                       cpu.m_scheduler.currentHandle());
         line += symbolize(cpu, guestLr);
         appendReadinessList(line, mut, "wait40", list40, list40Count);
         appendReadinessList(line, mut, "load48", list48, list48Count);
@@ -1009,8 +994,7 @@ namespace Core::Diag {
         }
     }
 
-    static void appendGuestWords(std::string &line, Interpreter &cpu, const char *label, const std::uint32_t base,
-                                 const std::uint32_t bytes)
+    static void appendGuestWords(std::string &line, Interpreter &cpu, const char *label, const std::uint32_t base, const std::uint32_t bytes)
     {
         line += std::format(" {}@0x{:08X}:", label, base);
         for (std::uint32_t off = 0; off < bytes; off += 4)
@@ -1025,8 +1009,8 @@ namespace Core::Diag {
         const std::uint32_t pairs = readWordOrZero(cpu, anim + 0x1C);
         const std::uint32_t count = readWordOrZero(cpu, anim + 0x20) & 0xFFFF;
         const std::uint32_t capacity = readWordOrZero(cpu, anim + 0x22) & 0xFFFF;
-        line += std::format(" animFields block=0x{:08X} vt=0x{:08X} helpers=0x{:08X} pairs=0x{:08X} count={} cap={}",
-                            block, vtable, helpers, pairs, count, capacity);
+        line += std::format(" animFields block=0x{:08X} vt=0x{:08X} helpers=0x{:08X} pairs=0x{:08X} count={} cap={}", block, vtable, helpers, pairs,
+                            count, capacity);
         const std::uint32_t limit = std::min<std::uint32_t>(count, 6);
         for (std::uint32_t i = 0; i < limit; i++) {
             const std::uint32_t target = readWordOrZero(cpu, pairs + i * 8);
@@ -1034,8 +1018,7 @@ namespace Core::Diag {
             const std::uint32_t bound = readWordOrZero(cpu, target + 8);
             const std::uint8_t kind = readByteOrZero(cpu, curve + 0x1D);
             const std::uint32_t magic = readWordOrZero(cpu, curve);
-            line += std::format(" pair#{}=target:0x{:08X}/bound:0x{:08X}/curve:0x{:08X}/kind:{}/w0:0x{:08X}",
-                                i, target, bound, curve, kind, magic);
+            line += std::format(" pair#{}=target:0x{:08X}/bound:0x{:08X}/curve:0x{:08X}/kind:{}/w0:0x{:08X}", i, target, bound, curve, kind, magic);
         }
     }
 
@@ -1074,10 +1057,11 @@ namespace Core::Diag {
 
         const std::uint32_t guestLr = cpu.m_lr + Memory::MemoryMap::ApplicationCode;
         const std::uint8_t kind = readByteOrZero(mut, curve + 0x1D);
-        std::string line = std::format(
-            "[DIAG] FLVC null-target #{} {} PC=0x{:08X} anim=0x{:08X} target=0x{:08X} bound=0x{:08X} curve=0x{:08X} kind={} node=0x{:08X} curveName=\"{}\" boundName=\"{}\" thread=0x{:08X} LR=",
-            hits, flvcNullTracePcLabel(ppcPc), ppcPc, anim, target, bound, curve, kind, node, readGuestCString(mut, curve, 0x18),
-            readGuestCString(mut, bound ? bound + 0x80 : 0, 0x18), cpu.m_scheduler.currentHandle());
+        std::string line =
+                std::format("[DIAG] FLVC null-target #{} {} PC=0x{:08X} anim=0x{:08X} target=0x{:08X} bound=0x{:08X} curve=0x{:08X} kind={} "
+                            "node=0x{:08X} curveName=\"{}\" boundName=\"{}\" thread=0x{:08X} LR=",
+                            hits, flvcNullTracePcLabel(ppcPc), ppcPc, anim, target, bound, curve, kind, node, readGuestCString(mut, curve, 0x18),
+                            readGuestCString(mut, bound ? bound + 0x80 : 0, 0x18), cpu.m_scheduler.currentHandle());
         line += symbolize(cpu, guestLr);
         appendFlvcAnimSummary(line, mut, anim);
         appendGuestWords(line, mut, "targetWords", target, 0x30);
@@ -1114,10 +1098,7 @@ namespace Core::Diag {
         return heap;
     }
 
-    static bool isPowerOfTwo(const std::uint32_t value)
-    {
-        return value != 0 && (value & (value - 1)) == 0;
-    }
+    static bool isPowerOfTwo(const std::uint32_t value) { return value != 0 && (value & (value - 1)) == 0; }
 
     static std::uint32_t alignUpPow2(const std::uint32_t value, const std::uint32_t align)
     {
@@ -1197,13 +1178,13 @@ namespace Core::Diag {
                                      const std::uint32_t align)
     {
         const std::uint32_t name = readWordOrZero(cpu, heap + 0x28);
-        line += std::format(
-            " heapFields +1c=0x{:08X} +20=0x{:08X} +24=0x{:08X} +28=0x{:08X}/\"{}\" +50=0x{:08X} +90=0x{:08X} +94=0x{:08X} +98=0x{:08X} +9c=0x{:08X} +a0={} +a4=0x{:08X} +a8=0x{:08X} +ac=0x{:08X} +b0={} +b4=0x{:08X}",
-            readWordOrZero(cpu, heap + 0x1C), readWordOrZero(cpu, heap + 0x20), readWordOrZero(cpu, heap + 0x24),
-            name, readGuestCString(cpu, name, 0x40), readWordOrZero(cpu, heap + 0x50), readWordOrZero(cpu, heap + 0x90),
-            readWordOrZero(cpu, heap + 0x94), readWordOrZero(cpu, heap + 0x98), readWordOrZero(cpu, heap + 0x9C),
-            readWordOrZero(cpu, heap + 0xA0), readWordOrZero(cpu, heap + 0xA4), readWordOrZero(cpu, heap + 0xA8),
-            readWordOrZero(cpu, heap + 0xAC), readWordOrZero(cpu, heap + 0xB0), readWordOrZero(cpu, heap + 0xB4));
+        line += std::format(" heapFields +1c=0x{:08X} +20=0x{:08X} +24=0x{:08X} +28=0x{:08X}/\"{}\" +50=0x{:08X} +90=0x{:08X} +94=0x{:08X} "
+                            "+98=0x{:08X} +9c=0x{:08X} +a0={} +a4=0x{:08X} +a8=0x{:08X} +ac=0x{:08X} +b0={} +b4=0x{:08X}",
+                            readWordOrZero(cpu, heap + 0x1C), readWordOrZero(cpu, heap + 0x20), readWordOrZero(cpu, heap + 0x24), name,
+                            readGuestCString(cpu, name, 0x40), readWordOrZero(cpu, heap + 0x50), readWordOrZero(cpu, heap + 0x90),
+                            readWordOrZero(cpu, heap + 0x94), readWordOrZero(cpu, heap + 0x98), readWordOrZero(cpu, heap + 0x9C),
+                            readWordOrZero(cpu, heap + 0xA0), readWordOrZero(cpu, heap + 0xA4), readWordOrZero(cpu, heap + 0xA8),
+                            readWordOrZero(cpu, heap + 0xAC), readWordOrZero(cpu, heap + 0xB0), readWordOrZero(cpu, heap + 0xB4));
         appendSeadHeapListSummary(line, cpu, "free", heap + 0x98, request, align);
         appendSeadHeapListSummary(line, cpu, "used", heap + 0xA8, request, align);
     }
@@ -1232,10 +1213,10 @@ namespace Core::Diag {
 
         const std::uint32_t savedLr = readWordOrZero(mut, cpu.m_gpr[1] + 0x6C);
         const std::uint32_t caller = savedLr ? savedLr + Memory::MemoryMap::ApplicationCode : cpu.m_lr + Memory::MemoryMap::ApplicationCode;
-        std::string line = std::format(
-            "[DIAG] SEAD heap {} #{} PC=0x{:08X} heap=0x{:08X} req=0x{:X} align=0x{:X} rounded=0x{:X} work=0x{:X} result=0x{:08X} thread=0x{:08X} caller=",
-            failed ? "FAIL" : "large", hits, ppcPc, heap, request, align, rounded, cpu.m_gpr[26], result,
-            cpu.m_scheduler.currentHandle());
+        std::string line = std::format("[DIAG] SEAD heap {} #{} PC=0x{:08X} heap=0x{:08X} req=0x{:X} align=0x{:X} rounded=0x{:X} work=0x{:X} "
+                                       "result=0x{:08X} thread=0x{:08X} caller=",
+                                       failed ? "FAIL" : "large", hits, ppcPc, heap, request, align, rounded, cpu.m_gpr[26], result,
+                                       cpu.m_scheduler.currentHandle());
         line += symbolize(cpu, caller);
         appendSeadHeapFields(line, mut, heap, rounded, align);
         std::cout << line << std::endl;
@@ -1291,19 +1272,17 @@ namespace Core::Diag {
         const std::uint32_t thread = cpu.m_scheduler.currentHandle();
         std::string line;
         if (ppcPc == 0x0273D448) {
-            line = std::format("[DIAG] SEAD heap ctx #{} set-enter thread=0x{:08X} new=0x{:08X} LR=", hits, thread,
-                               cpu.m_gpr[4]);
+            line = std::format("[DIAG] SEAD heap ctx #{} set-enter thread=0x{:08X} new=0x{:08X} LR=", hits, thread, cpu.m_gpr[4]);
             line += symbolize(cpu, cpu.m_lr + Memory::MemoryMap::ApplicationCode);
         } else if (ppcPc == 0x0273D474) {
-            line = std::format("[DIAG] SEAD heap ctx #{} set-return thread=0x{:08X} old=0x{:08X} installed=0x{:08X} LR=",
-                               hits, thread, cpu.m_gpr[0], cpu.m_gpr[31]);
+            line = std::format("[DIAG] SEAD heap ctx #{} set-return thread=0x{:08X} old=0x{:08X} installed=0x{:08X} LR=", hits, thread, cpu.m_gpr[0],
+                               cpu.m_gpr[31]);
             line += symbolize(cpu, readWordOrZero(mut, cpu.m_gpr[1] + 0x14) + Memory::MemoryMap::ApplicationCode);
         } else {
             // Current-heap gets are frequent. Log every zero result because it is usually the
             // interesting fallback-to-root condition. Full non-zero get logging is explicit via
             // WEMU_SEAD_HEAP_CTX_TRACE_GETS=1.
-            line = std::format("[DIAG] SEAD heap ctx #{} get-return thread=0x{:08X} current=0x{:08X} caller=", hits,
-                               thread, current);
+            line = std::format("[DIAG] SEAD heap ctx #{} get-return thread=0x{:08X} current=0x{:08X} caller=", hits, thread, current);
             line += symbolize(cpu, cpu.m_gpr[0] + Memory::MemoryMap::ApplicationCode);
         }
         std::cout << line << std::endl;
@@ -1343,11 +1322,11 @@ namespace Core::Diag {
             std::uint8_t kind = 0;
             try {
                 kind = cpu.m_memory.read<std::uint8_t>(cpu.m_gpr[5] + 0x1D);
-            } catch (...) {
+            } catch (const Core::MemoryException &) {
+                kind = 0; // Unreadable diagnostic metadata uses the unknown-kind value.
             }
             Utils::Log::error("[DIAG] WEMU_FLVC_SKIP_NULL_TARGET: skip #{} anim=0x{:08X} target=0x{:08X} curve=0x{:08X} kind={} LR=0x{:08X}",
-                              skipped + 1, cpu.m_gpr[31], target, cpu.m_gpr[5], kind,
-                              cpu.m_lr + Memory::MemoryMap::ApplicationCode);
+                              skipped + 1, cpu.m_gpr[31], target, cpu.m_gpr[5], kind, cpu.m_lr + Memory::MemoryMap::ApplicationCode);
         }
         skipped++;
         cpu.m_pc = kAfterDispatchPc - Memory::MemoryMap::ApplicationCode;
@@ -1379,8 +1358,8 @@ namespace Core::Diag {
         std::memset(dst, 0, static_cast<std::size_t>(count) * sizeof(std::uint32_t));
         static std::uint32_t hits = 0;
         if (hits++ < 12) {
-            std::cout << std::format("[DIAG] MK8 zero UI array PC=0x{:08X} ptr=0x{:08X} count={} bytes=0x{:X} thread=0x{:08X} LR=",
-                                      ppcPc, ptr, count, count * 4, cpu.m_scheduler.currentHandle())
+            std::cout << std::format("[DIAG] MK8 zero UI array PC=0x{:08X} ptr=0x{:08X} count={} bytes=0x{:X} thread=0x{:08X} LR=", ppcPc, ptr, count,
+                                     count * 4, cpu.m_scheduler.currentHandle())
                       << symbolize(cpu, cpu.m_lr + Memory::MemoryMap::ApplicationCode) << std::endl;
         }
     }
@@ -1432,7 +1411,7 @@ namespace Core::Diag {
             }
             return out;
         }
-    }
+    } // namespace
 
     void noteMk8WorkQueueTrace(const Interpreter &cpu, const std::uint32_t ppcPc)
     {
@@ -1445,8 +1424,10 @@ namespace Core::Diag {
         if (ppcPc != kPushEntry && ppcPc != kPushStoreWrap && ppcPc != kPushStore && ppcPc != kPopEntry && ppcPc != kPopLoad && ppcPc != kPopCall)
             return;
 
-        const std::uint32_t queue = ppcPc == kPushEntry ? cpu.m_gpr[3] : ppcPc == kPushStoreWrap || ppcPc == kPushStore ? cpu.m_gpr[30]
-                                                                                                                        : ppcPc == kPopEntry ? cpu.m_gpr[3] : cpu.m_gpr[31];
+        const std::uint32_t queue = ppcPc == kPushEntry                              ? cpu.m_gpr[3]
+                                    : ppcPc == kPushStoreWrap || ppcPc == kPushStore ? cpu.m_gpr[30]
+                                    : ppcPc == kPopEntry                             ? cpu.m_gpr[3]
+                                                                                     : cpu.m_gpr[31];
         if (!queue || !shouldTraceMk8Queue(queue))
             return;
 
@@ -1507,12 +1488,11 @@ namespace Core::Diag {
         const std::uint32_t n = ++hits[ppcPc];
         if (n > maxHits)
             return;
-        std::cout << std::format("[DIAG] watch PC 0x{:08X} hit #{} (LR=", ppcPc, n)
-                  << symbolize(cpu, cpu.m_lr + Memory::MemoryMap::ApplicationCode) << ")" << std::endl;
+        std::cout << std::format("[DIAG] watch PC 0x{:08X} hit #{} (LR=", ppcPc, n) << symbolize(cpu, cpu.m_lr + Memory::MemoryMap::ApplicationCode)
+                  << ")" << std::endl;
         for (int i = 0; i < 32; i += 8)
-            std::cout << std::format("       r{:<2}: {:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X}", i, cpu.m_gpr[i],
-                                     cpu.m_gpr[i + 1], cpu.m_gpr[i + 2], cpu.m_gpr[i + 3], cpu.m_gpr[i + 4], cpu.m_gpr[i + 5],
-                                     cpu.m_gpr[i + 6], cpu.m_gpr[i + 7])
+            std::cout << std::format("       r{:<2}: {:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X}", i, cpu.m_gpr[i], cpu.m_gpr[i + 1],
+                                     cpu.m_gpr[i + 2], cpu.m_gpr[i + 3], cpu.m_gpr[i + 4], cpu.m_gpr[i + 5], cpu.m_gpr[i + 6], cpu.m_gpr[i + 7])
                       << std::endl;
 
         // WEMU_WATCH_DEREF="9" (register number): also dump 8 guest words at [rN]. An optional hex
@@ -1555,11 +1535,10 @@ namespace Core::Diag {
         std::cout << "\n[DIAG] ==== crash context: " << reason << " ====" << std::endl;
         std::cout << "  PC  = " << symbolize(cpu, ppcPc) << std::endl;
         std::cout << "  LR  = " << symbolize(cpu, cpu.m_lr + Memory::MemoryMap::ApplicationCode) << std::endl;
-        std::cout << std::format("  CTR = 0x{:08X}  XER.SO={}  CR=0x{:08X}", cpu.m_ctr, static_cast<int>(cpu.m_xer.so), cpu.m_cr.raw)
-                  << std::endl;
+        std::cout << std::format("  CTR = 0x{:08X}  XER.SO={}  CR=0x{:08X}", cpu.m_ctr, static_cast<int>(cpu.m_xer.so), cpu.m_cr.raw) << std::endl;
         for (int i = 0; i < 32; i += 4)
-            std::cout << std::format("  r{:<2}=0x{:08X} r{:<2}=0x{:08X} r{:<2}=0x{:08X} r{:<2}=0x{:08X}", i, cpu.m_gpr[i], i + 1,
-                                     cpu.m_gpr[i + 1], i + 2, cpu.m_gpr[i + 2], i + 3, cpu.m_gpr[i + 3])
+            std::cout << std::format("  r{:<2}=0x{:08X} r{:<2}=0x{:08X} r{:<2}=0x{:08X} r{:<2}=0x{:08X}", i, cpu.m_gpr[i], i + 1, cpu.m_gpr[i + 1],
+                                     i + 2, cpu.m_gpr[i + 2], i + 3, cpu.m_gpr[i + 3])
                       << std::endl;
 
         // Peek the objects the fault most likely dereferenced: dump a few words at each distinct
@@ -1614,9 +1593,8 @@ namespace Core::Diag {
         }
         if (const auto *regs = std::getenv("WEMU_THREAD_REGS"); regs && regs[0] == '1') {
             for (int i = 0; i < 32; i += 4)
-                std::cout << std::format("{}r{}={:08X} r{}={:08X} r{}={:08X} r{}={:08X}\n", indent,
-                                         i, cpu.m_gpr[i], i + 1, cpu.m_gpr[i + 1],
-                                         i + 2, cpu.m_gpr[i + 2], i + 3, cpu.m_gpr[i + 3]);
+                std::cout << std::format("{}r{}={:08X} r{}={:08X} r{}={:08X} r{}={:08X}\n", indent, i, cpu.m_gpr[i], i + 1, cpu.m_gpr[i + 1], i + 2,
+                                         cpu.m_gpr[i + 2], i + 3, cpu.m_gpr[i + 3]);
         }
         if (const auto *stack = std::getenv("WEMU_THREAD_STACK"); stack && stack[0] == '1')
             dumpBacktrace(cpu, indent);

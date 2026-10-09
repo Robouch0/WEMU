@@ -98,8 +98,8 @@ namespace Core {
         // Nobody ready: fast-forward the clock to the earliest sleeper and wake it.
         ThreadContext *earliest = nullptr;
         for (auto &up: m_threads)
-            if ((up->state == ThreadContext::State::Sleeping || (up->state == ThreadContext::State::Waiting && up->timedWait))
-                && (!earliest || up->wakeTick < earliest->wakeTick))
+            if ((up->state == ThreadContext::State::Sleeping || (up->state == ThreadContext::State::Waiting && up->timedWait)) &&
+                (!earliest || up->wakeTick < earliest->wakeTick))
                 earliest = up.get();
         if (earliest) {
             advanceTicks(earliest->wakeTick > m_now ? earliest->wakeTick - m_now : 0);
@@ -363,10 +363,7 @@ namespace Core {
         wakeAll(addr);
     }
 
-    bool Scheduler::preempt(Interpreter &cpu)
-    {
-        return reschedule(cpu, cpu.m_pc, true);
-    }
+    bool Scheduler::preempt(Interpreter &cpu) { return reschedule(cpu, cpu.m_pc, true); }
 
     bool Scheduler::rescheduleAfterHle(Interpreter &cpu)
     {

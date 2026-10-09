@@ -18,7 +18,7 @@ namespace Core::Gfx::Latte {
                 if (op == CF_TEX) {
                     const auto count = (((cf1 >> 10) & 7) | ((cf1 >> 16) & 8)) + 1;
                     for (unsigned i = 0; i < count; i++) {
-                        const auto off = std::uint64_t(cf0) * 2 + i * 4;
+                        const auto off = std::uint64_t(cf0) * 2 + std::uint64_t(i) * 4;
                         if (off + 3 >= words.size()) {
                             result->valid = false;
                             break;
@@ -45,7 +45,7 @@ namespace Core::Gfx::Latte {
                 bool usesLiteral = false;
                 std::uint32_t maxLitChan = 0, vectorSlots = 0;
                 do {
-                    const auto w0 = words[slot * 2], w1 = words[slot * 2 + 1];
+                    const auto w0 = words[std::size_t(slot) * 2], w1 = words[std::size_t(slot) * 2 + 1];
                     ++slot;
                     AluInst in;
                     in.raw0 = w0;
@@ -96,7 +96,7 @@ namespace Core::Gfx::Latte {
                     }
                     for (auto &in: group)
                         for (unsigned i = 0; i < literalSlots * 2; i++)
-                            in.literal[i] = std::bit_cast<float>(words[slot * 2 + i]);
+                            in.literal[i] = std::bit_cast<float>(words[std::size_t(slot) * 2 + i]);
                     slot += literalSlots;
                 }
                 groups.push_back(std::move(group));

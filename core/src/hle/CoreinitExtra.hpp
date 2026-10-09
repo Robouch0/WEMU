@@ -16,8 +16,8 @@ namespace Core {
     namespace Hle {
         // Callable through the same indirect-import path as OSDynLoad_FindExport.
         std::uint32_t exportFunction(Interpreter &cpu, const std::string &name);
-    }
-}
+    } // namespace Hle
+} // namespace Core
 
 void RegisterCoreinitExtraFunctions();
 

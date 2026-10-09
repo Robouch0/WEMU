@@ -60,6 +60,7 @@ namespace Core::Gfx {
             checkAction(posix_spawn_file_actions_addopen(&actions.value, STDOUT_FILENO, log.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600));
             checkAction(posix_spawn_file_actions_adddup2(&actions.value, STDOUT_FILENO, STDERR_FILENO));
             std::vector<char *> argv;
+            argv.reserve(arguments.size() + 1);
             for (auto &argument: arguments)
                 argv.push_back(argument.data());
             argv.push_back(nullptr);
@@ -77,7 +78,8 @@ namespace Core::Gfx {
                     const auto error = errno;
                     if (error != ECHILD) {
                         kill(child, SIGKILL);
-                        while (waitpid(child, &status, 0) < 0 && errno == EINTR) {}
+                        while (waitpid(child, &status, 0) < 0 && errno == EINTR) {
+                        }
                     }
                     throw std::runtime_error(std::string("Cannot reap shader tool: ") + std::strerror(error));
                 }
@@ -110,7 +112,7 @@ namespace Core::Gfx {
             result->error = "Unsupported shader stage";
             return result;
         }
-        if (source.empty() || source.size() > 4 * 1024 * 1024 || source.find('\0') != std::string_view::npos) {
+        if (source.empty() || source.size() > std::size_t{4} * 1024 * 1024 || source.find('\0') != std::string_view::npos) {
             result->error = "Invalid or oversized shader source";
             return result;
         }
@@ -129,7 +131,7 @@ namespace Core::Gfx {
             const auto log = temporary.path / "tool.log";
             {
                 std::ofstream file(input, std::ios::binary);
-                file.write(source.data(), source.size());
+                file.write(source.data(), static_cast<std::streamsize>(source.size()));
                 file.close();
                 if (!file)
                     throw std::runtime_error("Cannot write shader source");
@@ -140,7 +142,7 @@ namespace Core::Gfx {
             if (!file)
                 throw std::runtime_error("Cannot read compiled shader");
             const auto bytes = file.tellg();
-            if (bytes < 20 || bytes > 16 * 1024 * 1024 || bytes % 4)
+            if (bytes < 20 || bytes > std::streamoff{16} * 1024 * 1024 || bytes % 4)
                 throw std::runtime_error("Invalid SPIR-V output size");
             result->words.resize(static_cast<std::size_t>(bytes) / 4);
             file.seekg(0);
@@ -148,7 +150,7 @@ namespace Core::Gfx {
             if (!file || result->words[0] != 0x07230203u)
                 throw std::runtime_error("Invalid SPIR-V output");
             const auto bytesCached = key.second.size() + result->words.size() * sizeof(std::uint32_t);
-            if (m_cache.size() >= 128 || m_cacheBytes + bytesCached > 32 * 1024 * 1024) {
+            if (m_cache.size() >= 128 || m_cacheBytes + bytesCached > std::size_t{32} * 1024 * 1024) {
                 m_cache.clear();
                 m_cacheBytes = 0;
             }

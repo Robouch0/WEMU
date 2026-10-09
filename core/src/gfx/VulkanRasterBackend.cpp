@@ -41,9 +41,11 @@ namespace Core::Gfx {
             if (!draw.vertices.empty()) {
                 double minX = draw.vertices[0].x, maxX = minX;
                 double minY = draw.vertices[0].y, maxY = minY;
-                for (const auto &vertex : draw.vertices) {
-                    minX = std::min(minX, double(vertex.x)); maxX = std::max(maxX, double(vertex.x));
-                    minY = std::min(minY, double(vertex.y)); maxY = std::max(maxY, double(vertex.y));
+                for (const auto &vertex: draw.vertices) {
+                    minX = std::min(minX, double(vertex.x));
+                    maxX = std::max(maxX, double(vertex.x));
+                    minY = std::min(minY, double(vertex.y));
+                    maxY = std::max(maxY, double(vertex.y));
                 }
                 // Pad one pixel for subpixel quantization. Clamp in floating point
                 // before converting, so even very large offscreen vertices are safe.
@@ -126,7 +128,8 @@ namespace Core::Gfx {
                 std::map<PipelineKey, PipelineBundle> pipelines;
                 void clearPipelines()
                 {
-                    if (device) vkDeviceWaitIdle(device);
+                    if (device)
+                        vkDeviceWaitIdle(device);
                     for (const auto &[key, bundle]: pipelines) {
                         vkDestroyPipeline(device, bundle.pipeline, nullptr);
                         vkDestroyPipelineLayout(device, bundle.layout, nullptr);
@@ -205,24 +208,28 @@ namespace Core::Gfx {
         };
 
         struct ColorImage {
-            std::shared_ptr<Context> context;
-            VkImage image{};
-            VkDeviceMemory memory{};
-            unsigned width{}, height{};
-            std::uint64_t version{};
-            ~ColorImage() {
-                if (image) vkDestroyImage(context->device, image, nullptr);
-                if (memory) vkFreeMemory(context->device, memory, nullptr);
-            }
+                std::shared_ptr<Context> context;
+                VkImage image{};
+                VkDeviceMemory memory{};
+                unsigned width{}, height{};
+                std::uint64_t version{};
+                ~ColorImage()
+                {
+                    if (image)
+                        vkDestroyImage(context->device, image, nullptr);
+                    if (memory)
+                        vkFreeMemory(context->device, memory, nullptr);
+                }
         };
         struct NativeImage final : RasterImage {
-            std::shared_ptr<ColorImage> storage;
-            std::uint64_t version;
-            unsigned pitch;
-            std::shared_ptr<const std::vector<std::uint8_t>> padding;
-            NativeImage(std::shared_ptr<ColorImage> image, unsigned rowPitch,
-                        std::shared_ptr<const std::vector<std::uint8_t>> rowPadding) :
-                storage(std::move(image)), version(storage->version), pitch(rowPitch), padding(std::move(rowPadding)) {}
+                std::shared_ptr<ColorImage> storage;
+                std::uint64_t version;
+                unsigned pitch;
+                std::shared_ptr<const std::vector<std::uint8_t>> padding;
+                NativeImage(std::shared_ptr<ColorImage> image, unsigned rowPitch, std::shared_ptr<const std::vector<std::uint8_t>> rowPadding) :
+                    storage(std::move(image)), version(storage->version), pitch(rowPitch), padding(std::move(rowPadding))
+                {
+                }
         };
 
         class DrawResources : public std::enable_shared_from_this<DrawResources> {
@@ -243,9 +250,10 @@ namespace Core::Gfx {
 
                         std::size_t rowBytes() const
                         {
-                            const unsigned bytes = format == VK_FORMAT_R8_UNORM ? 1
-                                : format == VK_FORMAT_R8G8_UNORM ? 2
-                                : format == VK_FORMAT_R32G32B32A32_SFLOAT ? 16 : 4;
+                            const unsigned bytes = format == VK_FORMAT_R8_UNORM              ? 1
+                                                   : format == VK_FORMAT_R8G8_UNORM          ? 2
+                                                   : format == VK_FORMAT_R32G32B32A32_SFLOAT ? 16
+                                                                                             : 4;
                             return std::size_t(width) * bytes;
                         }
                         std::size_t bytes() const { return rowBytes() * height * layers; }
@@ -254,8 +262,7 @@ namespace Core::Gfx {
                             const auto *source = snapshot.empty() ? reinterpret_cast<const std::byte *>(rgba.data()) : snapshot.data();
                             const auto pitch = snapshot.empty() ? rowBytes() : sourcePitch;
                             for (unsigned y = 0; y < height * layers; ++y)
-                                if (std::memcmp(static_cast<const std::byte *>(previous) + y * rowBytes(),
-                                                source + y * pitch, rowBytes()) != 0)
+                                if (std::memcmp(static_cast<const std::byte *>(previous) + y * rowBytes(), source + y * pitch, rowBytes()) != 0)
                                     return false;
                             return true;
                         }
@@ -267,14 +274,14 @@ namespace Core::Gfx {
                                 std::memcpy(destination, snapshot.data(), bytes());
                             } else {
                                 for (unsigned y = 0; y < height * layers; ++y)
-                                    std::memcpy(static_cast<std::byte *>(destination) + y * rowBytes(),
-                                        snapshot.data() + y * sourcePitch, rowBytes());
+                                    std::memcpy(static_cast<std::byte *>(destination) + y * rowBytes(), snapshot.data() + y * sourcePitch,
+                                                rowBytes());
                             }
                         }
                 };
                 explicit DrawResources(std::shared_ptr<Context> ctx) :
-                    contextOwner(std::move(ctx)), context(*contextOwner), physical(context.physical), device(context.device),
-                    queue(context.queue), pipelineCache(context.pipelineCache), family(context.family)
+                    contextOwner(std::move(ctx)), context(*contextOwner), physical(context.physical), device(context.device), queue(context.queue),
+                    pipelineCache(context.pipelineCache), family(context.family)
                 {
                 }
                 DrawResources(const DrawResources &) = delete;
@@ -404,7 +411,8 @@ namespace Core::Gfx {
                     vertexBuffer = buffer(draw.vertices.size_bytes(), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, vertexMemory);
                     upload(vertexMemory, draw.vertices.data(), draw.vertices.size_bytes());
                     targetBuffer = buffer(draw.target.size(), VK_BUFFER_USAGE_TRANSFER_SRC_BIT, targetMemory);
-                    if (!targetSource) upload(targetMemory, draw.target.data(), draw.target.size());
+                    if (!targetSource)
+                        upload(targetMemory, draw.target.data(), draw.target.size());
                     Context::PipelineKey key{vertex, fragment, {}, draw.width, draw.height, draw.channelMask, draw.scissor};
                     key.blend = blendKey(draw.blend);
                     for (const auto &texture: textures)
@@ -497,11 +505,17 @@ namespace Core::Gfx {
                         blend.colorWriteMask = draw.channelMask;
                         if (draw.blend.enabled) {
                             blend.blendEnable = VK_TRUE;
-                            blend.srcColorBlendFactor = *blendFactor(draw.blend.colorSource);
-                            blend.dstColorBlendFactor = *blendFactor(draw.blend.colorDestination);
+                            const auto colorSource = blendFactor(draw.blend.colorSource);
+                            const auto colorDestination = blendFactor(draw.blend.colorDestination);
+                            const auto alphaSource = blendFactor(draw.blend.alphaSource);
+                            const auto alphaDestination = blendFactor(draw.blend.alphaDestination);
+                            if (!colorSource || !colorDestination || !alphaSource || !alphaDestination)
+                                throw std::runtime_error("Unsupported blend factors");
+                            blend.srcColorBlendFactor = *colorSource;
+                            blend.dstColorBlendFactor = *colorDestination;
                             blend.colorBlendOp = VK_BLEND_OP_ADD;
-                            blend.srcAlphaBlendFactor = *blendFactor(draw.blend.alphaSource);
-                            blend.dstAlphaBlendFactor = *blendFactor(draw.blend.alphaDestination);
+                            blend.srcAlphaBlendFactor = *alphaSource;
+                            blend.dstAlphaBlendFactor = *alphaDestination;
                             blend.alphaBlendOp = VK_BLEND_OP_ADD;
                         }
                         VkPipelineColorBlendStateCreateInfo blending{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
@@ -543,8 +557,8 @@ namespace Core::Gfx {
                         const auto rowBytes = std::size_t(draw.pitch - draw.width) * 4;
                         auto snapshot = std::make_shared<std::vector<std::uint8_t>>(rowBytes * draw.height);
                         for (unsigned y = 0; y < draw.height; ++y)
-                            std::memcpy(snapshot->data() + y * rowBytes,
-                                        draw.target.data() + (std::size_t(y) * draw.pitch + draw.width) * 4, rowBytes);
+                            std::memcpy(snapshot->data() + y * rowBytes, draw.target.data() + (std::size_t(y) * draw.pitch + draw.width) * 4,
+                                        rowBytes);
                         padding = std::move(snapshot);
                     }
                     const auto region = targetSource ? VkRect2D{{0, 0}, {draw.width, draw.height}} : readbackRegion(draw);
@@ -556,8 +570,8 @@ namespace Core::Gfx {
                         VkMemoryBarrier hostWrites{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
                         hostWrites.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
                         hostWrites.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-                        vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                                             0, 1, &hostWrites, 0, nullptr, 0, nullptr);
+                        vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &hostWrites, 0, nullptr, 0,
+                                             nullptr);
                     }
                     VkImageMemoryBarrier targetBarrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
                     targetBarrier.srcQueueFamilyIndex = targetBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -574,8 +588,8 @@ namespace Core::Gfx {
                             VkImageCopy copy{};
                             copy.srcSubresource = copy.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
                             copy.extent = {draw.width, draw.height, 1};
-                            vkCmdCopyImage(command, targetSource->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                                image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+                            vkCmdCopyImage(command, targetSource->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, image,
+                                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
                             sampledImages.push_back(targetSource);
                         } else {
                             VkBufferImageCopy targetCopy{};
@@ -590,8 +604,7 @@ namespace Core::Gfx {
                     targetBarrier.srcAccessMask = retainedTarget ? VK_ACCESS_MEMORY_WRITE_BIT : VK_ACCESS_TRANSFER_WRITE_BIT;
                     targetBarrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
                     vkCmdPipelineBarrier(command, retainedTarget ? VK_PIPELINE_STAGE_ALL_COMMANDS_BIT : VK_PIPELINE_STAGE_TRANSFER_BIT,
-                                         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr, 0,
-                                         nullptr, 1, &targetBarrier);
+                                         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr, 0, nullptr, 1, &targetBarrier);
                     VkRenderPassBeginInfo rp{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
                     rp.renderPass = pass;
                     rp.framebuffer = framebuffer;
@@ -599,7 +612,7 @@ namespace Core::Gfx {
                     vkCmdBeginRenderPass(command, &rp, VK_SUBPASS_CONTENTS_INLINE);
                     vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
                     vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &descriptor, 0, nullptr);
-                    const float scale[]{2.0f / draw.width, 2.0f / draw.height};
+                    const float scale[]{2.0f / float(draw.width), 2.0f / float(draw.height)};
                     vkCmdPushConstants(command, layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(scale), scale);
                     const VkDeviceSize offset = 0;
                     vkCmdBindVertexBuffers(command, 0, 1, &vertexBuffer, &offset);
@@ -619,7 +632,8 @@ namespace Core::Gfx {
                     barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
                     barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
                     if (!lazyReadback)
-                        vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
+                        vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &barrier, 0, nullptr, 0,
+                                             nullptr);
                     check(vkEndCommandBuffer(command), "end commands");
                     VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
                     submit.commandBufferCount = 1;
@@ -634,10 +648,12 @@ namespace Core::Gfx {
                         pendingReadback.reset();
                         return {readPixels(draw.width, draw.height, draw.pitch, padding), 0, 0, {}};
                     }
-                    auto ticket = std::make_shared<RasterReadback>(draw.target.size(),
-                        [self = shared_from_this(), padding, width = draw.width, height = draw.height, pitch = draw.pitch] {
-                            return self->readPixels(width, height, pitch, padding);
-                        }, std::make_shared<NativeImage>(colorImage, draw.pitch, padding));
+                    auto ticket = std::make_shared<RasterReadback>(
+                            draw.target.size(),
+                            [self = shared_from_this(), padding, width = draw.width, height = draw.height, pitch = draw.pitch] {
+                                return self->readPixels(width, height, pitch, padding);
+                            },
+                            std::make_shared<NativeImage>(colorImage, draw.pitch, padding));
                     pendingReadback = ticket;
                     return {{}, 0, 0, std::move(ticket)};
                 }
@@ -650,7 +666,7 @@ namespace Core::Gfx {
                 }
 
                 std::vector<std::uint8_t> readPixels(unsigned width, unsigned height, unsigned pitch,
-                                                   const std::shared_ptr<const std::vector<std::uint8_t>> &padding)
+                                                     const std::shared_ptr<const std::vector<std::uint8_t>> &padding)
                 {
                     wait();
                     if (!readbackValid) {
@@ -668,8 +684,8 @@ namespace Core::Gfx {
                         VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
                         barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
                         barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
-                        vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT,
-                                             0, 1, &barrier, 0, nullptr, 0, nullptr);
+                        vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &barrier, 0, nullptr, 0,
+                                             nullptr);
                         check(vkEndCommandBuffer(command), "end readback commands");
                         VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
                         submit.commandBufferCount = 1;
@@ -685,13 +701,12 @@ namespace Core::Gfx {
                     check(vkMapMemory(device, readbackMemory, 0, result.size(), 0, &mapped), "map readback");
                     for (unsigned y = 0; y < height; ++y)
                         std::memcpy(result.data() + std::size_t(y) * pitch * 4,
-                                    static_cast<const std::uint8_t *>(mapped) + std::size_t(y) * pitch * 4, width * 4);
+                                    static_cast<const std::uint8_t *>(mapped) + std::size_t(y) * pitch * 4, std::size_t(width) * 4);
                     vkUnmapMemory(device, readbackMemory);
                     if (padding) {
                         const auto rowBytes = std::size_t(pitch - width) * 4;
                         for (unsigned y = 0; y < height; ++y)
-                            std::memcpy(result.data() + (std::size_t(y) * pitch + width) * 4,
-                                        padding->data() + y * rowBytes, rowBytes);
+                            std::memcpy(result.data() + (std::size_t(y) * pitch + width) * 4, padding->data() + y * rowBytes, rowBytes);
                     }
                     return result;
                 }
@@ -706,11 +721,13 @@ namespace Core::Gfx {
                     upload(uniformMemory, constants.data(), sizeof(constants));
                     upload(vertexMemory, draw.vertices.data(), draw.vertices.size_bytes());
                     retainedTarget = targetSource ? targetSource == colorImage : targetMatchesReadback(draw);
-                    if (!targetSource && !retainedTarget) upload(targetMemory, draw.target.data(), draw.target.size());
+                    if (!targetSource && !retainedTarget)
+                        upload(targetMemory, draw.target.data(), draw.target.size());
                     for (std::size_t i = 0; i < textures.size(); ++i) {
                         const auto &texture = textures[i];
                         if (texture.rendered) {
-                            recordTextureUpload(textureImages[i], textureStagingBuffers[i], texture.width, texture.height, false, texture.rendered, texture.layers);
+                            recordTextureUpload(textureImages[i], textureStagingBuffers[i], texture.width, texture.height, false, texture.rendered,
+                                                texture.layers);
                             textureStagingValid[i] = false;
                             continue;
                         }
@@ -743,14 +760,15 @@ namespace Core::Gfx {
                 }
                 bool targetMatchesReadback(const RasterDraw &draw)
                 {
-                    if (!submitted || !readbackValid) return false;
+                    if (!submitted || !readbackValid)
+                        return false;
                     void *mapped = nullptr;
                     check(vkMapMemory(device, readbackMemory, 0, draw.target.size(), 0, &mapped), "map target comparison");
                     bool equal = true;
                     for (unsigned y = 0; y < draw.height; ++y) {
                         const auto offset = std::size_t(y) * draw.pitch * 4;
                         if (std::memcmp(draw.target.data() + offset, static_cast<const std::uint8_t *>(mapped) + offset,
-                                        std::size_t(draw.width) * 4)) {
+                                        std::size_t(draw.width) * 4) != 0) {
                             equal = false;
                             break;
                         }
@@ -806,12 +824,12 @@ namespace Core::Gfx {
                     check(vkCreateSampler(device, &si, nullptr, &sampler), "create sampler");
                     samplers.push_back(sampler);
                     VkDeviceMemory stagingMemory{};
-                    const auto staging = buffer(texture.bytes(), VK_BUFFER_USAGE_TRANSFER_SRC_BIT, stagingMemory,
-                                                VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+                    const auto staging = buffer(texture.bytes(), VK_BUFFER_USAGE_TRANSFER_SRC_BIT, stagingMemory, VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
                     textureStagingBuffers.push_back(staging);
                     textureStagingMemories.push_back(stagingMemory);
                     textureStagingValid.push_back(!texture.rendered);
-                    if (!texture.rendered) uploadTextureData(stagingMemory, texture);
+                    if (!texture.rendered)
+                        uploadTextureData(stagingMemory, texture);
                     recordTextureUpload(textureImage, staging, texture.width, texture.height, true, texture.rendered, texture.layers);
                     VkDescriptorImageInfo info{sampler, textureView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
                     VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
@@ -839,8 +857,8 @@ namespace Core::Gfx {
                         VkImageCopy copy{};
                         copy.srcSubresource = copy.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
                         copy.extent = {width, height, 1};
-                        vkCmdCopyImage(command, source->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                            textureImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+                        vkCmdCopyImage(command, source->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, textureImage,
+                                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
                         sampledImages.push_back(source);
                     } else {
                         VkBufferImageCopy copy{};
@@ -861,8 +879,8 @@ namespace Core::Gfx {
                     if (result != VK_SUCCESS)
                         throw std::runtime_error(std::string(operation) + ": Vulkan result " + std::to_string(result));
                 }
-                VkDeviceMemory allocate(const VkMemoryRequirements &req, VkMemoryPropertyFlags flags,
-                                        VkMemoryPropertyFlags preferred = 0, bool track = true)
+                VkDeviceMemory allocate(const VkMemoryRequirements &req, VkMemoryPropertyFlags flags, VkMemoryPropertyFlags preferred = 0,
+                                        bool track = true)
                 {
                     VkPhysicalDeviceMemoryProperties props{};
                     vkGetPhysicalDeviceMemoryProperties(physical, &props);
@@ -876,7 +894,8 @@ namespace Core::Gfx {
                             ai.memoryTypeIndex = i;
                             VkDeviceMemory memory{};
                             check(vkAllocateMemory(device, &ai, nullptr, &memory), "allocate memory");
-                            if (track) memories.push_back(memory);
+                            if (track)
+                                memories.push_back(memory);
                             return memory;
                         }
                     }
@@ -936,6 +955,7 @@ namespace Core::Gfx {
                 std::vector<VkSampler> samplers;
                 bool submitted{};
                 bool retainedTarget{};
+
             public:
                 std::uint64_t retainedTextures{};
                 std::uint64_t retainedTextureBytes{};
@@ -981,15 +1001,9 @@ namespace Core::Gfx {
     std::uint64_t VulkanRasterBackend::residentTargetCopies() const noexcept { return m_impl->residentTargetCopies; }
     std::uint64_t VulkanRasterBackend::readbackTransfers() const noexcept { return m_impl->context ? m_impl->context->readbackTransfers : 0; }
 
-    std::optional<RasterResult> VulkanRasterBackend::render(const RasterDraw &draw)
-    {
-        return renderImpl(draw, false);
-    }
+    std::optional<RasterResult> VulkanRasterBackend::render(const RasterDraw &draw) { return renderImpl(draw, false); }
 
-    std::optional<RasterResult> VulkanRasterBackend::renderDeferred(const RasterDraw &draw)
-    {
-        return renderImpl(draw, true);
-    }
+    std::optional<RasterResult> VulkanRasterBackend::renderDeferred(const RasterDraw &draw) { return renderImpl(draw, true); }
 
     std::optional<RasterResult> VulkanRasterBackend::renderImpl(const RasterDraw &inputDraw, bool deferReadback)
     {
@@ -1006,7 +1020,7 @@ namespace Core::Gfx {
              !blendFactor(draw.blend.colorDestination) || !blendFactor(draw.blend.alphaSource) || !blendFactor(draw.blend.alphaDestination)))
             return reject("Unsupported blend factors or equation");
         if (!draw.width || !draw.height || draw.width > 4096 || draw.height > 4096 || draw.pitch < draw.width ||
-            std::uint64_t(draw.pitch) * draw.height * 4 != draw.target.size() || draw.target.size() > 64 * 1024 * 1024)
+            std::uint64_t(draw.pitch) * draw.height * 4 != draw.target.size() || draw.target.size() > std::size_t{64} * 1024 * 1024)
             return reject("Unsupported target dimensions");
         if (draw.vertices.size() % 3 || draw.vertices.size() > 262144 || draw.constants.size() > 1024 ||
             draw.textures.size() != draw.shader.textures.size() || draw.textures.size() > 16)
@@ -1017,7 +1031,8 @@ namespace Core::Gfx {
         if (draw.renderedTarget && draw.renderedTarget->size() != draw.target.size())
             return reject("Invalid rendered target size");
         if (draw.vertices.empty() || !draw.channelMask || draw.scissor[2] <= 0 || draw.scissor[3] <= 0) {
-            if (draw.renderedTarget) draw.target = draw.renderedTarget->resolve();
+            if (draw.renderedTarget)
+                draw.target = draw.renderedTarget->resolve();
             return RasterResult{std::vector<std::uint8_t>(draw.target.begin(), draw.target.end()), 0, 0};
         }
         std::uint64_t textureBytes = 0;
@@ -1025,38 +1040,40 @@ namespace Core::Gfx {
         for (const auto &texture: draw.textures) {
             const auto &binding = texture.binding;
             const auto found = std::find_if(draw.shader.textures.begin(), draw.shader.textures.end(), [&](const auto &expected) {
-                return expected.binding == binding.binding && expected.resource == binding.resource && expected.sampler == binding.sampler
-                    && expected.type == binding.type;
+                return expected.binding == binding.binding && expected.resource == binding.resource && expected.sampler == binding.sampler &&
+                       expected.type == binding.type;
             });
-            if (!binding.binding || binding.binding > 16 || !bindings.insert(binding.binding).second || found == draw.shader.textures.end() || !texture.texel ||
-                !texture.width || !texture.height || texture.width > 4096 || texture.height > 4096)
+            if (!binding.binding || binding.binding > 16 || !bindings.insert(binding.binding).second || found == draw.shader.textures.end() ||
+                !texture.texel || !texture.width || !texture.height || texture.width > 4096 || texture.height > 4096)
                 return reject("Unsupported texture binding");
             const bool array = binding.type == Latte::TextureType::TwoDArray;
-            if (!texture.layers || texture.layers > 256 || (!array && texture.layers != 1)
-                || (array && (texture.rendered || (texture.unorm8.empty() && texture.rgba32.empty() && texture.r32.empty()))))
+            if (!texture.layers || texture.layers > 256 || (!array && texture.layers != 1) ||
+                (array && (texture.rendered || (texture.unorm8.empty() && texture.rgba32.empty() && texture.r32.empty()))))
                 return reject("Unsupported array texture snapshot");
-            if (texture.rendered && (texture.unorm8Pitch < texture.width
-                || std::uint64_t(texture.unorm8Pitch) * texture.height * 4 != texture.rendered->size()))
+            if (texture.rendered &&
+                (texture.unorm8Pitch < texture.width || std::uint64_t(texture.unorm8Pitch) * texture.height * 4 != texture.rendered->size()))
                 return reject("Invalid rendered texture snapshot");
             if (!texture.unorm8.empty() &&
-                ((texture.unorm8Channels != 1 && texture.unorm8Channels != 2 && texture.unorm8Channels != 4)
-                 || texture.unorm8Pitch < texture.width
-                 || std::uint64_t(texture.unorm8Pitch) * texture.height * texture.layers * texture.unorm8Channels > texture.unorm8.size()))
+                ((texture.unorm8Channels != 1 && texture.unorm8Channels != 2 && texture.unorm8Channels != 4) || texture.unorm8Pitch < texture.width ||
+                 std::uint64_t(texture.unorm8Pitch) * texture.height * texture.layers * texture.unorm8Channels > texture.unorm8.size()))
                 return reject("Incomplete or unsupported UNORM8 texture snapshot");
-            if (!texture.rgba32.empty() && (!texture.unorm8.empty()
-                || texture.rgba32.size() != std::uint64_t(texture.width) * texture.height * texture.layers * 4))
+            if (!texture.rgba32.empty() &&
+                (!texture.unorm8.empty() || texture.rgba32.size() != std::uint64_t(texture.width) * texture.height * texture.layers * 4))
                 return reject("Invalid float texture snapshot");
-            if (!texture.r32.empty() && (!texture.unorm8.empty() || !texture.rgba32.empty()
-                || texture.r32.size() != std::uint64_t(texture.width) * texture.height * texture.layers))
+            if (!texture.r32.empty() && (!texture.unorm8.empty() || !texture.rgba32.empty() ||
+                                         texture.r32.size() != std::uint64_t(texture.width) * texture.height * texture.layers))
                 return reject("Invalid R32 texture snapshot");
             const auto r = texture.sampler.regs[0];
             // Match the reference's base-level magnification filter. Other addressing
             // modes need separate border/mirror-clamp validation before acceleration.
             if ((r & 7) > 2 || ((r >> 3) & 7) > 2 || ((r >> 9) & 7) > 1)
                 return reject("Unsupported sampler mode");
-            textureBytes += std::uint64_t(texture.width) * texture.height * texture.layers
-                * (texture.rendered ? 4 : !texture.unorm8.empty() ? texture.unorm8Channels : !texture.r32.empty() ? 4 : 16);
-            if (textureBytes > 128 * 1024 * 1024)
+            textureBytes += std::uint64_t(texture.width) * texture.height * texture.layers *
+                            (texture.rendered          ? 4
+                             : !texture.unorm8.empty() ? texture.unorm8Channels
+                             : !texture.r32.empty()    ? 4
+                                                       : 16);
+            if (textureBytes > std::uint64_t{128} * 1024 * 1024)
                 return reject("Texture upload budget exceeded");
         }
         constexpr auto vertexSource = R"(#version 450
@@ -1091,9 +1108,8 @@ void main() {
         std::shared_ptr<const NativeImage> targetSnapshot;
         if (draw.renderedTarget) {
             const auto native = std::dynamic_pointer_cast<const NativeImage>(draw.renderedTarget->image());
-            if (native && native->pitch == draw.pitch && native->storage->context == m_impl->context
-                && native->storage->version == native->version
-                && native->storage->width == draw.width && native->storage->height == draw.height) {
+            if (native && native->pitch == draw.pitch && native->storage->context == m_impl->context && native->storage->version == native->version &&
+                native->storage->width == draw.width && native->storage->height == draw.height) {
                 targetSource = native->storage;
                 targetSnapshot = native;
             } else
@@ -1105,19 +1121,20 @@ void main() {
             std::shared_ptr<ColorImage> resident;
             if (texture.rendered) {
                 const auto native = std::dynamic_pointer_cast<const NativeImage>(texture.rendered->image());
-                if (native && native->storage->context == m_impl->context
-                    && native->storage->version == native->version
-                    && native->storage->width == texture.width && native->storage->height == texture.height)
+                if (native && native->storage->context == m_impl->context && native->storage->version == native->version &&
+                    native->storage->width == texture.width && native->storage->height == texture.height)
                     resident = native->storage;
                 texture.unorm8 = resident ? std::span<const std::uint8_t>{} : texture.rendered->resolve();
                 texture.unorm8Channels = 4;
                 texture.r32 = {};
                 texture.rgba32 = {};
             }
-            const auto textureFormat = resident ? VK_FORMAT_R8G8B8A8_UNORM : !texture.r32.empty() ? VK_FORMAT_R32_SFLOAT
-                : texture.unorm8.empty() ? VK_FORMAT_R32G32B32A32_SFLOAT
-                : texture.unorm8Channels == 1 ? VK_FORMAT_R8_UNORM
-                : texture.unorm8Channels == 2 ? VK_FORMAT_R8G8_UNORM : VK_FORMAT_R8G8B8A8_UNORM;
+            const auto textureFormat = resident                      ? VK_FORMAT_R8G8B8A8_UNORM
+                                       : !texture.r32.empty()        ? VK_FORMAT_R32_SFLOAT
+                                       : texture.unorm8.empty()      ? VK_FORMAT_R32G32B32A32_SFLOAT
+                                       : texture.unorm8Channels == 1 ? VK_FORMAT_R8_UNORM
+                                       : texture.unorm8Channels == 2 ? VK_FORMAT_R8G8_UNORM
+                                                                     : VK_FORMAT_R8G8B8A8_UNORM;
             VkFormatProperties format{};
             vkGetPhysicalDeviceFormatProperties(m_impl->context->physical, textureFormat, &format);
             const auto r = texture.sampler.regs[0];
@@ -1140,9 +1157,9 @@ void main() {
             uploaded.rendered = resident;
             if (!texture.r32.empty()) {
                 const auto channel = [&](unsigned c) {
-                    constexpr VkComponentSwizzle channels[]{VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_ZERO,
-                        VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ONE, VK_COMPONENT_SWIZZLE_ZERO,
-                        VK_COMPONENT_SWIZZLE_ONE, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ZERO};
+                    constexpr VkComponentSwizzle channels[]{VK_COMPONENT_SWIZZLE_R,    VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ZERO,
+                                                            VK_COMPONENT_SWIZZLE_ONE,  VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ONE,
+                                                            VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ZERO};
                     return channels[(texture.r32Map >> (24 - c * 8)) & 7];
                 };
                 uploaded.components = {channel(0), channel(1), channel(2), channel(3)};
@@ -1157,9 +1174,12 @@ void main() {
                                                             VK_COMPONENT_SWIZZLE_A,    VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ONE,
                                                             VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ZERO};
                     const auto selector = (texture.unorm8Map >> (24 - c * 8)) & 7;
-                    if (texture.unorm8Channels == 1 && selector < 3) return VK_COMPONENT_SWIZZLE_R;
-                    if (texture.unorm8Channels == 2 && selector == 2) return VK_COMPONENT_SWIZZLE_ZERO;
-                    if (texture.unorm8Channels < 4 && selector == 3) return VK_COMPONENT_SWIZZLE_ONE;
+                    if (texture.unorm8Channels == 1 && selector < 3)
+                        return VK_COMPONENT_SWIZZLE_R;
+                    if (texture.unorm8Channels == 2 && selector == 2)
+                        return VK_COMPONENT_SWIZZLE_ZERO;
+                    if (texture.unorm8Channels < 4 && selector == 3)
+                        return VK_COMPONENT_SWIZZLE_ONE;
                     return channels[selector];
                 };
                 uploaded.components = {channel(0), channel(1), channel(2), channel(3)};
@@ -1178,15 +1198,15 @@ void main() {
             for (unsigned y = 0; y < texture.height; ++y)
                 for (unsigned x = 0; x < texture.width; ++x) {
                     const auto color = texture.texel(x, y);
-                    std::copy(color.begin(), color.end(), uploaded.rgba.begin() + (std::size_t(y) * texture.width + x) * 4);
+                    std::copy(color.begin(), color.end(), uploaded.rgba.data() + (std::size_t(y) * texture.width + x) * 4);
                 }
             textures.push_back(std::move(uploaded));
         }
         std::array<float, 1152> constants{};
         std::copy(draw.constants.begin(), draw.constants.end(), constants.begin());
-        for (const auto &texture : draw.textures) {
+        for (const auto &texture: draw.textures) {
             const auto border = texture.sampler.border();
-            std::copy(border.begin(), border.end(), constants.begin() + 1024 + (texture.binding.binding - 1) * 4);
+            std::copy(border.begin(), border.end(), constants.data() + 1024 + std::size_t(texture.binding.binding - 1) * 4);
             const auto offset = 1088 + (texture.binding.binding - 1) * 4;
             const auto sampler = texture.sampler.regs[0];
             constants[offset] = float(sampler & 7);
@@ -1201,10 +1221,10 @@ void main() {
         const auto estimatedBytes = std::uint64_t(draw.target.size()) * 3 + textureBytes * 2 + draw.vertices.size_bytes() + sizeof(constants);
         for (const auto &texture: textures) {
             key.pipeline.bindings.push_back(texture.binding);
-            key.textureShape.insert(key.textureShape.end(),
-                                    {texture.width, texture.height, texture.layers, unsigned(texture.array), unsigned(texture.format), unsigned(texture.components.r),
-                                     unsigned(texture.components.g), unsigned(texture.components.b), unsigned(texture.components.a),
-                                     unsigned(texture.addressU), unsigned(texture.addressV), unsigned(texture.filter)});
+            key.textureShape.insert(key.textureShape.end(), {texture.width, texture.height, texture.layers, unsigned(texture.array),
+                                                             unsigned(texture.format), unsigned(texture.components.r), unsigned(texture.components.g),
+                                                             unsigned(texture.components.b), unsigned(texture.components.a),
+                                                             unsigned(texture.addressU), unsigned(texture.addressV), unsigned(texture.filter)});
         }
         const auto t3 = std::chrono::steady_clock::now();
         RasterResult result;
@@ -1222,7 +1242,7 @@ void main() {
             if (it == m_impl->resources.end()) {
                 if (m_impl->resources.size() >= 32 || m_impl->cachedBytes + estimatedBytes > 384ull * 1024 * 1024 ||
                     m_impl->context->pipelines.size() >= 128) {
-                    for (auto &[oldKey, resource] : m_impl->resources)
+                    for (auto &[oldKey, resource]: m_impl->resources)
                         resource->finishPending();
                     m_impl->resources.clear();
                     m_impl->cachedBytes = 0;
@@ -1236,7 +1256,8 @@ void main() {
                 ++m_impl->resourceHits;
                 const auto oldTextures = it->second->retainedTextures;
                 const auto oldBytes = it->second->retainedTextureBytes;
-                if (it->second->refresh(constants, textures, draw, m_impl->retainTextures, targetSource)) ++m_impl->retainedTargets;
+                if (it->second->refresh(constants, textures, draw, m_impl->retainTextures, targetSource))
+                    ++m_impl->retainedTargets;
                 m_impl->retainedTextures += it->second->retainedTextures - oldTextures;
                 m_impl->retainedTextureBytes += it->second->retainedTextureBytes - oldBytes;
             }
@@ -1245,18 +1266,18 @@ void main() {
             result = it->second->execute(draw, deferReadback, targetSource, m_impl->lazyReadback, targetSnapshot);
             t5 = std::chrono::steady_clock::now();
         }
-        m_impl->residentTextureCopies += std::count_if(textures.begin(), textures.end(),
-            [](const auto &texture) { return bool(texture.rendered); });
-        if (targetSource) ++m_impl->residentTargetCopies;
+        m_impl->residentTextureCopies += std::count_if(textures.begin(), textures.end(), [](const auto &texture) { return bool(texture.rendered); });
+        if (targetSource)
+            ++m_impl->residentTargetCopies;
         if (timing) {
             const auto micros = [](auto begin, auto end) { return std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count(); };
             const auto region = targetSource ? VkRect2D{{0, 0}, {draw.width, draw.height}} : readbackRegion(draw);
             Utils::Log::error("[NATIVE_TIMING] target={}x{} textures={} vertices={} reused={} cached={} hits={} retained_targets={} "
                               "shader_us={} context_us={} texture_us={} setup_us={} execute_us={} teardown_us={} readback_bytes={} "
-                              "retained_textures={} retained_texture_bytes={} deferred={} resident_texture_copies={} resident_target_copies={} readback_transfers={}",
+                              "retained_textures={} retained_texture_bytes={} deferred={} resident_texture_copies={} resident_target_copies={} "
+                              "readback_transfers={}",
                               draw.width, draw.height, textures.size(), draw.vertices.size(), reused, m_impl->resources.size(), m_impl->resourceHits,
-                              m_impl->retainedTargets,
-                              micros(t0, t1), micros(t1, t2), micros(t2, t3), micros(t3, t4), micros(t4, t5),
+                              m_impl->retainedTargets, micros(t0, t1), micros(t1, t2), micros(t2, t3), micros(t3, t4), micros(t4, t5),
                               micros(t5, std::chrono::steady_clock::now()),
                               m_impl->lazyReadback && deferReadback ? 0 : std::uint64_t(region.extent.width) * region.extent.height * 4,
                               m_impl->retainedTextures, m_impl->retainedTextureBytes, deferReadback, m_impl->residentTextureCopies,

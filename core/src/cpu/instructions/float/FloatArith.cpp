@@ -44,16 +44,56 @@ namespace Core::Instruction {
     }
 
     // ---- Double-precision arithmetic (op63 A-form) ----
-    void FADD(Interpreter &cpu, const EncodedInstruction &i) { cpu.m_fpr[i.frt] = cpu.m_fpr[i.fra] + cpu.m_fpr[i.frb]; cpu.updateCR1(i); }
-    void FSUB(Interpreter &cpu, const EncodedInstruction &i) { cpu.m_fpr[i.frt] = cpu.m_fpr[i.fra] - cpu.m_fpr[i.frb]; cpu.updateCR1(i); }
-    void FMUL(Interpreter &cpu, const EncodedInstruction &i) { cpu.m_fpr[i.frt] = cpu.m_fpr[i.fra] * cpu.m_fpr[i.frc]; cpu.updateCR1(i); }
-    void FDIV(Interpreter &cpu, const EncodedInstruction &i) { cpu.m_fpr[i.frt] = cpu.m_fpr[i.fra] / cpu.m_fpr[i.frb]; cpu.updateCR1(i); }
-    void FSQRT(Interpreter &cpu, const EncodedInstruction &i) { cpu.m_fpr[i.frt] = std::sqrt(cpu.m_fpr[i.frb]); cpu.updateCR1(i); }
-    void FRSQRTE(Interpreter &cpu, const EncodedInstruction &i) { cpu.m_fpr[i.frt] = 1.0 / std::sqrt(cpu.m_fpr[i.frb]); cpu.updateCR1(i); }
-    void FMADD(Interpreter &cpu, const EncodedInstruction &i) { cpu.m_fpr[i.frt] = std::fma(cpu.m_fpr[i.fra], cpu.m_fpr[i.frc], cpu.m_fpr[i.frb]); cpu.updateCR1(i); }
-    void FMSUB(Interpreter &cpu, const EncodedInstruction &i) { cpu.m_fpr[i.frt] = std::fma(cpu.m_fpr[i.fra], cpu.m_fpr[i.frc], -cpu.m_fpr[i.frb]); cpu.updateCR1(i); }
-    void FNMADD(Interpreter &cpu, const EncodedInstruction &i) { cpu.m_fpr[i.frt] = -std::fma(cpu.m_fpr[i.fra], cpu.m_fpr[i.frc], cpu.m_fpr[i.frb]); cpu.updateCR1(i); }
-    void FNMSUB(Interpreter &cpu, const EncodedInstruction &i) { cpu.m_fpr[i.frt] = -std::fma(cpu.m_fpr[i.fra], cpu.m_fpr[i.frc], -cpu.m_fpr[i.frb]); cpu.updateCR1(i); }
+    void FADD(Interpreter &cpu, const EncodedInstruction &i)
+    {
+        cpu.m_fpr[i.frt] = cpu.m_fpr[i.fra] + cpu.m_fpr[i.frb];
+        cpu.updateCR1(i);
+    }
+    void FSUB(Interpreter &cpu, const EncodedInstruction &i)
+    {
+        cpu.m_fpr[i.frt] = cpu.m_fpr[i.fra] - cpu.m_fpr[i.frb];
+        cpu.updateCR1(i);
+    }
+    void FMUL(Interpreter &cpu, const EncodedInstruction &i)
+    {
+        cpu.m_fpr[i.frt] = cpu.m_fpr[i.fra] * cpu.m_fpr[i.frc];
+        cpu.updateCR1(i);
+    }
+    void FDIV(Interpreter &cpu, const EncodedInstruction &i)
+    {
+        cpu.m_fpr[i.frt] = cpu.m_fpr[i.fra] / cpu.m_fpr[i.frb];
+        cpu.updateCR1(i);
+    }
+    void FSQRT(Interpreter &cpu, const EncodedInstruction &i)
+    {
+        cpu.m_fpr[i.frt] = std::sqrt(cpu.m_fpr[i.frb]);
+        cpu.updateCR1(i);
+    }
+    void FRSQRTE(Interpreter &cpu, const EncodedInstruction &i)
+    {
+        cpu.m_fpr[i.frt] = 1.0 / std::sqrt(cpu.m_fpr[i.frb]);
+        cpu.updateCR1(i);
+    }
+    void FMADD(Interpreter &cpu, const EncodedInstruction &i)
+    {
+        cpu.m_fpr[i.frt] = std::fma(cpu.m_fpr[i.fra], cpu.m_fpr[i.frc], cpu.m_fpr[i.frb]);
+        cpu.updateCR1(i);
+    }
+    void FMSUB(Interpreter &cpu, const EncodedInstruction &i)
+    {
+        cpu.m_fpr[i.frt] = std::fma(cpu.m_fpr[i.fra], cpu.m_fpr[i.frc], -cpu.m_fpr[i.frb]);
+        cpu.updateCR1(i);
+    }
+    void FNMADD(Interpreter &cpu, const EncodedInstruction &i)
+    {
+        cpu.m_fpr[i.frt] = -std::fma(cpu.m_fpr[i.fra], cpu.m_fpr[i.frc], cpu.m_fpr[i.frb]);
+        cpu.updateCR1(i);
+    }
+    void FNMSUB(Interpreter &cpu, const EncodedInstruction &i)
+    {
+        cpu.m_fpr[i.frt] = -std::fma(cpu.m_fpr[i.fra], cpu.m_fpr[i.frc], -cpu.m_fpr[i.frb]);
+        cpu.updateCR1(i);
+    }
 
     /** @brief Floating Select. FRT = (FRA >= 0.0 && !NaN) ? FRC : FRB. */
     void FSEL(Interpreter &cpu, const EncodedInstruction &i)
@@ -69,17 +109,26 @@ namespace Core::Instruction {
     void FMULS(Interpreter &cpu, const EncodedInstruction &i) { storeSingleResult(cpu, i, cpu.m_fpr[i.fra] * cpu.m_fpr[i.frc]); }
     void FDIVS(Interpreter &cpu, const EncodedInstruction &i) { storeSingleResult(cpu, i, cpu.m_fpr[i.fra] / cpu.m_fpr[i.frb]); }
     void FRES(Interpreter &cpu, const EncodedInstruction &i) { storeSingleResult(cpu, i, 1.0 / cpu.m_fpr[i.frb]); }
-    void FMADDS(Interpreter &cpu, const EncodedInstruction &i) { storeSingleResult(cpu, i, std::fma(cpu.m_fpr[i.fra], cpu.m_fpr[i.frc], cpu.m_fpr[i.frb])); }
-    void FMSUBS(Interpreter &cpu, const EncodedInstruction &i) { storeSingleResult(cpu, i, std::fma(cpu.m_fpr[i.fra], cpu.m_fpr[i.frc], -cpu.m_fpr[i.frb])); }
-    void FNMADDS(Interpreter &cpu, const EncodedInstruction &i) { storeSingleResult(cpu, i, -std::fma(cpu.m_fpr[i.fra], cpu.m_fpr[i.frc], cpu.m_fpr[i.frb])); }
-    void FNMSUBS(Interpreter &cpu, const EncodedInstruction &i) { storeSingleResult(cpu, i, -std::fma(cpu.m_fpr[i.fra], cpu.m_fpr[i.frc], -cpu.m_fpr[i.frb])); }
+    void FMADDS(Interpreter &cpu, const EncodedInstruction &i)
+    {
+        storeSingleResult(cpu, i, std::fma(cpu.m_fpr[i.fra], cpu.m_fpr[i.frc], cpu.m_fpr[i.frb]));
+    }
+    void FMSUBS(Interpreter &cpu, const EncodedInstruction &i)
+    {
+        storeSingleResult(cpu, i, std::fma(cpu.m_fpr[i.fra], cpu.m_fpr[i.frc], -cpu.m_fpr[i.frb]));
+    }
+    void FNMADDS(Interpreter &cpu, const EncodedInstruction &i)
+    {
+        storeSingleResult(cpu, i, -std::fma(cpu.m_fpr[i.fra], cpu.m_fpr[i.frc], cpu.m_fpr[i.frb]));
+    }
+    void FNMSUBS(Interpreter &cpu, const EncodedInstruction &i)
+    {
+        storeSingleResult(cpu, i, -std::fma(cpu.m_fpr[i.fra], cpu.m_fpr[i.frc], -cpu.m_fpr[i.frb]));
+    }
 
     // ---- Round / convert (op63 X-form) ----
     /** @brief Round to Single-Precision. FRT = RoundToSingle(FRB). */
-    void FRSP(Interpreter &cpu, const EncodedInstruction &i)
-    {
-        storeSingleResult(cpu, i, cpu.m_fpr[i.frb]);
-    }
+    void FRSP(Interpreter &cpu, const EncodedInstruction &i) { storeSingleResult(cpu, i, cpu.m_fpr[i.frb]); }
 
     /** @brief Floating Negative Absolute Value. FRT = -|FRB|. */
     void FNABS(Interpreter &cpu, const EncodedInstruction &i)
