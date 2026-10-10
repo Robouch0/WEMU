@@ -83,6 +83,7 @@ namespace Core::Gfx {
             std::optional<std::uint64_t> m_nativeVerifyEvery;
             std::uint64_t m_nativeDraws{}, m_comparedNativeDraws{}, m_differingNativeDraws{};
             unsigned m_nativeWorstError{};
+            Latte::VertexShaderCache m_vertexShaderCache;
             std::unique_ptr<RasterWorkers> m_rasterWorkers;
             unsigned m_rasterWorkerCount{};
             std::uint64_t m_parallelMinPixels{32768};
@@ -258,6 +259,7 @@ namespace Core::Gfx {
                     std::uint32_t skipNoAttrib{0};
                     std::uint32_t skipBadPtr{0};
                     std::uint32_t tris{0};
+                    std::uint32_t points{};
                     std::uint64_t pixels{0};
                     std::uint64_t alphaSum{0};
                     std::uint32_t scanPtr{0};

@@ -9,7 +9,7 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Quick QuickControls2)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Quick QuickControls2 Network)
 
 qt_standard_project_setup(REQUIRES 6.6.2)
 find_package(SDL2 REQUIRED)
@@ -23,6 +23,7 @@ qt_add_executable(appgui
     src/input/InputProfileManager.cpp
     src/library/TitleScanner.cpp
     src/emulator/EmulatorLauncher.cpp
+    src/emulator/GameView.cpp
 )
 
 
@@ -44,6 +45,8 @@ qt_add_qml_module(appgui
         qml/pages/IntroSequence.qml
         qml/pages/MainMenu.qml
         qml/pages/SettingsPage.qml
+        qml/pages/GameSessionView.qml
+        qml/components/SessionMenuButton.qml
         qml/components/ControllerPreview.qml
         qml/components/ControllerButton.qml
         qml/components/DpadButton.qml
@@ -75,6 +78,7 @@ target_link_libraries(appgui
         Qt6::Quick
         Qt6::Gui
         Qt6::QuickControls2
+        Qt6::Network
         SDL2::SDL2
         SDL2_image::SDL2_image
 )
@@ -92,6 +96,19 @@ add_executable(wemu_launch_environment_tests tests/LaunchEnvironmentTest.cpp)
 target_include_directories(wemu_launch_environment_tests PRIVATE src/emulator)
 target_link_libraries(wemu_launch_environment_tests PRIVATE Qt6::Core)
 add_test(NAME wemu_launch_environment_tests COMMAND wemu_launch_environment_tests)
+
+add_executable(wemu_session_protocol_tests tests/SessionProtocolTest.cpp)
+target_include_directories(wemu_session_protocol_tests PRIVATE ../core/src)
+target_link_libraries(wemu_session_protocol_tests PRIVATE Qt6::Core gtest_main)
+add_test(NAME wemu_session_protocol_tests COMMAND wemu_session_protocol_tests)
+
+add_executable(wemu_session_lifecycle_tests tests/SessionLifecycleTest.cpp src/emulator/EmulatorLauncher.cpp)
+target_include_directories(wemu_session_lifecycle_tests PRIVATE src/emulator ../core/src)
+target_compile_definitions(wemu_session_lifecycle_tests PRIVATE WEMU_CORE_BINARY="$<TARGET_FILE:wemu>")
+target_link_libraries(wemu_session_lifecycle_tests PRIVATE Qt6::Core Qt6::Gui Qt6::Network gtest)
+add_dependencies(wemu_session_lifecycle_tests wemu)
+add_test(NAME wemu_session_lifecycle_tests COMMAND wemu_session_lifecycle_tests)
+set_tests_properties(wemu_session_lifecycle_tests PROPERTIES ENVIRONMENT "XDG_DATA_HOME=${CMAKE_CURRENT_BINARY_DIR}/session-test-data")
 
 include(GNUInstallDirs)
 install(TARGETS appgui

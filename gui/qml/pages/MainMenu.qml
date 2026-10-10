@@ -1,10 +1,11 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Dialogs
+import "../components/Theme.js" as Theme
 
 Rectangle {
     id: page
-    color: "#e8e8ed"
+    color: Theme.libraryBackground
     anchors.fill: parent
     focus: true
 
@@ -325,7 +326,7 @@ Rectangle {
             height: 56
             radius: 10
             color: page.launching ? "#9aa0a6"
-                 : launchMouseArea.containsMouse ? "#2980d9" : "#3498ff"
+                 : launchMouseArea.containsMouse ? "#2980d9" : Theme.accent
             Behavior on color { ColorAnimation { duration: 120 } }
 
             Row {
@@ -391,7 +392,7 @@ Rectangle {
     property int stickDir: 0
 
     function stickStep() {
-        if (!rootWindow.visible || carousel.count === 0 || settingsFocused) {
+        if (!rootWindow.visible || !page.visible || !page.enabled || carousel.count === 0 || settingsFocused) {
             stickRepeat.stop()
             stickDir = 0
             return
@@ -413,7 +414,7 @@ Rectangle {
         target: InputManager
 
         function onButtonChanged(button, pressed, device) {
-            if (!rootWindow.visible || !pressed) return
+            if (!rootWindow.visible || !page.visible || !page.enabled || !pressed) return
             if (button === "Up")          page.settingsFocused = true
             else if (button === "Down")   page.settingsFocused = false
             else if (button === "Left"  && !page.settingsFocused)  carousel.decrementCurrentIndex()
@@ -422,7 +423,7 @@ Rectangle {
         }
 
         function onAxisChanged(axis, value, device) {
-            if (!rootWindow.visible) return
+            if (!rootWindow.visible || !page.visible || !page.enabled) return
 
             if (axis === "LX") {
                 if (page.stickDir === 0 && Math.abs(value) >= 0.5 && !page.settingsFocused) {
@@ -447,13 +448,16 @@ Rectangle {
 
     Connections {
         target: EmulatorLauncher
-        // The library stays available while the isolated game process runs.
+        // Keep the carousel instance/selection while the isolated core fills the game view.
         function onStateChanged(running) {
             if (running) {
                 page.launching = true
             } else {
                 page.launching = false
                 rootWindow.visible = true
+                rootWindow.raise()
+                rootWindow.requestActivate()
+                page.forceActiveFocus()
             }
         }
     }

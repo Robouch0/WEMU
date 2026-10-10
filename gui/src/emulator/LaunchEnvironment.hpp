@@ -10,6 +10,9 @@ inline QProcessEnvironment desktopLaunchEnvironment(QProcessEnvironment environm
     for (const auto &key : environment.keys())
         if (key.startsWith("WEMU_")) environment.remove(key);
     environment.insert("WEMU_FRAME_CLOCK", "1");
+    // Captured-command hashes do not cover live texture/vertex bytes. Replay
+    // every frame and let the GPU caches reuse verified resources instead.
+    environment.insert("WEMU_NO_FRAMESKIP", "1");
     environment.insert("WEMU_CONTENT_LAYER", contentPath);
     for (const auto *key : {"WEMU_NATIVE_RASTER", "WEMU_NATIVE_DEFER_READBACK", "WEMU_NATIVE_LAZY_READBACK",
                             "WEMU_NATIVE_RESIDENT_TEXTURES", "WEMU_NATIVE_RESIDENT_TARGETS"})

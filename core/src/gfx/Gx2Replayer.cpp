@@ -516,14 +516,14 @@ namespace Core::Gfx {
 
     Gx2Replayer::SurfaceKey Gx2Replayer::makeSurfaceKey(const Surface &s)
     {
-        return {s.imagePtr, s.width, s.height, s.pitch, s.format & 0x3F, s.tileMode, s.swizzle};
+        return {s.imagePtr, s.width, s.height, s.pitch, s.format, s.tileMode, s.swizzle};
     }
 
     std::vector<std::uint8_t> &Gx2Replayer::viewBacking(const Surface &s)
     {
         resolveViewBacking(s);
         auto &backing = m_viewBackings[makeSurfaceKey(s)];
-        const std::size_t bytes = static_cast<std::size_t>(s.pitch) * s.height * 4;
+        const std::size_t bytes = static_cast<std::size_t>(s.pitch) * s.height * colorElementBytes(colorFormat(s.format));
         if (backing.size() != bytes)
             backing.assign(bytes, 0);
         return backing;
@@ -574,6 +574,13 @@ namespace Core::Gfx {
         v -= std::floor(v);
         const auto tx = std::min(s.width - 1, static_cast<std::uint32_t>(u * static_cast<float>(s.width)));
         const auto ty = std::min(s.height - 1, static_cast<std::uint32_t>(v * static_cast<float>(s.height)));
+        if (s.format == 0x823) {
+            const auto offset = (std::size_t(ty) * s.pitch + tx) * 16;
+            if (offset + 16 > backing.size())
+                return {128, 128, 128, 255};
+            const auto value = readFloatColor(backing.data() + offset);
+            return {byteFromUnit(value[0]), byteFromUnit(value[1]), byteFromUnit(value[2]), byteFromUnit(value[3])};
+        }
         const std::size_t off = (static_cast<std::size_t>(ty) * s.pitch + tx) * 4;
         if (off + 3 >= backing.size())
             return {128, 128, 128, 255};
@@ -706,7 +713,33 @@ namespace Core::Gfx {
         if (!depthPixels && m_depthBackings.contains(depthKey))
             if (const auto *backing = depthBacking(s))
                 depthPixels = &backing->pixels;
+        const auto *floatBacking = s.format == 0x823 ? (feedback ? feedback : findViewBacking(s)) : nullptr;
         auto fetch = [&](unsigned x, unsigned y) {
+            if (s.format == 0x823 && s.width && s.height && m_mem) {
+                std::array<float, 4> raw{};
+                const auto offset =
+                        floatBacking ? (std::size_t(y) * s.pitch + x) * 16 : tiledElementOffset(x, y, s.pitch, 128, s.tileMode, s.swizzle);
+                if (floatBacking && offset + 16 <= floatBacking->size())
+                    raw = readFloatColor(floatBacking->data() + offset);
+                else if (!floatBacking && offset + 16 <= s.imageSize && std::uint64_t(s.imagePtr) + offset + 16 <= 0x100000000ull) {
+                    const auto *p = m_mem->hostPtr(s.imagePtr + offset);
+                    const auto *last = m_mem->hostPtr(s.imagePtr + offset + 15);
+                    if (p && last && std::uintptr_t(last) - std::uintptr_t(p) == 15) {
+                        for (unsigned c = 0; c < 4; ++c) {
+                            std::uint32_t bits{};
+                            for (unsigned b = 0; b < 4; ++b)
+                                bits |= std::uint32_t(p[c * 4 + b]) << (b * 8);
+                            raw[c] = asFloat(bits);
+                        }
+                    }
+                }
+                std::array<float, 4> mapped;
+                for (unsigned c = 0; c < 4; ++c) {
+                    const auto selector = (s.compMap >> (24 - c * 8)) & 7;
+                    mapped[c] = selector < 4 ? raw[selector] : selector == 5 ? 1.f : 0.f;
+                }
+                return mapped;
+            }
             if (depthPixels && x < s.width && y < s.height) {
                 const std::array raw{(*depthPixels)[std::size_t(y) * s.pitch + x], 0.f, 0.f, 1.f};
                 std::array<float, 4> mapped{};
@@ -895,8 +928,15 @@ namespace Core::Gfx {
             if (!m_mem)
                 return;
             base = m_mem->hostPtr(s.imagePtr);
-            if (!base || !m_mem->hostPtr(s.imagePtr + s.pitch * s.height * 4 - 1))
+            if (!base || !m_mem->hostPtr(s.imagePtr + s.pitch * s.height * colorElementBytes(colorFormat(s.format)) - 1))
                 return;
+        }
+        if (colorFormat(s.format) == ColorFormat::RGBA32Float) {
+            const std::array value{rgba[0], rgba[1], rgba[2], rgba[3]};
+            for (unsigned y = 0; y < s.height; ++y)
+                for (unsigned x = 0; x < s.width; ++x)
+                    writeFloatColor(base + (std::size_t(y) * s.pitch + x) * 16, value, 15);
+            return;
         }
         const auto toByte = [](float f) { return static_cast<std::uint8_t>(std::lround(std::clamp(f, 0.0f, 1.0f) * 255.0f)); };
         const std::uint8_t px[4] = {toByte(rgba[0]), toByte(rgba[1]), toByte(rgba[2]), toByte(rgba[3])};
@@ -1162,7 +1202,7 @@ namespace Core::Gfx {
             target = renderedTarget ? m_viewBackings.at(makeSurfaceKey(m_color)).data() : viewBacking(m_color).data();
         } else {
             target = m_mem->hostPtr(m_color.imagePtr);
-            if (!target || !m_mem->hostPtr(m_color.imagePtr + m_color.pitch * m_color.height * 4 - 1)) {
+            if (!target || !m_mem->hostPtr(m_color.imagePtr + m_color.pitch * m_color.height * colorElementBytes(colorFormat(m_color.format)) - 1)) {
                 m_stats.skipBadPtr++;
                 return;
             }
@@ -1170,6 +1210,8 @@ namespace Core::Gfx {
         m_lastDrawColor = m_color;
         auto *drawDepth = m_depthTest ? depthBacking(m_depth, false) : nullptr;
 
+        const auto targetFormat = colorFormat(m_color.format);
+        const auto targetElementBytes = colorElementBytes(targetFormat);
         const std::uint32_t mode = cmd.gpr[0];
         const std::uint32_t count = std::min<std::uint32_t>(cmd.gpr[1], 0x10000);
         const Attrib &ab = m_attribs[0];
@@ -1248,6 +1290,7 @@ namespace Core::Gfx {
             return true;
         };
 
+        bool nativeVertexExecution = false, forceVertexReference = false;
         // Execute the real vertex shader for one vertex; returns false if unavailable so the
         // caller falls back to the [0,1]/matrix heuristics. PARAM exports are optionally returned
         // because the pixel shader consumes them as interpolated inputs.
@@ -1279,6 +1322,17 @@ namespace Core::Gfx {
                     attribs[1] = {f(4), f(5), f(6), f(7)};
                 else
                     attribs[1] = {f(0), f(1), 0.0f, 1.0f};
+            }
+            if (nativeVertexExecution && !forceVertexReference) {
+                if (params)
+                    *params = attribs;
+                sx = sy = 0.f;
+                u = v = 0.f;
+                if (z)
+                    *z = 0.f;
+                if (reciprocalW)
+                    *reciprocalW = 1.f;
+                return true;
             }
             const auto kcache = [&](std::uint32_t bank, std::uint32_t vec4Idx, std::uint32_t chan) -> float {
                 // kcache bank N maps to some GX2 uniform-block location N+bias. The +1 was inferred
@@ -1421,7 +1475,7 @@ namespace Core::Gfx {
             // So we centre only the large placeable content and drop the small filter intermediates
             // (a degenerate zero-area quad the rasteriser skips) rather than mis-placing them. The
             // whole branch disappears the moment a draw yields a real position.
-            if (collapsed && ab.stride == 8) {
+            if (mode != 1 && collapsed && ab.stride == 8) {
                 const float cx = static_cast<float>(kWidth) * 0.5f, cy = static_cast<float>(kHeight) * 0.5f;
                 // Threshold: content whose texture is at least half the screen wide is real UI
                 // (logo/background); anything smaller is a filter intermediate we drop.
@@ -1440,8 +1494,8 @@ namespace Core::Gfx {
             }
             // Other degenerate-projection draws (the fullscreen post-process passes): let the
             // caller fall back to its heuristic rather than smear them across the frame.
-            if (collapsed && m_vsRegs[32] == 0.0f && m_vsRegs[33] == 0.0f && m_vsRegs[34] == 0.0f && m_vsRegs[35] == 0.0f && m_vsRegs[36] == 0.0f &&
-                m_vsRegs[37] == 0.0f)
+            if (mode != 1 && collapsed && m_vsRegs[32] == 0.0f && m_vsRegs[33] == 0.0f && m_vsRegs[34] == 0.0f && m_vsRegs[35] == 0.0f &&
+                m_vsRegs[36] == 0.0f && m_vsRegs[37] == 0.0f)
                 return false;
             const float w = std::fabs(o.pos[3]) > 1e-6f ? o.pos[3] : 1.0f;
             sx = m_vp[0] + (o.pos[0] / w * 0.5f + 0.5f) * m_vp[2];
@@ -1501,6 +1555,7 @@ namespace Core::Gfx {
                         {{1.0f, 1.0f, 1.0f, 1.0f}, {0.0f, 0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 0.0f, 1.0f}}};
                 std::array<bool, 4> paramValid{};
                 float z{}, reciprocalW{1.f};
+                unsigned vertexIndex{};
         };
 
         auto interpolateParams = [](const RasterVertex(&rv)[3], const float w0, const float w1, const float w2) {
@@ -1609,6 +1664,10 @@ namespace Core::Gfx {
                 texBase = nullptr;
         }
         auto sampleTexel = [&](float uu, float vv) -> std::array<std::uint8_t, 4> {
+            if (m_texture.format == 0x823) {
+                const auto value = sampleTexture(m_texture, TextureSampler{}, uu, vv);
+                return {byteFromUnit(value[0]), byteFromUnit(value[1]), byteFromUnit(value[2]), byteFromUnit(value[3])};
+            }
             if (texBase) {
                 uu -= std::floor(uu);
                 vv -= std::floor(vv);
@@ -1652,7 +1711,19 @@ namespace Core::Gfx {
         const auto prepareSoftwareInputs = [&] {
             if (softwareInputsReady)
                 return;
-            resolvePendingBackings();
+            // Workers must see immutable CPU inputs, but unrelated render targets
+            // can remain on the GPU. Array slices are selected dynamically, so keep
+            // the conservative all-surface path until their aliases are tracked.
+            if (m_texture.dimension == 5 ||
+                std::any_of(m_pixelTextures.begin(), m_pixelTextures.end(), [](const auto &surface) { return surface.dimension == 5; }))
+                resolvePendingBackings();
+            else {
+                resolveViewBacking(m_color);
+                resolveViewBacking(m_texture);
+                if (pixelProgram)
+                    for (const auto &surface: m_pixelTextures)
+                        resolveViewBacking(surface);
+            }
             if (drawDepth && drawDepth->pending)
                 depthBacking(m_depth);
             if (drawDepth && m_depthWrite)
@@ -1751,6 +1822,27 @@ namespace Core::Gfx {
         const BlendState &blend = m_blend[m_colorTarget & 7];
         const std::uint32_t channelMask = m_colorWriteEnable ? (m_channelMask[m_colorTarget & 7] & 0xF) : 0;
 
+        const auto writeColor = [&](std::uint8_t *dst, const std::array<std::uint8_t, 4> &texel, const LatteVsInterp::Output &pixel) {
+            const auto mask = pixel.depthValid && !pixel.colorValid ? 0u : channelMask;
+            if (targetFormat == ColorFormat::RGBA32Float) {
+                std::array<float, 4> color = pixel.color;
+                if (!pixel.colorValid)
+                    for (unsigned c = 0; c < 4; ++c)
+                        color[c] = float(texel[c]) / 255.f;
+                if (targetBlendEnabled)
+                    color = blendFloatColor(color, readFloatColor(dst), blend.colorSrcBlend, blend.colorDstBlend, blend.colorCombine,
+                                            blend.useAlphaBlend ? blend.alphaSrcBlend : blend.colorSrcBlend,
+                                            blend.useAlphaBlend ? blend.alphaDstBlend : blend.colorDstBlend,
+                                            blend.useAlphaBlend ? blend.alphaCombine : blend.colorCombine, m_blendConstant);
+                writeFloatColor(dst, color, mask);
+            } else {
+                const auto out = targetBlendEnabled ? blendTexel(texel, dst, blend) : texel;
+                for (unsigned c = 0; c < 4; ++c)
+                    if (mask & (1u << c))
+                        dst[c] = out[c];
+            }
+        };
+
         // Array slices can alias a target without matching its base-view key.
         // Keep those draws and raw guest-memory targets serial until all aliases
         // participate in the same pre-draw snapshot scheme.
@@ -1786,19 +1878,57 @@ namespace Core::Gfx {
             return !value || value[0] != '0';
         }();
 
-        // Defer geometry only when vertex execution cannot sample an earlier
-        // triangle's output. Vertex-texture draws retain immediate execution.
+        // Preserve pre-draw snapshots. Vertex texture feedback into a surface
+        // modified by this draw remains on the reference path.
         const bool collectBackend =
                 m_rasterBackend && !m_gpuRenderer && !m_stencilTest && (!m_depthTest || !m_depth.imagePtr || drawDepth) &&
                 (!drawDepth || (nativeDepthEnabled && m_rasterBackend->supportsDepth())) && pixelProgram && useViewBacking() &&
-                m_color.pitch >= m_color.width && !m_color.aa &&
+                m_color.pitch >= m_color.width && !m_color.aa && m_color.dimension == 1 && !m_color.firstMip && !m_color.firstSlice &&
+                (mode != 1 || m_rasterBackend->supportsPoints()) &&
+                (targetFormat != ColorFormat::RGBA32Float || m_rasterBackend->supportsFloatTargets()) &&
                 std::none_of(m_vertexTextures.begin(), m_vertexTextures.end(), [&](const auto &surface) {
                     return surface.imagePtr && (surface.dimension == 5 || makeSurfaceKey(surface) == makeSurfaceKey(m_color) ||
                                                 (drawDepth && m_depthWrite && makeSurfaceKey(surface) == makeSurfaceKey(m_depth)));
                 });
+        std::shared_ptr<const Latte::VertexShader> nativeVertexShader;
+        static const bool gpuVertexEnabled = [] {
+            const auto *v = std::getenv("WEMU_NATIVE_VERTEX");
+            const auto *execution = std::getenv("WEMU_VS_EXEC");
+            return (!v || v[0] != '0') && (!execution || execution[0] != '0');
+        }();
+        if (collectBackend && (mode == 1 || mode == 4 || mode == 0x13) && gpuVertexEnabled && m_rasterBackend->supportsVertexStage() &&
+            !m_fetchLayout.empty()) {
+            const auto candidate = m_vertexShaderCache.get(m_vsProgram);
+            const bool resourcesSupported = std::all_of(candidate->textures.begin(), candidate->textures.end(), [&](const auto &binding) {
+                if (binding.resource >= m_vertexTextures.size() || binding.sampler >= m_vertexSamplers.size())
+                    return false;
+                const auto &surface = m_vertexTextures[binding.resource];
+                return surface.imagePtr && surface.dimension == 1 && !surface.aa && !surface.firstMip && !surface.firstSlice &&
+                       surface.sliceCount == 1;
+            });
+            // Point batches amortize vertex setup; texture shaders also avoid
+            // CPU reads of resident surfaces even for small draws. Keep ordinary
+            // triangle placement/interpolation on the established reference path.
+            if (*candidate && resourcesSupported && ((mode == 1 && count >= 64) || !candidate->textures.empty())) {
+                nativeVertexShader = candidate;
+                nativeVertexExecution = true;
+            }
+            if (nativeAudit)
+                Utils::Log::error("[NATIVEVS] frame={} draw={} lowered={} native={} reason={}", m_presentCount, m_stats.draws, bool(*candidate),
+                                  nativeVertexExecution, candidate->error);
+        }
         std::vector<std::array<RasterVertex, 3>> preparedTriangles;
-        auto rasterPrepared = [&](const RasterVertex(&rv)[3]) {
-            prepareSoftwareInputs();
+        auto rasterPrepared = [&](const RasterVertex(&prepared)[3]) {
+            RasterVertex rv[3]{prepared[0], prepared[1], prepared[2]};
+            if (nativeVertexExecution) {
+                forceVertexReference = true;
+                bool valid = true;
+                for (auto &v: rv)
+                    valid &= runShader(v.vertexIndex, v.x, v.y, v.u, v.v, &v.params, &v.paramValid, &v.z, &v.reciprocalW);
+                forceVertexReference = false;
+                if (!valid)
+                    return;
+            }
             const float area = (rv[1].x - rv[0].x) * (rv[2].y - rv[0].y) - (rv[2].x - rv[0].x) * (rv[1].y - rv[0].y);
             if (std::fabs(area) < 0.5f)
                 return;
@@ -1820,6 +1950,9 @@ namespace Core::Gfx {
             const int maxY = std::min(sy1 - 1, static_cast<int>(std::ceil(std::max({rv[0].y, rv[1].y, rv[2].y}))));
             if (minX > maxX || minY > maxY)
                 return;
+            // Empty geometry never reads or writes pixels. Preserve pending GPU
+            // versions until a covered software draw actually needs their data.
+            prepareSoftwareInputs();
             const TriangleCoverage coverage({rv[0].x, rv[0].y}, {rv[1].x, rv[1].y}, {rv[2].x, rv[2].y});
             // Incremental barycentrics: w0/w1 are affine in x and y — one add per pixel instead
             // of the full edge-function evaluation (and no per-pixel divides).
@@ -1846,7 +1979,7 @@ namespace Core::Gfx {
                 for (unsigned r = first; r < end; ++r) {
                     const int yy = minY + int(r);
                     auto &result = rows[r];
-                    std::uint8_t *row = target + static_cast<std::size_t>(yy) * m_color.pitch * 4;
+                    std::uint8_t *row = target + static_cast<std::size_t>(yy) * m_color.pitch * targetElementBytes;
                     double weight0 = result.w0, weight1 = result.w1;
                     for (int xx = minX; xx <= maxX; xx++, weight0 += w0dx, weight1 += w1dx) {
                         const float w0 = float(weight0), w1 = float(weight1), w2 = float(1.0 - weight0 - weight1);
@@ -1867,20 +2000,10 @@ namespace Core::Gfx {
                             if (m_depthWrite)
                                 stored = quantizeDepth(incoming, drawDepth->format);
                         }
-                        std::uint8_t *dst = row + static_cast<std::size_t>(xx) * 4;
-                        const std::uint32_t a = texel[3];
+                        std::uint8_t *dst = row + static_cast<std::size_t>(xx) * targetElementBytes;
                         result.pixels++;
-                        result.alphaSum += a;
-                        const auto out = targetBlendEnabled ? blendTexel(texel, dst, blend) : texel;
-                        const auto writeMask = pixel.depthValid && !pixel.colorValid ? 0u : channelMask;
-                        if (writeMask & 0x1)
-                            dst[0] = out[0];
-                        if (writeMask & 0x2)
-                            dst[1] = out[1];
-                        if (writeMask & 0x4)
-                            dst[2] = out[2];
-                        if (writeMask & 0x8)
-                            dst[3] = out[3];
+                        result.alphaSum += texel[3];
+                        writeColor(dst, texel, pixel);
                     }
                 }
             };
@@ -1891,7 +2014,7 @@ namespace Core::Gfx {
                 const bool verify = verifyEvery && (m_parallelTriangles % verifyEvery == 0);
                 ++m_parallelTriangles;
                 std::vector<std::uint8_t> before;
-                const auto targetBytes = std::size_t(m_color.pitch) * m_color.height * 4;
+                const auto targetBytes = std::size_t(m_color.pitch) * m_color.height * targetElementBytes;
                 if (verify)
                     before.assign(target, target + targetBytes);
                 m_rasterWorkers->run(unsigned(rows.size()), rasterRows);
@@ -1925,12 +2048,47 @@ namespace Core::Gfx {
             }
         };
 
+        std::vector<RasterVertex> preparedPoints;
+        const auto rasterPoint = [&](const RasterVertex &prepared) {
+            RasterVertex rv = prepared;
+            if (nativeVertexExecution) {
+                forceVertexReference = true;
+                const bool valid = runShader(rv.vertexIndex, rv.x, rv.y, rv.u, rv.v, &rv.params, &rv.paramValid, &rv.z, &rv.reciprocalW);
+                forceVertexReference = false;
+                if (!valid)
+                    return;
+            }
+            ++m_stats.points;
+            if (!std::isfinite(rv.x) || !std::isfinite(rv.y) || rv.x < float(sx0) || rv.y < float(sy0) || rv.x >= float(sx1) || rv.y >= float(sy1))
+                return;
+            const auto x = unsigned(std::floor(rv.x)), y = unsigned(std::floor(rv.y));
+            prepareSoftwareInputs();
+            LatteVsInterp::Output pixel;
+            const auto texel = shadeTexel(rv.u, rv.v, rv.params, &pixel);
+            if (pixel.discarded)
+                return;
+            if (drawDepth) {
+                if (x >= m_depth.width || y >= m_depth.height)
+                    return;
+                auto &stored = drawDepth->pixels[std::size_t(y) * m_depth.pitch + x];
+                const auto incoming = clampDepth(pixel.depthValid ? pixel.depth : rv.z);
+                if (!depthCompare(incoming, stored, m_depthCompare))
+                    return;
+                if (m_depthWrite)
+                    stored = quantizeDepth(incoming, drawDepth->format);
+            }
+            writeColor(target + (std::size_t(y) * m_color.pitch + x) * targetElementBytes, texel, pixel);
+            ++m_stats.pixels;
+            m_stats.alphaSum += texel[3];
+        };
+
         auto rasterTri = [&](const std::uint32_t i0, const std::uint32_t i1, const std::uint32_t i2) {
             const std::uint32_t vis[3] = {idx[i0], idx[i1], idx[i2]};
             RasterVertex rv[3];
             for (int i = 0; i < 3; i++) {
+                rv[i].vertexIndex = vis[i];
                 if (runShader(vis[i], rv[i].x, rv[i].y, rv[i].u, rv[i].v, &rv[i].params, &rv[i].paramValid, &rv[i].z, &rv[i].reciprocalW)) {
-                    if (!rv[i].paramValid[0])
+                    if (!nativeVertexExecution && !rv[i].paramValid[0])
                         rv[i].params[0] = {1.0f, 1.0f, 1.0f, 1.0f};
                     continue;
                 }
@@ -1944,7 +2102,22 @@ namespace Core::Gfx {
             else
                 rasterPrepared(rv);
         };
-        if (mode == 0x13) { // QUADS
+        if (mode == 1) {
+            for (const auto vi: idx) {
+                RasterVertex rv;
+                rv.vertexIndex = vi;
+                if (!runShader(vi, rv.x, rv.y, rv.u, rv.v, &rv.params, &rv.paramValid, &rv.z, &rv.reciprocalW)) {
+                    float x{}, y{};
+                    if (!fetch(vi, x, y, rv.u, rv.v))
+                        continue;
+                    mapVertex(x, y, rv.x, rv.y);
+                }
+                if (collectBackend)
+                    preparedPoints.push_back(rv);
+                else
+                    rasterPoint(rv);
+            }
+        } else if (mode == 0x13) { // QUADS
             for (std::uint32_t i = 0; i + 3 < idx.size(); i += 4) {
                 rasterTri(i, i + 1, i + 2);
                 rasterTri(i, i + 2, i + 3);
@@ -1955,7 +2128,7 @@ namespace Core::Gfx {
         }
         std::int64_t nativePrepareUs{}, nativeExecuteUs{}, nativeVerifyUs{}, fallbackUs{};
         bool nativeCommitted = false;
-        if (collectBackend && !preparedTriangles.empty()) {
+        if (collectBackend && (!preparedTriangles.empty() || !preparedPoints.empty())) {
             const auto prepareStart = (profile || nativeAudit) ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
             std::vector<Latte::TextureType> resourceTypes(m_pixelTextures.size(), Latte::TextureType::TwoD);
             for (unsigned i = 0; i < m_pixelTextures.size(); ++i)
@@ -1970,25 +2143,43 @@ namespace Core::Gfx {
             std::vector<std::shared_ptr<ArraySnapshot>> arrays;
             ownedTextures.reserve(shader.textures.size());
             ownedFloatTextures.reserve(shader.textures.size());
-            for (const auto &binding: shader.textures) {
-                if (binding.resource >= m_pixelTextures.size() || binding.sampler >= m_pixelSamplers.size()) {
+            auto allBindings = shader.textures;
+            if (nativeVertexShader)
+                for (auto binding: nativeVertexShader->textures) {
+                    binding.binding += 17;
+                    allBindings.push_back(binding);
+                }
+            ownedTextures.reserve(allBindings.size());
+            ownedFloatTextures.reserve(allBindings.size());
+            for (const auto &binding: allBindings) {
+                const bool vertexBinding = binding.binding > 17;
+                const auto &boundSurfaces = vertexBinding ? m_vertexTextures : m_pixelTextures;
+                const auto &boundSamplers = vertexBinding ? m_vertexSamplers : m_pixelSamplers;
+                if (binding.resource >= boundSurfaces.size() || binding.sampler >= boundSamplers.size()) {
                     supported = false;
                     break;
                 }
-                const auto surface = m_pixelTextures[binding.resource];
+                const auto surface = boundSurfaces[binding.resource];
                 auto depthKey = makeSurfaceKey(surface);
                 depthKey.format = surface.format;
                 if (m_depthBackings.contains(depthKey)) {
-                    const auto *depthTexture = depthBacking(surface);
+                    const auto *depthTexture = depthBacking(surface, !residentTextures);
                     if (!depthTexture) {
                         supported = false;
                         break;
                     }
-                    textures.push_back(
-                            {binding, surface.width, surface.height, m_pixelSamplers[binding.sampler], [&, surface](unsigned x, unsigned y) {
-                                 return sampleTexture(surface, TextureSampler{}, (float(x) + .5f) / float(surface.width),
-                                                      (float(y) + .5f) / float(surface.height));
-                             }});
+                    textures.push_back({binding, surface.width, surface.height, boundSamplers[binding.sampler], [&, surface](unsigned x, unsigned y) {
+                                            return sampleTexture(surface, TextureSampler{}, (float(x) + .5f) / float(surface.width),
+                                                                 (float(y) + .5f) / float(surface.height));
+                                        }});
+                    if (residentTextures && depthTexture->pending) {
+                        textures.back().rendered = depthTexture->pending;
+                        textures.back().renderedDepth = true;
+                        textures.back().unorm8Pitch = surface.pitch;
+                        textures.back().unorm8Map = surface.compMap;
+                        textures.back().r32Map = surface.compMap;
+                        continue;
+                    }
                     if (std::endian::native == std::endian::little) {
                         textures.back().r32Bytes = {reinterpret_cast<const std::uint8_t *>(depthTexture->pixels.data()),
                                                     depthTexture->pixels.size() * sizeof(float)};
@@ -2003,7 +2194,7 @@ namespace Core::Gfx {
                     textures.back().r32Map = surface.compMap;
                     continue;
                 }
-                if (shader.usesGather && !supportsGather(surface, m_pixelSamplers[binding.sampler])) {
+                if (shader.usesGather && !supportsGather(surface, boundSamplers[binding.sampler])) {
                     supported = false;
                     break;
                 }
@@ -2013,11 +2204,10 @@ namespace Core::Gfx {
                         supported = false;
                         break;
                     }
-                    textures.push_back(
-                            {binding, surface.width, surface.height, m_pixelSamplers[binding.sampler], [&, surface](unsigned x, unsigned y) {
-                                 return sampleTexture(surface, TextureSampler{}, (float(x) + 0.5f) / float(surface.width),
-                                                      (float(y) + 0.5f) / float(surface.height), 0, nullptr);
-                             }});
+                    textures.push_back({binding, surface.width, surface.height, boundSamplers[binding.sampler], [&, surface](unsigned x, unsigned y) {
+                                            return sampleTexture(surface, TextureSampler{}, (float(x) + 0.5f) / float(surface.width),
+                                                                 (float(y) + 0.5f) / float(surface.height), 0, nullptr);
+                                        }});
                     textures.back().unorm8 = snapshot->rgba;
                     textures.back().unorm8Pitch = surface.width;
                     textures.back().unorm8Map = surface.compMap;
@@ -2030,19 +2220,42 @@ namespace Core::Gfx {
                     supported = false;
                     break;
                 }
-                const auto *backing = pixelBackings[binding.resource];
+                const auto *backing = vertexBinding ? textureBacking(surface) : pixelBackings[binding.resource];
                 const auto format = surface.format & 0x3F;
                 // Match sample()'s four-byte representation, with typed R32 float
                 // conversion below. Other float/integer formats remain incomplete.
                 const bool rawBytes = format < 0x31 || format > 0x35;
                 const unsigned texelBytes = format == 1 ? 1 : format == 7 ? 2 : 4;
                 textures.push_back(
-                        {binding, surface.width, surface.height, m_pixelSamplers[binding.sampler], [&, surface, backing](unsigned x, unsigned y) {
+                        {binding, surface.width, surface.height, boundSamplers[binding.sampler], [&, surface, backing](unsigned x, unsigned y) {
                              if (x >= surface.width || y >= surface.height)
                                  throw std::out_of_range("Raster backend texel coordinate");
                              return sampleTexture(surface, TextureSampler{}, (float(x) + 0.5f) / float(surface.width),
                                                   (float(y) + 0.5f) / float(surface.height), 0, backing);
                          }});
+                if (surface.format == 0x823) {
+                    textures.back().renderedFormat = ColorFormat::RGBA32Float;
+                    textures.back().unorm8Map = surface.compMap;
+                    textures.back().unorm8Pitch = surface.pitch;
+                    const auto pending = m_pendingReadbacks.find(makeSurfaceKey(surface));
+                    if (residentTextures && pending != m_pendingReadbacks.end())
+                        textures.back().rendered = pending->second;
+                    else if (backing) {
+                        resolveViewBacking(surface);
+                        textures.back().rgba32Bytes = *backing;
+                        textures.back().rgba32Pitch = surface.pitch;
+                    } else {
+                        auto &values = ownedFloatTextures.emplace_back();
+                        for (unsigned y = 0; y < surface.height; ++y)
+                            for (unsigned x = 0; x < surface.width; ++x) {
+                                const auto value = sampleTexture(surface, TextureSampler{}, (float(x) + .5f) / float(surface.width),
+                                                                 (float(y) + .5f) / float(surface.height));
+                                values.insert(values.end(), value.begin(), value.end());
+                            }
+                        textures.back().rgba32 = values;
+                    }
+                    continue;
+                }
                 if (residentTextures) {
                     const auto pending = m_pendingReadbacks.find(makeSurfaceKey(surface));
                     if (pending != m_pendingReadbacks.end()) {
@@ -2118,7 +2331,7 @@ namespace Core::Gfx {
             for (const auto &triangle: preparedTriangles) {
                 const auto &a = triangle[0], &b = triangle[1], &c = triangle[2];
                 const float area = (b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y);
-                if (std::fabs(area) < 0.5f)
+                if (!nativeVertexShader && std::fabs(area) < 0.5f)
                     continue;
                 for (const auto &rv: triangle) {
                     if (!std::isfinite(rv.x) || !std::isfinite(rv.y))
@@ -2126,17 +2339,36 @@ namespace Core::Gfx {
                     RasterDraw::Vertex vertex{rv.x, rv.y, {}};
                     vertex.z = rv.z;
                     vertex.reciprocalW = rv.reciprocalW;
+                    if (nativeVertexShader)
+                        vertex.inputs = rv.params;
+                    else
+                        for (unsigned i = 0; i < pixelInputParams.size(); ++i)
+                            if (pixelInputParams[i] >= 0)
+                                vertex.inputs[i] = rv.params[pixelInputParams[i]];
+                    vertices.push_back(vertex);
+                }
+            }
+            for (const auto &rv: preparedPoints) {
+                if (!std::isfinite(rv.x) || !std::isfinite(rv.y)) {
+                    supported = false;
+                    break;
+                }
+                RasterDraw::Vertex vertex{rv.x, rv.y, {}};
+                vertex.z = rv.z;
+                vertex.reciprocalW = rv.reciprocalW;
+                if (nativeVertexShader)
+                    vertex.inputs = rv.params;
+                else
                     for (unsigned i = 0; i < pixelInputParams.size(); ++i)
                         if (pixelInputParams[i] >= 0)
                             vertex.inputs[i] = rv.params[pixelInputParams[i]];
-                    vertices.push_back(vertex);
-                }
+                vertices.push_back(vertex);
             }
             bool committed = false;
             if (profile || nativeAudit)
                 nativePrepareUs = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - prepareStart).count();
             if (supported && !vertices.empty()) {
-                const auto targetBytes = std::size_t(m_color.pitch) * m_color.height * 4;
+                const auto targetBytes = std::size_t(m_color.pitch) * m_color.height * targetElementBytes;
                 RasterDraw draw{shader,
                                 vertices,
                                 m_psRegs,
@@ -2151,6 +2383,24 @@ namespace Core::Gfx {
                                  blend.useAlphaBlend ? blend.alphaSrcBlend : blend.colorSrcBlend,
                                  blend.useAlphaBlend ? blend.alphaDstBlend : blend.colorDstBlend,
                                  blend.useAlphaBlend ? blend.alphaCombine : blend.colorCombine, m_blendConstant}};
+                std::vector<float> vertexUniforms;
+                if (nativeVertexShader) {
+                    static const unsigned bias = [] {
+                        const auto *v = std::getenv("WEMU_KCACHE_BIAS");
+                        return v ? unsigned(std::atoi(v)) : 1u;
+                    }();
+                    for (const auto &reference: nativeVertexShader->uniforms)
+                        for (unsigned c = 0; c < 4; ++c) {
+                            const auto bank = reference.bank + bias;
+                            const auto index = std::size_t(reference.index) * 4 + c;
+                            vertexUniforms.push_back(bank < m_vsBlocks.size() && index < m_vsBlocks[bank].size() ? asFloat(m_vsBlocks[bank][index])
+                                                                                                                 : 0.f);
+                        }
+                    draw.vertexStage = {
+                            nativeVertexShader, m_vsRegs, vertexUniforms, pixelInputParams, {m_vp[0], m_vp[1], m_vp[2], m_vp[3], m_vpNear, m_vpFar}};
+                }
+                draw.colorFormat = targetFormat;
+                draw.topology = mode == 1 ? RasterDraw::Topology::Points : RasterDraw::Topology::Triangles;
                 draw.renderedTarget = renderedTarget;
                 if (drawDepth)
                     draw.depth = {true,          m_depthWrite,   m_depthCompare, drawDepth->format, drawDepth->pixels,
@@ -2186,6 +2436,10 @@ namespace Core::Gfx {
                     if (compare) {
                         const auto verifyStart =
                                 (profile || nativeAudit) ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+                        // Verification compares the whole target, including pixels
+                        // untouched by clipped geometry. Start from the actual
+                        // pre-draw GPU version even when software covers no pixels.
+                        prepareSoftwareInputs();
                         result->resolve();
                         result->resolveDepth();
                         // The backend has not changed target; feedback snapshots and
@@ -2195,6 +2449,8 @@ namespace Core::Gfx {
                             const RasterVertex rv[]{triangle[0], triangle[1], triangle[2]};
                             rasterPrepared(rv);
                         }
+                        for (const auto &point: preparedPoints)
+                            rasterPoint(point);
                         m_stats = savedStats;
                         if (drawDepth && m_depthWrite) {
                             unsigned differences{};
@@ -2207,66 +2463,87 @@ namespace Core::Gfx {
                             Utils::Log::error("[NATIVE_DEPTH_VERIFY] frame={} draw={} different={} max_error={}", m_presentCount, m_stats.draws,
                                               differences, maximum);
                         }
-                        std::size_t different{}, overOne{}, first = targetBytes, worst = targetBytes;
-                        std::array<std::size_t, 4> channelDifferences{};
-                        std::array<std::size_t, 4> channelOverOne{};
-                        unsigned maxError{};
-                        for (std::size_t i = 0; i < targetBytes; ++i) {
-                            const auto error = unsigned(std::abs(int(target[i]) - int(result->rgba[i])));
-                            if (error) {
-                                ++different;
-                                first = std::min(first, i);
-                                ++channelDifferences[i % 4];
+                        if (targetFormat == ColorFormat::RGBA32Float) {
+                            unsigned differences{};
+                            float maximum{};
+                            for (std::size_t i = 0; i < targetBytes; i += 4) {
+                                float reference{}, native{};
+                                std::memcpy(&reference, target + i, 4);
+                                std::memcpy(&native, result->rgba.data() + i, 4);
+                                const auto error = reference == native || (std::isnan(reference) && std::isnan(native)) ? 0.f
+                                                   : std::isfinite(reference) && std::isfinite(native)                  ? std::abs(reference - native)
+                                                                                                       : std::numeric_limits<float>::infinity();
+                                differences += error > (std::isfinite(reference) ? 1e-5f * std::max(1.f, std::abs(reference)) : 0.f);
+                                maximum = std::max(maximum, error);
                             }
-                            overOne += error > 1;
-                            channelOverOne[i % 4] += error > 1;
-                            if (error > maxError) {
-                                maxError = error;
-                                worst = i;
+                            ++m_comparedNativeDraws;
+                            m_differingNativeDraws += differences != 0;
+                            Utils::Log::error("[NATIVE_FLOAT_VERIFY] frame={} draw={} different={} max_error={}", m_presentCount, m_stats.draws,
+                                              differences, maximum);
+                        } else {
+                            std::size_t different{}, overOne{}, first = targetBytes, worst = targetBytes;
+                            std::array<std::size_t, 4> channelDifferences{};
+                            std::array<std::size_t, 4> channelOverOne{};
+                            unsigned maxError{};
+                            for (std::size_t i = 0; i < targetBytes; ++i) {
+                                const auto error = unsigned(std::abs(int(target[i]) - int(result->rgba[i])));
+                                if (error) {
+                                    ++different;
+                                    first = std::min(first, i);
+                                    ++channelDifferences[i % 4];
+                                }
+                                overOne += error > 1;
+                                channelOverOne[i % 4] += error > 1;
+                                if (error > maxError) {
+                                    maxError = error;
+                                    worst = i;
+                                }
                             }
-                        }
-                        ++m_comparedNativeDraws;
-                        m_differingNativeDraws += different != 0;
-                        Utils::Log::error("[NATIVE_VERIFY] frame={} draw={} ps={:016X} bytes={} different={} over_one={} max_error={} first={}",
-                                          m_presentCount, m_stats.draws, shaderHash(m_psProgram), targetBytes, different, overOne, maxError, first);
-                        if (different && (m_differingNativeDraws == 1 || maxError > m_nativeWorstError)) {
-                            m_nativeWorstError = std::max(m_nativeWorstError, maxError);
-                            const auto pixel = (worst / 4) * 4;
-                            Utils::Log::error("[NATIVE_VERIFY_DETAIL] x={} y={} ref=({},{},{},{}) native=({},{},{},{}) "
-                                              "channel_different=({},{},{},{}) channel_over_one=({},{},{},{}) vertices={} textures={}",
-                                              (pixel / 4) % m_color.pitch, (pixel / 4) / m_color.pitch, target[pixel], target[pixel + 1],
-                                              target[pixel + 2], target[pixel + 3], result->rgba[pixel], result->rgba[pixel + 1],
-                                              result->rgba[pixel + 2], result->rgba[pixel + 3], channelDifferences[0], channelDifferences[1],
-                                              channelDifferences[2], channelDifferences[3], channelOverOne[0], channelOverOne[1], channelOverOne[2],
-                                              channelOverOne[3], vertices.size(), textures.size());
-                            for (const auto &texture: textures)
-                                Utils::Log::error("[NATIVE_VERIFY_TEXTURE] resource={} sampler={} size={}x{} map={:08X} "
-                                                  "sampler0={:08X} snapshot={} r32={} format={:X}",
-                                                  texture.binding.resource, texture.binding.sampler, texture.width, texture.height,
-                                                  m_pixelTextures[texture.binding.resource].compMap, texture.sampler.regs[0], !texture.unorm8.empty(),
-                                                  !texture.r32.empty(), m_pixelTextures[texture.binding.resource].format);
-                            Utils::Log::error("[NATIVE_VERIFY_BLEND] enabled={} color=({},{},{}) alpha=({},{},{}) mask={:X}", draw.blend.enabled,
-                                              draw.blend.colorSource, draw.blend.colorDestination, draw.blend.colorOperation, draw.blend.alphaSource,
-                                              draw.blend.alphaDestination, draw.blend.alphaOperation, draw.channelMask);
-                            for (unsigned i = 0; i < std::min<std::size_t>(vertices.size(), 6); ++i)
-                                Utils::Log::error("[NATIVE_VERIFY_VERTEX] i={} pos=({:.5f},{:.5f}) param0=({:.5f},{:.5f},{:.5f},{:.5f})", i,
-                                                  vertices[i].x, vertices[i].y, vertices[i].inputs[0][0], vertices[i].inputs[0][1],
-                                                  vertices[i].inputs[0][2], vertices[i].inputs[0][3]);
-                            if (const auto *dir = std::getenv("WEMU_NATIVE_VERIFY_DUMP_DIR")) {
-                                const auto dump = [&](const char *name, const std::uint8_t *rgba) {
-                                    const auto path = std::format("{}/native_verify_{}_{}_{}.ppm", dir, m_presentCount, m_stats.draws, name);
-                                    if (auto *file = std::fopen(path.c_str(), "wb")) {
-                                        std::fprintf(file, "P6\n%u %u\n255\n", m_color.width, m_color.height);
-                                        for (unsigned y = 0; y < m_color.height; ++y)
-                                            for (unsigned x = 0; x < m_color.width; ++x) {
-                                                const auto offset = (std::size_t(y) * m_color.pitch + x) * 4;
-                                                std::fwrite(rgba + offset, 1, 3, file);
-                                            }
-                                        std::fclose(file);
-                                    }
-                                };
-                                dump("software", target);
-                                dump("native", result->rgba.data());
+                            ++m_comparedNativeDraws;
+                            m_differingNativeDraws += different != 0;
+                            Utils::Log::error("[NATIVE_VERIFY] frame={} draw={} ps={:016X} bytes={} different={} over_one={} max_error={} first={}",
+                                              m_presentCount, m_stats.draws, shaderHash(m_psProgram), targetBytes, different, overOne, maxError,
+                                              first);
+                            if (different && (m_differingNativeDraws == 1 || maxError > m_nativeWorstError)) {
+                                m_nativeWorstError = std::max(m_nativeWorstError, maxError);
+                                const auto pixel = (worst / 4) * 4;
+                                Utils::Log::error("[NATIVE_VERIFY_DETAIL] x={} y={} ref=({},{},{},{}) native=({},{},{},{}) "
+                                                  "channel_different=({},{},{},{}) channel_over_one=({},{},{},{}) vertices={} textures={}",
+                                                  (pixel / 4) % m_color.pitch, (pixel / 4) / m_color.pitch, target[pixel], target[pixel + 1],
+                                                  target[pixel + 2], target[pixel + 3], result->rgba[pixel], result->rgba[pixel + 1],
+                                                  result->rgba[pixel + 2], result->rgba[pixel + 3], channelDifferences[0], channelDifferences[1],
+                                                  channelDifferences[2], channelDifferences[3], channelOverOne[0], channelOverOne[1],
+                                                  channelOverOne[2], channelOverOne[3], vertices.size(), textures.size());
+                                for (const auto &texture: textures)
+                                    Utils::Log::error("[NATIVE_VERIFY_TEXTURE] resource={} sampler={} size={}x{} map={:08X} "
+                                                      "sampler0={:08X} snapshot={} r32={} format={:X}",
+                                                      texture.binding.resource, texture.binding.sampler, texture.width, texture.height,
+                                                      m_pixelTextures[texture.binding.resource].compMap, texture.sampler.regs[0],
+                                                      !texture.unorm8.empty(), !texture.r32.empty(),
+                                                      m_pixelTextures[texture.binding.resource].format);
+                                Utils::Log::error("[NATIVE_VERIFY_BLEND] enabled={} color=({},{},{}) alpha=({},{},{}) mask={:X}", draw.blend.enabled,
+                                                  draw.blend.colorSource, draw.blend.colorDestination, draw.blend.colorOperation,
+                                                  draw.blend.alphaSource, draw.blend.alphaDestination, draw.blend.alphaOperation, draw.channelMask);
+                                for (unsigned i = 0; i < std::min<std::size_t>(vertices.size(), 6); ++i)
+                                    Utils::Log::error("[NATIVE_VERIFY_VERTEX] i={} pos=({:.5f},{:.5f}) param0=({:.5f},{:.5f},{:.5f},{:.5f})", i,
+                                                      vertices[i].x, vertices[i].y, vertices[i].inputs[0][0], vertices[i].inputs[0][1],
+                                                      vertices[i].inputs[0][2], vertices[i].inputs[0][3]);
+                                if (const auto *dir = std::getenv("WEMU_NATIVE_VERIFY_DUMP_DIR")) {
+                                    const auto dump = [&](const char *name, const std::uint8_t *rgba) {
+                                        const auto path = std::format("{}/native_verify_{}_{}_{}.ppm", dir, m_presentCount, m_stats.draws, name);
+                                        if (auto *file = std::fopen(path.c_str(), "wb")) {
+                                            std::fprintf(file, "P6\n%u %u\n255\n", m_color.width, m_color.height);
+                                            for (unsigned y = 0; y < m_color.height; ++y)
+                                                for (unsigned x = 0; x < m_color.width; ++x) {
+                                                    const auto offset = (std::size_t(y) * m_color.pitch + x) * 4;
+                                                    std::fwrite(rgba + offset, 1, 3, file);
+                                                }
+                                            std::fclose(file);
+                                        }
+                                    };
+                                    dump("software", target);
+                                    dump("native", result->rgba.data());
+                                }
                             }
                         }
                         if (profile || nativeAudit)
@@ -2284,7 +2561,10 @@ namespace Core::Gfx {
                         if (!drawDepth->pending)
                             std::copy(result->depth.begin(), result->depth.end(), drawDepth->pixels.begin());
                     }
-                    m_stats.tris += vertices.size() / 3;
+                    if (mode == 1)
+                        m_stats.points += vertices.size();
+                    else
+                        m_stats.tris += vertices.size() / 3;
                     m_stats.pixels += result->pixels;
                     m_stats.alphaSum += result->alphaSum;
                     committed = true;
@@ -2296,6 +2576,8 @@ namespace Core::Gfx {
                     const RasterVertex rv[]{triangle[0], triangle[1], triangle[2]};
                     rasterPrepared(rv);
                 }
+                for (const auto &point: preparedPoints)
+                    rasterPoint(point);
                 if (profile || nativeAudit)
                     fallbackUs = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - fallbackStart).count();
             }
@@ -2402,8 +2684,17 @@ namespace Core::Gfx {
             if (!m_mem)
                 return;
             base = m_mem->hostPtr(s.imagePtr);
-            if (!base || !m_mem->hostPtr(s.imagePtr + s.pitch * s.height * 4 - 1))
+            if (!base || !m_mem->hostPtr(s.imagePtr + s.pitch * s.height * colorElementBytes(colorFormat(s.format)) - 1))
                 return;
+        }
+        if (s.format == 0x823) {
+            for (unsigned y = 0; y < std::min(kHeight, s.height); ++y)
+                for (unsigned x = 0; x < std::min(kWidth, s.width); ++x) {
+                    const auto value = readFloatColor(base + (std::size_t(y) * s.pitch + x) * 16);
+                    for (unsigned c = 0; c < 4; ++c)
+                        m_fb[(std::size_t(y) * kWidth + x) * 4 + c] = byteFromUnit(value[c]);
+                }
+            return;
         }
         const std::uint32_t rows = std::min(kHeight, s.height);
         const std::uint32_t cols = std::min(kWidth, s.width);
@@ -2433,7 +2724,7 @@ namespace Core::Gfx {
         if (!force)
             dumped.push_back(s.imagePtr);
         const std::uint8_t *base = m_mem->hostPtr(s.imagePtr);
-        if (!base || !m_mem->hostPtr(s.imagePtr + s.pitch * s.height * 4 - 1))
+        if (!base || !m_mem->hostPtr(s.imagePtr + s.pitch * s.height * colorElementBytes(colorFormat(s.format)) - 1))
             return;
         const char *dir = std::getenv("WEMU_FB_DUMP_DIR");
         char path[512];
@@ -2953,9 +3244,10 @@ namespace Core::Gfx {
                     }
                     m_presentCount++;
                     if ((m_presentCount % 100) == 0)
-                        Utils::Log::error("[GX2] replay #{}: draws={} tris={} px={} avgA={} skip(t/a/p)={}/{}/{} scan=0x{:08X} nz={}", m_presentCount,
-                                          m_stats.draws, m_stats.tris, m_stats.pixels, m_stats.pixels ? m_stats.alphaSum / m_stats.pixels : 0,
-                                          m_stats.skipNoTarget, m_stats.skipNoAttrib, m_stats.skipBadPtr, m_stats.scanPtr, m_stats.scanNonZero);
+                        Utils::Log::error("[GX2] replay #{}: draws={} tris={} points={} px={} avgA={} skip(t/a/p)={}/{}/{} scan=0x{:08X} nz={}",
+                                          m_presentCount, m_stats.draws, m_stats.tris, m_stats.points, m_stats.pixels,
+                                          m_stats.pixels ? m_stats.alphaSum / m_stats.pixels : 0, m_stats.skipNoTarget, m_stats.skipNoAttrib,
+                                          m_stats.skipBadPtr, m_stats.scanPtr, m_stats.scanNonZero);
                     // WEMU_FB_DUMP_RICH=1: snapshot the frame whenever it beats the most triangles
                     // seen so far, to a distinctly-named PPM. The steady state is a 55-tri
                     // post-process pattern; any menu/scene geometry produces far more, and those

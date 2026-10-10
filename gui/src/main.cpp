@@ -1,15 +1,17 @@
+#include <QCommandLineParser>
+#include <QDir>
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
-#include <QCommandLineParser>
 #include <QSettings>
-#include <QDir>
 #include <SDL2/SDL.h>
+
+#include "emulator/EmulatorLauncher.hpp"
+#include "emulator/GameView.hpp"
 #include "input/InputManager.hpp"
 #include "input/InputProfileManager.hpp"
 #include "input/KeyboardInput.hpp"
 #include "library/TitleScanner.hpp"
-#include "emulator/EmulatorLauncher.hpp"
 
 int main(int argc, char *argv[])
 {
@@ -31,8 +33,9 @@ int main(int argc, char *argv[])
     auto library = parser.isSet("library") ? parser.value("library") : QSettings().value("library/directory").toString();
     if (!parser.isSet("library") && (library.isEmpty() || !QDir(library).exists()))
         library = TitleScanner::defaultLibraryPath(QCoreApplication::applicationDirPath(), QDir::currentPath());
-    if (!library.isEmpty()) scanner.scanDirectory(library);
+    if (!library.isEmpty()) scanner.scanDirectory(library, !parser.isSet("library"));
     QQmlApplicationEngine engine;
+    qmlRegisterType<GameView>("Wemu", 1, 0, "GameView");
     engine.rootContext()->setContextProperty("InputManager", &input);
     engine.rootContext()->setContextProperty("InputProfileManager", &profiles);
     engine.rootContext()->setContextProperty("TitleScanner", &scanner);
@@ -43,6 +46,11 @@ int main(int argc, char *argv[])
     QObject::connect(&app, &QGuiApplication::aboutToQuit, &launcher, &EmulatorLauncher::stop);
     engine.load(QUrl("qrc:/assets/qml/Main.qml"));
     if (engine.rootObjects().isEmpty()) return 1;
+    auto *gameView = engine.rootObjects().first()->findChild<GameView *>("gameView");
+    if (!gameView)
+        qFatal("The game presentation item was not created");
+    QObject::connect(&launcher, &EmulatorLauncher::frameReady, gameView, &GameView::setFrame);
+    QObject::connect(gameView, &GameView::framePresented, &launcher, &EmulatorLauncher::acknowledgeFrame);
     const int result = app.exec();
     input.stopPolling();
     return result;

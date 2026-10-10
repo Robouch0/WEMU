@@ -8,11 +8,12 @@ int main()
     inherited.insert("PATH", "/usr/bin");
     inherited.insert("WEMU_NATIVE_CPU", "1");
     inherited.insert("WEMU_NATIVE_RASTER", "0");
+    inherited.insert("WEMU_NO_FRAMESKIP", "0");
     inherited.insert("WEMU_NATIVE_VERIFY_EVERY", "1");
     inherited.insert("WEMU_SCENE_EXPERIMENT", "1");
     inherited.insert("WEMU_SHARED_FONT", "/wrong/font");
     const auto environment = desktopLaunchEnvironment(inherited, "/games/base content", "/fonts/shared font");
-    for (const auto *key : {"WEMU_FRAME_CLOCK", "WEMU_NATIVE_RASTER", "WEMU_NATIVE_DEFER_READBACK",
+    for (const auto *key : {"WEMU_FRAME_CLOCK", "WEMU_NO_FRAMESKIP", "WEMU_NATIVE_RASTER", "WEMU_NATIVE_DEFER_READBACK",
                             "WEMU_NATIVE_LAZY_READBACK", "WEMU_NATIVE_RESIDENT_TEXTURES", "WEMU_NATIVE_RESIDENT_TARGETS"}) {
         if (environment.value(key) != "1") { qCritical() << "Missing desktop optimization" << key; return 1; }
     }

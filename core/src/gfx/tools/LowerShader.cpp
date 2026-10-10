@@ -9,7 +9,7 @@
 int main(int argc, char **argv)
 {
     if (argc != 3) {
-        std::cerr << "Usage: wemu_shader_lower <decoded-dwords.hex> <output.frag|--inspect>\n";
+        std::cerr << "Usage: wemu_shader_lower <decoded-dwords.hex> <output.frag|output.vert|--inspect>\n";
         return 2;
     }
     std::ifstream input(argv[1]);
@@ -71,7 +71,8 @@ int main(int argc, char **argv)
         }
         return 0;
     }
-    const auto shader = Core::Gfx::Latte::lowerFragmentShader(*program);
+    const auto shader = std::string_view(argv[2]).ends_with(".vert") ? Core::Gfx::Latte::lowerVertexShader(*program)
+                                                                     : Core::Gfx::Latte::lowerFragmentShader(*program);
     if (!shader) {
         std::cerr << shader.error << '\n';
         return 1;

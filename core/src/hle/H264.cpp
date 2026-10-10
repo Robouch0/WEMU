@@ -245,6 +245,8 @@ namespace {
                                   elapsed, cpu.m_scheduler.now());
             }
             ++s.outputCount;
+            if (cpu.m_renderer)
+                cpu.m_renderer->record_movie_frame();
             std::memcpy(range(cpu, frame.guestBuffer, frame.nv12.size()), frame.nv12.data(), frame.nv12.size());
             if (s.callback) {
                 const auto record = records + static_cast<std::uint32_t>(i * 0x78);

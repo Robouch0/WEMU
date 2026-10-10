@@ -1124,7 +1124,7 @@ TEST(LatteLoweringTest, EmitsScalarForwardingAndExactLiteralBits)
     words[1] = (8u << 26) | (4u << 18); // four instructions and one literal slot
     const auto shader = lowerFragmentShader(*decodeProgram(words));
     ASSERT_TRUE(shader) << shader.error;
-    EXPECT_NE(shader.source.find("logClamped(r[0][0])"), std::string::npos);
+    EXPECT_NE(shader.source.find("logClamped(reg0[0])"), std::string::npos);
     EXPECT_NE(shader.source.find("ps=t0;"), std::string::npos);
     EXPECT_NE(shader.source.find("uintBitsToFloat(1061158912u)"), std::string::npos);
     EXPECT_TRUE(shader.textures.empty());
@@ -1543,7 +1543,7 @@ TEST(LatteLoweringTest, ComputesGroupSourcesBeforeCommittingRegisters)
     const auto shader = lowerFragmentShader(*decodeProgram({2, (8u << 26) | (1u << 18), 0, (0x28u << 23) | (1u << 21) | 0x688u, 249u,
                                                             (0x19u << 7) | 16u, 0x80000000u, (0x19u << 7) | 16u | (1u << 29)}));
     ASSERT_TRUE(shader) << shader.error;
-    EXPECT_LT(shader.source.find("precise float t1 = r[0][0]"), shader.source.find("r[0][0]=t0"));
+    EXPECT_LT(shader.source.find("precise float t1 = reg0[0]"), shader.source.find("reg0[0]=t0"));
     validateSpirv(shader);
 }
 
@@ -1563,7 +1563,7 @@ TEST(LatteLoweringTest, SeparatesResourceSamplerPairsAndPreservesTextureMask)
     EXPECT_EQ(shader.textures[0].sampler, 2u);
     EXPECT_EQ(shader.textures[1].sampler, 5u);
     EXPECT_TRUE(shader.requiresBaseLevelOnly);
-    EXPECT_EQ(shader.source.find("r[0][3]=sampled"), std::string::npos);
+    EXPECT_EQ(shader.source.find("reg0[3]=sampled"), std::string::npos);
     words[1] |= 1u << 22; // valid-pixel mode, no KILL/quad/derivative operations
     const auto validPixels = lowerFragmentShader(*decodeProgram(words));
     ASSERT_TRUE(validPixels) << validPixels.error;
@@ -1742,8 +1742,8 @@ TEST(LatteLoweringTest, GatherFootprintMatchesVulkan)
 TEST(LatteLoweringTest, EmitsReferenceArithmeticDomainGuards)
 {
     for (const auto [op, expected]:
-         {std::pair{OP2_RECIP_IEEE, "r[0][0] != 0.0 ? 1.0 / r[0][0] : 0.0"},
-          std::pair{OP2_RECIPSQRT_IEEE, "r[0][0] > 0.0 ? inversesqrt(r[0][0]) : 0.0"}, std::pair{OP2_LOG_IEEE, "logReference(r[0][0])"}}) {
+         {std::pair{OP2_RECIP_IEEE, "reg0[0] != 0.0 ? 1.0 / reg0[0] : 0.0"},
+          std::pair{OP2_RECIPSQRT_IEEE, "reg0[0] > 0.0 ? inversesqrt(reg0[0]) : 0.0"}, std::pair{OP2_LOG_IEEE, "logReference(reg0[0])"}}) {
         const auto shader = lowerFragmentShader(
                 *decodeProgram({2, 8u << 26, 0, (0x28u << 23) | (1u << 21) | 0x688u, 0x80000000u, (std::uint32_t(op) << 7) | 16u | (1u << 31)}));
         ASSERT_TRUE(shader) << shader.error;
@@ -2326,4 +2326,286 @@ TEST(VulkanDepthTest, MaskedDepthExportsDiscardAndMixedOutputMasksFallBack)
     auto mixed = words;
     mixed[7] = (0x28u << 23) | (1u << 21) | 0x688u;
     EXPECT_FALSE(lowerFragmentShader(*decodeProgram(mixed))) << "Conditional colour/depth masks are not a single-output native draw";
+}
+
+TEST(VulkanPointsTest, FloatPointsBlendWithoutClampingAndPreserveMasksPaddingAndVersions)
+{
+    using namespace Core::Gfx;
+    if (!std::getenv("WEMU_TEST_VULKAN"))
+        GTEST_SKIP();
+    const auto shader = lowerFragmentShader(*decodeProgram({0, (CF_EXP_DONE << 23) | (1u << 21) | 0x688u}));
+    ASSERT_TRUE(shader) << shader.error;
+    std::array<RasterDraw::Vertex, 4> points{{{1.5f, .5f, {}}, {1.5f, .5f, {}}, {3.5f, 1.5f, {}}, {-.5f, .5f, {}}}};
+    for (auto &v: points)
+        v.inputs[0] = {2.f, -.5f, .25f, 1.f};
+    std::vector<std::uint8_t> target(6 * 2 * 16);
+    for (unsigned i = 0; i < 12; ++i)
+        writeFloatColor(target.data() + i * 16, {.5f, .25f, .75f, .125f}, 15);
+    RasterDraw draw{shader, points, {}, {}, target, 4, 2, 6, {1, 0, 2, 2}, 7, {true, 1, 1, 0, 1, 1, 0, {}}};
+    draw.topology = RasterDraw::Topology::Points;
+    draw.colorFormat = ColorFormat::RGBA32Float;
+    VulkanRasterBackend backend(true, true);
+    auto first = backend.renderDeferred(draw);
+    ASSERT_TRUE(first) << backend.lastError();
+    ASSERT_TRUE(first->readback);
+    draw.renderedTarget = first->readback;
+    auto second = backend.renderDeferred(draw);
+    ASSERT_TRUE(second) << backend.lastError();
+    first->resolve();
+    second->resolve();
+    for (unsigned i = 0; i < 12; ++i) {
+        const auto a = readFloatColor(first->rgba.data() + i * 16), b = readFloatColor(second->rgba.data() + i * 16);
+        EXPECT_EQ(a, (i == 1 ? std::array{4.5f, -.75f, 1.25f, .125f} : std::array{.5f, .25f, .75f, .125f}));
+        EXPECT_EQ(b, (i == 1 ? std::array{8.5f, -1.75f, 1.75f, .125f} : std::array{.5f, .25f, .75f, .125f}));
+    }
+    // The float image also remains a typed texture, with component remapping.
+    const auto sampled = lowerFragmentShader(*decodeProgram(
+            {2, 1u << 23, 0, (CF_EXP_DONE << 23) | (1u << 21) | 0x688u, 0x13, 0x30000000u | (1u << 12) | (2u << 15) | (3u << 18), 1u << 23, 0}));
+    ASSERT_TRUE(sampled) << sampled.error;
+    RasterDraw::Texture texture{sampled.textures[0], 4, 2, {}, [](unsigned, unsigned) { return std::array<float, 4>{}; }};
+    texture.rendered = draw.renderedTarget;
+    texture.renderedFormat = ColorFormat::RGBA32Float;
+    texture.unorm8Pitch = 6;
+    texture.unorm8Map = 0x02010003;
+    std::array<RasterDraw::Vertex, 1> one{{{.5f, .5f, {}}}};
+    one[0].inputs[0] = {.375f, .25f, 0, 1};
+    std::vector<std::uint8_t> output(16);
+    RasterDraw sampleDraw{sampled, one, {}, std::span{&texture, 1}, output, 1, 1, 1, {0, 0, 1, 1}, 15, {}};
+    sampleDraw.topology = RasterDraw::Topology::Points;
+    sampleDraw.colorFormat = ColorFormat::RGBA32Float;
+    const auto result = backend.render(sampleDraw);
+    ASSERT_TRUE(result) << backend.lastError();
+    EXPECT_EQ(readFloatColor(result->rgba.data()), (std::array{1.25f, -.75f, 4.5f, .125f}));
+}
+
+TEST(LatteVertexTest, UniformWindowsAndExplicitTextureSamplingCompileWithSharedAlu)
+{
+    // R1.x takes bank 3, vector 16; POS0 exports R1 and PARAM0 exports R2.
+    const std::vector<std::uint32_t> words{4u | (3u << 22) | (1u << 30),
+                                           (8u << 26) | (1u << 2),
+                                           60u | (1u << 13) | (1u << 15),
+                                           (CF_EXP << 23) | 0x688u,
+                                           (2u << 13) | (2u << 15),
+                                           (CF_EXP_DONE << 23) | (1u << 21) | 0x688u,
+                                           0,
+                                           0,
+                                           0x80000000u | 256u,
+                                           (OP2_MOV << 7) | 16u | (1u << 21)};
+    const auto shader = lowerVertexShader(*decodeProgram(words));
+    ASSERT_TRUE(shader) << shader.error;
+    ASSERT_EQ(shader.uniforms.size(), 1u);
+    EXPECT_EQ(shader.uniforms[0], (FragmentShader::UniformReference{3, 16}));
+    EXPECT_EQ(shader.parameterMask, 1u);
+    ASSERT_NO_FATAL_FAILURE(validateSpirv(shader, nullptr, "vert"));
+    auto invalid = words;
+    invalid[1] |= 1u << 30;
+    EXPECT_FALSE(lowerVertexShader(*decodeProgram(invalid)));
+    VertexShaderCache cache;
+    EXPECT_EQ(cache.get(words), cache.get(words));
+}
+
+TEST(VulkanPointsTest, VertexTexturesConsumeResidentDepthWithoutHostReadback)
+{
+    using namespace Core::Gfx;
+    if (!std::getenv("WEMU_TEST_VULKAN"))
+        GTEST_SKIP();
+    const auto fragment = lowerFragmentShader(*decodeProgram({0, (CF_EXP_DONE << 23) | (1u << 21) | 0x688u}));
+    const std::vector<std::uint32_t> words{3,
+                                           1u << 23,
+                                           60u | (1u << 13) | (1u << 15),
+                                           (CF_EXP << 23) | 0x688u,
+                                           (2u << 13) | (3u << 15),
+                                           (CF_EXP_DONE << 23) | (1u << 21) | 0x688u,
+                                           0x13u | (2u << 16),
+                                           0x30000000u | 3u | (1u << 12) | (2u << 15) | (3u << 18),
+                                           1u << 23,
+                                           0};
+    auto vertex = std::make_shared<const VertexShader>(lowerVertexShader(*decodeProgram(words)));
+    ASSERT_TRUE(*vertex) << vertex->error;
+    ASSERT_EQ(vertex->textures.size(), 1u);
+    ASSERT_NO_FATAL_FAILURE(validateSpirv(*vertex, nullptr, "vert"));
+    std::array<RasterDraw::Vertex, 2> points{{{.5f, .5f, {}}, {1.5f, .5f, {}}}};
+    points[0].z = .25f;
+    points[1].z = .75f;
+    std::vector<float> depths(3, .9f);
+    std::vector<std::uint8_t> bytes(3 * 16);
+    RasterDraw depthDraw{fragment, points, {}, {}, bytes, 2, 1, 3, {0, 0, 2, 1}, 0, {}};
+    depthDraw.topology = RasterDraw::Topology::Points;
+    depthDraw.colorFormat = ColorFormat::RGBA32Float;
+    depthDraw.depth = {true, true, 7, DepthFormat::Float32, depths, 2, 1, 3, {}};
+    VulkanRasterBackend backend(true, true);
+    auto source = backend.renderDeferred(depthDraw);
+    ASSERT_TRUE(source) << backend.lastError();
+    ASSERT_TRUE(source->depthReadback);
+    unsigned resolutions{};
+    auto observed = std::make_shared<RasterReadback>(
+            source->depthReadback->size(),
+            [&, ticket = source->depthReadback] {
+                ++resolutions;
+                return ticket->resolve();
+            },
+            source->depthReadback->image());
+    auto binding = vertex->textures[0];
+    binding.binding += 17;
+    RasterDraw::Texture texture{binding, 2, 1, {}, [](unsigned, unsigned) -> std::array<float, 4> { throw std::runtime_error("CPU texture fetch"); }};
+    texture.rendered = observed;
+    texture.renderedDepth = true;
+    texture.unorm8Pitch = 3;
+    texture.unorm8Map = 0x00000505;
+    for (unsigned i = 0; i < 2; ++i) {
+        points[i].inputs[0] = {i ? .5f : -.5f, 0, 0, 1};
+        points[i].inputs[1] = {i ? .75f : .25f, .5f, 0, 1};
+    }
+    RasterDraw draw{fragment, points, {}, std::span{&texture, 1}, bytes, 2, 1, 3, {0, 0, 2, 1}, 15, {}};
+    draw.topology = RasterDraw::Topology::Points;
+    draw.colorFormat = ColorFormat::RGBA32Float;
+    draw.vertexStage = {vertex, {}, {}, {0, -1, -1, -1}, {0, 0, 2, 1, 0, 1}};
+    auto result = backend.renderDeferred(draw);
+    ASSERT_TRUE(result) << backend.lastError();
+    EXPECT_EQ(resolutions, 0u);
+    EXPECT_EQ(backend.readbackTransfers(), 0u);
+    result->resolve();
+    EXPECT_EQ(readFloatColor(result->rgba.data()), (std::array{.25f, .25f, 1.f, 1.f}));
+    EXPECT_EQ(readFloatColor(result->rgba.data() + 16), (std::array{.75f, .75f, 1.f, 1.f}));
+    EXPECT_EQ(resolutions, 0u);
+    std::array<RasterDraw::Vertex, 3> triangle{};
+    triangle[0].inputs[0] = {-1, 1, 0, 1};
+    triangle[1].inputs[0] = {-1, -3, 0, 1};
+    triangle[2].inputs[0] = {3, 1, 0, 1};
+    for (auto &v: triangle)
+        v.inputs[1] = {.25f, .5f, 0, 1};
+    draw.vertices = triangle;
+    draw.topology = RasterDraw::Topology::Triangles;
+    auto triangles = backend.render(draw);
+    ASSERT_TRUE(triangles) << backend.lastError();
+    EXPECT_EQ(readFloatColor(triangles->rgba.data()), (std::array{.25f, .25f, 1.f, 1.f}));
+    EXPECT_EQ(readFloatColor(triangles->rgba.data() + 16), (std::array{.25f, .25f, 1.f, 1.f}));
+    EXPECT_EQ(resolutions, 0u);
+    auto repeated = backend.render(draw);
+    ASSERT_TRUE(repeated) << backend.lastError();
+    EXPECT_EQ(repeated->rgba, triangles->rgba);
+    EXPECT_EQ(resolutions, 0u);
+    source->resolveDepth();
+    EXPECT_EQ(source->depth, (std::vector<float>{.25f, .75f, .9f}));
+}
+
+TEST(LatteLoweringTest, DotReductionPreservesOrderedProductsPredicationAndScale)
+{
+    for (const auto op: {OP2_DOT4, OP2_DOT4_IEEE})
+        for (unsigned predicate: {0u, 2u, 3u})
+            for (unsigned scale: {0u, 1u, 2u, 3u}) {
+                std::vector<std::uint32_t> words{2, (8u << 26) | (3u << 18), 2u << 15, (CF_EXP_DONE << 23) | (1u << 21) | 0x688u};
+                for (unsigned c = 0; c < 4; ++c) {
+                    words.push_back((c << 10) | (1u << 13) | (c << 23) | (predicate << 29) | (c == 3 ? 0x80000000u : 0));
+                    words.push_back((unsigned(op) << 7) | 16u | (scale << 5) | (2u << 21) | (c << 29));
+                }
+                const auto program = decodeProgram(words);
+                VulkanFragmentProbe::Inputs inputs{};
+                inputs[0] = {2, -4, .5f, 1};
+                inputs[1] = {3, 2, 8, 1};
+                const auto reference = Core::Gfx::LatteVsInterp::runPixel(*program, inputs, nullptr, 0, {});
+                const float expected = predicate == 2 ? 0.f : 3.f * (scale == 0 ? 1.f : scale == 1 ? 2.f : scale == 2 ? 4.f : .5f);
+                ASSERT_TRUE(reference.colorValid);
+                EXPECT_EQ(reference.color, (std::array{expected, expected, expected, expected}));
+                ASSERT_NO_FATAL_FAILURE(compareNativeControlFlow(*program, inputs, reference.color));
+                auto incomplete = words;
+                incomplete[1] = (8u << 26) | (2u << 18);
+                incomplete[8] |= 0x80000000u;
+                EXPECT_FALSE(lowerFragmentShader(*decodeProgram(incomplete)));
+            }
+}
+
+TEST(LatteLoweringTest, Dx10ComparisonMasksMatchInterpreterForOrderedAndNanInputs)
+{
+    for (const auto op: {OP2_SETE_DX10, OP2_SETGT_DX10, OP2_SETGE_DX10, OP2_SETNE_DX10})
+        for (const auto a: {-1.f, 0.f, 1.f, std::numeric_limits<float>::quiet_NaN()}) {
+            const std::vector<std::uint32_t> words{2,
+                                                   (8u << 26) | (1u << 18),
+                                                   3u << 15,
+                                                   (CF_EXP_DONE << 23) | (1u << 21) | 0x688u,
+                                                   0x80000000u | (1u << 13),
+                                                   (unsigned(op) << 7) | 16u | (2u << 21),
+                                                   0x80000000u | 2u | (SRC_0 << 13),
+                                                   SRC_1 | (OP3_CNDE_INT << 13) | (3u << 21)};
+            VulkanFragmentProbe::Inputs inputs{};
+            inputs[0][0] = a;
+            const bool condition = op == OP2_SETE_DX10 ? a == 0.f : op == OP2_SETGT_DX10 ? a > 0.f : op == OP2_SETGE_DX10 ? a >= 0.f : a != 0.f;
+            const auto program = decodeProgram(words);
+            const auto reference = Core::Gfx::LatteVsInterp::runPixel(*program, inputs, nullptr, 0, {});
+            ASSERT_TRUE(reference.colorValid);
+            EXPECT_EQ(reference.color, (std::array{condition ? 1.f : 0.f, 0.f, 0.f, 0.f}));
+            ASSERT_NO_FATAL_FAILURE(compareNativeControlFlow(*program, inputs, reference.color));
+        }
+}
+
+TEST(VulkanPointsTest, FloatBlendEquationsAndVertexUniformWindowsPreserveHdrValues)
+{
+    using namespace Core::Gfx;
+    if (!std::getenv("WEMU_TEST_VULKAN"))
+        GTEST_SKIP();
+    const auto fragment = lowerFragmentShader(*decodeProgram({0, (CF_EXP_DONE << 23) | (1u << 21) | 0x688u}));
+    const std::vector<std::uint32_t> words{4u | (3u << 22) | (1u << 30),
+                                           (8u << 26) | (1u << 2),
+                                           60u | (1u << 13) | (1u << 15),
+                                           (CF_EXP << 23) | 0x688u,
+                                           (2u << 13) | (2u << 15),
+                                           (CF_EXP_DONE << 23) | (1u << 21) | 0x688u,
+                                           0,
+                                           0,
+                                           0x80000000u | 256u,
+                                           (OP2_MOV << 7) | 16u | (1u << 21)};
+    auto vertex = std::make_shared<const VertexShader>(lowerVertexShader(*decodeProgram(words)));
+    ASSERT_TRUE(*vertex) << vertex->error;
+    std::array<RasterDraw::Vertex, 1> points{{{0, 0, {}}}};
+    points[0].inputs[0] = {3, 0, 0, 1}; // kcache supplies -.5 instead of the offscreen X
+    points[0].inputs[1] = {2, -.5f, .25f, 2};
+    const std::array<float, 4> uniforms{-.5f, 0, 0, 0};
+    std::vector<std::uint8_t> bytes(2 * 16);
+    for (unsigned i = 0; i < 2; ++i)
+        writeFloatColor(bytes.data() + i * 16, {.5f, .25f, .75f, 1}, 15);
+    RasterDraw draw{fragment, points, {}, {}, bytes, 2, 1, 2, {0, 0, 2, 1}, 15, {true, 1, 1, 0, 1, 1, 0, {}}};
+    draw.topology = RasterDraw::Topology::Points;
+    draw.colorFormat = ColorFormat::RGBA32Float;
+    draw.vertexStage = {vertex, {}, uniforms, {0, -1, -1, -1}, {0, 0, 2, 1, 0, 1}};
+    VulkanRasterBackend backend;
+    const std::array<std::array<float, 4>, 5> expected{
+            {{2.5f, -.25f, 1.f, 3.f}, {1.5f, -.75f, -.5f, 1.f}, {.5f, -.5f, .25f, 1.f}, {2.f, .25f, .75f, 2.f}, {-1.5f, .75f, .5f, -1.f}}};
+    for (unsigned operation = 0; operation < 5; ++operation) {
+        draw.blend.colorOperation = draw.blend.alphaOperation = operation;
+        const auto result = backend.render(draw);
+        ASSERT_TRUE(result) << backend.lastError();
+        EXPECT_EQ(readFloatColor(result->rgba.data()), expected[operation]);
+        EXPECT_EQ(readFloatColor(result->rgba.data() + 16), (std::array{.5f, .25f, .75f, 1.f}));
+    }
+}
+
+TEST(VulkanRasterBackendTest, ColdScissorVariantsKeepHotResourcesAndOlderSnapshotsAlive)
+{
+    using namespace Core::Gfx;
+    if (!std::getenv("WEMU_TEST_VULKAN"))
+        GTEST_SKIP();
+    const auto shader = lowerFragmentShader(*decodeProgram({0, (CF_EXP_DONE << 23) | (1u << 21) | 0x688u}));
+    ASSERT_TRUE(shader) << shader.error;
+    std::array<RasterDraw::Vertex, 3> vertices{{{0, 0, {}}, {8, 0, {}}, {0, 8, {}}}};
+    for (auto &v: vertices)
+        v.inputs[0] = {1, 0, 0, 1};
+    std::vector<std::uint8_t> target(6 * 4 * 4, 19);
+    RasterDraw draw{shader, vertices, {}, {}, target, 4, 4, 6, {0, 0, 4, 4}, 15, {}};
+    VulkanRasterBackend backend(true, true);
+    auto first = backend.renderDeferred(draw);
+    ASSERT_TRUE(first) << backend.lastError();
+    for (int variant = 1; variant <= 70; ++variant) {
+        draw.scissor = {-variant, 0, variant + 4, 4};
+        ASSERT_TRUE(backend.renderDeferred(draw)) << backend.lastError();
+        draw.scissor = {0, 0, 4, 4};
+        ASSERT_TRUE(backend.renderDeferred(draw)) << backend.lastError();
+    }
+    EXPECT_EQ(backend.reusedDraws(), 70u);
+    first->resolve();
+    for (unsigned y = 0; y < 4; ++y)
+        for (unsigned x = 0; x < 6; ++x) {
+            const auto offset = (y * 6 + x) * 4;
+            EXPECT_EQ((std::array{first->rgba[offset], first->rgba[offset + 1], first->rgba[offset + 2], first->rgba[offset + 3]}),
+                      (x < 4 ? std::array<std::uint8_t, 4>{255, 0, 0, 255} : std::array<std::uint8_t, 4>{19, 19, 19, 19}));
+        }
 }

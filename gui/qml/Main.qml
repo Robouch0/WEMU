@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import "pages"
 
 ApplicationWindow {
     id: rootWindow
@@ -8,13 +9,17 @@ ApplicationWindow {
     height: 720
     minimumWidth: 800
     minimumHeight: 640
-    title: "WEMU Library"
+    title: EmulatorLauncher.running ? "WEMU — " + EmulatorLauncher.gameTitle : "WEMU Library"
 
     Loader {
         id: mainLoader
         anchors.fill: parent
+        visible: !EmulatorLauncher.running
+        enabled: visible
         sourceComponent: introComponent
     }
+
+    GameSessionView { anchors.fill: parent }
 
     Component {
         id: introComponent

@@ -53,7 +53,15 @@ int main(int argc, char **argv)
         require(QSettings().value("library/directory") == root, "library was not persisted");
         scanner.refresh();
         require(scanner.rowCount({}) == 2, "refresh duplicated titles");
+        scanner.scanDirectory(base, false);
+        require(scanner.rowCount({}) == 1, "temporary library override was not scanned");
+        require(scanner.searchPath() == base, "temporary library override path incorrect");
+        require(QSettings().value("library/directory") == root, "temporary override replaced saved library");
+        scanner.refresh();
+        require(scanner.rowCount({}) == 1, "temporary library refresh changed its selection");
+        require(QSettings().value("library/directory") == root, "refresh persisted temporary library override");
         scanner.scanDirectory(base);
+        require(QSettings().value("library/directory") == base, "explicit library selection stopped persisting");
         require(scanner.rowCount({}) == 1, "direct game folder not supported");
         require(scanner.data(scanner.index(0, 0), TitleScanner::RpxPathRole) == base + "/code/program.rpx", "base-only launch wrong");
         scanner.scanDirectory(root + "/orphan");

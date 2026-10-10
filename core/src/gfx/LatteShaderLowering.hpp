@@ -24,6 +24,12 @@ namespace Core::Gfx::Latte {
             bool usesGather{};
             bool exportsColor{true};
             bool writesDepth{};
+            struct UniformReference {
+                    unsigned bank{}, index{};
+                    bool operator==(const UniformReference &) const = default;
+            };
+            std::vector<UniformReference> uniforms;
+            unsigned parameterMask{};
             explicit operator bool() const { return error.empty() && !source.empty(); }
     };
 
@@ -36,6 +42,15 @@ namespace Core::Gfx::Latte {
     // Whole-quad ALU is accepted only when helper writes cannot escape an enclosing
     // mask and no implicit derivatives consume them; general quad execution falls back.
     FragmentShader lowerFragmentShader(const Program &program, std::span<const TextureType> resourceTypes = {});
+    struct VertexShader : FragmentShader {};
+    VertexShader lowerVertexShader(const Program &program, std::span<const TextureType> resourceTypes = {});
+    class VertexShaderCache {
+        public:
+            std::shared_ptr<const VertexShader> get(const std::vector<std::uint32_t> &words);
+
+        private:
+            std::map<std::vector<std::uint32_t>, std::shared_ptr<const VertexShader>> m_entries;
+    };
 
     // Replayer-owned, single-threaded cache. Exact keys include resource specialization.
     class FragmentShaderCache {

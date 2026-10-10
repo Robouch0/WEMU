@@ -138,7 +138,7 @@ namespace Core::Gfx {
                 if (!file)
                     throw std::runtime_error("Cannot write shader source");
             }
-            execute({WEMU_RUNTIME_GLSLANG, "-V", "--target-env", "vulkan1.0", "-o", output.string(), input.string()}, log);
+            execute({WEMU_RUNTIME_GLSLANG, "-V", "-Os", "--target-env", "vulkan1.0", "-o", output.string(), input.string()}, log);
             execute({WEMU_RUNTIME_SPIRV_VAL, "--target-env", "vulkan1.0", output.string()}, log);
             std::ifstream file(output, std::ios::binary | std::ios::ate);
             if (!file)

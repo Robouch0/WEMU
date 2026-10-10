@@ -11,6 +11,7 @@
 #include <stdexcept>
 #include <vector>
 
+#include "gfx/ColorTarget.hpp"
 #include "gfx/Depth.hpp"
 #include "gfx/LatteShaderLowering.hpp"
 #include "gfx/TextureSampler.hpp"
@@ -26,7 +27,8 @@ namespace Core::Gfx {
     // perspectively for positive W; full clipping, stencil and multisampling are
     // outside this ABI's validated native subset.
     // Texture views expose only reference base-level texels. Shader output is
-    // rounded to RGBA8 before the reference's integer blend operations; a GPU
+    // rounded to RGBA8 before integer blending on UNORM targets. RGBA32 float
+    // targets preserve shader floats and use float blending. A GPU
     // implementation must validate its conversion/blend tolerances separately.
     struct RasterDraw {
             struct Vertex {
@@ -52,7 +54,7 @@ namespace Core::Gfx {
                     std::span<const float> r32;
                     std::uint32_t r32Map{0x00010203};
                     unsigned unorm8Channels{4};
-                    // Optional rendered RGBA8 source. Overrides CPU snapshots;
+                    // Optional rendered typed color/depth source. Overrides CPU snapshots;
                     // unorm8Pitch/Map describe its layout and component mapping.
                     std::shared_ptr<RasterReadback> rendered;
                     // Array snapshots are layer-major, with identical row pitches.
@@ -62,6 +64,10 @@ namespace Core::Gfx {
                     // expanding guest GPU words into a temporary host float array.
                     std::span<const std::uint8_t> r32Bytes;
                     unsigned r32Pitch{};
+                    ColorFormat renderedFormat{ColorFormat::RGBA8};
+                    bool renderedDepth{};
+                    std::span<const std::uint8_t> rgba32Bytes;
+                    unsigned rgba32Pitch{};
             };
             struct Blend {
                     bool enabled{};
@@ -70,10 +76,10 @@ namespace Core::Gfx {
                     std::array<std::uint8_t, 4> constant{};
             };
             const Latte::FragmentShader &shader;
-            std::span<const Vertex> vertices; // ordered triangle list
+            std::span<const Vertex> vertices; // ordered list, selected by topology
             std::span<const float> constants; // missing entries must read as zero
             std::span<const Texture> textures;
-            std::span<const std::uint8_t> target; // reference RGBA8, including row padding
+            std::span<const std::uint8_t> target; // canonical colorFormat bytes, including row padding
             unsigned width{}, height{}, pitch{};
             std::array<std::int32_t, 4> scissor{}; // x, y, width, height
             unsigned channelMask{};
@@ -90,6 +96,16 @@ namespace Core::Gfx {
                     unsigned width{}, height{}, pitch{};
                     std::shared_ptr<RasterReadback> rendered;
             } depth;
+            enum class Topology { Triangles, Points };
+            Topology topology{Topology::Triangles};
+            ColorFormat colorFormat{ColorFormat::RGBA8};
+            struct VertexStage {
+                    std::shared_ptr<const Latte::VertexShader> shader;
+                    std::span<const float> constants;
+                    std::span<const float> uniforms;
+                    std::array<int, 4> inputParams{-1, -1, -1, -1};
+                    std::array<float, 6> viewport{};
+            } vertexStage;
     };
 
     // Owns all data/resources needed after renderDeferred returns. Materialization
@@ -170,6 +186,9 @@ namespace Core::Gfx {
             virtual bool supportsRenderedTextures() const { return false; }
             virtual bool supportsRenderedTargets() const { return false; }
             virtual bool supportsDepth() const { return false; }
+            virtual bool supportsPoints() const { return false; }
+            virtual bool supportsFloatTargets() const { return false; }
+            virtual bool supportsVertexStage() const { return false; }
             // Same borrowed-input lifetime as render; only the owned readback may
             // outlive this call. Backends without deferred support remain synchronous.
             virtual std::optional<RasterResult> renderDeferred(const RasterDraw &draw) { return render(draw); }

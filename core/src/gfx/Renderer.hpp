@@ -4,10 +4,14 @@
 #include <SDL2/SDL_vulkan.h>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
 #include <vulkan/vulkan.h>
+
+#include "gfx/HostPresenter.hpp"
+#include "ui/PauseMenu.hpp"
 
 #define GLM_FORCE_RADIANS
 #define GLM_FORCE_DEFAULT_ALIGNED_GENTYPES
@@ -26,19 +30,27 @@ namespace Core::Gfx {
 class Renderer {
     public:
         // Standalone: creates own SDL window, Vulkan instance and surface.
-        Renderer()
+        Renderer() : Renderer(nullptr) {}
+
+        explicit Renderer(std::unique_ptr<Core::Gfx::HostPresenter> presenter) : m_hostPresenter(std::move(presenter))
         {
-            initWindow();
-            createInstance();
-            createSurface();
-            initVulkanPipeline();
+            if (!m_hostPresenter) {
+                initWindow();
+                createInstance();
+                createSurface();
+                initVulkanPipeline();
+            }
         }
 
         // Embedded: takes an externally-owned instance and surface (e.g. from Qt).
         // Does not own or destroy those handles.
         Renderer(VkInstance instance, VkSurfaceKHR surface, uint32_t w, uint32_t h);
 
-        ~Renderer() { cleanup(); }
+        ~Renderer()
+        {
+            if (!m_hostPresenter)
+                cleanup();
+        }
 
         void flip_tv(const std::uint8_t *rgbx, std::uint32_t w, std::uint32_t h);
 
@@ -65,6 +77,13 @@ class Renderer {
         void gpuPresentTarget(std::uint32_t scanAddr, std::uint8_t *outRgbx);
 
         bool poll_events();
+
+        [[nodiscard]] bool pause_requested() const { return m_pauseMenu.state() == Core::UI::PauseMenu::State::PauseRequested; }
+        // Called only by the CPU at a safe service boundary, never inside HLE.
+        void service_pause(const std::function<void()> &onPaused);
+        void record_movie_frame() { m_movieRate.record(Core::UI::FrameRate::Clock::now()); }
+        [[nodiscard]] std::uint64_t guest_present_count() const { return m_presentRate.total(); }
+        [[nodiscard]] std::uint64_t movie_frame_count() const { return m_movieRate.total(); }
 
         [[nodiscard]] std::uint32_t get_buttons() const;
 
@@ -106,6 +125,11 @@ class Renderer {
         };
 
     private:
+        void processHostCommands(std::chrono::milliseconds wait = {});
+        Core::Gfx::HostPresenter::Statistics hostStatistics() const;
+        void pacePresentation();
+        void presentFrame(const std::uint8_t *rgbx, std::uint32_t w, std::uint32_t h, bool guestFrame);
+        bool handleHostEvent(const SDL_Event &event);
         void createInstance();
 
         void initWindow();
@@ -256,6 +280,14 @@ class Renderer {
         VkImage m_tvImage = VK_NULL_HANDLE;
         VkDeviceMemory m_tvImageMemory = VK_NULL_HANDLE;
         bool m_tvImageInitialized = false;
+        Core::UI::PauseMenu m_pauseMenu;
+        std::unique_ptr<Core::Gfx::HostPresenter> m_hostPresenter;
+        std::uint32_t m_hostButtons{};
+        Core::UI::FrameRate m_presentRate, m_movieRate;
+        std::vector<std::uint8_t> m_pauseBackground;
+        std::uint32_t m_lastGameSlot{};
+        bool m_haveGameFrame{}, m_pacingReady{};
+        Core::UI::FrameRate::Clock::time_point m_lastFlip{};
 
         Core::Gfx::GpuQuadRasterizer *m_gpuQuad = nullptr; // lazily created on first gpuBegin(); freed in cleanup()
         Core::Gfx::GpuRenderGraph *m_gpuGraph = nullptr; // lazily created on first gpuBeginFrame(); freed in cleanup()

@@ -124,6 +124,7 @@ add_library(core STATIC
         src/hle/Scheduler.hpp
         src/hle/Scheduler.cpp
         src/gfx/Renderer.cpp
+        src/ui/PauseMenu.cpp
         src/gfx/init/buffer.cpp
         src/gfx/init/cleanup.cpp
         src/gfx/init/commandPool.cpp
@@ -173,6 +174,14 @@ endif()
 # ------------------------------------------------------------
 add_executable(wemu src/main.cpp)
 target_link_libraries(wemu PRIVATE core)
+
+# Optional desktop transport; the emulation library and standalone SDL path stay toolkit-independent.
+find_package(Qt6 QUIET COMPONENTS Core Network)
+if(TARGET Qt6::Core AND TARGET Qt6::Network)
+    target_sources(wemu PRIVATE src/frontend/QtHostPresenter.cpp)
+    target_link_libraries(wemu PRIVATE Qt6::Core Qt6::Network)
+    target_compile_definitions(wemu PRIVATE WEMU_QT_FRONTEND=1)
+endif()
 
 # Offline diagnostic lowering; not used to replace unsupported live draws.
 add_executable(wemu_shader_lower src/gfx/tools/LowerShader.cpp)

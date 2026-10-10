@@ -313,6 +313,15 @@ namespace Core::Gfx {
                                 case OP2_SETNE:
                                     v = (a != b) ? 1.0f : 0.0f;
                                     break;
+                                case OP2_SETE_DX10:
+                                    v = fromU32(a == b ? 0xFFFFFFFFu : 0u);
+                                    break;
+                                case OP2_SETGE_DX10:
+                                    v = fromU32(a >= b ? 0xFFFFFFFFu : 0u);
+                                    break;
+                                case OP2_SETNE_DX10:
+                                    v = fromU32(a != b ? 0xFFFFFFFFu : 0u);
+                                    break;
                                 case OP2_SETGT_DX10:
                                     v = fromU32(a > b ? 0xFFFFFFFFu : 0u);
                                     break;

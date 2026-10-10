@@ -241,6 +241,20 @@ void Core::Interpreter::run()
                 stop();
                 break;
             }
+            if (m_renderer && m_renderer->pause_requested()) {
+                m_renderer->service_pause([&] {
+                    Utils::Log::error("[SESSION] paused retired={} tick={} presents={} movies={}", m_retired, m_scheduler.now(),
+                                      m_renderer->guest_present_count(), m_renderer->movie_frame_count());
+                });
+                Utils::Log::error("[SESSION] {} retired={} tick={} presents={} movies={}", m_renderer->is_open() ? "resumed" : "stopped", m_retired,
+                                  m_scheduler.now(), m_renderer->guest_present_count(), m_renderer->movie_frame_count());
+                ipsMark = threadDumpMark = std::chrono::steady_clock::now();
+                ipsLast = m_retired;
+                if (!m_renderer->is_open()) {
+                    stop();
+                    break;
+                }
+            }
             // Espresso time base runs at coreClock / 20. Keep deadlines moving even
             // while a runnable thread does not call an OS clock or yield service.
             const auto timerTicks = (m_retired - schedulerClockRetired) / 20;

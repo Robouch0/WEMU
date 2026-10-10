@@ -17,6 +17,9 @@ namespace Core::Gfx {
             bool supportsRenderedTextures() const override { return true; }
             bool supportsRenderedTargets() const override { return true; }
             bool supportsDepth() const override { return true; }
+            bool supportsPoints() const override { return true; }
+            bool supportsFloatTargets() const override { return true; }
+            bool supportsVertexStage() const override { return true; }
             const std::string &lastError() const noexcept;
             std::uint64_t completedDraws() const noexcept;
             std::uint64_t reusedDraws() const noexcept;

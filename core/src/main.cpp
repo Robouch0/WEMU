@@ -37,6 +37,11 @@
 #include "utils/BeDecoder.hpp"
 #include "utils/Diagnostics.hpp"
 #include "utils/Logger.hpp"
+#ifdef WEMU_QT_FRONTEND
+    #include <QCoreApplication>
+
+    #include "frontend/QtHostPresenter.hpp"
+#endif
 
 
 void print_elf32_ehdr(const Elf32_Ehdr &ehdr)
@@ -93,12 +98,24 @@ void print_section(const Core::Section &section)
 
 int main(const int ac, char const *const *av)
 {
-    const bool guiSession = ac == 3 && std::string(av[1]) == "--gui-session";
-    if (ac != 2 && !guiSession) {
+    const bool guiSession = (ac == 3 || ac == 5) && std::string(av[1]) == "--gui-session";
+    const bool windowChannel = guiSession && ac == 5 && std::string(av[3]) == "--window-channel";
+    if (ac != 2 && (!guiSession || (ac == 5 && !windowChannel))) {
         std::cerr << "Invalid arguments." << std::endl;
         return ERROR_VALUE;
     }
     try {
+#ifdef WEMU_QT_FRONTEND
+        int qtArgc = 1;
+        char qtName[] = "wemu";
+        char *qtArgv[]{qtName, nullptr};
+        std::unique_ptr<QCoreApplication> hostApplication;
+        if (windowChannel)
+            hostApplication = std::make_unique<QCoreApplication>(qtArgc, qtArgv);
+#else
+        if (windowChannel)
+            throw std::runtime_error("This core was built without the Qt desktop transport");
+#endif
         const char *executable = av[guiSession ? 2 : 1];
         Core::Loader loader(executable);
         const auto codeAddressRange = loader.codeAddressRange;
@@ -146,7 +163,16 @@ int main(const int ac, char const *const *av)
         std::cout << "CPU 268437924 MEM -> " << std::hex << interpreter.m_memory.read<uint32_t>(268437924) << std::dec << std::endl;
 
         // 4. Connect renderer to interpreter
-        Renderer renderer;
+        std::unique_ptr<Core::Gfx::HostPresenter> hostPresenter;
+#ifdef WEMU_QT_FRONTEND
+        if (windowChannel) {
+            const auto *legacyGpu = std::getenv("WEMU_GPU");
+            if (legacyGpu && std::atoi(legacyGpu))
+                throw std::runtime_error("The legacy WEMU_GPU compositor requires standalone SDL presentation");
+            hostPresenter = std::make_unique<Core::Frontend::QtHostPresenter>(QString::fromUtf8(av[4]));
+        }
+#endif
+        Renderer renderer(std::move(hostPresenter));
         interpreter.m_renderer = &renderer;
 
         Core::installStdlibHooks(interpreter, interpreter.m_binary);

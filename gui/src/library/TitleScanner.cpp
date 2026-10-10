@@ -75,7 +75,7 @@ TitleScanner::TitleScanner(QObject *parent)
     connect(m_watcher, &QFileSystemWatcher::directoryChanged, this, [this]() { refresh(); });
 }
 
-void TitleScanner::scanDirectory(const QString &path)
+void TitleScanner::scanDirectory(const QString &path, bool rememberLibrary)
 {
     const QUrl url(path);
     const QString local = url.isLocalFile() ? url.toLocalFile() : path;
@@ -171,9 +171,10 @@ void TitleScanner::scanDirectory(const QString &path)
     m_titles = titles;
     const bool changed = m_searchPath != rootPath;
     m_searchPath = rootPath;
+    m_rememberLibrary = rememberLibrary;
     endResetModel();
     if (changed) emit searchPathChanged();
-    QSettings().setValue("library/directory", rootPath);
+    if (rememberLibrary) QSettings().setValue("library/directory", rootPath);
     if (!m_watcher->directories().isEmpty()) m_watcher->removePaths(m_watcher->directories());
     m_watcher->addPaths(roots);
 }

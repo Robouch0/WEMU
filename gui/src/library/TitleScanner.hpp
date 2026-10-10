@@ -38,8 +38,9 @@ public:
     [[nodiscard]] QVariant data(const QModelIndex &index, int role) const override;
     [[nodiscard]] QHash<int, QByteArray> roleNames() const override;
 
-    Q_INVOKABLE void scanDirectory(const QString &path);
-    Q_INVOKABLE void refresh() { scanDirectory(m_searchPath); }
+    // Command-line/test overrides must not replace the user's saved library.
+    Q_INVOKABLE void scanDirectory(const QString &path, bool rememberLibrary = true);
+    Q_INVOKABLE void refresh() { scanDirectory(m_searchPath, m_rememberLibrary); }
 
     [[nodiscard]] QString searchPath() const { return m_searchPath; }
 
@@ -49,5 +50,6 @@ signals:
 private:
     QList<GameTitle>     m_titles;
     QString              m_searchPath;
+    bool                 m_rememberLibrary = true;
     QFileSystemWatcher  *m_watcher;
 };

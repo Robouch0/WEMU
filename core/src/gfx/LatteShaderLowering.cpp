@@ -87,7 +87,27 @@ namespace Core::Gfx::Latte {
                 unsigned m_scalar{};
         };
 
-        std::string source(const Src &s, const AluInst &instruction)
+        struct LoweringConstants {
+                FragmentShader &shader;
+                std::array<unsigned, 2> bank{}, address{}, mode{};
+                bool vertex{};
+                std::string read(const Src &src)
+                {
+                    if (vertex && src.sel >= 256 && src.sel < 320 && mode[(src.sel - 256) / 32]) {
+                        const auto window = (src.sel - 256) / 32;
+                        FragmentShader::UniformReference ref{bank[window], address[window] * 16 + (src.sel - 256) % 32};
+                        auto it = std::find(shader.uniforms.begin(), shader.uniforms.end(), ref);
+                        if (it == shader.uniforms.end()) {
+                            if (shader.uniforms.size() >= 512)
+                                throw std::runtime_error("vertex uniform reference budget exceeded");
+                            it = shader.uniforms.insert(it, ref);
+                        }
+                        return std::format("u.k[{}][{}]", std::distance(shader.uniforms.begin(), it), src.chan);
+                    }
+                    return std::format("u.c[{}][{}]", src.sel - 256, src.chan);
+                }
+        };
+        std::string source(const Src &s, const AluInst &instruction, LoweringConstants &constants)
         {
             if (s.rel || s.chan > 3)
                 throw std::runtime_error("relative or invalid ALU source");
@@ -97,7 +117,7 @@ namespace Core::Gfx::Latte {
             else if (s.sel < 192)
                 value = std::format("u.c[{}][{}]", s.sel - 128, s.chan);
             else if (s.sel >= 256 && s.sel < 512)
-                value = std::format("u.c[{}][{}]", s.sel - 256, s.chan);
+                value = constants.read(s);
             else
                 switch (s.sel) {
                     case SRC_0:
@@ -131,7 +151,7 @@ namespace Core::Gfx::Latte {
             return value;
         }
 
-        std::string predicateCondition(const AluInst &in)
+        std::string predicateCondition(const AluInst &in, LoweringConstants &constants)
         {
             if (in.op3)
                 return {};
@@ -160,7 +180,7 @@ namespace Core::Gfx::Latte {
                 default:
                     return {};
             }
-            auto a = source(in.src[0], in), b = source(in.src[1], in);
+            auto a = source(in.src[0], in, constants), b = source(in.src[1], in, constants);
             if (in.op >= OP2_PRED_SETE_INT) {
                 a = "floatBitsToInt(" + a + ")";
                 b = "floatBitsToInt(" + b + ")";
@@ -168,10 +188,10 @@ namespace Core::Gfx::Latte {
             return "(" + a + comparison + b + ")";
         }
 
-        std::string expression(const AluInst &in)
+        std::string expression(const AluInst &in, LoweringConstants &constants)
         {
             // Mask updates are modeled only for predicate-set operations.
-            const auto condition = predicateCondition(in);
+            const auto condition = predicateCondition(in, constants);
             constexpr std::uint32_t sourceMask = 0xE3BFFDFFu;
             const std::uint32_t destinationMask = in.op3 ? 0xEFFFFDFFu : condition.empty() ? 0xEFFFFFF3u : 0xEFFFFFFFu;
             if ((in.raw0 & ~sourceMask) || (in.raw1 & ~destinationMask) || in.predSel == 1)
@@ -183,10 +203,10 @@ namespace Core::Gfx::Latte {
                 throw std::runtime_error("reserved ALU bank swizzle");
             if (!condition.empty())
                 return in.op >= OP2_PRED_SETE_INT ? "uintBitsToFloat(" + condition + " ? 4294967295u : 0u)" : "(" + condition + " ? 1.0 : 0.0)";
-            auto a = source(in.src[0], in);
-            const auto b = source(in.src[1], in);
+            auto a = source(in.src[0], in, constants);
+            const auto b = source(in.src[1], in, constants);
             if (in.op3) {
-                const auto c = source(in.src[2], in);
+                const auto c = source(in.src[2], in, constants);
                 switch (in.op) {
                     case OP3_MULADD:
                     case OP3_MULADD_IEEE:
@@ -240,8 +260,37 @@ namespace Core::Gfx::Latte {
                     return "uintBitsToFloat(floatBitsToUint(" + a + ") >> (floatBitsToUint(" + b + ") & 31u))";
                 case OP2_LSHL:
                     return "uintBitsToFloat(floatBitsToUint(" + a + ") << (floatBitsToUint(" + b + ") & 31u))";
+                case OP2_SETE:
+                    return "(" + a + " == " + b + " ? 1.0 : 0.0)";
+                case OP2_SETGT:
+                    return "(" + a + " > " + b + " ? 1.0 : 0.0)";
+                case OP2_SETGE:
+                    return "(" + a + " >= " + b + " ? 1.0 : 0.0)";
+                case OP2_SETNE:
+                    return "(" + a + " != " + b + " ? 1.0 : 0.0)";
+                case OP2_SETE_DX10:
+                    return "uintBitsToFloat(" + a + " == " + b + " ? 4294967295u : 0u)";
+                case OP2_SETGE_DX10:
+                    return "uintBitsToFloat(" + a + " >= " + b + " ? 4294967295u : 0u)";
+                case OP2_SETNE_DX10:
+                    return "uintBitsToFloat(" + a + " != " + b + " ? 4294967295u : 0u)";
+                case OP2_SETE_INT:
+                    return "uintBitsToFloat(floatBitsToUint(" + a + ") == floatBitsToUint(" + b + ") ? 4294967295u : 0u)";
+                case OP2_SETNE_INT:
+                    return "uintBitsToFloat(floatBitsToUint(" + a + ") != floatBitsToUint(" + b + ") ? 4294967295u : 0u)";
+                case OP2_SETGE_INT:
+                    return "uintBitsToFloat(floatBitsToInt(" + a + ") >= floatBitsToInt(" + b + ") ? 4294967295u : 0u)";
+                case OP2_SETGT_INT:
+                    return "uintBitsToFloat(floatBitsToInt(" + a + ") > floatBitsToInt(" + b + ") ? 4294967295u : 0u)";
+                case OP2_INT_TO_FLT:
+                    return "float(floatBitsToInt(" + a + "))";
+                case OP2_UINT_TO_FLT:
+                    return "float(floatBitsToUint(" + a + "))";
                 case OP2_SETGT_DX10:
                     return "uintBitsToFloat(" + a + " > " + b + " ? 4294967295u : 0u)";
+                case OP2_DOT4:
+                case OP2_DOT4_IEEE:
+                    return "dotValue";
                 case OP2_MOV:
                     return a;
                 case OP2_NOP:
@@ -267,6 +316,34 @@ namespace Core::Gfx::Latte {
             }
         }
 
+        // The accepted subset has only static GPR addressing. Separate locals
+        // avoid a dynamically initialized 128-register private array and let both
+        // SPIR-V and device compilers eliminate unused registers.
+        std::string scalarizeRegisters(std::string body)
+        {
+            std::array<bool, 128> used{};
+            std::size_t at = 0;
+            while ((at = body.find("r[", at)) != std::string::npos) {
+                auto end = at + 2;
+                unsigned reg = 0;
+                if (end == body.size() || body[end] < '0' || body[end] > '9')
+                    throw std::runtime_error("dynamic GPR addressing reached native emission");
+                while (end < body.size() && body[end] >= '0' && body[end] <= '9')
+                    reg = reg * 10 + unsigned(body[end++] - '0');
+                if (reg >= used.size() || end == body.size() || body[end] != ']')
+                    throw std::runtime_error("invalid native register index");
+                used[reg] = true;
+                const auto name = std::format("reg{}", reg);
+                body.replace(at, end - at + 1, name);
+                at += name.size();
+            }
+            std::string declarations;
+            for (unsigned reg = 0; reg < used.size(); ++reg)
+                if (used[reg])
+                    declarations += std::format("vec4 reg{}=vec4(0.0);\n", reg);
+            body.insert(body.find('\n') + 1, declarations);
+            return body;
+        }
         std::string select(const std::string &reg, unsigned selector)
         {
             if (selector < 4)
@@ -279,16 +356,20 @@ namespace Core::Gfx::Latte {
         }
     } // namespace
 
-    FragmentShader lowerFragmentShader(const Program &program, std::span<const TextureType> resourceTypes)
+    static FragmentShader lowerShader(const Program &program, std::span<const TextureType> resourceTypes, bool vertexStage)
     {
         FragmentShader result;
         result.exportsColor = false;
+        LoweringConstants constants{result, {}, {}, {}, vertexStage};
         try {
             if (!program.valid || program.words.size() < 2)
                 throw std::runtime_error("invalid shader structure");
-            std::string body = "void main() {\nvec4 r[128];\nfor (int i=0;i<128;++i) r[i]=vec4(0.0);\n"
-                               "for (int i=0;i<4;++i) r[i]=inputs[i];\nvec4 pv=vec4(0.0); float ps=0.0;\n"
-                               "bool pred=true, laneActive=true, wroteOutput=false; bool activeStack[32]; uint pc=0u;\n";
+            std::string body = "void main() {\n";
+            for (unsigned i = 0; i < 4; ++i)
+                body += vertexStage ? std::format("r[{}]=attributes[{}];\n", i + 1, i) : std::format("r[{}]=inputs[{}];\n", i, i);
+            if (vertexStage)
+                body += "vec4 position=vec4(0.0,0.0,0.0,1.0); vec4 parameters[4]; for(int i=0;i<4;++i) parameters[i]=vec4(0.0);\n";
+            body += "vec4 pv=vec4(0.0); float ps=0.0;\nbool pred=true,laneActive=true,wroteOutput=false; bool activeStack[32]; uint pc=0u;\n";
             bool exported = false, terminated = false;
             bool wholeQuadUsed = false, implicitSamples = false;
             bool maskedControl = false;
@@ -319,9 +400,13 @@ namespace Core::Gfx::Latte {
                 if (isAluClause(w1)) {
                     const auto kind = cfAluInst(w1);
                     const bool wholeQuad = w1 & (1u << 30);
-                    if (kind < 8 || kind > 11 || (w0 >> 30) || (w1 & 3) || (wholeQuad && (kind != 8 || !depth)))
+                    if (kind < 8 || kind > 11 || (!vertexStage && ((w0 >> 30) || (w1 & 3))) || (vertexStage && wholeQuad) ||
+                        (wholeQuad && (kind != 8 || !depth)))
                         throw std::runtime_error(std::format("unsupported ALU clause: cf={} kind={} uniform={} whole_quad={}", cf / 2, kind,
                                                              bool((w0 >> 30) || (w1 & 3)), bool(w1 & (1u << 30))));
+                    constants.bank = {(w0 >> 22) & 15, (w0 >> 26) & 15};
+                    constants.address = {(w1 >> 2) & 255, (w1 >> 10) & 255};
+                    constants.mode = {(w0 >> 30) & 3, w1 & 3};
                     if (kind == 9)
                         push();
                     wholeQuadUsed |= wholeQuad;
@@ -332,6 +417,26 @@ namespace Core::Gfx::Latte {
                     body += "if(laneActive) {\n";
                     for (const auto &group: it->second) {
                         body += "{ bool nextPred=pred, nextActive=laneActive;\n";
+                        const bool dotGroup = !group.empty() && !group[0].op3 && (group[0].op == OP2_DOT4 || group[0].op == OP2_DOT4_IEEE);
+                        if (dotGroup) {
+                            if (group.size() < 4 || group.size() > 5)
+                                throw std::runtime_error("incomplete DOT4 reduction");
+                            body += "precise float dotValue=0.0;\n";
+                            for (unsigned i = 0; i < 4; ++i) {
+                                const auto &slot = group[i];
+                                if (slot.op3 || slot.scalarSlot || slot.op != group[0].op || slot.dstChan != i || slot.predSel != group[0].predSel ||
+                                    (slot.raw1 & 12u))
+                                    throw std::runtime_error("unsupported DOT4 group layout");
+                                body += std::format("dotValue=dotValue+({}*{});\n", source(slot.src[0], slot, constants),
+                                                    source(slot.src[1], slot, constants));
+                            }
+                            if (group.size() == 5 &&
+                                (!group[4].scalarSlot || (!group[4].op3 && (group[4].op == OP2_DOT4 || group[4].op == OP2_DOT4_IEEE))))
+                                throw std::runtime_error("unsupported DOT4 scalar slot");
+                        } else if (std::any_of(group.begin(), group.end(),
+                                               [](const auto &in) { return !in.op3 && (in.op == OP2_DOT4 || in.op == OP2_DOT4_IEEE); }))
+                            throw std::runtime_error("DOT4 must start its vector group");
+
                         for (unsigned i = 0; i < group.size(); ++i) {
                             const auto &in = group[i];
                             if (wholeQuad && !in.op3 && (in.raw1 & 12u))
@@ -339,10 +444,10 @@ namespace Core::Gfx::Latte {
                             for (unsigned operand = 0; operand < (in.op3 ? 3u : 2u); ++operand)
                                 wholeQuadWrites.read(in.src[operand], depth);
                             body += std::format("bool e{}={};\n", i, in.predSel == 2 ? "!pred" : in.predSel == 3 ? "pred" : "true");
-                            const auto condition = predicateCondition(in);
+                            const auto condition = predicateCondition(in, constants);
                             if (!condition.empty())
                                 body += std::format("bool p{}={};\n", i, condition);
-                            auto value = expression(in);
+                            auto value = expression(in, constants);
                             if (in.omod)
                                 value = std::format("({}{}", value, in.omod == 1 ? " * 2.0)" : in.omod == 2 ? " * 4.0)" : " * 0.5)");
                             if (in.clamp)
@@ -390,6 +495,8 @@ namespace Core::Gfx::Latte {
                             throw std::runtime_error("truncated texture clause");
                         const auto t0 = words[off], t1 = words[off + 1], t2 = words[off + 2];
                         const auto texOp = t0 & 31;
+                        if (vertexStage && texOp != 0x13)
+                            throw std::runtime_error("vertex texture opcode requires explicit base LOD");
                         constexpr auto tex0Mask = 31u | (255u << 8) | (127u << 16);
                         constexpr auto tex1Mask = 127u | (0xFFFu << 9) | (15u << 28);
                         // TEX has three instruction words in a four-word slot. The
@@ -451,29 +558,46 @@ namespace Core::Gfx::Latte {
                     }
                     body += "}\n";
                 } else if (op == CF_EXP || op == CF_EXP_DONE) {
-                    constexpr auto export1Mask = 0xFFFu | (1u << 21) | (1u << 22) | (127u << 23) | (1u << 31);
-                    const auto target = w0 & 0x1FFF;
-                    const bool depthExport = target == 61;
-                    if ((target != 0 && !depthExport) || (depthExport ? result.writesDepth : result.exportsColor) ||
-                        (w0 & ~(0x1FFFu | (127u << 15))) || (w1 & ~export1Mask) || (depthExport && ((w1 & 7) == 7 || ((w1 >> 3) & 0x1FF) != 0x1FF)))
-                        throw std::runtime_error(
-                                std::format("unsupported export target, addressing or burst: cf={} type={} base={} repeated={} words={:08X},{:08X}",
-                                            cf / 2, (w0 >> 13) & 3, w0 & 0x1FFF, exported, w0, w1));
-                    const auto reg = std::format("r[{}]", (w0 >> 15) & 127);
-                    for (unsigned c = 0; c < 4; ++c) {
-                        const auto selector = (w1 >> (c * 3)) & 7;
-                        if (selector < 4)
-                            wholeQuadWrites.read({(w0 >> 15) & 127, selector, false, false, false}, depth);
-                    }
-                    if (depthExport) {
-                        body += std::format("if(laneActive) {{ gl_FragDepth=clampReference({}); wroteOutput=true; }}\n", select(reg, w1 & 7));
-                        result.writesDepth = true;
+                    if (vertexStage) {
+                        const auto target = w0 & 0x1FFF, type = (w0 >> 13) & 3;
+                        constexpr auto word0Mask = 0x1FFFu | (3u << 13) | (127u << 15);
+                        constexpr auto word1Mask = 0xFFFu | (1u << 21) | (1u << 22) | (127u << 23) | (1u << 31);
+                        if ((w0 & ~word0Mask) || (w1 & ~word1Mask) || !((type == 1 && target == 60) || (type == 2 && target < 4)))
+                            throw std::runtime_error("unsupported vertex export addressing or target");
+                        const auto reg = std::format("r[{}]", (w0 >> 15) & 127);
+                        const auto dst = type == 1 ? std::string("position") : std::format("parameters[{}]", target);
+                        body += std::format("if(laneActive) {{ {}=vec4({},{},{},{}); {} }}\n", dst, select(reg, w1 & 7), select(reg, (w1 >> 3) & 7),
+                                            select(reg, (w1 >> 6) & 7), select(reg, (w1 >> 9) & 7), type == 1 ? "wroteOutput=true;" : "");
+                        if (type == 1)
+                            exported = true;
+                        else
+                            result.parameterMask |= 1u << target;
                     } else {
-                        body += std::format("if(laneActive) {{ color=vec4({},{},{},{}); wroteOutput=true; }}\n", select(reg, w1 & 7),
-                                            select(reg, (w1 >> 3) & 7), select(reg, (w1 >> 6) & 7), select(reg, (w1 >> 9) & 7));
-                        result.exportsColor = true;
+                        constexpr auto export1Mask = 0xFFFu | (1u << 21) | (1u << 22) | (127u << 23) | (1u << 31);
+                        const auto target = w0 & 0x1FFF;
+                        const bool depthExport = target == 61;
+                        if ((target != 0 && !depthExport) || (depthExport ? result.writesDepth : result.exportsColor) ||
+                            (w0 & ~(0x1FFFu | (127u << 15))) || (w1 & ~export1Mask) ||
+                            (depthExport && ((w1 & 7) == 7 || ((w1 >> 3) & 0x1FF) != 0x1FF)))
+                            throw std::runtime_error(std::format(
+                                    "unsupported export target, addressing or burst: cf={} type={} base={} repeated={} words={:08X},{:08X}", cf / 2,
+                                    (w0 >> 13) & 3, w0 & 0x1FFF, exported, w0, w1));
+                        const auto reg = std::format("r[{}]", (w0 >> 15) & 127);
+                        for (unsigned c = 0; c < 4; ++c) {
+                            const auto selector = (w1 >> (c * 3)) & 7;
+                            if (selector < 4)
+                                wholeQuadWrites.read({(w0 >> 15) & 127, selector, false, false, false}, depth);
+                        }
+                        if (depthExport) {
+                            body += std::format("if(laneActive) {{ gl_FragDepth=clampReference({}); wroteOutput=true; }}\n", select(reg, w1 & 7));
+                            result.writesDepth = true;
+                        } else {
+                            body += std::format("if(laneActive) {{ color=vec4({},{},{},{}); wroteOutput=true; }}\n", select(reg, w1 & 7),
+                                                select(reg, (w1 >> 3) & 7), select(reg, (w1 >> 6) & 7), select(reg, (w1 >> 9) & 7));
+                            result.exportsColor = true;
+                        }
+                        exported = true;
                     }
-                    exported = true;
                 } else if (op == 0x0A || op == 0x0B || op == 0x0D || op == 0x0E) {
                     // VALID_PIXEL_MODE is equivalent here: kill/demote are not supported.
                     constexpr auto mask = 7u | (1u << 22) | (127u << 23) | (1u << 31);
@@ -507,7 +631,7 @@ namespace Core::Gfx::Latte {
                     }
                 } else {
                     constexpr auto controlMask = (1u << 21) | (127u << 23) | (1u << 31);
-                    if ((op != CF_NOP && op != CF_RETURN) || w0 || (w1 & ~controlMask))
+                    if ((op != CF_NOP && op != CF_RETURN && !(vertexStage && op == CF_CALL_FS)) || w0 || (w1 & ~controlMask))
                         throw std::runtime_error("unsupported control flow");
                 }
                 body += "}\n";
@@ -539,6 +663,16 @@ namespace Core::Gfx::Latte {
                             "float logReference(float x) { if(isnan(x)) return x; if(x==0.0) return uintBitsToFloat(4286578688u); "
                             "if(x<0.0) return uintBitsToFloat(2143289344u); if(isinf(x)) return x; return log2(x); }\n"
                             "float logClamped(float x) { float v=logReference(x); return isinf(v)&&v<0.0 ? -uintBitsToFloat(2139095039u) : v; }\n";
+            if (vertexStage) {
+                const auto end = result.source.find("float arrayLayerReference");
+                result.source.replace(
+                        0, end,
+                        "#version 450\nlayout(location=1) in vec4 attributes[4];\nlayout(location=0) out vec4 inputs[4];\n"
+                        "layout(location=4) noperspective out float windowDepth;\n"
+                        "layout(set=0,binding=17,std140) uniform Constants { vec4 c[256]; vec4 borders[16]; vec4 sampling[16]; vec4 k[512]; } u;\n"
+                        "layout(push_constant) uniform Viewport { vec2 scale; float depthEnabled; float unused; vec4 window; vec2 depth; "
+                        "layout(offset=48) ivec4 inputParams; } viewport;\n");
+            }
             result.source += R"(
 float arrayCoordinate(float v,int mode) {
     if(mode==0) return fract(v);
@@ -570,13 +704,48 @@ vec4 sampleArrayReference(sampler2DArray tex,vec3 p,vec4 state) {
             for (const auto &b: result.textures)
                 result.source += std::format("layout(set=0,binding={}) uniform sampler2D{} tex{};\n", b.binding,
                                              b.type == TextureType::TwoDArray ? "Array" : "", b.binding);
+            body = scalarizeRegisters(std::move(body));
             if (result.writesDepth)
                 body.insert(body.find('\n') + 1, "gl_FragDepth=gl_FragCoord.z;\n");
-            result.source += body + "if(!wroteOutput) discard;\n}\n";
+            result.source += body;
+            if (vertexStage)
+                result.source += R"(
+    gl_PointSize=1.0;
+    float divisor=abs(position.w)>1e-6 ? position.w : 1.0;
+    vec2 ndc=position.xy/divisor;
+    vec2 screen=viewport.window.xy+(ndc*vec2(1.0,-1.0)+vec2(1.0))*viewport.window.zw;
+    windowDepth=(viewport.depth.x+viewport.depth.y)*0.5+(position.z/divisor)*(viewport.depth.y-viewport.depth.x)*0.5;
+    gl_Position=wroteOutput ? vec4((screen*viewport.scale-vec2(1.0))*divisor,viewport.depthEnabled!=0.0 ? windowDepth*divisor : 0.0,divisor) : vec4(2.0,2.0,2.0,1.0);
+    for(int i=0;i<4;++i) inputs[i]=viewport.inputParams[i]>=0 ? parameters[viewport.inputParams[i]] : vec4(0.0);
+}
+)";
+            else
+                result.source += "if(!wroteOutput) discard;\n}\n";
         } catch (const std::runtime_error &error) {
             result = {};
             result.error = error.what();
         }
         return result;
+    }
+    FragmentShader lowerFragmentShader(const Program &program, std::span<const TextureType> resourceTypes)
+    {
+        return lowerShader(program, resourceTypes, false);
+    }
+    VertexShader lowerVertexShader(const Program &program, std::span<const TextureType> resourceTypes)
+    {
+        VertexShader shader;
+        static_cast<FragmentShader &>(shader) = lowerShader(program, resourceTypes, true);
+        return shader;
+    }
+    std::shared_ptr<const VertexShader> VertexShaderCache::get(const std::vector<std::uint32_t> &words)
+    {
+        if (const auto it = m_entries.find(words); it != m_entries.end())
+            return it->second;
+        auto shader = std::make_shared<const VertexShader>(lowerVertexShader(*decodeProgram(words)));
+        if (m_entries.size() >= 128)
+            m_entries.clear();
+        if (words.size() <= 16384 && shader->source.size() <= std::size_t{256} * 1024)
+            m_entries.emplace(words, shader);
+        return shader;
     }
 } // namespace Core::Gfx::Latte
