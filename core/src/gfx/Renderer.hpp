@@ -4,10 +4,14 @@
 #include <SDL2/SDL_vulkan.h>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
 #include <vulkan/vulkan.h>
+
+#include "gfx/HostPresenter.hpp"
+#include "ui/PauseMenu.hpp"
 
 #define GLM_FORCE_RADIANS
 #define GLM_FORCE_DEFAULT_ALIGNED_GENTYPES
@@ -18,26 +22,68 @@ constexpr int MAX_FRAMES_IN_FLIGHT = 2;
 
 const std::vector<const char *> deviceExtensions = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
 
+namespace Core::Gfx {
+    class GpuQuadRasterizer;
+    class GpuRenderGraph;
+} // namespace Core::Gfx
+
 class Renderer {
     public:
         // Standalone: creates own SDL window, Vulkan instance and surface.
-        Renderer()
+        Renderer() : Renderer(nullptr) {}
+
+        explicit Renderer(std::unique_ptr<Core::Gfx::HostPresenter> presenter) : m_hostPresenter(std::move(presenter))
         {
-            initWindow();
-            createInstance();
-            createSurface();
-            initVulkanPipeline();
+            if (!m_hostPresenter) {
+                initWindow();
+                createInstance();
+                createSurface();
+                initVulkanPipeline();
+            }
         }
 
         // Embedded: takes an externally-owned instance and surface (e.g. from Qt).
         // Does not own or destroy those handles.
         Renderer(VkInstance instance, VkSurfaceKHR surface, uint32_t w, uint32_t h);
 
-        ~Renderer() { cleanup(); }
+        ~Renderer()
+        {
+            if (!m_hostPresenter)
+                cleanup();
+        }
 
         void flip_tv(const std::uint8_t *rgbx, std::uint32_t w, std::uint32_t h);
 
+        // GPU rasterisation path (WEMU_GPU=1). The Gx2Replayer computes screen-space textured
+        // triangles on the CPU and hands them here to be filled on the GPU instead of by the
+        // software rasteriser. `xyuv` is `count` vertices of 4 floats each (x,y in framebuffer
+        // pixels, u,v in [0,1]); `key` is the guest texture address (for the upload cache).
+        void gpuBegin();
+        void gpuDrawTriangles(std::uint64_t key, const std::uint8_t *rgba, std::uint32_t tw, std::uint32_t th, const float *xyuv,
+                              std::uint32_t count);
+        void gpuEnd(std::uint8_t *outRgbx);
+
+        // GPU render-target graph (WEMU_GPU=1). A general GX2->Vulkan compositor: every guest colour
+        // buffer is a persistent GPU image, draws render into the currently-bound target, and a draw
+        // that samples a colour buffer reads that target's image directly (render-to-texture — MK8's
+        // offscreen menu buffers + bloom). `xyuv` is `count` verts of 4 floats (x,y in target pixels,
+        // u,v in [0,1]). See Core::Gfx::GpuRenderGraph.
+        void gpuBeginFrame();
+        void gpuBindTarget(std::uint32_t addr, std::uint32_t w, std::uint32_t h);
+        void gpuClearTarget(std::uint32_t addr, std::uint32_t w, std::uint32_t h, const float rgba[4]);
+        [[nodiscard]] bool gpuIsTarget(std::uint32_t addr) const;
+        void gpuDrawTexture(std::uint64_t key, const std::uint8_t *rgba, std::uint32_t tw, std::uint32_t th, const float *xyuv, std::uint32_t count);
+        void gpuDrawTarget(std::uint32_t srcAddr, const float *xyuv, std::uint32_t count);
+        void gpuPresentTarget(std::uint32_t scanAddr, std::uint8_t *outRgbx);
+
         bool poll_events();
+
+        [[nodiscard]] bool pause_requested() const { return m_pauseMenu.state() == Core::UI::PauseMenu::State::PauseRequested; }
+        // Called only by the CPU at a safe service boundary, never inside HLE.
+        void service_pause(const std::function<void()> &onPaused);
+        void record_movie_frame() { m_movieRate.record(Core::UI::FrameRate::Clock::now()); }
+        [[nodiscard]] std::uint64_t guest_present_count() const { return m_presentRate.total(); }
+        [[nodiscard]] std::uint64_t movie_frame_count() const { return m_movieRate.total(); }
 
         [[nodiscard]] std::uint32_t get_buttons() const;
 
@@ -79,6 +125,11 @@ class Renderer {
         };
 
     private:
+        void processHostCommands(std::chrono::milliseconds wait = {});
+        Core::Gfx::HostPresenter::Statistics hostStatistics() const;
+        void pacePresentation();
+        void presentFrame(const std::uint8_t *rgbx, std::uint32_t w, std::uint32_t h, bool guestFrame);
+        bool handleHostEvent(const SDL_Event &event);
         void createInstance();
 
         void initWindow();
@@ -120,6 +171,8 @@ class Renderer {
         [[nodiscard]] VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR &capabilities) const;
 
         void createSyncObjects();
+
+        void createPresentSemaphores();
 
         void createCommandPool();
 
@@ -221,10 +274,23 @@ class Renderer {
 
         uint32_t m_currentFrame = 0;
 
-        VkBuffer m_tvStagingBuffer = VK_NULL_HANDLE;
-        VkDeviceMemory m_tvStagingMemory = VK_NULL_HANDLE;
+        std::vector<VkBuffer> m_tvStagingBuffers;
+        std::vector<VkDeviceMemory> m_tvStagingMemories;
+        std::vector<void *> m_tvStagingMapped;
         VkImage m_tvImage = VK_NULL_HANDLE;
         VkDeviceMemory m_tvImageMemory = VK_NULL_HANDLE;
+        bool m_tvImageInitialized = false;
+        Core::UI::PauseMenu m_pauseMenu;
+        std::unique_ptr<Core::Gfx::HostPresenter> m_hostPresenter;
+        std::uint32_t m_hostButtons{};
+        Core::UI::FrameRate m_presentRate, m_movieRate;
+        std::vector<std::uint8_t> m_pauseBackground;
+        std::uint32_t m_lastGameSlot{};
+        bool m_haveGameFrame{}, m_pacingReady{};
+        Core::UI::FrameRate::Clock::time_point m_lastFlip{};
+
+        Core::Gfx::GpuQuadRasterizer *m_gpuQuad = nullptr; // lazily created on first gpuBegin(); freed in cleanup()
+        Core::Gfx::GpuRenderGraph *m_gpuGraph = nullptr; // lazily created on first gpuBeginFrame(); freed in cleanup()
 
         bool m_framebufferResized = false;
         bool m_open = true;

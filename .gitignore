@@ -42,3 +42,30 @@ compile_commands.events.json
 # Project specific
 WEMU
 vulkan/src/shaders/*.spv
+
+# Additional CMake caches
+cmake-build-*/
+build-*/
+CMakeCache.txt
+CMakeFiles/
+
+# Large demo media (kept on disk, not versioned)
+greenlight-review/demo-material/
+*.webm
+*.mp4
+
+# Editor / OS noise
+.DS_Store
+*.swp
+
+# Autonomous loop per-cycle logs
+loop-logs/
+
+# Local caches and migration artifacts
+__pycache__/
+*.pyc
+reports/
+diff_output.patch
+func_mapping.txt
+funcs.txt
+wemu_frame.ppm

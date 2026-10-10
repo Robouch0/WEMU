@@ -9,13 +9,13 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Quick QuickControls2)
-find_package(Vulkan REQUIRED)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Quick QuickControls2 Network)
 
 qt_standard_project_setup(REQUIRES 6.6.2)
 find_package(SDL2 REQUIRED)
+find_package(SDL2_image REQUIRED)
 
-qt_add_executable(wemu
+qt_add_executable(appgui
     src/main.cpp
     src/input/KeyboardInput.cpp
     src/input/SDLGamepadInput.cpp
@@ -23,11 +23,11 @@ qt_add_executable(wemu
     src/input/InputProfileManager.cpp
     src/library/TitleScanner.cpp
     src/emulator/EmulatorLauncher.cpp
-    src/gfx/VulkanOutputWindow.cpp
+    src/emulator/GameView.cpp
 )
 
 
-target_sources(wemu PRIVATE
+target_sources(appgui PRIVATE
         src/input/IInputDevice.hpp
         src/input/KeyboardInput.hpp
         src/input/InputManager.hpp
@@ -37,7 +37,7 @@ target_sources(wemu PRIVATE
         src/library/TitleScanner.hpp
 )
 
-qt_add_qml_module(wemu
+qt_add_qml_module(appgui
     URI gui
     VERSION 1.0
     QML_FILES
@@ -45,6 +45,8 @@ qt_add_qml_module(wemu
         qml/pages/IntroSequence.qml
         qml/pages/MainMenu.qml
         qml/pages/SettingsPage.qml
+        qml/pages/GameSessionView.qml
+        qml/components/SessionMenuButton.qml
         qml/components/ControllerPreview.qml
         qml/components/ControllerButton.qml
         qml/components/DpadButton.qml
@@ -53,37 +55,63 @@ qt_add_qml_module(wemu
         qml/components/BindingRow.qml
 )
 
-qt_add_resources(wemu_QRC resources.qrc)
-target_sources(wemu PRIVATE ${wemu_QRC})
+qt_add_resources(APPGUI_QRC resources.qrc)
+target_sources(appgui PRIVATE ${APPGUI_QRC})
 
-set_target_properties(wemu PROPERTIES
+set_target_properties(appgui PROPERTIES
     WIN32_EXECUTABLE TRUE
 )
 
-target_include_directories(wemu
+target_include_directories(appgui
         PRIVATE
-        ${CMAKE_SOURCE_DIR}/core/src/
-        ${CMAKE_SOURCE_DIR}/gui/src/input
-        ${CMAKE_SOURCE_DIR}/gui/src/library
-        ${CMAKE_SOURCE_DIR}/gui/src/emulator
-        ${CMAKE_SOURCE_DIR}/gui/src/gfx
+        ${CMAKE_CURRENT_SOURCE_DIR}/../core/src/
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/input
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/library
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/emulator
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/gfx
         ${Qt6Core_INCLUDE_DIRS}
-        ${Vulkan_INCLUDE_DIRS}
 )
 
-target_link_libraries(wemu
+target_link_libraries(appgui
     PRIVATE
         Qt6::Core
         Qt6::Quick
         Qt6::Gui
         Qt6::QuickControls2
-        Vulkan::Vulkan
+        Qt6::Network
         SDL2::SDL2
-        core
+        SDL2_image::SDL2_image
 )
+target_compile_definitions(appgui PRIVATE WEMU_CORE_BINARY="$<TARGET_FILE:wemu>")
+add_dependencies(appgui wemu)
+file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/WEMU.desktop" CONTENT
+"[Desktop Entry]\nType=Application\nName=WEMU\nComment=Game library and emulator\nExec=\"$<TARGET_FILE:appgui>\"\nIcon=applications-games\nTerminal=false\nCategories=Game;Emulator;\n")
+
+add_executable(wemu_library_tests tests/TitleScannerTest.cpp src/library/TitleScanner.cpp src/library/TitleScanner.hpp)
+target_include_directories(wemu_library_tests PRIVATE src/library)
+target_link_libraries(wemu_library_tests PRIVATE Qt6::Core Qt6::Gui SDL2::SDL2 SDL2_image::SDL2_image)
+enable_testing()
+add_test(NAME wemu_library_tests COMMAND wemu_library_tests)
+add_executable(wemu_launch_environment_tests tests/LaunchEnvironmentTest.cpp)
+target_include_directories(wemu_launch_environment_tests PRIVATE src/emulator)
+target_link_libraries(wemu_launch_environment_tests PRIVATE Qt6::Core)
+add_test(NAME wemu_launch_environment_tests COMMAND wemu_launch_environment_tests)
+
+add_executable(wemu_session_protocol_tests tests/SessionProtocolTest.cpp)
+target_include_directories(wemu_session_protocol_tests PRIVATE ../core/src)
+target_link_libraries(wemu_session_protocol_tests PRIVATE Qt6::Core gtest_main)
+add_test(NAME wemu_session_protocol_tests COMMAND wemu_session_protocol_tests)
+
+add_executable(wemu_session_lifecycle_tests tests/SessionLifecycleTest.cpp src/emulator/EmulatorLauncher.cpp)
+target_include_directories(wemu_session_lifecycle_tests PRIVATE src/emulator ../core/src)
+target_compile_definitions(wemu_session_lifecycle_tests PRIVATE WEMU_CORE_BINARY="$<TARGET_FILE:wemu>")
+target_link_libraries(wemu_session_lifecycle_tests PRIVATE Qt6::Core Qt6::Gui Qt6::Network gtest)
+add_dependencies(wemu_session_lifecycle_tests wemu)
+add_test(NAME wemu_session_lifecycle_tests COMMAND wemu_session_lifecycle_tests)
+set_tests_properties(wemu_session_lifecycle_tests PROPERTIES ENVIRONMENT "XDG_DATA_HOME=${CMAKE_CURRENT_BINARY_DIR}/session-test-data")
 
 include(GNUInstallDirs)
-install(TARGETS wemu
+install(TARGETS appgui
     BUNDLE DESTINATION .
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}

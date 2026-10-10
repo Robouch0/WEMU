@@ -11,16 +11,26 @@ project(WemuEmulator)
 set(CMAKE_CXX_STANDARD 23)
 
 find_package(ZLIB REQUIRED)
+find_package(Threads REQUIRED)
+find_program(WEMU_RUNTIME_GLSLANG glslangValidator)
+find_program(WEMU_RUNTIME_SPIRV_VAL spirv-val)
 find_package(Vulkan REQUIRED)
 if(NOT Vulkan_FOUND)
     message(FATAL_ERROR "Vulkan SDK not found. Install it or set VULKAN_SDK.")
 endif()
 find_package(SDL2 REQUIRED)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET libavcodec>=60 libavutil libswscale)
 
 # ------------------------------------------------------------
 # 1. OPTIONS
 # ------------------------------------------------------------
 option(ENABLE_COVERAGE "Enable coverage reporting" OFF)
+option(WEMU_BUILD_GUI "Build the desktop game library" OFF)
+option(WEMU_ENABLE_LLVM "Build experimental PPC native block compiler (LLVM 19)" OFF)
+if(WEMU_BUILD_GUI AND CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+    add_subdirectory(../gui gui)
+endif()
 
 # ------------------------------------------------------------
 # 2. CORE LIBRARY
@@ -34,8 +44,23 @@ add_library(core STATIC
         src/binary/Loader.hpp
         src/binary/Loader.cpp
         src/utils/BeDecoder.cpp
+        src/utils/Diagnostics.hpp
+        src/utils/Diagnostics.cpp
+        src/hle/MemHeap.hpp
+        src/hle/MemHeap.cpp
+        src/hle/CoreinitExtra.hpp
+        src/hle/CoreinitExtra.cpp
+        src/hle/H264.cpp
+        src/video/H264Decoder.cpp
+        src/hle/Ax.hpp
+        src/hle/Ax.cpp
+        src/hle/AsyncCallbacks.hpp
+        src/hle/AsyncCallbacks.cpp
+        src/hle/NnOnline.hpp
+        src/hle/NnOnline.cpp
         src/cpu/interpreter/Interpreter.hpp
         src/cpu/interpreter/Interpreter.cpp
+        src/cpu/recompiler/Block.cpp
         src/cpu/instructions/arithmetic/Add.cpp
         src/cpu/instructions/Sc.cpp
         src/cpu/types/Field.hpp
@@ -53,7 +78,11 @@ add_library(core STATIC
         src/cpu/instructions/logical/Xor.cpp
         src/cpu/instructions/arithmetic/Neg.cpp
         src/cpu/instructions/load/Load.cpp
+        src/cpu/instructions/load/LoadExtra.cpp
         src/cpu/instructions/store/Store.cpp
+        src/cpu/instructions/store/StoreExtra.cpp
+        src/cpu/instructions/CrLogical.cpp
+        src/cpu/instructions/Trap.cpp
         src/cpu/instructions/spr/Spr.cpp
         src/cpu/instructions/spr/Cache.cpp
         src/cpu/instructions/shift/Shift.cpp
@@ -64,6 +93,9 @@ add_library(core STATIC
         src/cpu/instructions/float/FloatMove.cpp
         src/cpu/instructions/float/FloatConvert.cpp
         src/cpu/instructions/float/FloatCompare.cpp
+        src/cpu/instructions/float/FloatArith.cpp
+        src/cpu/instructions/float/FloatLoadStoreExtra.cpp
+        src/cpu/instructions/float/PairedSingle.cpp
         src/cpu/instructions/BranchExtra.cpp
         src/cpu/instructions/Cmp.cpp
         src/hle/Coreinit.hpp
@@ -72,9 +104,27 @@ add_library(core STATIC
         src/hle/Libc.cpp
         src/hle/Whb.hpp
         src/hle/Whb.cpp
+        src/hle/Gx2.hpp
+        src/hle/Gx2.cpp
+        src/gfx/Gx2CommandStream.hpp
+        src/gfx/Gx2Replayer.hpp
+        src/gfx/Gx2Replayer.cpp
+        src/gfx/GpuQuadRasterizer.cpp
+        src/gfx/GpuRenderGraph.cpp
+        src/gfx/LatteVsInterp.cpp
+        src/gfx/LatteProgram.cpp
+        src/gfx/LatteShaderLowering.cpp
+        src/gfx/SpirvCompiler.cpp
+        src/gfx/VulkanRasterBackend.cpp
+        src/gfx/RasterWorkers.cpp
+        src/hle/Fs.hpp
+        src/hle/Fs.cpp
         src/hle/StdlibHooks.hpp
         src/hle/StdlibHooks.cpp
+        src/hle/Scheduler.hpp
+        src/hle/Scheduler.cpp
         src/gfx/Renderer.cpp
+        src/ui/PauseMenu.cpp
         src/gfx/init/buffer.cpp
         src/gfx/init/cleanup.cpp
         src/gfx/init/commandPool.cpp
@@ -101,6 +151,8 @@ target_include_directories(core PUBLIC
 )
 
 target_link_libraries(core PRIVATE
+        Threads::Threads
+        PkgConfig::FFMPEG
         ${ZLIB_LIBRARIES}
         Vulkan::Vulkan
         ${SDL2_LIBRARIES}
@@ -120,12 +172,47 @@ endif()
 # ------------------------------------------------------------
 # 3. BINAIRE PRINCIPAL
 # ------------------------------------------------------------
-add_executable(WemuCore src/main.cpp)
-target_link_libraries(WemuCore PRIVATE core)
+add_executable(wemu src/main.cpp)
+target_link_libraries(wemu PRIVATE core)
+
+# Optional desktop transport; the emulation library and standalone SDL path stay toolkit-independent.
+find_package(Qt6 QUIET COMPONENTS Core Network)
+if(TARGET Qt6::Core AND TARGET Qt6::Network)
+    target_sources(wemu PRIVATE src/frontend/QtHostPresenter.cpp)
+    target_link_libraries(wemu PRIVATE Qt6::Core Qt6::Network)
+    target_compile_definitions(wemu PRIVATE WEMU_QT_FRONTEND=1)
+endif()
+
+# Offline diagnostic lowering; not used to replace unsupported live draws.
+add_executable(wemu_shader_lower src/gfx/tools/LowerShader.cpp)
+target_link_libraries(wemu_shader_lower PRIVATE core)
+
+if(WEMU_ENABLE_LLVM)
+    find_package(LLVM 19.1 REQUIRED CONFIG)
+    set(ppc_identity "")
+    foreach(ppc_source IN ITEMS src/cpu/recompiler/Block.cpp src/cpu/recompiler/Block.hpp
+            src/cpu/recompiler/LlvmBackend.cpp src/cpu/recompiler/LlvmBackend.hpp)
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${ppc_source}")
+        file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/${ppc_source}" ppc_hash)
+        string(APPEND ppc_identity "${ppc_hash}")
+    endforeach()
+    string(SHA256 ppc_fingerprint "${ppc_identity}")
+    set_property(SOURCE src/cpu/recompiler/LlvmBackend.cpp APPEND PROPERTY COMPILE_DEFINITIONS
+        "WEMU_PPC_COMPILER_FINGERPRINT=\"${ppc_fingerprint}\"")
+    target_sources(core PRIVATE src/cpu/recompiler/LlvmBackend.cpp src/cpu/recompiler/Dispatcher.cpp src/cpu/recompiler/ObjectCache.cpp)
+    target_include_directories(core SYSTEM PRIVATE ${LLVM_INCLUDE_DIRS})
+    target_compile_definitions(core PUBLIC WEMU_HAS_LLVM=1)
+    target_link_libraries(core PRIVATE LLVM)
+endif()
+if(WEMU_RUNTIME_GLSLANG AND WEMU_RUNTIME_SPIRV_VAL)
+    target_compile_definitions(core PRIVATE
+        WEMU_RUNTIME_GLSLANG="${WEMU_RUNTIME_GLSLANG}"
+        WEMU_RUNTIME_SPIRV_VAL="${WEMU_RUNTIME_SPIRV_VAL}")
+endif()
 
 if(ENABLE_COVERAGE)
-    target_compile_options(WemuCore PRIVATE --coverage -O0 -g)
-    target_link_options(WemuCore PRIVATE --coverage)
+    target_compile_options(wemu PRIVATE --coverage -O0 -g)
+    target_link_options(wemu PRIVATE --coverage)
 endif()
 
 # ------------------------------------------------------------

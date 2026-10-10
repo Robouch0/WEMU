@@ -1,9 +1,11 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Dialogs
+import "../components/Theme.js" as Theme
 
 Rectangle {
     id: page
-    color: "#e8e8ed"
+    color: Theme.libraryBackground
     anchors.fill: parent
     focus: true
 
@@ -17,10 +19,11 @@ Rectangle {
     property bool launching: false
 
     function launchCurrent() {
-        if (launching) return
+        if (EmulatorLauncher.running) return
         if (carousel.count > 0 && carousel.currentItem)
             EmulatorLauncher.launch(carousel.currentItem.gameRpxPath,
-                                    carousel.currentItem.gameName)
+                                    carousel.currentItem.gameName,
+                                    carousel.currentItem.gameContentPath)
     }
 
     function activateCurrent() {
@@ -28,6 +31,12 @@ Rectangle {
             mainLoader.source = "pages/SettingsPage.qml"
         else
             launchCurrent()
+    }
+
+    FolderDialog {
+        id: libraryDialog
+        title: "Game library folder"
+        onAccepted: TitleScanner.scanDirectory(selectedFolder.toString())
     }
 
     // ───────────────────────────────────────────────────────────── header
@@ -63,6 +72,19 @@ Rectangle {
             anchors.verticalCenter: parent.verticalCenter
             spacing: 12
 
+            Button {
+                text: "Games folder"
+                icon.name: "folder-open"
+                enabled: !EmulatorLauncher.running
+                onClicked: libraryDialog.open()
+            }
+            Button {
+                text: "Refresh"
+                icon.name: "view-refresh"
+                enabled: !EmulatorLauncher.running && TitleScanner.searchPath !== ""
+                onClicked: TitleScanner.refresh()
+            }
+
             Rectangle {
                 visible: carousel.count > 0
                 anchors.verticalCenter: parent.verticalCenter
@@ -83,7 +105,7 @@ Rectangle {
 
             Rectangle {
                 anchors.verticalCenter: parent.verticalCenter
-                width: 110
+                width: 130
                 height: 36
                 radius: 6
                 color: settingsMouseArea.containsMouse || page.settingsFocused ? "#d0d0d5" : "#e4e4ea"
@@ -144,7 +166,7 @@ Rectangle {
 
                 Text {
                     width: parent.width
-                    text: "Drop a game folder (containing code/*.rpx and meta/meta.xml) into:"
+                    text: TitleScanner.searchPath === "" ? "No library folder selected" : "No games or RPX demos found in this folder"
                     color: "#666666"
                     font.pixelSize: 13
                     horizontalAlignment: Text.AlignHCenter
@@ -205,6 +227,7 @@ Rectangle {
             property string gamePublisher: model.publisher
             property string gameVersion:   model.version
             property string gameRpxPath:   model.rpxPath
+            property string gameContentPath: model.contentPath
             property string gameIconPath:  model.iconPath
 
             Rectangle {
@@ -303,7 +326,7 @@ Rectangle {
             height: 56
             radius: 10
             color: page.launching ? "#9aa0a6"
-                 : launchMouseArea.containsMouse ? "#2980d9" : "#3498ff"
+                 : launchMouseArea.containsMouse ? "#2980d9" : Theme.accent
             Behavior on color { ColorAnimation { duration: 120 } }
 
             Row {
@@ -311,7 +334,7 @@ Rectangle {
                 spacing: 10
 
                 BusyIndicator {
-                    visible: page.launching
+                    visible: false
                     running: visible
                     anchors.verticalCenter: parent.verticalCenter
                     width: 24
@@ -320,7 +343,7 @@ Rectangle {
 
                 Text {
                     anchors.verticalCenter: parent.verticalCenter
-                    text: page.launching ? "Loading game RPX…" : "▶  Play"
+                    text: EmulatorLauncher.running ? "Stop" : "▶  Play"
                     color: "white"
                     font.pixelSize: 18
                     font.bold: true
@@ -331,17 +354,26 @@ Rectangle {
                 id: launchMouseArea
                 anchors.fill: parent
                 hoverEnabled: true
-                enabled: !page.launching
                 cursorShape: Qt.PointingHandCursor
-                onClicked: page.launchCurrent()
+                onClicked: EmulatorLauncher.running ? EmulatorLauncher.stop() : page.launchCurrent()
             }
         }
 
         Text {
             anchors.horizontalCenter: parent.horizontalCenter
-            text: "← →  navigate     ↑  settings     A / Enter  select"
-            color: "#999999"
-            font.pixelSize: 11
+            width: parent.width
+            text: EmulatorLauncher.error
+            color: "#ad2637"
+            font.pixelSize: 13
+            wrapMode: Text.WordWrap
+            horizontalAlignment: Text.AlignHCenter
+            visible: text !== ""
+        }
+        Button {
+            anchors.horizontalCenter: parent.horizontalCenter
+            text: "Session log"
+            visible: EmulatorLauncher.logPath !== ""
+            onClicked: EmulatorLauncher.openLog()
         }
     }
 
@@ -360,7 +392,7 @@ Rectangle {
     property int stickDir: 0
 
     function stickStep() {
-        if (!rootWindow.visible || carousel.count === 0 || settingsFocused) {
+        if (!rootWindow.visible || !page.visible || !page.enabled || carousel.count === 0 || settingsFocused) {
             stickRepeat.stop()
             stickDir = 0
             return
@@ -382,7 +414,7 @@ Rectangle {
         target: InputManager
 
         function onButtonChanged(button, pressed, device) {
-            if (!rootWindow.visible || !pressed) return
+            if (!rootWindow.visible || !page.visible || !page.enabled || !pressed) return
             if (button === "Up")          page.settingsFocused = true
             else if (button === "Down")   page.settingsFocused = false
             else if (button === "Left"  && !page.settingsFocused)  carousel.decrementCurrentIndex()
@@ -391,7 +423,7 @@ Rectangle {
         }
 
         function onAxisChanged(axis, value, device) {
-            if (!rootWindow.visible) return
+            if (!rootWindow.visible || !page.visible || !page.enabled) return
 
             if (axis === "LX") {
                 if (page.stickDir === 0 && Math.abs(value) >= 0.5 && !page.settingsFocused) {
@@ -416,17 +448,16 @@ Rectangle {
 
     Connections {
         target: EmulatorLauncher
-        // Hide only once the game's first frame is on screen the menu stays visible during the RPX load instead of leaving no window at all
-        function onRendererReady() {
-            rootWindow.visible = false
-            page.launching = false
-        }
+        // Keep the carousel instance/selection while the isolated core fills the game view.
         function onStateChanged(running) {
             if (running) {
                 page.launching = true
             } else {
                 page.launching = false
                 rootWindow.visible = true
+                rootWindow.raise()
+                rootWindow.requestActivate()
+                page.forceActiveFocus()
             }
         }
     }

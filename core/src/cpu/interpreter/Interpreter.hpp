@@ -20,11 +20,23 @@
 #include "cpu/types/EncodedInstruction.hpp"
 #include "cpu/types/Instruction.hpp"
 #include "gfx/Renderer.hpp"
+#include "hle/H264.hpp"
+#include "hle/Scheduler.hpp"
 #include "utils/BeDecoder.hpp"
 #include "utils/Logger.hpp"
 
 namespace Core {
     static constexpr std::uint32_t INSTR_SIZE = sizeof(std::uint32_t);
+
+    // Sentinel return address installed in LR before entering the module. When the entry function
+    // returns (blr) to it, the program has finished its top-level call and we stop cleanly.
+    static constexpr std::uint32_t RETURN_SENTINEL = 0x0FFFFFFCu;
+    // Return address seeded into LR for AX frame callbacks: landing here means the callback
+    // finished; the pump then runs the next callback or parks the synthetic AX thread.
+    static constexpr std::uint32_t AX_FRAME_SENTINEL = 0x0FFFFFF4u;
+    // Return address seeded into LR for deferred async completion callbacks (nn::fp login, etc.):
+    // landing here means one queued callback finished; the async pump runs the next or parks.
+    static constexpr std::uint32_t ASYNC_CB_SENTINEL = 0x0FFFFFF0u;
 
     class InterpreterException final : public Core::Exception {
         public:
@@ -80,6 +92,9 @@ namespace Core {
 
             void reset()
             {
+                m_h264.reset();
+                m_blockCache.clear();
+                m_failed = false;
                 m_pc = 0;
                 m_nextPc = 0;
                 m_cr = {};
@@ -122,6 +137,7 @@ namespace Core {
             void updateOverflow(const std::int32_t &a, const std::int32_t &b, const std::int32_t &result, const EncodedInstruction &instr);
 
             void stop() { m_running = false; }
+            [[nodiscard]] bool failed() const { return m_failed; }
 
 #define INSTR(name, ...) friend void Core::Instruction::name(Core::Interpreter &, const EncodedInstruction &);
 #include "cpu/tables/cpu_instructions.anh"
@@ -130,8 +146,15 @@ namespace Core {
             using HookFn = std::function<void(Interpreter &)>;
 
             std::atomic<bool> m_running{true};
+            bool m_failed{false};
+            std::shared_ptr<H264::State> m_h264;
             std::atomic<std::uint32_t> m_controllerMask{0};
+            std::uint32_t m_vpadPreviousHold{0};
+            std::uint64_t m_vpadReadCount{0};
             bool m_hle_redirected{false};
+            bool m_interruptsDisabled{false}; // OSDisableInterrupts: defers timeslice preemption
+            bool m_reserveValid{false}; // lwarx reservation; cleared on context switch
+            std::uint32_t m_reserveAddr{0};
 
             Renderer *m_renderer = nullptr; // Window — set after construction
             std::unordered_map<std::uint32_t, HookFn> m_hooks; // PPC addr → intercept fn
@@ -139,7 +162,8 @@ namespace Core {
             std::uint32_t m_hooks_max{0u};
 
             Core::Binary m_binary;
-            Core::Memory m_memory;
+            // Data accesses, instruction fetch, and diagnostics share the binary's owned RAM.
+            Core::Memory &m_memory;
 
             std::uint32_t m_pc{};
             std::uint32_t m_nextPc{};
@@ -152,10 +176,74 @@ namespace Core {
                     std::int32_t m_gprSigned[32];
             }; // General Purpose Registers (unsigned/signed)
             Core::FixedPointExceptionRegister m_xer{};
-            double m_fpr[32]{}; // Fixed-Point Registers
+            double m_fpr[32]{}; // Floating-Point Registers (ps0 slot for paired single)
+            double m_ps1[32]{}; // Paired-single second slot (ps1)
+            std::uint32_t m_gqr[8]{}; // Graphics Quantization Registers (SPR 912-919)
             Core::FloatingPointStatusAndControlRegister m_fpscr{};
 
+            Core::Scheduler m_scheduler{}; // cooperative guest-thread scheduler
+
             std::map<std::uint32_t, std::vector<InstructionInfo>> m_instructionMap{};
+
+            // Decode cache. findInstructionID() is a pure function of the 32-bit instruction word
+            // (it only inspects the encoding), but it costs a std::map lookup plus a linear scan of
+            // every instruction sharing that primary opcode (opcd 31 alone has ~100 candidates). The
+            // same words repeat billions of times inside guest loops, so we memoise the decode in a
+            // direct-mapped cache keyed by the exact word. A hit is a single compare + branch; a
+            // miss falls back to findInstructionID() and fills the slot. This is the first step of
+            // the interpreter-speedup path (decode-once) and keeps the existing table as the source
+            // of truth. Empty slots hold raw==0, which is the illegal word and never reaches decode,
+            // so it can never collide with a real lookup.
+            struct DecodeCacheEntry {
+                    std::uint32_t raw{0};
+                    InstructionID id{};
+            };
+            static constexpr std::uint32_t kDecodeCacheSize = 1u << 16; // 64K slots, 8 bytes each
+            std::vector<DecodeCacheEntry> m_decodeCache{kDecodeCacheSize};
+
+            // Raw function-pointer dispatch table, indexed by InstructionID. INSTRUCTIONARRAY stores
+            // each handler in a std::function (type-erased: an indirect call through a vtable-like
+            // wrapper, run for every instruction). The handlers are all plain free functions, so we
+            // extract their bare pointers once at init and call through this instead — a direct
+            // indirect call with no wrapper.
+            using RawHandler = void (*)(Core::Interpreter &, const EncodedInstruction &);
+            std::vector<RawHandler> m_handlers;
+
+            // --- Light JIT: pre-decoded basic-block cache (WEMU_JIT=1) -------------------------------
+            //
+            // The interpreter re-fetches and re-decodes every instruction every time it runs, even
+            // inside tight guest loops. A "basic block" is a straight-line run of instructions with a
+            // single entry and a branch at the end. We decode each block ONCE into a flat array of
+            // (handler, decoded instruction) and cache it by start PC; re-executing the block then
+            // skips fetch, decode, and most of the per-instruction bookkeeping in run(). This is the
+            // honest "light JIT" — no native code generation, so it stays portable and readable and
+            // the existing instruction table remains the source of truth — and it is the natural next
+            // step after the decode cache. It is opt-in while it proves out, so the working boot path
+            // is never at risk. Cached words are revalidated against live guest memory;
+            // stores end blocks so rewritten following instructions are fetched again.
+            struct DecodedInstr {
+                    RawHandler fn;
+                    EncodedInstruction instr;
+            };
+            struct Block {
+                    std::vector<DecodedInstr> instrs; // straight-line run, terminator (branch) last
+#ifdef WEMU_HAS_LLVM
+                    std::vector<std::uint32_t> nativeWords; // supported prefix, empty when not eligible
+                    unsigned nativePrefixLength{}; // includes ineligible single-instruction prefixes
+#endif
+            };
+            std::unordered_map<std::uint32_t, Block> m_blockCache; // keyed by memory-relative PC
+            bool m_jitEnabled{false};
+            std::uint64_t m_retired{0}; // total instructions retired (WEMU_IPS throughput reporting)
+
+            // Build (or fetch) the block starting at the current m_pc. Blocks end at a control-flow
+            // instruction, a hooked address, an illegal word, or a length cap.
+            const Block &getBlock(Utils::BeDecoder &decoder, std::uint32_t startPc);
+            // Execute a whole block; returns the number of instructions retired (for slice accounting).
+            std::uint32_t runBlock(const Block &block);
+
+            // Import sentinel (st_value >= 0xC0000000) -> symbol name, for BCTR HLE dispatch.
+            std::unordered_map<std::uint32_t, const std::string *> m_importBySentinel{};
     };
 
 

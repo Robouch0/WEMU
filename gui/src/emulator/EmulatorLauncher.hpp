@@ -1,65 +1,85 @@
 #pragma once
+#include <QImage>
+#include <QLocalServer>
+#include <QLocalSocket>
 #include <QObject>
-#include <QThread>
-#include <qwindowdefs.h>
-#include <atomic>
-#include <memory>
-
-namespace Core { class Interpreter; }
-class Renderer;
-class InputManager;
-class InputProfileManager;
-class VulkanOutputWindow;
-
-
-class GameThread : public QThread {
-    Q_OBJECT
-public:
-    explicit GameThread(QObject *parent = nullptr);
-    ~GameThread() override;
-
-    void queueGame(const QString &rpxPath, const QString &title);
-    void stopGame();
-    void setControllerMask(std::uint32_t mask);
-    void setVulkanOutput(VulkanOutputWindow *window);
-
-signals:
-    void gameFinished();
-    void gameError(const QString &message);
-    void rendererReady();
-
-protected:
-    void run() override;
-
-private:
-    std::atomic<bool>                m_startRequested{false};
-    std::atomic<Core::Interpreter *> m_interpreter{nullptr};
-    QString                          m_nextPath;
-    QString                          m_nextTitle;
-    VulkanOutputWindow              *m_vulkanOutput = nullptr;
-    std::unique_ptr<Renderer>        m_renderer;
-};
+#include <QProcess>
+#include <QSet>
+#include <QTimer>
+#include <deque>
 
 class EmulatorLauncher : public QObject {
-    Q_OBJECT
-public:
-    explicit EmulatorLauncher(QObject *parent = nullptr);
-    ~EmulatorLauncher() override;
+        Q_OBJECT
+        Q_PROPERTY(bool running READ running NOTIFY runningChanged)
+        Q_PROPERTY(QString error READ error NOTIFY errorChanged)
+        Q_PROPERTY(QString logPath READ logPath NOTIFY logPathChanged)
+        Q_PROPERTY(bool connected READ connected NOTIFY sessionChanged)
+        Q_PROPERTY(bool hasFrame READ hasFrame NOTIFY sessionChanged)
+        Q_PROPERTY(bool paused READ paused NOTIFY sessionChanged)
+        Q_PROPERTY(bool pausePending READ pausePending NOTIFY sessionChanged)
+        Q_PROPERTY(bool stopping READ stopping NOTIFY sessionChanged)
+        Q_PROPERTY(bool showFps READ showFps NOTIFY sessionChanged)
+        Q_PROPERTY(double presentFps READ presentFps NOTIFY statisticsChanged)
+        Q_PROPERTY(double movieFps READ movieFps NOTIFY statisticsChanged)
+        Q_PROPERTY(QString gameTitle READ gameTitle NOTIFY sessionChanged)
+    public:
+        explicit EmulatorLauncher(QObject *parent = nullptr);
+        ~EmulatorLauncher() override;
+        bool running() const { return m_process.state() != QProcess::NotRunning; }
+        QString error() const { return m_error; }
+        QString logPath() const { return m_logPath; }
+        bool connected() const { return m_connected; }
+        bool hasFrame() const { return m_hasFrame; }
+        bool paused() const { return m_paused; }
+        bool pausePending() const { return m_pausePending; }
+        bool stopping() const { return m_stopping; }
+        bool showFps() const { return m_showFps; }
+        double presentFps() const { return m_presentFps; }
+        double movieFps() const { return m_movieFps; }
+        QString gameTitle() const { return m_title; }
+        Q_INVOKABLE void launch(const QString &rpxPath, const QString &title, const QString &contentPath);
+        Q_INVOKABLE void stop();
+        Q_INVOKABLE void openLog();
+        Q_INVOKABLE void togglePause();
+        Q_INVOKABLE void resume();
+        Q_INVOKABLE void toggleFps();
+        void acknowledgeFrame(quint64 sequence);
+    signals:
+        void runningChanged();
+        void stateChanged(bool running);
+        void errorChanged();
+        void logPathChanged();
+        void sessionChanged();
+        void statisticsChanged();
+        void frameReady(const QImage &image, quint64 sequence);
 
-    Q_INVOKABLE void setWindowHandle(WId handle);
-    void setVulkanOutput(VulkanOutputWindow *window);
+    protected:
+        bool eventFilter(QObject *object, QEvent *event) override;
 
-    Q_INVOKABLE void launch(const QString &rpxPath, const QString &title = QString());
-    Q_INVOKABLE void stop();
-
-    void connectInput(InputManager *mgr, InputProfileManager *profileMgr);
-
-signals:
-    void stateChanged(bool running);
-    void rendererReady();
-
-private:
-    GameThread         *m_thread       = nullptr;
-    VulkanOutputWindow *m_vulkanWindow = nullptr;
-    bool                m_emulating    = false;
+    private:
+        void readChannel();
+        void sendCommand(quint32 action, quint32 value = 0);
+        void clearChannel();
+        void sendButtons();
+        void dispatchFrame();
+        QProcess m_process;
+        QTimer m_stopTimer;
+        QString m_error, m_logPath;
+        bool m_stopping = false;
+        QLocalServer m_server;
+        QLocalSocket *m_socket{};
+        QByteArray m_incoming;
+        bool m_connected{}, m_hasFrame{}, m_paused{}, m_pausePending{}, m_showFps{};
+        double m_presentFps{-1}, m_movieFps{-1};
+        quint64 m_awaitingFrame{}, m_lastFrame{};
+        struct PendingFrame {
+                QImage image;
+                quint64 sequence{};
+                double presentFps{}, movieFps{};
+        };
+        std::deque<PendingFrame> m_frames;
+        quint32 m_buttons{};
+        QSet<int> m_heldKeys, m_suppressedKeys;
+        QString m_title;
+        void setError(const QString &error);
 };

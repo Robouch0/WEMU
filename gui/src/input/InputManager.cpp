@@ -1,11 +1,12 @@
 #include "InputManager.hpp"
 
-#include <iostream>
+#include <QCoreApplication>
 #include <QDebug>
 #include <SDL2/SDL.h>
-#include "SDLGamepadInput.hpp"
+#include <iostream>
 
 #include "KeyboardInput.hpp"
+#include "SDLGamepadInput.hpp"
 
 InputManager::InputManager(QObject *parent)
     : QObject(parent)
@@ -23,7 +24,9 @@ void InputManager::pollSDLEvents()
 
     SDL_PumpEvents();
     while (SDL_PollEvent(&e)) {
-        if (e.type == SDL_CONTROLLERDEVICEADDED) {
+        if (e.type == SDL_QUIT) {
+            QCoreApplication::quit();
+        } else if (e.type == SDL_CONTROLLERDEVICEADDED) {
             addDevice(new SDLGamepadInput(e.cdevice.which, this));
         } else if (e.type == SDL_CONTROLLERDEVICEREMOVED) {
             const SDL_JoystickID id = e.cdevice.which;

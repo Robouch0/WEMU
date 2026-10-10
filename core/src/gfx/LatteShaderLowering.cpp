@@ -1,0 +1,751 @@
+#include "gfx/LatteShaderLowering.hpp"
+
+#include <algorithm>
+#include <array>
+#include <bit>
+#include <format>
+#include <stdexcept>
+
+namespace Core::Gfx::Latte {
+    std::shared_ptr<const FragmentShader> FragmentShaderCache::get(const std::vector<std::uint32_t> &words,
+                                                                   std::span<const TextureType> resourceTypes)
+    {
+        // Missing resource types default to 2D, so trailing defaults are equivalent.
+        while (!resourceTypes.empty() && resourceTypes.back() == TextureType::TwoD)
+            resourceTypes = resourceTypes.first(resourceTypes.size() - 1);
+        Key key{words, {resourceTypes.begin(), resourceTypes.end()}};
+        if (const auto found = m_entries.find(key); found != m_entries.end()) {
+            ++m_hits;
+            return found->second;
+        }
+        ++m_misses;
+        auto shader = std::make_shared<const FragmentShader>(lowerFragmentShader(*decodeProgram(words), resourceTypes));
+        constexpr std::size_t maxBytes = std::size_t{32} * 1024 * 1024;
+        const auto bytes = words.size() * sizeof(std::uint32_t) + resourceTypes.size() * sizeof(TextureType) + shader->source.size() +
+                           shader->error.size() + shader->textures.size() * sizeof(TextureBinding);
+        if (bytes <= maxBytes) {
+            if (m_entries.size() >= 128 || bytes > maxBytes - m_bytes) {
+                m_entries.clear();
+                m_bytes = 0;
+            }
+            m_entries.emplace(std::move(key), shader);
+            m_bytes += bytes;
+        }
+        return shader;
+    }
+
+    namespace {
+
+        // Whole-quad ALU may write registers for inactive lanes. A lane-local
+        // lowering is equivalent only while those extra writes stay unobservable:
+        // no derivatives, mask updates, or reads after their mask is restored.
+        class WholeQuadWrites {
+            public:
+                void read(const Src &src, unsigned depth) const
+                {
+                    if (src.sel < 128 && src.chan < 4)
+                        check(m_registers[src.sel][src.chan], depth);
+                    else if (src.sel == SRC_PV && src.chan < 4)
+                        check(m_previous[src.chan], depth);
+                    else if (src.sel == SRC_PS)
+                        check(m_scalar, depth);
+                }
+                void write(const AluInst &in, unsigned depth)
+                {
+                    if (in.writeMask)
+                        m_registers[in.dstGpr][in.dstChan] = std::max(m_registers[in.dstGpr][in.dstChan], depth);
+                    if (in.scalarSlot)
+                        m_scalar = std::max(m_scalar, depth);
+                    else
+                        m_previous[in.dstChan] = std::max(m_previous[in.dstChan], depth);
+                }
+                void restore(unsigned depth)
+                {
+                    for (auto &reg: m_registers)
+                        for (auto &scope: reg)
+                            escape(scope, depth);
+                    for (auto &scope: m_previous)
+                        escape(scope, depth);
+                    escape(m_scalar, depth);
+                }
+
+            private:
+                static void check(unsigned scope, unsigned depth)
+                {
+                    if (scope > depth)
+                        throw std::runtime_error("whole-quad value escapes masked region");
+                }
+                static void escape(unsigned &scope, unsigned depth)
+                {
+                    // Once a scope has ended, another PUSH must not hide the
+                    // escaped value. Keep even overwritten values conservatively.
+                    if (scope > depth)
+                        scope = 33;
+                }
+                std::array<std::array<unsigned, 4>, 128> m_registers{};
+                std::array<unsigned, 4> m_previous{};
+                unsigned m_scalar{};
+        };
+
+        struct LoweringConstants {
+                FragmentShader &shader;
+                std::array<unsigned, 2> bank{}, address{}, mode{};
+                bool vertex{};
+                std::string read(const Src &src)
+                {
+                    if (vertex && src.sel >= 256 && src.sel < 320 && mode[(src.sel - 256) / 32]) {
+                        const auto window = (src.sel - 256) / 32;
+                        FragmentShader::UniformReference ref{bank[window], address[window] * 16 + (src.sel - 256) % 32};
+                        auto it = std::find(shader.uniforms.begin(), shader.uniforms.end(), ref);
+                        if (it == shader.uniforms.end()) {
+                            if (shader.uniforms.size() >= 512)
+                                throw std::runtime_error("vertex uniform reference budget exceeded");
+                            it = shader.uniforms.insert(it, ref);
+                        }
+                        return std::format("u.k[{}][{}]", std::distance(shader.uniforms.begin(), it), src.chan);
+                    }
+                    return std::format("u.c[{}][{}]", src.sel - 256, src.chan);
+                }
+        };
+        std::string source(const Src &s, const AluInst &instruction, LoweringConstants &constants)
+        {
+            if (s.rel || s.chan > 3)
+                throw std::runtime_error("relative or invalid ALU source");
+            std::string value;
+            if (s.sel < 128)
+                value = std::format("r[{}][{}]", s.sel, s.chan);
+            else if (s.sel < 192)
+                value = std::format("u.c[{}][{}]", s.sel - 128, s.chan);
+            else if (s.sel >= 256 && s.sel < 512)
+                value = constants.read(s);
+            else
+                switch (s.sel) {
+                    case SRC_0:
+                        value = "0.0";
+                        break;
+                    case SRC_1:
+                        value = "1.0";
+                        break;
+                    case SRC_1_INT:
+                        value = "uintBitsToFloat(1u)";
+                        break;
+                    case SRC_HALF:
+                        value = "0.5";
+                        break;
+                    case SRC_LITERAL:
+                        value = std::format("uintBitsToFloat({}u)", std::bit_cast<std::uint32_t>(instruction.literal[s.chan]));
+                        break;
+                    case SRC_PV:
+                        value = std::format("pv[{}]", s.chan);
+                        break;
+                    case SRC_PS:
+                        value = "ps";
+                        break;
+                    default:
+                        throw std::runtime_error("unsupported ALU source selector");
+                }
+            if (s.abs)
+                value = "abs(" + value + ")";
+            if (s.neg)
+                value = "(-(" + value + "))";
+            return value;
+        }
+
+        std::string predicateCondition(const AluInst &in, LoweringConstants &constants)
+        {
+            if (in.op3)
+                return {};
+            std::string comparison;
+            switch (in.op) {
+                case OP2_PRED_SETE:
+                case OP2_PRED_SETE_PUSH:
+                case OP2_PRED_SETE_INT:
+                    comparison = "==";
+                    break;
+                case OP2_PRED_SETGT:
+                case OP2_PRED_SETGT_PUSH:
+                case OP2_PRED_SETGT_INT:
+                    comparison = ">";
+                    break;
+                case OP2_PRED_SETGE:
+                case OP2_PRED_SETGE_PUSH:
+                case OP2_PRED_SETGE_INT:
+                    comparison = ">=";
+                    break;
+                case OP2_PRED_SETNE:
+                case OP2_PRED_SETNE_PUSH:
+                case OP2_PRED_SETNE_INT:
+                    comparison = "!=";
+                    break;
+                default:
+                    return {};
+            }
+            auto a = source(in.src[0], in, constants), b = source(in.src[1], in, constants);
+            if (in.op >= OP2_PRED_SETE_INT) {
+                a = "floatBitsToInt(" + a + ")";
+                b = "floatBitsToInt(" + b + ")";
+            }
+            return "(" + a + comparison + b + ")";
+        }
+
+        std::string expression(const AluInst &in, LoweringConstants &constants)
+        {
+            // Mask updates are modeled only for predicate-set operations.
+            const auto condition = predicateCondition(in, constants);
+            constexpr std::uint32_t sourceMask = 0xE3BFFDFFu;
+            const std::uint32_t destinationMask = in.op3 ? 0xEFFFFDFFu : condition.empty() ? 0xEFFFFFF3u : 0xEFFFFFFFu;
+            if ((in.raw0 & ~sourceMask) || (in.raw1 & ~destinationMask) || in.predSel == 1)
+                throw std::runtime_error("unsupported ALU addressing or control flags");
+            // R700 BANK_SWIZZLE schedules register-bank reads, not operand components.
+            // Functional execution reads the pre-group state without bank contention.
+            const auto bankSwizzle = (in.raw1 >> 18) & 7;
+            if (bankSwizzle > (in.scalarSlot ? 3u : 5u))
+                throw std::runtime_error("reserved ALU bank swizzle");
+            if (!condition.empty())
+                return in.op >= OP2_PRED_SETE_INT ? "uintBitsToFloat(" + condition + " ? 4294967295u : 0u)" : "(" + condition + " ? 1.0 : 0.0)";
+            auto a = source(in.src[0], in, constants);
+            const auto b = source(in.src[1], in, constants);
+            if (in.op3) {
+                const auto c = source(in.src[2], in, constants);
+                switch (in.op) {
+                    case OP3_MULADD:
+                    case OP3_MULADD_IEEE:
+                        return "(" + a + " * " + b + " + " + c + ")";
+                    case OP3_MULADD_M2:
+                    case OP3_MULADD_IEEE_M2:
+                        return "((" + a + " * " + b + " + " + c + ") * 2.0)";
+                    case OP3_MULADD_M4:
+                    case OP3_MULADD_IEEE_M4:
+                        return "((" + a + " * " + b + " + " + c + ") * 4.0)";
+                    case OP3_MULADD_D2:
+                    case OP3_MULADD_IEEE_D2:
+                        return "((" + a + " * " + b + " + " + c + ") * 0.5)";
+                    case OP3_CNDE:
+                        return "(" + a + " == 0.0 ? " + b + " : " + c + ")";
+                    case OP3_CNDGT:
+                        return "(" + a + " > 0.0 ? " + b + " : " + c + ")";
+                    case OP3_CNDGE:
+                        return "(" + a + " >= 0.0 ? " + b + " : " + c + ")";
+                    case OP3_CNDE_INT:
+                        return "(floatBitsToUint(" + a + ") == 0u ? " + b + " : " + c + ")";
+                    default:
+                        throw std::runtime_error("unsupported OP3 instruction");
+                }
+            }
+            switch (in.op) {
+                case OP2_ADD:
+                    return "(" + a + " + " + b + ")";
+                case OP2_MUL:
+                case OP2_MUL_IEEE:
+                    return "(" + a + " * " + b + ")";
+                case OP2_MIN:
+                case OP2_MIN_DX10:
+                    return "minReference(" + a + "," + b + ")";
+                case OP2_MAX:
+                case OP2_MAX_DX10:
+                    return "maxReference(" + a + "," + b + ")";
+                case OP2_AND_INT:
+                    return "uintBitsToFloat(floatBitsToUint(" + a + ") & floatBitsToUint(" + b + "))";
+                case OP2_OR_INT:
+                    return "uintBitsToFloat(floatBitsToUint(" + a + ") | floatBitsToUint(" + b + "))";
+                case OP2_XOR_INT:
+                    return "uintBitsToFloat(floatBitsToUint(" + a + ") ^ floatBitsToUint(" + b + "))";
+                case OP2_ADD_INT:
+                    return "uintBitsToFloat(floatBitsToUint(" + a + ") + floatBitsToUint(" + b + "))";
+                case OP2_SUB_INT:
+                    return "uintBitsToFloat(floatBitsToUint(" + a + ") - floatBitsToUint(" + b + "))";
+                case OP2_ASHR:
+                    return "intBitsToFloat(floatBitsToInt(" + a + ") >> (floatBitsToUint(" + b + ") & 31u))";
+                case OP2_LSHR:
+                    return "uintBitsToFloat(floatBitsToUint(" + a + ") >> (floatBitsToUint(" + b + ") & 31u))";
+                case OP2_LSHL:
+                    return "uintBitsToFloat(floatBitsToUint(" + a + ") << (floatBitsToUint(" + b + ") & 31u))";
+                case OP2_SETE:
+                    return "(" + a + " == " + b + " ? 1.0 : 0.0)";
+                case OP2_SETGT:
+                    return "(" + a + " > " + b + " ? 1.0 : 0.0)";
+                case OP2_SETGE:
+                    return "(" + a + " >= " + b + " ? 1.0 : 0.0)";
+                case OP2_SETNE:
+                    return "(" + a + " != " + b + " ? 1.0 : 0.0)";
+                case OP2_SETE_DX10:
+                    return "uintBitsToFloat(" + a + " == " + b + " ? 4294967295u : 0u)";
+                case OP2_SETGE_DX10:
+                    return "uintBitsToFloat(" + a + " >= " + b + " ? 4294967295u : 0u)";
+                case OP2_SETNE_DX10:
+                    return "uintBitsToFloat(" + a + " != " + b + " ? 4294967295u : 0u)";
+                case OP2_SETE_INT:
+                    return "uintBitsToFloat(floatBitsToUint(" + a + ") == floatBitsToUint(" + b + ") ? 4294967295u : 0u)";
+                case OP2_SETNE_INT:
+                    return "uintBitsToFloat(floatBitsToUint(" + a + ") != floatBitsToUint(" + b + ") ? 4294967295u : 0u)";
+                case OP2_SETGE_INT:
+                    return "uintBitsToFloat(floatBitsToInt(" + a + ") >= floatBitsToInt(" + b + ") ? 4294967295u : 0u)";
+                case OP2_SETGT_INT:
+                    return "uintBitsToFloat(floatBitsToInt(" + a + ") > floatBitsToInt(" + b + ") ? 4294967295u : 0u)";
+                case OP2_INT_TO_FLT:
+                    return "float(floatBitsToInt(" + a + "))";
+                case OP2_UINT_TO_FLT:
+                    return "float(floatBitsToUint(" + a + "))";
+                case OP2_SETGT_DX10:
+                    return "uintBitsToFloat(" + a + " > " + b + " ? 4294967295u : 0u)";
+                case OP2_DOT4:
+                case OP2_DOT4_IEEE:
+                    return "dotValue";
+                case OP2_MOV:
+                    return a;
+                case OP2_NOP:
+                    return "0.0";
+                case OP2_FLOOR:
+                    return "floor(" + a + ")";
+                case OP2_RNDNE:
+                    return "roundEvenReference(" + a + ")";
+                case OP2_FRACT:
+                    return "fract(" + a + ")";
+                case OP2_EXP_IEEE:
+                    return "exp2(" + a + ")";
+                case OP2_LOG_IEEE:
+                    return "logReference(" + a + ")";
+                case OP2_LOG_CLAMPED:
+                    return "logClamped(" + a + ")";
+                case OP2_RECIP_IEEE:
+                    return "(" + a + " != 0.0 ? 1.0 / " + a + " : 0.0)";
+                case OP2_RECIPSQRT_IEEE:
+                    return "(" + a + " > 0.0 ? inversesqrt(" + a + ") : 0.0)";
+                default:
+                    throw std::runtime_error(std::format("unsupported OP2 instruction: op={:02X} words={:08X},{:08X}", in.op, in.raw0, in.raw1));
+            }
+        }
+
+        // The accepted subset has only static GPR addressing. Separate locals
+        // avoid a dynamically initialized 128-register private array and let both
+        // SPIR-V and device compilers eliminate unused registers.
+        std::string scalarizeRegisters(std::string body)
+        {
+            std::array<bool, 128> used{};
+            std::size_t at = 0;
+            while ((at = body.find("r[", at)) != std::string::npos) {
+                auto end = at + 2;
+                unsigned reg = 0;
+                if (end == body.size() || body[end] < '0' || body[end] > '9')
+                    throw std::runtime_error("dynamic GPR addressing reached native emission");
+                while (end < body.size() && body[end] >= '0' && body[end] <= '9')
+                    reg = reg * 10 + unsigned(body[end++] - '0');
+                if (reg >= used.size() || end == body.size() || body[end] != ']')
+                    throw std::runtime_error("invalid native register index");
+                used[reg] = true;
+                const auto name = std::format("reg{}", reg);
+                body.replace(at, end - at + 1, name);
+                at += name.size();
+            }
+            std::string declarations;
+            for (unsigned reg = 0; reg < used.size(); ++reg)
+                if (used[reg])
+                    declarations += std::format("vec4 reg{}=vec4(0.0);\n", reg);
+            body.insert(body.find('\n') + 1, declarations);
+            return body;
+        }
+        std::string select(const std::string &reg, unsigned selector)
+        {
+            if (selector < 4)
+                return std::format("{}[{}]", reg, selector);
+            if (selector == 4)
+                return "0.0";
+            if (selector == 5)
+                return "1.0";
+            throw std::runtime_error("unsupported component selector");
+        }
+    } // namespace
+
+    static FragmentShader lowerShader(const Program &program, std::span<const TextureType> resourceTypes, bool vertexStage)
+    {
+        FragmentShader result;
+        result.exportsColor = false;
+        LoweringConstants constants{result, {}, {}, {}, vertexStage};
+        try {
+            if (!program.valid || program.words.size() < 2)
+                throw std::runtime_error("invalid shader structure");
+            std::string body = "void main() {\n";
+            for (unsigned i = 0; i < 4; ++i)
+                body += vertexStage ? std::format("r[{}]=attributes[{}];\n", i + 1, i) : std::format("r[{}]=inputs[{}];\n", i, i);
+            if (vertexStage)
+                body += "vec4 position=vec4(0.0,0.0,0.0,1.0); vec4 parameters[4]; for(int i=0;i<4;++i) parameters[i]=vec4(0.0);\n";
+            body += "vec4 pv=vec4(0.0); float ps=0.0;\nbool pred=true,laneActive=true,wroteOutput=false; bool activeStack[32]; uint pc=0u;\n";
+            bool exported = false, terminated = false;
+            bool wholeQuadUsed = false, implicitSamples = false;
+            bool maskedControl = false;
+            WholeQuadWrites wholeQuadWrites;
+            unsigned depth = 0;
+            std::vector<unsigned> entryDepth;
+            std::vector<std::pair<unsigned, unsigned>> jumpTargets;
+            const auto &words = program.words;
+            for (std::size_t cf = 0; cf + 1 < words.size(); cf += 2) {
+                const auto w0 = words[cf], w1 = words[cf + 1];
+                entryDepth.push_back(depth);
+                body += std::format("if(pc<={}u) {{\n", cf / 2);
+                const auto push = [&] {
+                    maskedControl = true;
+                    if (depth == 32)
+                        throw std::runtime_error("control-flow stack overflow");
+                    body += std::format("activeStack[{}]=laneActive;\n", depth++);
+                };
+                const auto pop = [&](unsigned count) {
+                    if (count > depth)
+                        throw std::runtime_error("control-flow stack underflow");
+                    if (count) {
+                        depth -= count;
+                        wholeQuadWrites.restore(depth);
+                        body += std::format("laneActive=activeStack[{}];\n", depth);
+                    }
+                };
+                if (isAluClause(w1)) {
+                    const auto kind = cfAluInst(w1);
+                    const bool wholeQuad = w1 & (1u << 30);
+                    if (kind < 8 || kind > 11 || (!vertexStage && ((w0 >> 30) || (w1 & 3))) || (vertexStage && wholeQuad) ||
+                        (wholeQuad && (kind != 8 || !depth)))
+                        throw std::runtime_error(std::format("unsupported ALU clause: cf={} kind={} uniform={} whole_quad={}", cf / 2, kind,
+                                                             bool((w0 >> 30) || (w1 & 3)), bool(w1 & (1u << 30))));
+                    constants.bank = {(w0 >> 22) & 15, (w0 >> 26) & 15};
+                    constants.address = {(w1 >> 2) & 255, (w1 >> 10) & 255};
+                    constants.mode = {(w0 >> 30) & 3, w1 & 3};
+                    if (kind == 9)
+                        push();
+                    wholeQuadUsed |= wholeQuad;
+                    const auto key = (std::uint64_t(w0 & 0x3FFFFF) << 32) | (((w1 >> 18) & 127) + 1);
+                    const auto it = program.clauses.find(key);
+                    if (it == program.clauses.end())
+                        throw std::runtime_error("missing ALU clause");
+                    body += "if(laneActive) {\n";
+                    for (const auto &group: it->second) {
+                        body += "{ bool nextPred=pred, nextActive=laneActive;\n";
+                        const bool dotGroup = !group.empty() && !group[0].op3 && (group[0].op == OP2_DOT4 || group[0].op == OP2_DOT4_IEEE);
+                        if (dotGroup) {
+                            if (group.size() < 4 || group.size() > 5)
+                                throw std::runtime_error("incomplete DOT4 reduction");
+                            body += "precise float dotValue=0.0;\n";
+                            for (unsigned i = 0; i < 4; ++i) {
+                                const auto &slot = group[i];
+                                if (slot.op3 || slot.scalarSlot || slot.op != group[0].op || slot.dstChan != i || slot.predSel != group[0].predSel ||
+                                    (slot.raw1 & 12u))
+                                    throw std::runtime_error("unsupported DOT4 group layout");
+                                body += std::format("dotValue=dotValue+({}*{});\n", source(slot.src[0], slot, constants),
+                                                    source(slot.src[1], slot, constants));
+                            }
+                            if (group.size() == 5 &&
+                                (!group[4].scalarSlot || (!group[4].op3 && (group[4].op == OP2_DOT4 || group[4].op == OP2_DOT4_IEEE))))
+                                throw std::runtime_error("unsupported DOT4 scalar slot");
+                        } else if (std::any_of(group.begin(), group.end(),
+                                               [](const auto &in) { return !in.op3 && (in.op == OP2_DOT4 || in.op == OP2_DOT4_IEEE); }))
+                            throw std::runtime_error("DOT4 must start its vector group");
+
+                        for (unsigned i = 0; i < group.size(); ++i) {
+                            const auto &in = group[i];
+                            if (wholeQuad && !in.op3 && (in.raw1 & 12u))
+                                throw std::runtime_error("whole-quad ALU mask updates require quad execution");
+                            for (unsigned operand = 0; operand < (in.op3 ? 3u : 2u); ++operand)
+                                wholeQuadWrites.read(in.src[operand], depth);
+                            body += std::format("bool e{}={};\n", i, in.predSel == 2 ? "!pred" : in.predSel == 3 ? "pred" : "true");
+                            const auto condition = predicateCondition(in, constants);
+                            if (!condition.empty())
+                                body += std::format("bool p{}={};\n", i, condition);
+                            auto value = expression(in, constants);
+                            if (in.omod)
+                                value = std::format("({}{}", value, in.omod == 1 ? " * 2.0)" : in.omod == 2 ? " * 4.0)" : " * 0.5)");
+                            if (in.clamp)
+                                value = std::format("clampReference({})", value);
+                            body += std::format("precise float t{} = {};\n", i, value);
+                        }
+                        // All sources read the pre-group state. Commit only after every RHS.
+                        for (unsigned i = 0; i < group.size(); ++i) {
+                            const auto &in = group[i];
+                            if (wholeQuad)
+                                wholeQuadWrites.write(in, depth);
+                            body += std::format("if(e{}) {{\n", i);
+                            if (!in.op3 && (in.raw1 & 8u))
+                                body += std::format("nextPred=p{};\n", i);
+                            if (!in.op3 && (in.raw1 & 4u))
+                                maskedControl = true;
+                            if (!in.op3 && (in.raw1 & 4u))
+                                body += std::format("nextActive=p{};\n", i);
+                            if (in.writeMask)
+                                body += std::format("r[{}][{}]=t{};\n", in.dstGpr, in.dstChan, i);
+                            body += in.scalarSlot ? std::format("ps=t{};\n", i) : std::format("pv[{}]=t{};\n", in.dstChan, i);
+                            body += "}\n";
+                        }
+                        body += "pred=nextPred; laneActive=nextActive; }\n";
+                    }
+                    body += "}\n";
+                    if (kind == 10)
+                        pop(1);
+                    if (kind == 11)
+                        pop(2);
+                    body += "}\n";
+                    continue;
+                }
+                const auto op = cfInst(w1);
+                if (op == CF_TEX) {
+                    body += "if(laneActive) {\n";
+                    // Whole-quad TEX and non-ACTIVE clause conditions remain rejected.
+                    constexpr auto texCfMask = (7u << 10) | (1u << 19) | (1u << 21) | (1u << 22) | (127u << 23) | (1u << 31);
+                    if (w1 & ~texCfMask)
+                        throw std::runtime_error("unsupported texture clause flags");
+                    const auto count = (((w1 >> 10) & 7) | ((w1 >> 16) & 8)) + 1;
+                    for (unsigned i = 0; i < count; ++i) {
+                        const auto off = std::uint64_t(w0) * 2 + std::uint64_t(i) * 4;
+                        if (off + 3 >= words.size())
+                            throw std::runtime_error("truncated texture clause");
+                        const auto t0 = words[off], t1 = words[off + 1], t2 = words[off + 2];
+                        const auto texOp = t0 & 31;
+                        if (vertexStage && texOp != 0x13)
+                            throw std::runtime_error("vertex texture opcode requires explicit base LOD");
+                        constexpr auto tex0Mask = 31u | (255u << 8) | (127u << 16);
+                        constexpr auto tex1Mask = 127u | (0xFFFu << 9) | (15u << 28);
+                        // TEX has three instruction words in a four-word slot. The
+                        // final word is padding, not additional instruction flags.
+                        if ((texOp != 0x0F && texOp != 0x10 && texOp != 0x13) || (t0 & ~tex0Mask) || (t1 & ~tex1Mask) ||
+                            (t1 & 0x30000000) != 0x30000000 || (t2 & 0x7FFF))
+                            throw std::runtime_error(std::format("unsupported texture instruction: cf={} slot={} op={} words={:08X},{:08X},{:08X}",
+                                                                 cf / 2, i, texOp, t0, t1, t2));
+                        if (texOp == 0x10 || texOp == 0x0F)
+                            result.requiresBaseLevelOnly = true;
+                        if (texOp == 0x0F)
+                            result.usesGather = true;
+                        implicitSamples |= texOp == 0x13;
+                        const unsigned resource = (t0 >> 8) & 255, sampler = (t2 >> 15) & 31;
+                        auto binding = std::find_if(result.textures.begin(), result.textures.end(),
+                                                    [&](const auto &b) { return b.resource == resource && b.sampler == sampler; });
+                        if (binding == result.textures.end()) {
+                            const auto type = resource < resourceTypes.size() ? resourceTypes[resource] : TextureType::TwoD;
+                            if (type != TextureType::TwoD && type != TextureType::TwoDArray)
+                                throw std::runtime_error("unsupported texture resource type");
+                            result.textures.push_back({resource, sampler, unsigned(result.textures.size() + 1), type});
+                            binding = result.textures.end() - 1;
+                        }
+                        const auto reg = std::format("r[{}]", (t0 >> 16) & 127);
+                        for (unsigned c = 0; c < 4; ++c) {
+                            const auto selector = (t2 >> (20 + c * 3)) & 7;
+                            if (selector < 4)
+                                wholeQuadWrites.read({(t0 >> 16) & 127, selector, false, false, false}, depth);
+                        }
+                        auto coords = std::format("{},{}", select(reg, (t2 >> 20) & 7), select(reg, (t2 >> 23) & 7));
+                        const bool array = binding->type == TextureType::TwoDArray;
+                        if (array)
+                            coords += std::format(",arrayLayerReference({},textureSize(tex{},0).z)", select(reg, (t2 >> 26) & 7), binding->binding);
+                        if (texOp == 0x0F) {
+                            if (array)
+                                throw std::runtime_error("array gather not yet supported");
+                            // Validate all source selectors consistently with the interpreter.
+                            for (unsigned c = 0; c < 4; ++c)
+                                select(reg, (t2 >> (20 + c * 3)) & 7);
+                            body += std::format("{{ vec2 coord=vec2({}); vec4 sampled; "
+                                                "if(any(isnan(coord))||any(isinf(coord))) sampled=vec4(u.borders[{}].r); "
+                                                "else sampled=textureGather(tex{},coord,0);\n",
+                                                coords, binding->binding - 1, binding->binding);
+                        } else if (array) {
+                            body += std::format("{{ vec3 originalCoord=vec3({},{},{}); vec4 sampled; "
+                                                "if(any(isnan(originalCoord))||any(isinf(originalCoord))) sampled=u.borders[{}]; "
+                                                "else sampled=sampleArrayReference(tex{},vec3({}),u.sampling[{}]);\n",
+                                                select(reg, (t2 >> 20) & 7), select(reg, (t2 >> 23) & 7), select(reg, (t2 >> 26) & 7),
+                                                binding->binding - 1, binding->binding, coords, binding->binding - 1);
+                        } else {
+                            body += std::format("{{ vec4 sampled=textureLod(tex{},vec2({}),0.0);\n", binding->binding, coords);
+                        }
+                        for (unsigned c = 0; c < 4; ++c) {
+                            const auto selector = (t1 >> (9 + c * 3)) & 7;
+                            if (selector != 7)
+                                body += std::format("r[{}][{}]={};\n", t1 & 127, c, select("sampled", selector));
+                        }
+                        body += "}\n";
+                    }
+                    body += "}\n";
+                } else if (op == CF_EXP || op == CF_EXP_DONE) {
+                    if (vertexStage) {
+                        const auto target = w0 & 0x1FFF, type = (w0 >> 13) & 3;
+                        constexpr auto word0Mask = 0x1FFFu | (3u << 13) | (127u << 15);
+                        constexpr auto word1Mask = 0xFFFu | (1u << 21) | (1u << 22) | (127u << 23) | (1u << 31);
+                        if ((w0 & ~word0Mask) || (w1 & ~word1Mask) || !((type == 1 && target == 60) || (type == 2 && target < 4)))
+                            throw std::runtime_error("unsupported vertex export addressing or target");
+                        const auto reg = std::format("r[{}]", (w0 >> 15) & 127);
+                        const auto dst = type == 1 ? std::string("position") : std::format("parameters[{}]", target);
+                        body += std::format("if(laneActive) {{ {}=vec4({},{},{},{}); {} }}\n", dst, select(reg, w1 & 7), select(reg, (w1 >> 3) & 7),
+                                            select(reg, (w1 >> 6) & 7), select(reg, (w1 >> 9) & 7), type == 1 ? "wroteOutput=true;" : "");
+                        if (type == 1)
+                            exported = true;
+                        else
+                            result.parameterMask |= 1u << target;
+                    } else {
+                        constexpr auto export1Mask = 0xFFFu | (1u << 21) | (1u << 22) | (127u << 23) | (1u << 31);
+                        const auto target = w0 & 0x1FFF;
+                        const bool depthExport = target == 61;
+                        if ((target != 0 && !depthExport) || (depthExport ? result.writesDepth : result.exportsColor) ||
+                            (w0 & ~(0x1FFFu | (127u << 15))) || (w1 & ~export1Mask) ||
+                            (depthExport && ((w1 & 7) == 7 || ((w1 >> 3) & 0x1FF) != 0x1FF)))
+                            throw std::runtime_error(std::format(
+                                    "unsupported export target, addressing or burst: cf={} type={} base={} repeated={} words={:08X},{:08X}", cf / 2,
+                                    (w0 >> 13) & 3, w0 & 0x1FFF, exported, w0, w1));
+                        const auto reg = std::format("r[{}]", (w0 >> 15) & 127);
+                        for (unsigned c = 0; c < 4; ++c) {
+                            const auto selector = (w1 >> (c * 3)) & 7;
+                            if (selector < 4)
+                                wholeQuadWrites.read({(w0 >> 15) & 127, selector, false, false, false}, depth);
+                        }
+                        if (depthExport) {
+                            body += std::format("if(laneActive) {{ gl_FragDepth=clampReference({}); wroteOutput=true; }}\n", select(reg, w1 & 7));
+                            result.writesDepth = true;
+                        } else {
+                            body += std::format("if(laneActive) {{ color=vec4({},{},{},{}); wroteOutput=true; }}\n", select(reg, w1 & 7),
+                                                select(reg, (w1 >> 3) & 7), select(reg, (w1 >> 6) & 7), select(reg, (w1 >> 9) & 7));
+                            result.exportsColor = true;
+                        }
+                        exported = true;
+                    }
+                } else if (op == 0x0A || op == 0x0B || op == 0x0D || op == 0x0E) {
+                    // VALID_PIXEL_MODE is equivalent here: kill/demote are not supported.
+                    constexpr auto mask = 7u | (1u << 22) | (127u << 23) | (1u << 31);
+                    if (w1 & ~mask)
+                        throw std::runtime_error("unsupported conditional control-flow flags");
+                    const auto count = w1 & 7u;
+                    if (op == 0x0A || op == 0x0D) {
+                        if (w0 <= cf / 2 || count > depth)
+                            throw std::runtime_error("unsupported backward jump or stack pop");
+                        jumpTargets.emplace_back(w0, depth - count);
+                        if (count)
+                            wholeQuadWrites.restore(depth - count);
+                        if (op == 0x0D && !depth)
+                            throw std::runtime_error("ELSE without stack entry");
+                        if (op == 0x0D)
+                            wholeQuadWrites.restore(depth - 1);
+                        body += op == 0x0A ? "if(!laneActive) {\n" : "if(laneActive) {\n";
+                        if (count)
+                            body += std::format("laneActive=activeStack[{}];\n", depth - count);
+                        body += std::format("pc={}u;\n}}", w0);
+                        if (op == 0x0D)
+                            body += std::format(" else {{ laneActive=activeStack[{}]&&!laneActive; }}", depth - 1);
+                        body += "\n";
+                    } else {
+                        if (w0 || (op == 0x0B && count))
+                            throw std::runtime_error("unsupported stack control fields");
+                        if (op == 0x0B)
+                            push();
+                        else
+                            pop(count);
+                    }
+                } else {
+                    constexpr auto controlMask = (1u << 21) | (127u << 23) | (1u << 31);
+                    if ((op != CF_NOP && op != CF_RETURN && !(vertexStage && op == CF_CALL_FS)) || w0 || (w1 & ~controlMask))
+                        throw std::runtime_error("unsupported control flow");
+                }
+                body += "}\n";
+                if (cfEop(w1) || op == CF_RETURN) {
+                    terminated = true;
+                    break;
+                }
+            }
+            if (!exported || !terminated)
+                throw std::runtime_error("missing color/depth export or shader termination");
+            if (result.exportsColor && result.writesDepth && maskedControl)
+                throw std::runtime_error("conditional mixed color/depth exports require per-output lane masks");
+            if (wholeQuadUsed && implicitSamples)
+                throw std::runtime_error("whole-quad ALU with implicit texture derivatives requires quad execution");
+            if (depth)
+                throw std::runtime_error("unbalanced control-flow stack");
+            for (const auto [target, expectedDepth]: jumpTargets)
+                if (target >= entryDepth.size() || entryDepth[target] != expectedDepth)
+                    throw std::runtime_error("jump target has incompatible control-flow stack");
+            result.source = "#version 450\nlayout(location=0) in vec4 inputs[4];\nlayout(location=0) out vec4 color;\n"
+                            "layout(set=0,binding=0,std140) uniform Constants { vec4 c[256]; vec4 borders[16]; vec4 sampling[16]; } u;\n"
+                            "float arrayLayerReference(float x,int layers) { float v=clamp(x,0.0,float(layers-1)); "
+                            "return floor(v)+step(0.5,fract(v)); }\n"
+                            "float clampReference(float x) { return isnan(x) ? 0.0 : clamp(x,0.0,1.0); }\n"
+                            "float minReference(float a,float b) { return isnan(a) ? b : isnan(b) ? a : min(a,b); }\n"
+                            "float maxReference(float a,float b) { return isnan(a) ? b : isnan(b) ? a : max(a,b); }\n"
+                            "float roundEvenReference(float x) { if(isnan(x)||isinf(x)) return x; float v=roundEven(x); "
+                            "return v==0.0 ? uintBitsToFloat(floatBitsToUint(x)&2147483648u) : v; }\n"
+                            "float logReference(float x) { if(isnan(x)) return x; if(x==0.0) return uintBitsToFloat(4286578688u); "
+                            "if(x<0.0) return uintBitsToFloat(2143289344u); if(isinf(x)) return x; return log2(x); }\n"
+                            "float logClamped(float x) { float v=logReference(x); return isinf(v)&&v<0.0 ? -uintBitsToFloat(2139095039u) : v; }\n";
+            if (vertexStage) {
+                const auto end = result.source.find("float arrayLayerReference");
+                result.source.replace(
+                        0, end,
+                        "#version 450\nlayout(location=1) in vec4 attributes[4];\nlayout(location=0) out vec4 inputs[4];\n"
+                        "layout(location=4) noperspective out float windowDepth;\n"
+                        "layout(set=0,binding=17,std140) uniform Constants { vec4 c[256]; vec4 borders[16]; vec4 sampling[16]; vec4 k[512]; } u;\n"
+                        "layout(push_constant) uniform Viewport { vec2 scale; float depthEnabled; float unused; vec4 window; vec2 depth; "
+                        "layout(offset=48) ivec4 inputParams; } viewport;\n");
+            }
+            result.source += R"(
+float arrayCoordinate(float v,int mode) {
+    if(mode==0) return fract(v);
+    if(mode==1) { float t=mod(v,2.0); return t>1.0 ? 2.0-t : t; }
+    return clamp(v,0.0,1.0);
+}
+int arrayIndex(int v,int size,int mode) {
+    return mode==0 ? ((v%size)+size)%size : clamp(v,0,size-1);
+}
+vec4 arrayTexel(sampler2DArray tex,ivec2 p,int layer,ivec2 size,ivec2 modes) {
+    return texelFetch(tex,ivec3(arrayIndex(p.x,size.x,modes.x),arrayIndex(p.y,size.y,modes.y),layer),0);
+}
+vec4 sampleArrayReference(sampler2DArray tex,vec3 p,vec4 state) {
+    ivec2 size=textureSize(tex,0).xy;
+    ivec2 modes=ivec2(state.xy);
+    vec2 xy=vec2(arrayCoordinate(p.x,modes.x),arrayCoordinate(p.y,modes.y))*vec2(size);
+    int layer=int(p.z);
+    if(state.z==0.0) return arrayTexel(tex,ivec2(floor(xy)),layer,size,modes);
+    vec2 pos=xy-vec2(0.5);
+    ivec2 base=ivec2(floor(pos));
+    vec2 fraction=fract(pos);
+    vec4 a=arrayTexel(tex,base,layer,size,modes);
+    vec4 b=arrayTexel(tex,base+ivec2(1,0),layer,size,modes);
+    vec4 c=arrayTexel(tex,base+ivec2(0,1),layer,size,modes);
+    vec4 d=arrayTexel(tex,base+ivec2(1,1),layer,size,modes);
+    return mix(mix(a,b,fraction.x),mix(c,d,fraction.x),fraction.y);
+}
+)";
+            for (const auto &b: result.textures)
+                result.source += std::format("layout(set=0,binding={}) uniform sampler2D{} tex{};\n", b.binding,
+                                             b.type == TextureType::TwoDArray ? "Array" : "", b.binding);
+            body = scalarizeRegisters(std::move(body));
+            if (result.writesDepth)
+                body.insert(body.find('\n') + 1, "gl_FragDepth=gl_FragCoord.z;\n");
+            result.source += body;
+            if (vertexStage)
+                result.source += R"(
+    gl_PointSize=1.0;
+    float divisor=abs(position.w)>1e-6 ? position.w : 1.0;
+    vec2 ndc=position.xy/divisor;
+    vec2 screen=viewport.window.xy+(ndc*vec2(1.0,-1.0)+vec2(1.0))*viewport.window.zw;
+    windowDepth=(viewport.depth.x+viewport.depth.y)*0.5+(position.z/divisor)*(viewport.depth.y-viewport.depth.x)*0.5;
+    gl_Position=wroteOutput ? vec4((screen*viewport.scale-vec2(1.0))*divisor,viewport.depthEnabled!=0.0 ? windowDepth*divisor : 0.0,divisor) : vec4(2.0,2.0,2.0,1.0);
+    for(int i=0;i<4;++i) inputs[i]=viewport.inputParams[i]>=0 ? parameters[viewport.inputParams[i]] : vec4(0.0);
+}
+)";
+            else
+                result.source += "if(!wroteOutput) discard;\n}\n";
+        } catch (const std::runtime_error &error) {
+            result = {};
+            result.error = error.what();
+        }
+        return result;
+    }
+    FragmentShader lowerFragmentShader(const Program &program, std::span<const TextureType> resourceTypes)
+    {
+        return lowerShader(program, resourceTypes, false);
+    }
+    VertexShader lowerVertexShader(const Program &program, std::span<const TextureType> resourceTypes)
+    {
+        VertexShader shader;
+        static_cast<FragmentShader &>(shader) = lowerShader(program, resourceTypes, true);
+        return shader;
+    }
+    std::shared_ptr<const VertexShader> VertexShaderCache::get(const std::vector<std::uint32_t> &words)
+    {
+        if (const auto it = m_entries.find(words); it != m_entries.end())
+            return it->second;
+        auto shader = std::make_shared<const VertexShader>(lowerVertexShader(*decodeProgram(words)));
+        if (m_entries.size() >= 128)
+            m_entries.clear();
+        if (words.size() <= 16384 && shader->source.size() <= std::size_t{256} * 1024)
+            m_entries.emplace(words, shader);
+        return shader;
+    }
+} // namespace Core::Gfx::Latte

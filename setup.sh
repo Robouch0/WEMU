@@ -10,7 +10,7 @@
 #        - Compilers + CMake + Ninja + ccache
 #        - Qt6 (base + declarative + multimedia) + QML runtime modules
 #        - Vulkan loader + headers + glslang
-#        - GLFW3, SDL2, zlib
+#        - GLFW3, SDL2, SDL2_image, zlib, FFmpeg >= 6.0
 #        - GoogleTest (build-time, fetched by CMake)
 #   3. Configures and builds:
 #        - core/   (PowerPC interpreter, ELF loader, tests)
@@ -88,7 +88,7 @@ log "Detected: ${PRETTY_NAME:-$DISTRO_ID}"
 #   - Qt6 dev (base + declarative + multimedia + tools + 5compat shim)
 #   - QML *runtime* modules (the ones you discovered were missing!)
 #   - Vulkan SDK pieces (headers, loader, validation, glslang)
-#   - GLFW3, SDL2, zlib
+#   - GLFW3, SDL2, SDL2_image, zlib, FFmpeg >= 6.0
 #   - GoogleTest (CMake will FetchContent if needed; package speeds it up)
 
 # Debian / Ubuntu shared list
@@ -103,6 +103,9 @@ declare -a APT_PKGS=(
 
   # Core deps
   zlib1g-dev
+  libavcodec-dev
+  libavutil-dev
+  libswscale-dev
 
   # Vulkan stack
   libvulkan-dev
@@ -116,6 +119,7 @@ declare -a APT_PKGS=(
   # Window/input/graphics deps
   libglfw3-dev
   libsdl2-dev
+  libsdl2-image-dev
   libglm-dev
 
   # Qt6 dev
@@ -126,7 +130,7 @@ declare -a APT_PKGS=(
   qt6-tools-dev-tools
   libqt6core5compat6-dev
 
-  # Qt6 QML runtime modules — required for ./wemu to start without
+  # Qt6 QML runtime modules — required for ./appgui to start without
   # 'module "QtQuick" is not installed' errors.
   qml6-module-qtquick
   qml6-module-qtquick-controls
@@ -147,9 +151,9 @@ declare -a APT_PKGS=(
 # Fedora list
 declare -a DNF_PKGS=(
   gcc-c++ make cmake ninja-build ccache git pkgconf-pkg-config
-  zlib-devel
+  zlib-devel ffmpeg-free-devel
   vulkan-loader-devel vulkan-tools vulkan-validation-layers glslang glslc
-  glfw-devel SDL2-devel glm-devel
+  glfw-devel SDL2-devel SDL2_image-devel glm-devel
   qt6-qtbase-devel qt6-qtdeclarative-devel qt6-qtmultimedia-devel
   qt6-qttools-devel qt6-qt5compat-devel
   qt6-qtdeclarative qt6-qtquickcontrols2 qt6-qtmultimedia
@@ -159,9 +163,9 @@ declare -a DNF_PKGS=(
 # Arch list
 declare -a PACMAN_PKGS=(
   base-devel cmake ninja ccache git pkgconf
-  zlib
+  zlib ffmpeg
   vulkan-headers vulkan-icd-loader vulkan-tools vulkan-validation-layers glslang shaderc
-  glfw sdl2 glm
+  glfw sdl2 sdl2_image glm
   qt6-base qt6-declarative qt6-multimedia qt6-tools qt6-5compat
   gtest
 )
@@ -263,10 +267,11 @@ fi
 log "Build complete."
 echo
 echo "Artifacts:"
-echo "  GUI binary:    $(pwd)/build/gui/wemu"
+echo "  Core binary:   $(pwd)/build/core/wemu"
+echo "  GUI binary:    $(pwd)/build/gui/appgui"
 [[ -d vulkan/build ]] && echo "  Vulkan binary: $(pwd)/vulkan/build/  (look for the executable)"
 echo
-echo "To run the GUI:    ./build/gui/wemu"
+echo "To run the GUI:    ./build/gui/appgui"
 echo "To re-run tests:   ./setup.sh --test"
 echo "To rebuild clean:  ./setup.sh --clean"
 echo "To build debug:    ./setup.sh --debug"
