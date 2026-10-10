@@ -14,7 +14,7 @@ DRAW = re.compile(
 )
 
 
-def read_draws(lines, first, last):
+def read_draws(lines, first, last, ignore_pixel_count=False):
     result = {}
     for line in lines:
         match = DRAW.search(line)
@@ -22,7 +22,8 @@ def read_draws(lines, first, last):
             continue
         frame, draw, micros, pixels, shader, words, width, height = match.groups()
         if first <= int(frame) <= last:
-            key = (int(frame), int(draw), shader, int(words), int(pixels), int(width), int(height))
+            key = (int(frame), int(draw), shader, int(words),
+                   0 if ignore_pixel_count else int(pixels), int(width), int(height))
             if key in result:
                 raise ValueError(f"Duplicate draw identity: {key}")
             result[key] = int(micros)
@@ -35,14 +36,16 @@ def main():
     parser.add_argument("after", type=Path)
     parser.add_argument("--first-frame", type=int, default=0)
     parser.add_argument("--last-frame", type=int, default=2**63 - 1)
+    parser.add_argument("--ignore-pixel-count", action="store_true",
+                        help="compare software/native draws when the native path does not report pixel counts")
     args = parser.parse_args()
     if args.first_frame < 0 or args.last_frame < args.first_frame:
         parser.error("invalid frame interval")
     try:
         with args.before.open() as source:
-            before = read_draws(source, args.first_frame, args.last_frame)
+            before = read_draws(source, args.first_frame, args.last_frame, args.ignore_pixel_count)
         with args.after.open() as source:
-            after = read_draws(source, args.first_frame, args.last_frame)
+            after = read_draws(source, args.first_frame, args.last_frame, args.ignore_pixel_count)
     except (OSError, ValueError) as error:
         parser.error(str(error))
     common = before.keys() & after.keys()
@@ -62,7 +65,8 @@ def main():
     old = sum(before[key] for key in common)
     new = sum(after[key] for key in common)
     print(f"Matched draw time: {old / 1e6:.3f} -> {new / 1e6:.3f} seconds")
-    print("Matches require frame, draw, shader, word/pixel counts and target size; inputs may still differ.")
+    counts = "word counts" if args.ignore_pixel_count else "word/pixel counts"
+    print(f"Matches require frame, draw, shader, {counts} and target size; inputs may still differ.")
     print("This is not GPU-only time or game FPS. Compare identical diagnostics and repeated runs.")
 
 

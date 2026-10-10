@@ -52,23 +52,23 @@ Renderer::Renderer(VkInstance instance, VkSurfaceKHR surface, uint32_t w, uint32
 
 void Renderer::flip_tv(const std::uint8_t *rgbx, std::uint32_t w, std::uint32_t h)
 {
+    // The slot's previous submission must release both its upload memory and
+    // acquire semaphore before either is reused by the host.
+    if (vkWaitForFences(m_logicalDevice, 1, &m_inFlightFences[m_currentFrame], VK_TRUE, UINT64_MAX) != VK_SUCCESS)
+        throw std::runtime_error("flip_tv: failed to wait for frame fence");
     const std::size_t cols = (w < WIDTH) ? w : WIDTH;
     const std::size_t rows = (h < HEIGHT) ? h : HEIGHT;
 
-    // map to cpu readable
-    void *mapped = nullptr;
-    vkMapMemory(m_logicalDevice, m_tvStagingMemory, 0, WIDTH * HEIGHT * 4, 0, &mapped);
-
-    auto *dst = static_cast<std::uint32_t *>(mapped);
+    auto *dst = static_cast<std::uint32_t *>(m_tvStagingMapped[m_currentFrame]);
     const auto *src = reinterpret_cast<const std::uint32_t *>(rgbx);
+    if (cols != WIDTH || rows != HEIGHT)
+        std::memset(dst, 0, WIDTH * HEIGHT * 4);
 
     for (std::uint32_t y = 0; y < rows; ++y) {
         const std::uint32_t *srow = src + static_cast<std::size_t>(y) * w;
         std::uint32_t *drow = dst + static_cast<std::size_t>(y) * WIDTH;
         std::memcpy(drow, srow, cols * 4);
     }
-    vkUnmapMemory(m_logicalDevice, m_tvStagingMemory);
-    // endMapping
 
     // asks the swapchain the next available image to render into
     uint32_t imageIndex = 0;
@@ -87,9 +87,6 @@ void Renderer::flip_tv(const std::uint8_t *rgbx, std::uint32_t w, std::uint32_t 
     }
     // end of image retrieval
 
-    vkWaitForFences(m_logicalDevice, 1, &m_inFlightFences[m_currentFrame], VK_TRUE, UINT64_MAX);
-    vkResetFences(m_logicalDevice, 1, &m_inFlightFences[m_currentFrame]);
-
     VkCommandBuffer cmd = m_commandBuffers[m_currentFrame];
     vkResetCommandBuffer(cmd, 0);
 
@@ -100,8 +97,9 @@ void Renderer::flip_tv(const std::uint8_t *rgbx, std::uint32_t w, std::uint32_t 
     if (vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS)
         throw std::runtime_error("flip_tv: failed to begin command buffer");
 
-    pipelineBarrier(m_tvImage, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
-                    VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, cmd);
+    pipelineBarrier(m_tvImage, m_tvImageInitialized ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, m_tvImageInitialized ? VK_ACCESS_TRANSFER_READ_BIT : 0, VK_ACCESS_TRANSFER_WRITE_BIT,
+                    m_tvImageInitialized ? VK_PIPELINE_STAGE_TRANSFER_BIT : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, cmd);
 
     VkBufferImageCopy region{};
     region.bufferOffset = 0;
@@ -110,13 +108,13 @@ void Renderer::flip_tv(const std::uint8_t *rgbx, std::uint32_t w, std::uint32_t 
     region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     region.imageOffset = {0, 0, 0};
     region.imageExtent = {WIDTH, HEIGHT, 1};
-    vkCmdCopyBufferToImage(cmd, m_tvStagingBuffer, m_tvImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    vkCmdCopyBufferToImage(cmd, m_tvStagingBuffers[m_currentFrame], m_tvImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
     pipelineBarrier(m_tvImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
                     VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, cmd);
 
     pipelineBarrier(m_swapChainImages[imageIndex], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
-                    VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, cmd);
+                    VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, cmd);
 
 
     VkImageBlit blit{};
@@ -146,16 +144,18 @@ void Renderer::flip_tv(const std::uint8_t *rgbx, std::uint32_t w, std::uint32_t 
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &cmd;
     submitInfo.signalSemaphoreCount = 1;
-    submitInfo.pSignalSemaphores = &m_renderFinishedSemaphores[m_currentFrame];
+    submitInfo.pSignalSemaphores = &m_renderFinishedSemaphores[imageIndex];
 
+    vkResetFences(m_logicalDevice, 1, &m_inFlightFences[m_currentFrame]);
     result = vkQueueSubmit(m_graphicsQueue, 1, &submitInfo, m_inFlightFences[m_currentFrame]);
     if (result != VK_SUCCESS)
         throw std::runtime_error("flip_tv: failed to submit command buffer (VkResult " + std::to_string(result) + ")");
+    m_tvImageInitialized = true;
 
     VkPresentInfoKHR presentInfo{};
     presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
     presentInfo.waitSemaphoreCount = 1;
-    presentInfo.pWaitSemaphores = &m_renderFinishedSemaphores[m_currentFrame];
+    presentInfo.pWaitSemaphores = &m_renderFinishedSemaphores[imageIndex];
     presentInfo.swapchainCount = 1;
     presentInfo.pSwapchains = &m_swapChain;
     presentInfo.pImageIndices = &imageIndex;

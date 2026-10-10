@@ -591,8 +591,8 @@ TEST_F(Gx2CaptureTest, DeclaredAttributesAndPixelSemanticRenderWithEveryIndexEnd
                     EXPECT_EQ(pixel(6, 1), samplerMode == 6 ? border : textureCase.expected[samplerMode == 2 ? 0 : 1]);
                     EXPECT_EQ(pixel(1, 6), samplerMode == 6 ? border : textureCase.expected[2]);
                     EXPECT_EQ(pixel(6, 6), samplerMode == 6 ? border : textureCase.expected[samplerMode == 2 ? 2 : 3]);
-                    if ((textureCase.format == 1 || textureCase.format == 7) && !samplerMode && !type && std::getenv("WEMU_TEST_VULKAN") &&
-                        SpirvCompiler::available()) {
+                    if ((textureCase.format == 1 || textureCase.format == 7 || textureCase.format == 0x80E) && !samplerMode && !type &&
+                        std::getenv("WEMU_TEST_VULKAN") && SpirvCompiler::available()) {
                         auto backend = std::make_shared<VulkanRasterBackend>();
                         Gx2Replayer native;
                         native.setRasterBackend(backend);
@@ -1037,4 +1037,172 @@ TEST_F(Gx2CaptureTest, DeclaredAttributesAndPixelSemanticRenderWithEveryIndexEnd
                         }
                     }
                 }
+}
+
+TEST_F(Gx2CaptureTest, DepthClearsExportsOcclusionAndSamplingMatchNative)
+{
+    using namespace Core::Gfx;
+    constexpr unsigned colorHeader = 0x28009000, depthHeader = 0x2800A000, colorImage = 0x28040000, depthImage = 0x28050000;
+    constexpr unsigned vsHeader = 0x28001000, psColorHeader = 0x28002000, psDepthHeader = 0x28003000, psSampleHeader = 0x28006000;
+    constexpr unsigned vertices = 0x28010000;
+    const std::vector<std::uint32_t> vs{60u | (1u << 13) | (1u << 15), (0x27u << 23) | 0x688u, (2u << 13) | (2u << 15),
+                                        (0x28u << 23) | (1u << 21) | 0x688u};
+    const std::vector<std::uint32_t> colorPs{0, (0x28u << 23) | (1u << 21) | 0x688u};
+    const std::vector<std::uint32_t> depthPs{61, (0x28u << 23) | (1u << 21) | 0xFF8u};
+    const std::vector<std::uint32_t> samplePs{2, 1u << 23, 0, (0x28u << 23) | (1u << 21) | 0x688u, 0x10u, 0x30000000u | (0x688u << 9), 1u << 23, 0};
+    const auto shader = [&](unsigned header, unsigned offset, unsigned ptr, const auto &words) {
+        for (unsigned off = 0; off < 0x200; off += 4)
+            cpu->m_memory.write<std::uint32_t>(header + off, 0);
+        cpu->m_memory.write<std::uint32_t>(header + offset, words.size() * 4);
+        cpu->m_memory.write<std::uint32_t>(header + offset + 4, ptr);
+        for (unsigned i = 0; i < words.size(); ++i)
+            cpu->m_memory.write<std::uint32_t>(ptr + i * 4, std::byteswap(words[i]));
+    };
+    shader(vsHeader, 0xD0, 0x28007000, vs);
+    shader(psColorHeader, 0xA4, 0x28008000, colorPs);
+    shader(psDepthHeader, 0xA4, 0x2800B000, depthPs);
+    shader(psSampleHeader, 0xA4, 0x2800C000, samplePs);
+    for (unsigned header: {psColorHeader, psDepthHeader, psSampleHeader})
+        cpu->m_memory.write<std::uint32_t>(header + 0x10, 1);
+    const auto record = [&](const char *name, std::initializer_list<unsigned> args) {
+        unsigned r = 3;
+        for (auto arg: args)
+            cpu->m_gpr[r++] = arg;
+        call(name);
+    };
+    const auto mesh = [&](float z, const std::array<float, 4> &value) {
+        const float positions[6][2] = {{-1, 1}, {1, 1}, {-1, -1}, {1, 1}, {1, -1}, {-1, -1}};
+        for (unsigned v = 0; v < 6; ++v) {
+            const std::array<float, 8> data{positions[v][0], positions[v][1], z, 1, value[0], value[1], value[2], value[3]};
+            for (unsigned c = 0; c < 8; ++c)
+                cpu->m_memory.write<std::uint32_t>(vertices + v * 32 + c * 4, std::bit_cast<std::uint32_t>(data[c]));
+        }
+    };
+    for (const unsigned format: {0x80Eu, 5u}) {
+        SCOPED_TRACE(format);
+        gx2Stream().clear();
+        surface(colorHeader, colorImage, 256, 8, 8, 8, 1);
+        surface(depthHeader, depthImage, 10 * 8 * (format == 5 ? 2 : 4), 8, 8, 10, 0);
+        cpu->m_memory.write<std::uint32_t>(depthHeader + 0x14, format);
+        cpu->m_memory.write<std::uint32_t>(depthHeader + 0x80, 1);
+        cpu->m_memory.write<std::uint32_t>(depthHeader + 0x84, 0x00040505); // depth,0,1,1
+        for (auto &f: cpu->m_fpr)
+            f = 0;
+        cpu->m_fpr[4] = 1;
+        cpu->m_fpr[5] = 1;
+        record("GX2ClearBuffersEx", {colorHeader, depthHeader, 0, 1});
+        record("GX2SetColorBuffer", {colorHeader, 0});
+        record("GX2SetDepthBuffer", {depthHeader});
+        record("GX2SetColorControl", {0xCC, 0, 0, 1});
+        cpu->m_fpr[1] = cpu->m_fpr[2] = cpu->m_fpr[5] = 0;
+        cpu->m_fpr[3] = cpu->m_fpr[4] = 8;
+        cpu->m_fpr[6] = 1;
+        record("GX2SetViewport", {});
+        record("GX2SetScissor", {0, 0, 8, 8});
+        Gx2Command fetch{Gx2Cmd::SetFetchShader};
+        fetch.payload = {0, 0, 0, 0x813, 0, 0, 0x00010203, 3, 1, 0, 16, 0x813, 0, 0, 0x00010203, 3};
+        gx2Stream().push(fetch);
+        record("GX2SetVertexShader", {vsHeader});
+        record("GX2SetAttribBuffer", {0, 6 * 32, 32, vertices});
+        record("GX2SetDepthOnlyControl", {1, 1, 1});
+        record("GX2SetPixelShader", {psDepthHeader});
+        record("GX2DrawEx", {4, 6, 0, 1});
+        mesh(0, {.25f, 0, 0, 1});
+        Gx2Replayer reference, native;
+        std::shared_ptr<VulkanRasterBackend> backend;
+        if (std::getenv("WEMU_TEST_VULKAN") && SpirvCompiler::available()) {
+            backend = std::make_shared<VulkanRasterBackend>();
+            native.setRasterBackend(backend);
+            native.setNativeVerificationInterval(1);
+        }
+        reference.replay(gx2Stream(), &cpu->m_memory);
+        native.replay(gx2Stream(), &cpu->m_memory);
+        if (backend)
+            EXPECT_EQ(backend->completedDraws(), 1u) << backend->lastError();
+        // A stencil-only clear leaves depth .25; z=.5 is occluded.
+        gx2Stream().clear();
+        cpu->m_fpr[1] = 1;
+        record("GX2ClearDepthStencilEx", {depthHeader, 0, 2});
+        record("GX2SetPixelShader", {psColorHeader});
+        record("GX2DrawEx", {4, 6, 0, 1});
+        record("GX2CopyColorBufferToScanBuffer", {colorHeader, 1});
+        gx2Stream().push(Gx2Command{Gx2Cmd::SwapScanBuffers});
+        mesh(0, {1, 0, 0, 1});
+        reference.replay(gx2Stream(), &cpu->m_memory);
+        native.replay(gx2Stream(), &cpu->m_memory);
+        EXPECT_EQ(reference.framebuffer()[0], 0);
+        EXPECT_EQ(native.framebuffer(), reference.framebuffer());
+        // Depth clear makes the same triangle visible.
+        gx2Stream().mutableCommands()[0].gpr[2] = 1;
+        reference.replay(gx2Stream(), &cpu->m_memory);
+        native.replay(gx2Stream(), &cpu->m_memory);
+        EXPECT_EQ(reference.framebuffer()[0], 255);
+        EXPECT_EQ(native.framebuffer(), reference.framebuffer());
+        // A near triangle updates the depth surface; a later sampler sees it.
+        gx2Stream().clear();
+        record("GX2SetPixelShader", {psColorHeader});
+        record("GX2DrawEx", {4, 6, 0, 1});
+        mesh(-.75f, {1, 0, 0, 1});
+        reference.replay(gx2Stream(), &cpu->m_memory);
+        native.replay(gx2Stream(), &cpu->m_memory);
+        gx2Stream().clear();
+        record("GX2SetDepthOnlyControl", {0, 0, 1});
+        record("GX2SetPixelShader", {psSampleHeader});
+        cpu->m_memory.write<std::uint32_t>(depthHeader + 0xC, 0); // 2D texture views may leave the unused depth field zero.
+        record("GX2SetPixelTexture", {depthHeader, 0});
+        record("GX2DrawEx", {4, 6, 0, 1});
+        record("GX2CopyColorBufferToScanBuffer", {colorHeader, 1});
+        gx2Stream().push(Gx2Command{Gx2Cmd::SwapScanBuffers});
+        mesh(0, {.5f, .5f, 0, 1});
+        reference.replay(gx2Stream(), &cpu->m_memory);
+        native.replay(gx2Stream(), &cpu->m_memory);
+        EXPECT_EQ(reference.framebuffer()[0], 32);
+        EXPECT_EQ(reference.framebuffer()[1], 0);
+        EXPECT_EQ(native.framebuffer(), reference.framebuffer());
+        if (backend)
+            EXPECT_EQ(native.differingNativeDraws(), 0u);
+    }
+}
+
+TEST_F(Gx2CaptureTest, DepthClearDescriptorsAndControlRegistersAreCapturedAtCallTime)
+{
+    using namespace Core::Gfx;
+    constexpr unsigned color = 0x28001000, depth = 0x28002000, control = 0x28003000;
+    surface(color, 0x28040000, 256, 8, 8, 8, 1);
+    surface(depth, 0x28050000, 256, 8, 8, 8, 0);
+    cpu->m_memory.write<std::uint32_t>(depth + 0x14, 0x80E);
+    cpu->m_gpr[3] = color;
+    cpu->m_gpr[4] = depth;
+    cpu->m_gpr[5] = 23;
+    cpu->m_gpr[6] = 1;
+    cpu->m_fpr[5] = .75;
+    call("GX2ClearBuffersEx");
+    ASSERT_EQ(gx2Stream().size(), 1u);
+    const auto both = gx2Stream().commands()[0];
+    ASSERT_EQ(both.payload.size(), 32u);
+    EXPECT_EQ(both.payload[9], 0x28040000u);
+    EXPECT_EQ(both.payload[25], 0x28050000u);
+    EXPECT_DOUBLE_EQ(both.fpr[4], .75);
+    EXPECT_EQ(both.gpr[2], 23u);
+    EXPECT_EQ(both.gpr[3], 1u);
+    cpu->m_gpr[3] = depth;
+    cpu->m_gpr[4] = 0;
+    cpu->m_gpr[5] = 1;
+    cpu->m_fpr[1] = .25;
+    call("GX2ClearDepthStencilEx");
+    ASSERT_EQ(gx2Stream().commands()[1].payload.size(), 16u);
+    cpu->m_memory.write<std::uint32_t>(depth + 0x24, 0);
+    EXPECT_EQ(gx2Stream().commands()[1].payload[9], 0x28050000u);
+    const unsigned word = (1u << 1) | (1u << 2) | (3u << 4);
+    cpu->m_memory.write<std::uint32_t>(control, word);
+    cpu->m_gpr[3] = control;
+    call("GX2SetDepthStencilControlReg");
+    cpu->m_memory.write<std::uint32_t>(control, 0);
+    const auto state = gx2Stream().commands().back();
+    EXPECT_EQ(state.type, Gx2Cmd::SetDepthStencilControl);
+    EXPECT_EQ(state.gpr[0], 1u);
+    EXPECT_EQ(state.gpr[1], 1u);
+    EXPECT_EQ(state.gpr[2], 3u);
+    EXPECT_EQ(state.gpr[3], 0u);
+    EXPECT_EQ(state.payload, std::vector<std::uint32_t>{word});
 }

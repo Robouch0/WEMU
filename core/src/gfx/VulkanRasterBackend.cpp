@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <compare>
@@ -104,12 +105,23 @@ namespace Core::Gfx {
                     blend.alphaSource,       blend.alphaDestination, blend.alphaOperation,   blend.constant[0],
                     blend.constant[1],       blend.constant[2],      blend.constant[3]};
         }
+        VkFormat depthVkFormat(DepthFormat)
+        {
+            // Canonical floats avoid device-dependent fixed-point comparison precision.
+            // UNORM writes are quantized in a GPU buffer pass after comparison.
+            return VK_FORMAT_D32_SFLOAT;
+        }
+        std::array<unsigned, 4> depthKey(const RasterDraw::Depth &depth)
+        {
+            return {depth.test ? unsigned(depth.format) + 1 : 0, unsigned(depth.test), unsigned(depth.write), depth.compare};
+        }
         struct Context {
                 struct PipelineKey {
                         std::vector<std::uint32_t> vertex, fragment, bindings;
                         unsigned width{}, height{}, channelMask{};
                         std::array<std::int32_t, 4> scissor{};
                         std::array<unsigned, 11> blend{};
+                        std::array<unsigned, 4> depth{};
                         auto operator<=>(const PipelineKey &) const = default;
                 };
                 struct PipelineBundle {
@@ -125,6 +137,10 @@ namespace Core::Gfx {
                 std::uint32_t family{};
                 std::string deviceName;
                 std::uint64_t readbackTransfers{};
+                VkDescriptorSetLayout depthQuantizeSetLayout{};
+                VkPipelineLayout depthQuantizeLayout{};
+                VkPipeline depthQuantizePipeline{};
+                bool computeQueue{};
                 std::map<PipelineKey, PipelineBundle> pipelines;
                 void clearPipelines()
                 {
@@ -143,6 +159,12 @@ namespace Core::Gfx {
                         vkDeviceWaitIdle(device);
                     if (device)
                         clearPipelines();
+                    if (depthQuantizePipeline)
+                        vkDestroyPipeline(device, depthQuantizePipeline, nullptr);
+                    if (depthQuantizeLayout)
+                        vkDestroyPipelineLayout(device, depthQuantizeLayout, nullptr);
+                    if (depthQuantizeSetLayout)
+                        vkDestroyDescriptorSetLayout(device, depthQuantizeSetLayout, nullptr);
                     if (pipelineCache)
                         vkDestroyPipelineCache(device, pipelineCache, nullptr);
                     if (device)
@@ -179,6 +201,7 @@ namespace Core::Gfx {
                                 if (score > bestScore) {
                                     physical = candidate;
                                     family = i;
+                                    computeQueue = (queues[i].queueFlags & VK_QUEUE_COMPUTE_BIT) != 0;
                                     bestScore = score;
                                 }
                                 break;
@@ -205,6 +228,72 @@ namespace Core::Gfx {
                     VkPipelineCacheCreateInfo cache{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
                     check(vkCreatePipelineCache(device, &cache, nullptr, &pipelineCache), "create pipeline cache");
                 }
+                void initializeDepthQuantizer()
+                {
+                    if (depthQuantizePipeline)
+                        return;
+                    SpirvCompiler compiler;
+                    const auto module = compiler.compile(ShaderStage::Compute, R"(#version 450
+layout(local_size_x=8,local_size_y=8) in;
+layout(set=0,binding=0,std430) buffer Depth { float values[]; } depth;
+layout(push_constant) uniform Dimensions { uint width; uint height; float maximum; } dimensions;
+float normalizedInteger(uint value,uint maximum) {
+    if(value==0u) return 0.0;
+    if(value==maximum) return 1.0;
+    int exponent=0;
+    uint remainder=value;
+    while(remainder<maximum) { remainder<<=1; --exponent; }
+    remainder-=maximum;
+    uint fraction=0u;
+    for(int bit=22;bit>=0;--bit) {
+        remainder<<=1;
+        if(remainder>=maximum) { remainder-=maximum; fraction|=1u<<bit; }
+    }
+    if((remainder<<1)>maximum) ++fraction;
+    if(fraction==0x800000u) { fraction=0u; ++exponent; }
+    return uintBitsToFloat((uint(exponent+127)<<23)|fraction);
+}
+void main() {
+    uvec2 p=gl_GlobalInvocationID.xy;
+    if(p.x>=dimensions.width||p.y>=dimensions.height) return;
+    uint i=p.y*dimensions.width+p.x;
+    float value=clamp(depth.values[i],0.0,1.0);
+    // Power-of-two multiplication is exact. Separate the fractional correction
+    // so adding 0.5 cannot lose a bit at 24-bit integer magnitudes.
+    float scaled=value*(dimensions.maximum+1.0);
+    int integer=int(scaled)+int(floor(fract(scaled)-value+0.5));
+    depth.values[i]=normalizedInteger(uint(integer),uint(dimensions.maximum));
+}
+)");
+                    if (!*module)
+                        throw std::runtime_error(module->error);
+                    VkDescriptorSetLayoutBinding binding{0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+                    VkDescriptorSetLayoutCreateInfo setInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+                    setInfo.bindingCount = 1;
+                    setInfo.pBindings = &binding;
+                    check(vkCreateDescriptorSetLayout(device, &setInfo, nullptr, &depthQuantizeSetLayout), "create depth quantizer descriptors");
+                    VkPushConstantRange range{VK_SHADER_STAGE_COMPUTE_BIT, 0, 12};
+                    VkPipelineLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+                    layoutInfo.setLayoutCount = 1;
+                    layoutInfo.pSetLayouts = &depthQuantizeSetLayout;
+                    layoutInfo.pushConstantRangeCount = 1;
+                    layoutInfo.pPushConstantRanges = &range;
+                    check(vkCreatePipelineLayout(device, &layoutInfo, nullptr, &depthQuantizeLayout), "create depth quantizer layout");
+                    VkShaderModuleCreateInfo shaderInfo{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+                    shaderInfo.codeSize = module->words.size() * sizeof(std::uint32_t);
+                    shaderInfo.pCode = module->words.data();
+                    VkShaderModule shader{};
+                    check(vkCreateShaderModule(device, &shaderInfo, nullptr, &shader), "create depth quantizer shader");
+                    VkComputePipelineCreateInfo pipelineInfo{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+                    pipelineInfo.layout = depthQuantizeLayout;
+                    pipelineInfo.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+                    pipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+                    pipelineInfo.stage.module = shader;
+                    pipelineInfo.stage.pName = "main";
+                    const auto created = vkCreateComputePipelines(device, pipelineCache, 1, &pipelineInfo, nullptr, &depthQuantizePipeline);
+                    vkDestroyShaderModule(device, shader, nullptr);
+                    check(created, "create depth quantizer pipeline");
+                }
         };
 
         struct ColorImage {
@@ -213,6 +302,8 @@ namespace Core::Gfx {
                 VkDeviceMemory memory{};
                 unsigned width{}, height{};
                 std::uint64_t version{};
+                VkFormat format{VK_FORMAT_R8G8B8A8_UNORM};
+                DepthFormat depthFormat{DepthFormat::Float32};
                 ~ColorImage()
                 {
                     if (image)
@@ -308,6 +399,10 @@ namespace Core::Gfx {
                         vkDestroyRenderPass(device, pass, nullptr);
                     if (view)
                         vkDestroyImageView(device, view, nullptr);
+                    if (depthView)
+                        vkDestroyImageView(device, depthView, nullptr);
+                    if (depthQuantizePool)
+                        vkDestroyDescriptorPool(device, depthQuantizePool, nullptr);
                     for (auto sampler: samplers)
                         vkDestroySampler(device, sampler, nullptr);
                     for (auto textureView: textureViews)
@@ -324,7 +419,7 @@ namespace Core::Gfx {
 
                 void initialize(const std::vector<std::uint32_t> &vertex, const std::vector<std::uint32_t> &fragment,
                                 const std::array<float, 1152> &constants, const std::vector<Texture> &textures, const RasterDraw &draw,
-                                const std::shared_ptr<ColorImage> &targetSource)
+                                const std::shared_ptr<ColorImage> &targetSource, const std::shared_ptr<ColorImage> &depthSource)
                 {
                     VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
                     check(vkCreateFence(device, &fenceInfo, nullptr, &completion), "create submission fence");
@@ -364,8 +459,34 @@ namespace Core::Gfx {
                     vi.format = ci.format;
                     vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
                     check(vkCreateImageView(device, &vi, nullptr, &view), "create view");
+                    if (draw.depth.test) {
+                        depthImage = std::make_shared<ColorImage>();
+                        depthImage->context = contextOwner;
+                        depthImage->width = draw.depth.width;
+                        depthImage->height = draw.depth.height;
+                        depthImage->format = depthVkFormat(draw.depth.format);
+                        depthImage->depthFormat = draw.depth.format;
+                        ci.format = depthImage->format;
+                        ci.extent = {draw.depth.width, draw.depth.height, 1};
+                        ci.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+                        check(vkCreateImage(device, &ci, nullptr, &depthImage->image), "create depth image");
+                        vkGetImageMemoryRequirements(device, depthImage->image, &req);
+                        depthImage->memory = allocate(req, 0, 0, false);
+                        check(vkBindImageMemory(device, depthImage->image, depthImage->memory, 0), "bind depth image");
+                        vi.image = depthImage->image;
+                        vi.format = ci.format;
+                        vi.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+                        check(vkCreateImageView(device, &vi, nullptr, &depthView), "create depth view");
+                        const auto bytes = std::size_t(draw.depth.pitch) * draw.depth.height * sizeof(float);
+                        depthUpload = buffer(bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, depthUploadMemory);
+                        depthReadback = buffer(bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, depthReadbackMemory, VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+                        if (!depthSource)
+                            uploadDepth(draw.depth);
+                        if (draw.depth.format != DepthFormat::Float32 && draw.depth.write)
+                            initializeDepthQuantization(draw.depth);
+                    }
                     VkAttachmentDescription attachment{};
-                    attachment.format = ci.format;
+                    attachment.format = VK_FORMAT_R8G8B8A8_UNORM;
                     attachment.samples = VK_SAMPLE_COUNT_1_BIT;
                     attachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
                     attachment.initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
@@ -374,20 +495,27 @@ namespace Core::Gfx {
                     attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
                     attachment.finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
                     VkAttachmentReference color{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+                    auto depthAttachment = attachment;
+                    depthAttachment.format = draw.depth.test ? depthImage->format : VK_FORMAT_UNDEFINED;
+                    depthAttachment.initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+                    VkAttachmentDescription attachments[]{attachment, depthAttachment};
+                    VkAttachmentReference depthReference{1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
                     VkSubpassDescription subpass{};
                     subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
                     subpass.colorAttachmentCount = 1;
                     subpass.pColorAttachments = &color;
+                    subpass.pDepthStencilAttachment = draw.depth.test ? &depthReference : nullptr;
                     VkSubpassDependency dependency{};
                     dependency.srcSubpass = 0;
                     dependency.dstSubpass = VK_SUBPASS_EXTERNAL;
-                    dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+                    dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                                              VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
                     dependency.dstStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT;
-                    dependency.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+                    dependency.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
                     dependency.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
                     VkRenderPassCreateInfo ri{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
-                    ri.attachmentCount = 1;
-                    ri.pAttachments = &attachment;
+                    ri.attachmentCount = draw.depth.test ? 2 : 1;
+                    ri.pAttachments = attachments;
                     ri.subpassCount = 1;
                     ri.pSubpasses = &subpass;
                     ri.dependencyCount = 1;
@@ -395,10 +523,11 @@ namespace Core::Gfx {
                     check(vkCreateRenderPass(device, &ri, nullptr, &pass), "create render pass");
                     VkFramebufferCreateInfo fi{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
                     fi.renderPass = pass;
-                    fi.attachmentCount = 1;
-                    fi.pAttachments = &view;
-                    fi.width = draw.width;
-                    fi.height = draw.height;
+                    const VkImageView views[]{view, depthView};
+                    fi.attachmentCount = ri.attachmentCount;
+                    fi.pAttachments = views;
+                    fi.width = draw.depth.test ? std::min(draw.width, draw.depth.width) : draw.width;
+                    fi.height = draw.depth.test ? std::min(draw.height, draw.depth.height) : draw.height;
                     fi.layers = 1;
                     check(vkCreateFramebuffer(device, &fi, nullptr, &framebuffer), "create framebuffer");
 
@@ -415,6 +544,7 @@ namespace Core::Gfx {
                         upload(targetMemory, draw.target.data(), draw.target.size());
                     Context::PipelineKey key{vertex, fragment, {}, draw.width, draw.height, draw.channelMask, draw.scissor};
                     key.blend = blendKey(draw.blend);
+                    key.depth = depthKey(draw.depth);
                     for (const auto &texture: textures)
                         key.bindings.push_back(texture.binding);
                     if (const auto it = context.pipelines.find(key); it != context.pipelines.end()) {
@@ -457,7 +587,7 @@ namespace Core::Gfx {
                         uploadTexture(texture);
 
                     if (!cachedPipeline) {
-                        VkPushConstantRange push{VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(float) * 2};
+                        VkPushConstantRange push{VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(float) * 3};
                         VkPipelineLayoutCreateInfo li{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
                         li.setLayoutCount = li.pushConstantRangeCount = 1;
                         li.pSetLayouts = &setLayout;
@@ -478,15 +608,16 @@ namespace Core::Gfx {
                             stages[i].pName = "main";
                         }
                         VkVertexInputBindingDescription vertexBinding{0, sizeof(RasterDraw::Vertex), VK_VERTEX_INPUT_RATE_VERTEX};
-                        VkVertexInputAttributeDescription attributes[5]{};
+                        VkVertexInputAttributeDescription attributes[6]{};
                         attributes[0] = {0, 0, VK_FORMAT_R32G32_SFLOAT, 0};
                         for (unsigned i = 0; i < 4; ++i)
                             attributes[i + 1] = {i + 1, 0, VK_FORMAT_R32G32B32A32_SFLOAT,
                                                  unsigned(offsetof(RasterDraw::Vertex, inputs) + i * sizeof(float) * 4)};
+                        attributes[5] = {5, 0, VK_FORMAT_R32G32_SFLOAT, unsigned(offsetof(RasterDraw::Vertex, z))};
                         VkPipelineVertexInputStateCreateInfo input{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
                         input.vertexBindingDescriptionCount = 1;
                         input.pVertexBindingDescriptions = &vertexBinding;
-                        input.vertexAttributeDescriptionCount = 5;
+                        input.vertexAttributeDescriptionCount = 6;
                         input.pVertexAttributeDescriptions = attributes;
                         VkPipelineInputAssemblyStateCreateInfo assembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
                         assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
@@ -532,6 +663,11 @@ namespace Core::Gfx {
                         gp.pRasterizationState = &raster;
                         gp.pMultisampleState = &samples;
                         gp.pColorBlendState = &blending;
+                        VkPipelineDepthStencilStateCreateInfo depthState{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+                        depthState.depthTestEnable = draw.depth.test;
+                        depthState.depthWriteEnable = draw.depth.test && draw.depth.write;
+                        depthState.depthCompareOp = VkCompareOp(draw.depth.compare);
+                        gp.pDepthStencilState = &depthState;
                         gp.layout = layout;
                         gp.renderPass = pass;
                         check(vkCreateGraphicsPipelines(device, pipelineCache, 1, &gp, nullptr, &pipeline), "create pipeline");
@@ -542,10 +678,11 @@ namespace Core::Gfx {
                     }
                 }
 
-                bool ownsImage(const std::shared_ptr<ColorImage> &candidate) const { return colorImage == candidate; }
+                bool ownsImage(const std::shared_ptr<ColorImage> &candidate) const { return colorImage == candidate || depthImage == candidate; }
 
                 RasterResult execute(const RasterDraw &draw, bool deferReadback, const std::shared_ptr<ColorImage> &targetSource,
-                                     bool allowLazyReadback, const std::shared_ptr<const NativeImage> &targetSnapshot)
+                                     bool allowLazyReadback, const std::shared_ptr<const NativeImage> &targetSnapshot,
+                                     const std::shared_ptr<ColorImage> &depthSource)
                 {
                     const bool lazyReadback = allowLazyReadback && deferReadback;
                     // Padding is not represented by VkImage. Preserve it independently
@@ -605,19 +742,26 @@ namespace Core::Gfx {
                     targetBarrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
                     vkCmdPipelineBarrier(command, retainedTarget ? VK_PIPELINE_STAGE_ALL_COMMANDS_BIT : VK_PIPELINE_STAGE_TRANSFER_BIT,
                                          VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr, 0, nullptr, 1, &targetBarrier);
+                    if (draw.depth.test)
+                        prepareDepth(draw.depth, depthSource);
                     VkRenderPassBeginInfo rp{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
                     rp.renderPass = pass;
                     rp.framebuffer = framebuffer;
-                    rp.renderArea.extent = {draw.width, draw.height};
+                    rp.renderArea.extent = {draw.depth.test ? std::min(draw.width, draw.depth.width) : draw.width,
+                                            draw.depth.test ? std::min(draw.height, draw.depth.height) : draw.height};
                     vkCmdBeginRenderPass(command, &rp, VK_SUBPASS_CONTENTS_INLINE);
                     vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
                     vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &descriptor, 0, nullptr);
-                    const float scale[]{2.0f / float(draw.width), 2.0f / float(draw.height)};
+                    const float scale[]{2.0f / float(draw.width), 2.0f / float(draw.height), draw.depth.test ? 1.f : 0.f};
                     vkCmdPushConstants(command, layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(scale), scale);
                     const VkDeviceSize offset = 0;
                     vkCmdBindVertexBuffers(command, 0, 1, &vertexBuffer, &offset);
                     vkCmdDraw(command, draw.vertices.size(), 1, 0, 0);
                     vkCmdEndRenderPass(command);
+                    if (draw.depth.test && draw.depth.write && draw.depth.format != DepthFormat::Float32)
+                        quantizeDepthImage(draw.depth);
+                    if (draw.depth.test && draw.depth.write && !lazyReadback)
+                        copyDepth(draw.depth.width, draw.depth.height, draw.depth.pitch);
                     VkBufferImageCopy copy{};
                     copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
                     copy.imageOffset = {region.offset.x, region.offset.y, 0};
@@ -643,10 +787,26 @@ namespace Core::Gfx {
                     inFlight = true;
                     submitted = true;
                     readbackValid = !lazyReadback;
+                    depthReadbackValid = !lazyReadback;
                     ++colorImage->version;
+                    if (depthImage)
+                        ++depthImage->version;
+                    RasterResult result;
+                    if (draw.depth.test && draw.depth.write) {
+                        const auto padding = depthPadding(draw.depth);
+                        result.depthReadback = std::make_shared<RasterReadback>(
+                                draw.depth.target.size_bytes(),
+                                [self = shared_from_this(), width = draw.depth.width, height = draw.depth.height, pitch = draw.depth.pitch, padding] {
+                                    return self->readDepth(width, height, pitch, padding);
+                                },
+                                std::make_shared<NativeImage>(depthImage, draw.depth.pitch, padding));
+                        pendingDepthReadback = result.depthReadback;
+                    }
                     if (!deferReadback) {
                         pendingReadback.reset();
-                        return {readPixels(draw.width, draw.height, draw.pitch, padding), 0, 0, {}};
+                        result.rgba = readPixels(draw.width, draw.height, draw.pitch, padding);
+                        result.resolveDepth();
+                        return result;
                     }
                     auto ticket = std::make_shared<RasterReadback>(
                             draw.target.size(),
@@ -655,14 +815,206 @@ namespace Core::Gfx {
                             },
                             std::make_shared<NativeImage>(colorImage, draw.pitch, padding));
                     pendingReadback = ticket;
-                    return {{}, 0, 0, std::move(ticket)};
+                    result.readback = std::move(ticket);
+                    return result;
                 }
 
                 void finishPending()
                 {
                     if (auto pending = pendingReadback.lock())
                         pending->resolve();
+                    if (auto pending = pendingDepthReadback.lock())
+                        pending->resolve();
                     wait();
+                }
+
+                void uploadDepth(const RasterDraw::Depth &depth)
+                {
+                    void *mapped = nullptr;
+                    check(vkMapMemory(device, depthUploadMemory, 0, depth.target.size_bytes(), 0, &mapped), "map depth upload");
+                    std::memcpy(mapped, depth.target.data(), depth.target.size_bytes());
+                    vkUnmapMemory(device, depthUploadMemory);
+                }
+
+                void initializeDepthQuantization(const RasterDraw::Depth &depth)
+                {
+                    context.initializeDepthQuantizer();
+                    const auto bytes = std::size_t(depth.width) * depth.height * sizeof(float);
+                    depthQuantizeBuffer =
+                            buffer(bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                   depthQuantizeMemory, 0, true);
+                    VkDescriptorPoolSize size{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1};
+                    VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+                    poolInfo.maxSets = poolInfo.poolSizeCount = 1;
+                    poolInfo.pPoolSizes = &size;
+                    check(vkCreateDescriptorPool(device, &poolInfo, nullptr, &depthQuantizePool), "create depth quantizer pool");
+                    VkDescriptorSetAllocateInfo setInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+                    setInfo.descriptorPool = depthQuantizePool;
+                    setInfo.descriptorSetCount = 1;
+                    setInfo.pSetLayouts = &context.depthQuantizeSetLayout;
+                    check(vkAllocateDescriptorSets(device, &setInfo, &depthQuantizeSet), "allocate depth quantizer descriptor");
+                    VkDescriptorBufferInfo info{depthQuantizeBuffer, 0, bytes};
+                    VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+                    write.dstSet = depthQuantizeSet;
+                    write.descriptorCount = 1;
+                    write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                    write.pBufferInfo = &info;
+                    vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+                }
+
+                void quantizeDepthImage(const RasterDraw::Depth &depth)
+                {
+                    VkBufferImageCopy copy{};
+                    copy.imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1};
+                    copy.imageExtent = {depth.width, depth.height, 1};
+                    vkCmdCopyImageToBuffer(command, depthImage->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, depthQuantizeBuffer, 1, &copy);
+                    VkMemoryBarrier memory{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+                    memory.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                    memory.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+                    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &memory, 0, nullptr, 0,
+                                         nullptr);
+                    vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, context.depthQuantizePipeline);
+                    vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE, context.depthQuantizeLayout, 0, 1, &depthQuantizeSet, 0,
+                                            nullptr);
+                    struct Dimensions {
+                            unsigned width, height;
+                            float maximum;
+                    } dimensions{depth.width, depth.height, depth.format == DepthFormat::UNorm16 ? 65535.f : 16777215.f};
+                    vkCmdPushConstants(command, context.depthQuantizeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(dimensions), &dimensions);
+                    vkCmdDispatch(command, (depth.width + 7) / 8, (depth.height + 7) / 8, 1);
+                    memory.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+                    memory.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+                    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &memory, 0, nullptr, 0,
+                                         nullptr);
+                    VkImageMemoryBarrier image{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+                    image.srcQueueFamilyIndex = image.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                    image.image = depthImage->image;
+                    image.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+                    image.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+                    image.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                    image.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+                    image.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1,
+                                         &image);
+                    vkCmdCopyBufferToImage(command, depthQuantizeBuffer, depthImage->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+                    image.oldLayout = image.newLayout;
+                    image.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+                    image.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                    image.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+                    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1,
+                                         &image);
+                }
+
+                void prepareDepth(const RasterDraw::Depth &depth, const std::shared_ptr<ColorImage> &source)
+                {
+                    VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+                    barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                    barrier.image = depthImage->image;
+                    barrier.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+                    barrier.oldLayout = submitted ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED;
+                    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                    barrier.srcAccessMask = submitted ? VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT : 0;
+                    barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                    vkCmdPipelineBarrier(command, submitted ? VK_PIPELINE_STAGE_ALL_COMMANDS_BIT : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+                    if (source) {
+                        VkImageCopy copy{};
+                        copy.srcSubresource = copy.dstSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1};
+                        copy.extent = {depth.width, depth.height, 1};
+                        vkCmdCopyImage(command, source->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, depthImage->image,
+                                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+                        sampledImages.push_back(source);
+                    } else {
+                        VkBufferImageCopy copy{};
+                        copy.bufferRowLength = depth.pitch;
+                        copy.imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1};
+                        copy.imageExtent = {depth.width, depth.height, 1};
+                        vkCmdCopyBufferToImage(command, depthUpload, depthImage->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+                    }
+                    barrier.oldLayout = barrier.newLayout;
+                    barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+                    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                    barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+                    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                         VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, 0, 0, nullptr, 0,
+                                         nullptr, 1, &barrier);
+                }
+
+                void copyDepth(unsigned width, unsigned height, unsigned pitch)
+                {
+                    VkBufferImageCopy copy{};
+                    copy.bufferRowLength = pitch;
+                    copy.imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1};
+                    copy.imageExtent = {width, height, 1};
+                    vkCmdCopyImageToBuffer(command, depthImage->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, depthReadback, 1, &copy);
+                    ++context.readbackTransfers;
+                }
+
+                std::shared_ptr<const std::vector<std::uint8_t>> depthPadding(const RasterDraw::Depth &depth)
+                {
+                    if (depth.rendered) {
+                        const auto native = std::dynamic_pointer_cast<const NativeImage>(depth.rendered->image());
+                        if (native && native->storage->format == depthImage->format)
+                            return native->padding;
+                    }
+                    if (depth.pitch == depth.width)
+                        return {};
+                    const auto rowBytes = std::size_t(depth.pitch - depth.width) * sizeof(float);
+                    auto padding = std::make_shared<std::vector<std::uint8_t>>(rowBytes * depth.height);
+                    for (unsigned y = 0; y < depth.height; ++y)
+                        std::memcpy(padding->data() + y * rowBytes, depth.target.data() + std::size_t(y) * depth.pitch + depth.width, rowBytes);
+                    return padding;
+                }
+
+                std::vector<std::uint8_t> readDepth(unsigned width, unsigned height, unsigned pitch,
+                                                    const std::shared_ptr<const std::vector<std::uint8_t>> &padding)
+                {
+                    wait();
+                    if (!depthReadbackValid) {
+                        check(vkResetCommandPool(device, pool, 0), "reset depth readback commands");
+                        VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+                        check(vkBeginCommandBuffer(command, &begin), "begin depth readback commands");
+                        copyDepth(width, height, pitch);
+                        VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+                        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                        barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+                        vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &barrier, 0, nullptr, 0,
+                                             nullptr);
+                        check(vkEndCommandBuffer(command), "end depth readback commands");
+                        VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+                        submit.commandBufferCount = 1;
+                        submit.pCommandBuffers = &command;
+                        check(vkResetFences(device, 1, &completion), "reset depth readback fence");
+                        check(vkQueueSubmit(queue, 1, &submit, completion), "submit depth readback");
+                        inFlight = true;
+                        wait();
+                        depthReadbackValid = true;
+                    }
+                    const auto elementBytes = sizeof(float);
+                    std::vector<std::uint8_t> result(std::size_t(pitch) * height * sizeof(float));
+                    void *mapped = nullptr;
+                    check(vkMapMemory(device, depthReadbackMemory, 0, std::size_t(pitch) * height * elementBytes, 0, &mapped), "map depth readback");
+                    const auto *source = static_cast<const std::uint8_t *>(mapped);
+                    for (unsigned y = 0; y < height; ++y)
+                        if (std::endian::native == std::endian::little)
+                            std::memcpy(result.data() + std::size_t(y) * pitch * sizeof(float), source + std::size_t(y) * pitch * sizeof(float),
+                                        std::size_t(width) * sizeof(float));
+                        else
+                            for (unsigned x = 0; x < width; ++x) {
+                                const auto index = std::size_t(y) * pitch + x;
+                                std::uint32_t word{};
+                                for (unsigned b = 0; b < elementBytes; ++b)
+                                    word |= std::uint32_t(source[index * elementBytes + b]) << (b * 8);
+                                const auto value = unpackDepth(word, DepthFormat::Float32);
+                                std::memcpy(result.data() + index * sizeof(float), &value, sizeof(value));
+                            }
+                    vkUnmapMemory(device, depthReadbackMemory);
+                    if (padding) {
+                        const auto rowBytes = std::size_t(pitch - width) * sizeof(float);
+                        for (unsigned y = 0; y < height; ++y)
+                            std::memcpy(result.data() + (std::size_t(y) * pitch + width) * sizeof(float), padding->data() + y * rowBytes, rowBytes);
+                    }
+                    return result;
                 }
 
                 std::vector<std::uint8_t> readPixels(unsigned width, unsigned height, unsigned pitch,
@@ -712,7 +1064,7 @@ namespace Core::Gfx {
                 }
 
                 bool refresh(const std::array<float, 1152> &constants, const std::vector<Texture> &textures, const RasterDraw &draw,
-                             bool retainTextures, const std::shared_ptr<ColorImage> &targetSource)
+                             bool retainTextures, const std::shared_ptr<ColorImage> &targetSource, const std::shared_ptr<ColorImage> &depthSource)
                 {
                     finishPending();
                     check(vkResetCommandPool(device, pool, 0), "reset commands");
@@ -723,6 +1075,8 @@ namespace Core::Gfx {
                     retainedTarget = targetSource ? targetSource == colorImage : targetMatchesReadback(draw);
                     if (!targetSource && !retainedTarget)
                         upload(targetMemory, draw.target.data(), draw.target.size());
+                    if (draw.depth.test && !depthSource)
+                        uploadDepth(draw.depth);
                     for (std::size_t i = 0; i < textures.size(); ++i) {
                         const auto &texture = textures[i];
                         if (texture.rendered) {
@@ -901,7 +1255,8 @@ namespace Core::Gfx {
                     }
                     throw std::runtime_error("No suitable Vulkan memory type");
                 }
-                VkBuffer buffer(VkDeviceSize bytes, VkBufferUsageFlags usage, VkDeviceMemory &memory, VkMemoryPropertyFlags preferred = 0)
+                VkBuffer buffer(VkDeviceSize bytes, VkBufferUsageFlags usage, VkDeviceMemory &memory, VkMemoryPropertyFlags preferred = 0,
+                                bool deviceOnly = false)
                 {
                     VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
                     bi.size = bytes;
@@ -911,18 +1266,22 @@ namespace Core::Gfx {
                     buffers.push_back(result);
                     VkMemoryRequirements req{};
                     vkGetBufferMemoryRequirements(device, result, &req);
-                    memory = allocate(req, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, preferred);
+                    memory = allocate(req, deviceOnly ? 0 : VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                      deviceOnly ? VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT : preferred);
                     check(vkBindBufferMemory(device, result, memory, 0), "bind buffer");
                     return result;
                 }
 
                 std::shared_ptr<Context> contextOwner;
                 std::shared_ptr<ColorImage> colorImage;
+                std::shared_ptr<ColorImage> depthImage;
                 std::vector<std::shared_ptr<ColorImage>> sampledImages;
                 Context &context;
                 std::weak_ptr<RasterReadback> pendingReadback;
+                std::weak_ptr<RasterReadback> pendingDepthReadback;
                 bool inFlight{};
                 bool readbackValid{};
+                bool depthReadbackValid{};
                 VkFence completion{};
                 bool cachedPipeline{};
                 VkPhysicalDevice physical{};
@@ -932,6 +1291,7 @@ namespace Core::Gfx {
                 VkCommandBuffer command{};
                 VkImage image{};
                 VkImageView view{};
+                VkImageView depthView{};
                 VkRenderPass pass{};
                 VkFramebuffer framebuffer{};
                 VkDescriptorSetLayout setLayout{};
@@ -941,6 +1301,12 @@ namespace Core::Gfx {
                 VkPipeline pipeline{};
                 VkBuffer uniform{}, readback{}, vertexBuffer{}, targetBuffer{};
                 VkDeviceMemory uniformMemory{}, vertexMemory{}, targetMemory{};
+                VkBuffer depthUpload{}, depthReadback{};
+                VkDeviceMemory depthUploadMemory{}, depthReadbackMemory{};
+                VkBuffer depthQuantizeBuffer{};
+                VkDeviceMemory depthQuantizeMemory{};
+                VkDescriptorPool depthQuantizePool{};
+                VkDescriptorSet depthQuantizeSet{};
                 VkPipelineCache pipelineCache{};
                 std::uint32_t family{};
                 VkDeviceMemory readbackMemory{};
@@ -967,6 +1333,7 @@ namespace Core::Gfx {
             struct ResourceKey {
                     Context::PipelineKey pipeline;
                     unsigned pitch{}, vertexCount{}, chainSlot{};
+                    unsigned depthWidth{}, depthHeight{}, depthPitch{};
                     std::vector<std::uint32_t> textureShape;
                     auto operator<=>(const ResourceKey &) const = default;
             };
@@ -1015,6 +1382,18 @@ namespace Core::Gfx {
         };
         if (!draw.shader || draw.channelMask > 15)
             return reject("Unsupported shader or blend state");
+        if (!draw.shader.exportsColor)
+            draw.channelMask = 0;
+        if (draw.depth.compare > 7)
+            return reject("Unsupported depth comparison");
+        if (draw.depth.format != DepthFormat::Float32 && draw.depth.format != DepthFormat::UNorm16 && draw.depth.format != DepthFormat::UNorm24)
+            return reject("Unsupported depth storage format");
+        if (draw.depth.test &&
+            (!draw.depth.width || !draw.depth.height || draw.depth.width > 4096 || draw.depth.height > 4096 || draw.depth.pitch < draw.depth.width ||
+             std::uint64_t(draw.depth.pitch) * draw.depth.height != draw.depth.target.size() ||
+             draw.depth.target.size_bytes() > 64ull * 1024 * 1024 ||
+             (draw.depth.rendered && draw.depth.rendered->size() != draw.depth.target.size_bytes())))
+            return reject("Unsupported depth dimensions or snapshot");
         if (draw.blend.enabled &&
             (draw.blend.colorOperation || draw.blend.alphaOperation || !blendFactor(draw.blend.colorSource) ||
              !blendFactor(draw.blend.colorDestination) || !blendFactor(draw.blend.alphaSource) || !blendFactor(draw.blend.alphaDestination)))
@@ -1026,14 +1405,22 @@ namespace Core::Gfx {
             draw.textures.size() != draw.shader.textures.size() || draw.textures.size() > 16)
             return reject("Unsupported draw inputs");
         for (const auto &vertex: draw.vertices)
-            if (!std::isfinite(vertex.x) || !std::isfinite(vertex.y))
+            if (!std::isfinite(vertex.x) || !std::isfinite(vertex.y) || !std::isfinite(vertex.reciprocalW) || vertex.reciprocalW <= 0.f ||
+                (draw.depth.test && (!std::isfinite(vertex.z) || vertex.z < 0.f || vertex.z > 1.f)))
                 return reject("Nonfinite vertex position");
         if (draw.renderedTarget && draw.renderedTarget->size() != draw.target.size())
             return reject("Invalid rendered target size");
-        if (draw.vertices.empty() || !draw.channelMask || draw.scissor[2] <= 0 || draw.scissor[3] <= 0) {
+        if (draw.vertices.empty() || (!draw.channelMask && !(draw.depth.test && draw.depth.write)) || draw.scissor[2] <= 0 || draw.scissor[3] <= 0) {
             if (draw.renderedTarget)
                 draw.target = draw.renderedTarget->resolve();
-            return RasterResult{std::vector<std::uint8_t>(draw.target.begin(), draw.target.end()), 0, 0};
+            RasterResult result{std::vector<std::uint8_t>(draw.target.begin(), draw.target.end()), 0, 0};
+            if (draw.depth.test && draw.depth.write) {
+                if (draw.depth.rendered)
+                    result.depthReadback = draw.depth.rendered;
+                else
+                    result.depth.assign(draw.depth.target.begin(), draw.depth.target.end());
+            }
+            return result;
         }
         std::uint64_t textureBytes = 0;
         std::set<unsigned> bindings;
@@ -1048,7 +1435,8 @@ namespace Core::Gfx {
                 return reject("Unsupported texture binding");
             const bool array = binding.type == Latte::TextureType::TwoDArray;
             if (!texture.layers || texture.layers > 256 || (!array && texture.layers != 1) ||
-                (array && (texture.rendered || (texture.unorm8.empty() && texture.rgba32.empty() && texture.r32.empty()))))
+                (array &&
+                 (texture.rendered || (texture.unorm8.empty() && texture.rgba32.empty() && texture.r32.empty() && texture.r32Bytes.empty()))))
                 return reject("Unsupported array texture snapshot");
             if (texture.rendered &&
                 (texture.unorm8Pitch < texture.width || std::uint64_t(texture.unorm8Pitch) * texture.height * 4 != texture.rendered->size()))
@@ -1063,27 +1451,35 @@ namespace Core::Gfx {
             if (!texture.r32.empty() && (!texture.unorm8.empty() || !texture.rgba32.empty() ||
                                          texture.r32.size() != std::uint64_t(texture.width) * texture.height * texture.layers))
                 return reject("Invalid R32 texture snapshot");
+            if (!texture.r32Bytes.empty() &&
+                (std::endian::native != std::endian::little || !texture.unorm8.empty() || !texture.rgba32.empty() || !texture.r32.empty() ||
+                 texture.r32Pitch < texture.width || std::uint64_t(texture.r32Pitch) * texture.height * texture.layers * 4 > texture.r32Bytes.size()))
+                return reject("Invalid little-endian R32 texture snapshot");
             const auto r = texture.sampler.regs[0];
             // Match the reference's base-level magnification filter. Other addressing
             // modes need separate border/mirror-clamp validation before acceleration.
             if ((r & 7) > 2 || ((r >> 3) & 7) > 2 || ((r >> 9) & 7) > 1)
                 return reject("Unsupported sampler mode");
             textureBytes += std::uint64_t(texture.width) * texture.height * texture.layers *
-                            (texture.rendered          ? 4
-                             : !texture.unorm8.empty() ? texture.unorm8Channels
-                             : !texture.r32.empty()    ? 4
-                                                       : 16);
+                            (texture.rendered                                    ? 4
+                             : !texture.unorm8.empty()                           ? texture.unorm8Channels
+                             : !texture.r32.empty() || !texture.r32Bytes.empty() ? 4
+                                                                                 : 16);
             if (textureBytes > std::uint64_t{128} * 1024 * 1024)
                 return reject("Texture upload budget exceeded");
         }
         constexpr auto vertexSource = R"(#version 450
 layout(location=0) in vec2 position;
 layout(location=1) in vec4 attributes[4];
+layout(location=5) in vec2 depthAndW;
 layout(location=0) out vec4 inputs[4];
-layout(push_constant) uniform Viewport { vec2 scale; } viewport;
+layout(location=4) noperspective out float windowDepth;
+layout(push_constant) uniform Viewport { vec2 scale; float depthEnabled; } viewport;
 void main() {
-    gl_Position=vec4(position*viewport.scale-vec2(1.0),0.0,1.0);
+    float w=1.0/depthAndW.y;
+    gl_Position=vec4((position*viewport.scale-vec2(1.0))*w,viewport.depthEnabled!=0.0?depthAndW.x*w:0.0,w);
     for(int i=0;i<4;++i) inputs[i]=attributes[i];
+    windowDepth=depthAndW.x;
 }
 )";
         static const bool timing = [] {
@@ -1092,7 +1488,20 @@ void main() {
         }();
         const auto t0 = std::chrono::steady_clock::now();
         const auto vertex = m_impl->compiler.compile(ShaderStage::Vertex, vertexSource);
-        const auto fragment = m_impl->compiler.compile(ShaderStage::Fragment, draw.shader.source);
+        auto fragmentSource = draw.shader.source;
+        if (draw.depth.test) {
+            fragmentSource.insert(fragmentSource.find('\n') + 1, "layout(location=4) noperspective in float windowDepth;\n");
+            const auto main = fragmentSource.find("void main() {");
+            if (main == std::string::npos)
+                return reject("Depth specialization requires the shared fragment ABI");
+            if (draw.shader.writesDepth) {
+                const auto initial = fragmentSource.find("gl_FragDepth=gl_FragCoord.z;");
+                if (initial != std::string::npos)
+                    fragmentSource.replace(initial, std::string("gl_FragDepth=gl_FragCoord.z;").size(), "gl_FragDepth=windowDepth;");
+            } else
+                fragmentSource.insert(main + std::string("void main() {").size(), "\ngl_FragDepth=windowDepth;\n");
+        }
+        const auto fragment = m_impl->compiler.compile(ShaderStage::Fragment, fragmentSource);
         if (!*vertex || !*fragment) {
             m_impl->error = !*vertex ? vertex->error : fragment->error;
             return std::nullopt;
@@ -1104,12 +1513,36 @@ void main() {
             m_impl->context = std::move(context);
         }
         const auto t2 = std::chrono::steady_clock::now();
+        if (draw.depth.test) {
+            VkFormatProperties properties{};
+            vkGetPhysicalDeviceFormatProperties(m_impl->context->physical, depthVkFormat(draw.depth.format), &properties);
+            if (!(properties.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT))
+                return reject("Device lacks the requested depth attachment format");
+            if (draw.depth.format != DepthFormat::Float32 && draw.depth.write && !m_impl->context->computeQueue)
+                return reject("Device lacks compute support for fixed-point depth storage");
+        }
+        std::shared_ptr<ColorImage> depthSource;
+        std::vector<float> resolvedDepth;
+        if (draw.depth.test && draw.depth.rendered) {
+            const auto native = std::dynamic_pointer_cast<const NativeImage>(draw.depth.rendered->image());
+            if (native && native->storage->context == m_impl->context && native->storage->version == native->version &&
+                native->storage->width == draw.depth.width && native->storage->height == draw.depth.height &&
+                native->storage->format == depthVkFormat(draw.depth.format) && native->storage->depthFormat == draw.depth.format)
+                depthSource = native->storage;
+            else {
+                const auto &bytes = draw.depth.rendered->resolve();
+                resolvedDepth.resize(draw.depth.target.size());
+                std::memcpy(resolvedDepth.data(), bytes.data(), bytes.size());
+                draw.depth.target = resolvedDepth;
+            }
+        }
         std::shared_ptr<ColorImage> targetSource;
         std::shared_ptr<const NativeImage> targetSnapshot;
         if (draw.renderedTarget) {
             const auto native = std::dynamic_pointer_cast<const NativeImage>(draw.renderedTarget->image());
             if (native && native->pitch == draw.pitch && native->storage->context == m_impl->context && native->storage->version == native->version &&
-                native->storage->width == draw.width && native->storage->height == draw.height) {
+                native->storage->width == draw.width && native->storage->height == draw.height &&
+                native->storage->format == VK_FORMAT_R8G8B8A8_UNORM) {
                 targetSource = native->storage;
                 targetSnapshot = native;
             } else
@@ -1122,19 +1555,21 @@ void main() {
             if (texture.rendered) {
                 const auto native = std::dynamic_pointer_cast<const NativeImage>(texture.rendered->image());
                 if (native && native->storage->context == m_impl->context && native->storage->version == native->version &&
-                    native->storage->width == texture.width && native->storage->height == texture.height)
+                    native->storage->width == texture.width && native->storage->height == texture.height &&
+                    native->storage->format == VK_FORMAT_R8G8B8A8_UNORM)
                     resident = native->storage;
                 texture.unorm8 = resident ? std::span<const std::uint8_t>{} : texture.rendered->resolve();
                 texture.unorm8Channels = 4;
                 texture.r32 = {};
+                texture.r32Bytes = {};
                 texture.rgba32 = {};
             }
-            const auto textureFormat = resident                      ? VK_FORMAT_R8G8B8A8_UNORM
-                                       : !texture.r32.empty()        ? VK_FORMAT_R32_SFLOAT
-                                       : texture.unorm8.empty()      ? VK_FORMAT_R32G32B32A32_SFLOAT
-                                       : texture.unorm8Channels == 1 ? VK_FORMAT_R8_UNORM
-                                       : texture.unorm8Channels == 2 ? VK_FORMAT_R8G8_UNORM
-                                                                     : VK_FORMAT_R8G8B8A8_UNORM;
+            const auto textureFormat = resident                                            ? VK_FORMAT_R8G8B8A8_UNORM
+                                       : !texture.r32.empty() || !texture.r32Bytes.empty() ? VK_FORMAT_R32_SFLOAT
+                                       : texture.unorm8.empty()                            ? VK_FORMAT_R32G32B32A32_SFLOAT
+                                       : texture.unorm8Channels == 1                       ? VK_FORMAT_R8_UNORM
+                                       : texture.unorm8Channels == 2                       ? VK_FORMAT_R8G8_UNORM
+                                                                                           : VK_FORMAT_R8G8B8A8_UNORM;
             VkFormatProperties format{};
             vkGetPhysicalDeviceFormatProperties(m_impl->context->physical, textureFormat, &format);
             const auto r = texture.sampler.regs[0];
@@ -1155,7 +1590,7 @@ void main() {
             uploaded.addressV = address[(r >> 3) & 7];
             uploaded.filter = linear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
             uploaded.rendered = resident;
-            if (!texture.r32.empty()) {
+            if (!texture.r32.empty() || !texture.r32Bytes.empty()) {
                 const auto channel = [&](unsigned c) {
                     constexpr VkComponentSwizzle channels[]{VK_COMPONENT_SWIZZLE_R,    VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ZERO,
                                                             VK_COMPONENT_SWIZZLE_ONE,  VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ONE,
@@ -1163,8 +1598,8 @@ void main() {
                     return channels[(texture.r32Map >> (24 - c * 8)) & 7];
                 };
                 uploaded.components = {channel(0), channel(1), channel(2), channel(3)};
-                uploaded.snapshot = std::as_bytes(texture.r32);
-                uploaded.sourcePitch = std::size_t(texture.width) * sizeof(float);
+                uploaded.snapshot = texture.r32Bytes.empty() ? std::as_bytes(texture.r32) : std::as_bytes(texture.r32Bytes);
+                uploaded.sourcePitch = std::size_t(texture.r32Bytes.empty() ? texture.width : texture.r32Pitch) * sizeof(float);
                 textures.push_back(std::move(uploaded));
                 continue;
             }
@@ -1216,9 +1651,14 @@ void main() {
         Impl::ResourceKey key;
         key.pipeline = {vertex->words, fragment->words, {}, draw.width, draw.height, draw.channelMask, draw.scissor};
         key.pipeline.blend = blendKey(draw.blend);
+        key.pipeline.depth = depthKey(draw.depth);
+        key.depthWidth = draw.depth.test ? draw.depth.width : 0;
+        key.depthHeight = draw.depth.test ? draw.depth.height : 0;
+        key.depthPitch = draw.depth.test ? draw.depth.pitch : 0;
         key.pitch = draw.pitch;
         key.vertexCount = draw.vertices.size();
-        const auto estimatedBytes = std::uint64_t(draw.target.size()) * 3 + textureBytes * 2 + draw.vertices.size_bytes() + sizeof(constants);
+        const auto estimatedBytes = std::uint64_t(draw.target.size()) * 3 + textureBytes * 2 + draw.vertices.size_bytes() + sizeof(constants) +
+                                    (draw.depth.test ? draw.depth.target.size_bytes() * 3 : 0);
         for (const auto &texture: textures) {
             key.pipeline.bindings.push_back(texture.binding);
             key.textureShape.insert(key.textureShape.end(), {texture.width, texture.height, texture.layers, unsigned(texture.array),
@@ -1235,8 +1675,9 @@ void main() {
             // Do not overwrite the source version merely to reuse its bundle.
             // Alternating bundles permit a chain whose discarded outputs never
             // need CPU materialization, while externally held tickets stay valid.
-            if (targetSource && it != m_impl->resources.end() && it->second->ownsImage(targetSource)) {
-                key.chainSlot = 1;
+            while (it != m_impl->resources.end() &&
+                   ((targetSource && it->second->ownsImage(targetSource)) || (depthSource && it->second->ownsImage(depthSource)))) {
+                ++key.chainSlot;
                 it = m_impl->resources.find(key);
             }
             if (it == m_impl->resources.end()) {
@@ -1248,7 +1689,7 @@ void main() {
                     m_impl->cachedBytes = 0;
                 }
                 auto resources = std::make_shared<DrawResources>(m_impl->context);
-                resources->initialize(vertex->words, fragment->words, constants, textures, draw, targetSource);
+                resources->initialize(vertex->words, fragment->words, constants, textures, draw, targetSource, depthSource);
                 it = m_impl->resources.emplace(std::move(key), std::move(resources)).first;
                 m_impl->cachedBytes += estimatedBytes;
             } else {
@@ -1256,14 +1697,14 @@ void main() {
                 ++m_impl->resourceHits;
                 const auto oldTextures = it->second->retainedTextures;
                 const auto oldBytes = it->second->retainedTextureBytes;
-                if (it->second->refresh(constants, textures, draw, m_impl->retainTextures, targetSource))
+                if (it->second->refresh(constants, textures, draw, m_impl->retainTextures, targetSource, depthSource))
                     ++m_impl->retainedTargets;
                 m_impl->retainedTextures += it->second->retainedTextures - oldTextures;
                 m_impl->retainedTextureBytes += it->second->retainedTextureBytes - oldBytes;
             }
             t4 = std::chrono::steady_clock::now();
             // Fragment/alpha counters are not measured by this backend yet.
-            result = it->second->execute(draw, deferReadback, targetSource, m_impl->lazyReadback, targetSnapshot);
+            result = it->second->execute(draw, deferReadback, targetSource, m_impl->lazyReadback, targetSnapshot, depthSource);
             t5 = std::chrono::steady_clock::now();
         }
         m_impl->residentTextureCopies += std::count_if(textures.begin(), textures.end(), [](const auto &texture) { return bool(texture.rendered); });

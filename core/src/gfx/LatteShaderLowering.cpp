@@ -1,6 +1,7 @@
 #include "gfx/LatteShaderLowering.hpp"
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <format>
 #include <stdexcept>
@@ -34,6 +35,57 @@ namespace Core::Gfx::Latte {
     }
 
     namespace {
+
+        // Whole-quad ALU may write registers for inactive lanes. A lane-local
+        // lowering is equivalent only while those extra writes stay unobservable:
+        // no derivatives, mask updates, or reads after their mask is restored.
+        class WholeQuadWrites {
+            public:
+                void read(const Src &src, unsigned depth) const
+                {
+                    if (src.sel < 128 && src.chan < 4)
+                        check(m_registers[src.sel][src.chan], depth);
+                    else if (src.sel == SRC_PV && src.chan < 4)
+                        check(m_previous[src.chan], depth);
+                    else if (src.sel == SRC_PS)
+                        check(m_scalar, depth);
+                }
+                void write(const AluInst &in, unsigned depth)
+                {
+                    if (in.writeMask)
+                        m_registers[in.dstGpr][in.dstChan] = std::max(m_registers[in.dstGpr][in.dstChan], depth);
+                    if (in.scalarSlot)
+                        m_scalar = std::max(m_scalar, depth);
+                    else
+                        m_previous[in.dstChan] = std::max(m_previous[in.dstChan], depth);
+                }
+                void restore(unsigned depth)
+                {
+                    for (auto &reg: m_registers)
+                        for (auto &scope: reg)
+                            escape(scope, depth);
+                    for (auto &scope: m_previous)
+                        escape(scope, depth);
+                    escape(m_scalar, depth);
+                }
+
+            private:
+                static void check(unsigned scope, unsigned depth)
+                {
+                    if (scope > depth)
+                        throw std::runtime_error("whole-quad value escapes masked region");
+                }
+                static void escape(unsigned &scope, unsigned depth)
+                {
+                    // Once a scope has ended, another PUSH must not hide the
+                    // escaped value. Keep even overwritten values conservatively.
+                    if (scope > depth)
+                        scope = 33;
+                }
+                std::array<std::array<unsigned, 4>, 128> m_registers{};
+                std::array<unsigned, 4> m_previous{};
+                unsigned m_scalar{};
+        };
 
         std::string source(const Src &s, const AluInst &instruction)
         {
@@ -230,13 +282,17 @@ namespace Core::Gfx::Latte {
     FragmentShader lowerFragmentShader(const Program &program, std::span<const TextureType> resourceTypes)
     {
         FragmentShader result;
+        result.exportsColor = false;
         try {
             if (!program.valid || program.words.size() < 2)
                 throw std::runtime_error("invalid shader structure");
             std::string body = "void main() {\nvec4 r[128];\nfor (int i=0;i<128;++i) r[i]=vec4(0.0);\n"
                                "for (int i=0;i<4;++i) r[i]=inputs[i];\nvec4 pv=vec4(0.0); float ps=0.0;\n"
-                               "bool pred=true, laneActive=true, wroteColor=false; bool activeStack[32]; uint pc=0u;\n";
+                               "bool pred=true, laneActive=true, wroteOutput=false; bool activeStack[32]; uint pc=0u;\n";
             bool exported = false, terminated = false;
+            bool wholeQuadUsed = false, implicitSamples = false;
+            bool maskedControl = false;
+            WholeQuadWrites wholeQuadWrites;
             unsigned depth = 0;
             std::vector<unsigned> entryDepth;
             std::vector<std::pair<unsigned, unsigned>> jumpTargets;
@@ -246,6 +302,7 @@ namespace Core::Gfx::Latte {
                 entryDepth.push_back(depth);
                 body += std::format("if(pc<={}u) {{\n", cf / 2);
                 const auto push = [&] {
+                    maskedControl = true;
                     if (depth == 32)
                         throw std::runtime_error("control-flow stack overflow");
                     body += std::format("activeStack[{}]=laneActive;\n", depth++);
@@ -255,16 +312,19 @@ namespace Core::Gfx::Latte {
                         throw std::runtime_error("control-flow stack underflow");
                     if (count) {
                         depth -= count;
+                        wholeQuadWrites.restore(depth);
                         body += std::format("laneActive=activeStack[{}];\n", depth);
                     }
                 };
                 if (isAluClause(w1)) {
                     const auto kind = cfAluInst(w1);
-                    if (kind < 8 || kind > 11 || (w0 >> 30) || (w1 & 3) || (w1 & (1u << 30)))
+                    const bool wholeQuad = w1 & (1u << 30);
+                    if (kind < 8 || kind > 11 || (w0 >> 30) || (w1 & 3) || (wholeQuad && (kind != 8 || !depth)))
                         throw std::runtime_error(std::format("unsupported ALU clause: cf={} kind={} uniform={} whole_quad={}", cf / 2, kind,
                                                              bool((w0 >> 30) || (w1 & 3)), bool(w1 & (1u << 30))));
                     if (kind == 9)
                         push();
+                    wholeQuadUsed |= wholeQuad;
                     const auto key = (std::uint64_t(w0 & 0x3FFFFF) << 32) | (((w1 >> 18) & 127) + 1);
                     const auto it = program.clauses.find(key);
                     if (it == program.clauses.end())
@@ -274,6 +334,10 @@ namespace Core::Gfx::Latte {
                         body += "{ bool nextPred=pred, nextActive=laneActive;\n";
                         for (unsigned i = 0; i < group.size(); ++i) {
                             const auto &in = group[i];
+                            if (wholeQuad && !in.op3 && (in.raw1 & 12u))
+                                throw std::runtime_error("whole-quad ALU mask updates require quad execution");
+                            for (unsigned operand = 0; operand < (in.op3 ? 3u : 2u); ++operand)
+                                wholeQuadWrites.read(in.src[operand], depth);
                             body += std::format("bool e{}={};\n", i, in.predSel == 2 ? "!pred" : in.predSel == 3 ? "pred" : "true");
                             const auto condition = predicateCondition(in);
                             if (!condition.empty())
@@ -288,9 +352,13 @@ namespace Core::Gfx::Latte {
                         // All sources read the pre-group state. Commit only after every RHS.
                         for (unsigned i = 0; i < group.size(); ++i) {
                             const auto &in = group[i];
+                            if (wholeQuad)
+                                wholeQuadWrites.write(in, depth);
                             body += std::format("if(e{}) {{\n", i);
                             if (!in.op3 && (in.raw1 & 8u))
                                 body += std::format("nextPred=p{};\n", i);
+                            if (!in.op3 && (in.raw1 & 4u))
+                                maskedControl = true;
                             if (!in.op3 && (in.raw1 & 4u))
                                 body += std::format("nextActive=p{};\n", i);
                             if (in.writeMask)
@@ -334,6 +402,7 @@ namespace Core::Gfx::Latte {
                             result.requiresBaseLevelOnly = true;
                         if (texOp == 0x0F)
                             result.usesGather = true;
+                        implicitSamples |= texOp == 0x13;
                         const unsigned resource = (t0 >> 8) & 255, sampler = (t2 >> 15) & 31;
                         auto binding = std::find_if(result.textures.begin(), result.textures.end(),
                                                     [&](const auto &b) { return b.resource == resource && b.sampler == sampler; });
@@ -345,6 +414,11 @@ namespace Core::Gfx::Latte {
                             binding = result.textures.end() - 1;
                         }
                         const auto reg = std::format("r[{}]", (t0 >> 16) & 127);
+                        for (unsigned c = 0; c < 4; ++c) {
+                            const auto selector = (t2 >> (20 + c * 3)) & 7;
+                            if (selector < 4)
+                                wholeQuadWrites.read({(t0 >> 16) & 127, selector, false, false, false}, depth);
+                        }
                         auto coords = std::format("{},{}", select(reg, (t2 >> 20) & 7), select(reg, (t2 >> 23) & 7));
                         const bool array = binding->type == TextureType::TwoDArray;
                         if (array)
@@ -378,15 +452,28 @@ namespace Core::Gfx::Latte {
                     body += "}\n";
                 } else if (op == CF_EXP || op == CF_EXP_DONE) {
                     constexpr auto export1Mask = 0xFFFu | (1u << 21) | (1u << 22) | (127u << 23) | (1u << 31);
-                    if (exported || (w0 & ~(127u << 15)) || (w1 & ~export1Mask))
+                    const auto target = w0 & 0x1FFF;
+                    const bool depthExport = target == 61;
+                    if ((target != 0 && !depthExport) || (depthExport ? result.writesDepth : result.exportsColor) ||
+                        (w0 & ~(0x1FFFu | (127u << 15))) || (w1 & ~export1Mask) || (depthExport && ((w1 & 7) == 7 || ((w1 >> 3) & 0x1FF) != 0x1FF)))
                         throw std::runtime_error(
                                 std::format("unsupported export target, addressing or burst: cf={} type={} base={} repeated={} words={:08X},{:08X}",
                                             cf / 2, (w0 >> 13) & 3, w0 & 0x1FFF, exported, w0, w1));
                     const auto reg = std::format("r[{}]", (w0 >> 15) & 127);
-                    body += std::format("if(!laneActive) discard; color=vec4({},{},{},{});\n", select(reg, w1 & 7), select(reg, (w1 >> 3) & 7),
-                                        select(reg, (w1 >> 6) & 7), select(reg, (w1 >> 9) & 7));
+                    for (unsigned c = 0; c < 4; ++c) {
+                        const auto selector = (w1 >> (c * 3)) & 7;
+                        if (selector < 4)
+                            wholeQuadWrites.read({(w0 >> 15) & 127, selector, false, false, false}, depth);
+                    }
+                    if (depthExport) {
+                        body += std::format("if(laneActive) {{ gl_FragDepth=clampReference({}); wroteOutput=true; }}\n", select(reg, w1 & 7));
+                        result.writesDepth = true;
+                    } else {
+                        body += std::format("if(laneActive) {{ color=vec4({},{},{},{}); wroteOutput=true; }}\n", select(reg, w1 & 7),
+                                            select(reg, (w1 >> 3) & 7), select(reg, (w1 >> 6) & 7), select(reg, (w1 >> 9) & 7));
+                        result.exportsColor = true;
+                    }
                     exported = true;
-                    body += "wroteColor=true;\n";
                 } else if (op == 0x0A || op == 0x0B || op == 0x0D || op == 0x0E) {
                     // VALID_PIXEL_MODE is equivalent here: kill/demote are not supported.
                     constexpr auto mask = 7u | (1u << 22) | (127u << 23) | (1u << 31);
@@ -397,8 +484,12 @@ namespace Core::Gfx::Latte {
                         if (w0 <= cf / 2 || count > depth)
                             throw std::runtime_error("unsupported backward jump or stack pop");
                         jumpTargets.emplace_back(w0, depth - count);
+                        if (count)
+                            wholeQuadWrites.restore(depth - count);
                         if (op == 0x0D && !depth)
                             throw std::runtime_error("ELSE without stack entry");
+                        if (op == 0x0D)
+                            wholeQuadWrites.restore(depth - 1);
                         body += op == 0x0A ? "if(!laneActive) {\n" : "if(laneActive) {\n";
                         if (count)
                             body += std::format("laneActive=activeStack[{}];\n", depth - count);
@@ -426,7 +517,11 @@ namespace Core::Gfx::Latte {
                 }
             }
             if (!exported || !terminated)
-                throw std::runtime_error("missing color export or shader termination");
+                throw std::runtime_error("missing color/depth export or shader termination");
+            if (result.exportsColor && result.writesDepth && maskedControl)
+                throw std::runtime_error("conditional mixed color/depth exports require per-output lane masks");
+            if (wholeQuadUsed && implicitSamples)
+                throw std::runtime_error("whole-quad ALU with implicit texture derivatives requires quad execution");
             if (depth)
                 throw std::runtime_error("unbalanced control-flow stack");
             for (const auto [target, expectedDepth]: jumpTargets)
@@ -475,7 +570,9 @@ vec4 sampleArrayReference(sampler2DArray tex,vec3 p,vec4 state) {
             for (const auto &b: result.textures)
                 result.source += std::format("layout(set=0,binding={}) uniform sampler2D{} tex{};\n", b.binding,
                                              b.type == TextureType::TwoDArray ? "Array" : "", b.binding);
-            result.source += body + "if(!wroteColor) discard;\n}\n";
+            if (result.writesDepth)
+                body.insert(body.find('\n') + 1, "gl_FragDepth=gl_FragCoord.z;\n");
+            result.source += body + "if(!wroteOutput) discard;\n}\n";
         } catch (const std::runtime_error &error) {
             result = {};
             result.error = error.what();

@@ -122,6 +122,7 @@ namespace Core::Gfx {
         std::memset(regs.gpr, 0, compiled.registerCount * sizeof(regs.gpr[0]));
         bool pred = true;
         bool active = true;
+        bool skippedPixelExport = false;
         std::array<bool, 32> activeStack{};
         unsigned activeDepth = 0;
         auto popActive = [&](std::uint32_t n) {
@@ -505,6 +506,8 @@ namespace Core::Gfx {
                 std::fprintf(stderr, "CF%u: inst=0x%02X w0=%08X pred=%d\n", cf, inst, w0, pred);
             if (inst == CF_EXP || inst == CF_EXP_DONE) {
                 if (!active) {
+                    if (pixelStage && ((w0 >> 13) & 3) == 0 && ((w0 & 0x1FFF) == 0 || (w0 & 0x1FFF) == 61))
+                        skippedPixelExport = true;
                     if (cfEop(w1))
                         break;
                     continue;
@@ -534,6 +537,9 @@ namespace Core::Gfx {
                 } else if (pixelStage && type == 0 && arrayBase == 0) {
                     std::memcpy(out.color.data(), v, 16);
                     out.colorValid = true;
+                } else if (pixelStage && type == 0 && arrayBase == 61 && sel[0] != 7) {
+                    out.depth = v[0];
+                    out.depthValid = true;
                 }
                 if (cfEop(w1))
                     break;
@@ -629,6 +635,7 @@ namespace Core::Gfx {
             if (pixelStage && inst != CF_NOP)
                 return {};
         }
+        out.discarded = skippedPixelExport && !out.colorValid && !out.depthValid;
         return out;
     }
 

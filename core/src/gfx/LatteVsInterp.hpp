@@ -40,6 +40,9 @@ namespace Core::Gfx {
                     bool valid{false};
                     std::array<float, 4> color{}; // pixel EXPORT 0
                     bool colorValid{false};
+                    float depth{}; // pixel EXPORT_Z (base 61), X component
+                    bool depthValid{};
+                    bool discarded{}; // All supported pixel exports were masked off.
             };
 
             // Fetches one float from uniform BLOCK `bank` at vec4 index / channel (kcache path,

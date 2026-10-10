@@ -135,6 +135,13 @@ namespace Core::Gfx {
             Surface parseSurface(const Gx2Command &cmd); // prefers the call-time struct snapshot
             void dumpSurface(const Surface &s, const char *kind, bool force = false);
             void clearSurface(const Surface &s, const float rgba[4]);
+            struct DepthBacking {
+                    std::vector<float> pixels;
+                    std::shared_ptr<RasterReadback> pending;
+                    DepthFormat format{DepthFormat::Float32};
+            };
+            DepthBacking *depthBacking(const Surface &s, bool resolve = true) const;
+            void clearDepthSurface(const Surface &s, float depth, unsigned flags);
             void drawPrimitives(const Gx2Command &cmd, bool indexed);
             bool fetchAttributes(std::uint32_t vertex, std::array<std::array<float, 4>, 4> &out) const;
             void copyToScanBuffer(const Surface &s);
@@ -153,7 +160,8 @@ namespace Core::Gfx {
             // Nearest-neighbour sample of a guest surface at normalized uv (RGBA out, 0..255).
             std::array<std::uint8_t, 4> sample(const Surface &s, float u, float v) const;
             std::array<float, 4> sampleTexture(const Surface &s, const TextureSampler &sampler, float u, float v, float layer = 0,
-                                               const std::vector<std::uint8_t> *feedback = nullptr, bool gather = false) const;
+                                               const std::vector<std::uint8_t> *feedback = nullptr, bool gather = false,
+                                               const std::vector<float> *depthFeedback = nullptr) const;
             static bool supportsGather(const Surface &surface, const TextureSampler &sampler);
 
             // Decode a whole guest surface to a linear RGBA8 image (reuses sample() per texel, so it
@@ -198,6 +206,10 @@ namespace Core::Gfx {
 
             Core::Memory *m_mem{nullptr};
             Surface m_color; // bound colour target
+            Surface m_depth;
+            bool m_depthTest{}, m_depthWrite{}, m_stencilTest{};
+            unsigned m_depthCompare{7};
+            mutable std::unordered_map<SurfaceKey, DepthBacking, SurfaceKeyHash> m_depthBackings;
             std::uint32_t m_colorTarget{0}; // GX2 render target slot for the bound colour target
             Surface m_texture; // texture selected by the current pixel shader
             std::array<Surface, 16> m_pixelTextures{}, m_vertexTextures{};
@@ -236,6 +248,7 @@ namespace Core::Gfx {
             std::array<std::uint32_t, 4> m_vertexOutputSemantics{0, 1, 2, 3};
             std::array<std::uint32_t, 4> m_pixelInputSemantics{0, 1, 2, 3};
             float m_vp[4]{0.0f, 0.0f, static_cast<float>(kWidth), static_cast<float>(kHeight)}; // x,y,w,h
+            float m_vpNear{}, m_vpFar{1.f};
             std::int32_t m_scissor[4]{0, 0, kWidth, kHeight}; // x,y,w,h
 
             // Per-frame replay stats (logged around the WEMU_FB_DUMP frame to debug black output).

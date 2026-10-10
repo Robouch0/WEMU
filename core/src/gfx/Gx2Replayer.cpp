@@ -1,6 +1,7 @@
 #include "gfx/Gx2Replayer.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -451,6 +452,68 @@ namespace Core::Gfx {
         return enabled;
     }
 
+    Gx2Replayer::DepthBacking *Gx2Replayer::depthBacking(const Surface &s, bool resolve) const
+    {
+        DepthFormat format;
+        if (s.format == 0x80E)
+            format = DepthFormat::Float32;
+        else if (s.format == 5)
+            format = DepthFormat::UNorm16;
+        else if (s.format == 0x11)
+            format = DepthFormat::UNorm24;
+        else
+            return nullptr;
+        if (!m_mem || !s.imagePtr || !s.width || !s.height || s.width > 4096 || s.height > 4096 || s.pitch < s.width ||
+            std::uint64_t(s.pitch) * s.height > 16ull * 1024 * 1024 || s.aa || s.dimension != 1 || s.depth > 1 || s.firstMip || s.firstSlice)
+            return nullptr;
+        auto key = makeSurfaceKey(s);
+        key.format = s.format; // Depth storage retains numeric type, not just element layout.
+        auto found = m_depthBackings.find(key);
+        if (found == m_depthBackings.end()) {
+            const auto *base = m_mem->hostPtr(s.imagePtr);
+            const auto end = std::uint64_t(s.imagePtr) + s.imageSize;
+            const auto *last = end <= 0x100000000ull && s.imageSize ? m_mem->hostPtr(std::uint32_t(end - 1)) : nullptr;
+            if (!s.imageSize || !base || !last || std::uintptr_t(last) - std::uintptr_t(base) != s.imageSize - 1)
+                return nullptr;
+            DepthBacking backing;
+            backing.format = format;
+            backing.pixels.resize(std::size_t(s.pitch) * s.height);
+            const auto elementBytes = depthElementBytes(format);
+            for (unsigned y = 0; y < s.height; ++y)
+                for (unsigned x = 0; x < s.width; ++x) {
+                    const auto offset = tiledElementOffset(x, y, s.pitch, elementBytes * 8, s.tileMode, s.swizzle);
+                    if (std::uint64_t(offset) + elementBytes > s.imageSize)
+                        return nullptr;
+                    std::uint32_t word{};
+                    for (unsigned b = 0; b < elementBytes; ++b)
+                        word |= std::uint32_t(base[offset + b]) << (b * 8);
+                    backing.pixels[std::size_t(y) * s.pitch + x] = unpackDepth(word, format);
+                }
+            found = m_depthBackings.emplace(key, std::move(backing)).first;
+        }
+        auto &backing = found->second;
+        if (resolve && backing.pending) {
+            const auto &bytes = backing.pending->resolve();
+            if (bytes.size() != backing.pixels.size() * sizeof(float))
+                throw std::runtime_error("Depth backend returned an incomplete surface");
+            std::memcpy(backing.pixels.data(), bytes.data(), bytes.size());
+            backing.pending.reset();
+        }
+        return &backing;
+    }
+
+    void Gx2Replayer::clearDepthSurface(const Surface &s, float depth, unsigned flags)
+    {
+        if (!(flags & 1))
+            return;
+        if (auto *backing = depthBacking(s, false)) {
+            backing->pending.reset();
+            const auto value = quantizeDepth(depth, backing->format);
+            for (unsigned y = 0; y < s.height; ++y)
+                std::fill_n(backing->pixels.data() + std::size_t(y) * s.pitch, s.width, value);
+        }
+    }
+
     Gx2Replayer::SurfaceKey Gx2Replayer::makeSurfaceKey(const Surface &s)
     {
         return {s.imagePtr, s.width, s.height, s.pitch, s.format & 0x3F, s.tileMode, s.swizzle};
@@ -621,7 +684,8 @@ namespace Core::Gfx {
     }
 
     std::array<float, 4> Gx2Replayer::sampleTexture(const Surface &original, const TextureSampler &sampler, float u, float v, float layer,
-                                                    const std::vector<std::uint8_t> *feedback, bool gather) const
+                                                    const std::vector<std::uint8_t> *feedback, bool gather,
+                                                    const std::vector<float> *depthFeedback) const
     {
         if (original.dimension == 5) {
             if (!std::isfinite(layer) || !original.sliceCount)
@@ -636,7 +700,22 @@ namespace Core::Gfx {
             return sampleTexture(selected, sampler, u, v, 0, selectedFeedback);
         }
         const Surface &s = original;
+        auto depthKey = makeSurfaceKey(s);
+        depthKey.format = s.format;
+        const std::vector<float> *depthPixels = depthFeedback;
+        if (!depthPixels && m_depthBackings.contains(depthKey))
+            if (const auto *backing = depthBacking(s))
+                depthPixels = &backing->pixels;
         auto fetch = [&](unsigned x, unsigned y) {
+            if (depthPixels && x < s.width && y < s.height) {
+                const std::array raw{(*depthPixels)[std::size_t(y) * s.pitch + x], 0.f, 0.f, 1.f};
+                std::array<float, 4> mapped{};
+                for (unsigned c = 0; c < 4; ++c) {
+                    const auto selector = (s.compMap >> (24 - c * 8)) & 7;
+                    mapped[c] = selector < 4 ? raw[selector] : selector == 5 ? 1.f : 0.f;
+                }
+                return mapped;
+            }
             if (s.format == 0x80E && !feedback && !findViewBacking(s) && m_mem && s.imagePtr) {
                 const auto offset = tiledElementOffset(x, y, s.pitch, 32, s.tileMode, s.swizzle);
                 if (std::uint64_t(offset) + 4 <= s.imageSize && std::uint64_t(s.imagePtr) + offset + 4 <= 0x100000000ull) {
@@ -1089,6 +1168,7 @@ namespace Core::Gfx {
             }
         }
         m_lastDrawColor = m_color;
+        auto *drawDepth = m_depthTest ? depthBacking(m_depth, false) : nullptr;
 
         const std::uint32_t mode = cmd.gpr[0];
         const std::uint32_t count = std::min<std::uint32_t>(cmd.gpr[1], 0x10000);
@@ -1172,7 +1252,7 @@ namespace Core::Gfx {
         // caller falls back to the [0,1]/matrix heuristics. PARAM exports are optionally returned
         // because the pixel shader consumes them as interpolated inputs.
         auto runShader = [&](std::uint32_t vi, float &sx, float &sy, float &u, float &v, std::array<std::array<float, 4>, 4> *params = nullptr,
-                             std::array<bool, 4> *paramValid = nullptr) -> bool {
+                             std::array<bool, 4> *paramValid = nullptr, float *z = nullptr, float *reciprocalW = nullptr) -> bool {
             // Real vertex-shader execution. ON by default: combined with the UI-composite fallback
             // it produces the placed, clean title screen (logo + background, no stray squares). Set
             // WEMU_VS_EXEC=0 to fall back to the [0,1] heuristic (the old fullscreen-layer look).
@@ -1366,6 +1446,10 @@ namespace Core::Gfx {
             const float w = std::fabs(o.pos[3]) > 1e-6f ? o.pos[3] : 1.0f;
             sx = m_vp[0] + (o.pos[0] / w * 0.5f + 0.5f) * m_vp[2];
             sy = m_vp[1] + (0.5f - o.pos[1] / w * 0.5f) * m_vp[3]; // NDC y-up -> raster y-down
+            if (z)
+                *z = (m_vpFar + m_vpNear) * .5f + (o.pos[2] / w) * (m_vpFar - m_vpNear) * .5f;
+            if (reciprocalW)
+                *reciprocalW = 1.f / w;
             const auto &uv = o.params[textureParam];
             u = textureSelectX < 4 ? uv[textureSelectX] : textureSelectX == 5 ? 1.0f : 0.0f;
             v = textureSelectY < 4 ? uv[textureSelectY] : textureSelectY == 5 ? 1.0f : 0.0f;
@@ -1416,13 +1500,19 @@ namespace Core::Gfx {
                 std::array<std::array<float, 4>, 4> params{
                         {{1.0f, 1.0f, 1.0f, 1.0f}, {0.0f, 0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 0.0f, 1.0f}}};
                 std::array<bool, 4> paramValid{};
+                float z{}, reciprocalW{1.f};
         };
 
         auto interpolateParams = [](const RasterVertex(&rv)[3], const float w0, const float w1, const float w2) {
+            const bool affine = rv[0].reciprocalW == rv[1].reciprocalW && rv[1].reciprocalW == rv[2].reciprocalW;
+            const float total = affine ? 1.f : w0 * rv[0].reciprocalW + w1 * rv[1].reciprocalW + w2 * rv[2].reciprocalW;
+            const float p0 = affine ? w0 : w0 * rv[0].reciprocalW / total;
+            const float p1 = affine ? w1 : w1 * rv[1].reciprocalW / total;
+            const float p2 = affine ? w2 : w2 * rv[2].reciprocalW / total;
             std::array<std::array<float, 4>, 4> out{};
             for (int p = 0; p < 4; p++)
                 for (int c = 0; c < 4; c++)
-                    out[p][c] = w0 * rv[0].params[p][c] + w1 * rv[1].params[p][c] + w2 * rv[2].params[p][c];
+                    out[p][c] = p0 * rv[0].params[p][c] + p1 * rv[1].params[p][c] + p2 * rv[2].params[p][c];
             return out;
         };
 
@@ -1552,6 +1642,7 @@ namespace Core::Gfx {
         // CPU feedback snapshots are created only if software rasterization runs.
         // Native inputs are consumed before committing output, or use GPU versions.
         std::array<std::vector<std::uint8_t>, 16> pixelFeedback;
+        std::array<std::vector<float>, 16> pixelDepthFeedback;
         std::array<const std::vector<std::uint8_t> *, 16> pixelBackings{};
         for (unsigned i = 0; pixelProgram && i < m_pixelTextures.size(); i++) {
             if (useViewBacking() && m_pixelTextures[i].dimension != 5)
@@ -1562,6 +1653,12 @@ namespace Core::Gfx {
             if (softwareInputsReady)
                 return;
             resolvePendingBackings();
+            if (drawDepth && drawDepth->pending)
+                depthBacking(m_depth);
+            if (drawDepth && m_depthWrite)
+                for (unsigned i = 0; i < m_pixelTextures.size(); ++i)
+                    if (makeSurfaceKey(m_pixelTextures[i]) == makeSurfaceKey(m_depth))
+                        pixelDepthFeedback[i] = drawDepth->pixels;
             if (texBacking && makeSurfaceKey(m_color) == makeSurfaceKey(m_texture)) {
                 textureSnapshot = *texBacking;
                 texBase = textureSnapshot.data();
@@ -1582,7 +1679,8 @@ namespace Core::Gfx {
             if (resource >= m_pixelTextures.size() || sampler >= m_pixelSamplers.size())
                 return false;
             const auto &surface = m_pixelTextures[resource];
-            rgba = sampleTexture(surface, m_pixelSamplers[sampler], coords[0], coords[1], coords[2], pixelBackings[resource]);
+            rgba = sampleTexture(surface, m_pixelSamplers[sampler], coords[0], coords[1], coords[2], pixelBackings[resource], false,
+                                 pixelDepthFeedback[resource].empty() ? nullptr : &pixelDepthFeedback[resource]);
             return true;
         };
         const LatteVsInterp::KcacheFetch pixelConstants = [&](unsigned bank, unsigned index, unsigned channel) {
@@ -1597,20 +1695,26 @@ namespace Core::Gfx {
             if (resource >= m_pixelTextures.size() || sampler >= m_pixelSamplers.size() ||
                 !supportsGather(m_pixelTextures[resource], m_pixelSamplers[sampler]))
                 return false;
-            rgba = sampleTexture(m_pixelTextures[resource], m_pixelSamplers[sampler], coords[0], coords[1], 0, pixelBackings[resource], true);
+            rgba = sampleTexture(m_pixelTextures[resource], m_pixelSamplers[sampler], coords[0], coords[1], 0, pixelBackings[resource], true,
+                                 pixelDepthFeedback[resource].empty() ? nullptr : &pixelDepthFeedback[resource]);
             return true;
         };
         bool pixelFallbackReported = false;
-        auto shadeTexel = [&](float u, float v, const std::array<std::array<float, 4>, 4> &params) {
+        auto shadeTexel = [&](float u, float v, const std::array<std::array<float, 4>, 4> &params, LatteVsInterp::Output *output) {
             if (pixelProgram) {
                 std::array<std::array<float, 4>, 4> inputs{};
                 for (unsigned i = 0; i < inputs.size(); i++)
                     if (pixelInputParams[i] >= 0)
                         inputs[i] = params[pixelInputParams[i]];
                 const auto pixel = LatteVsInterp::runPixel(*pixelProgram, inputs, m_psRegs, 64, pixelSample, pixelConstants, pixelGather);
+                *output = pixel;
+                if (pixel.discarded)
+                    return std::array<std::uint8_t, 4>{};
                 if (pixel.colorValid)
                     return std::array<std::uint8_t, 4>{byteFromUnit(pixel.color[0]), byteFromUnit(pixel.color[1]), byteFromUnit(pixel.color[2]),
                                                        byteFromUnit(pixel.color[3])};
+                if (pixel.depthValid)
+                    return std::array<std::uint8_t, 4>{}; // A depth-only export does not write colour.
                 if (m_trace && !pixelFallbackReported) {
                     Utils::Log::error("[GX2TRACE] draw#{} unsupported pixel execution; using legacy texture approximation", m_stats.draws);
                     pixelFallbackReported = true;
@@ -1650,7 +1754,7 @@ namespace Core::Gfx {
         // Array slices can alias a target without matching its base-view key.
         // Keep those draws and raw guest-memory targets serial until all aliases
         // participate in the same pre-draw snapshot scheme.
-        const bool parallelSafe = useViewBacking() && !m_trace && m_color.pitch >= m_color.width && m_texture.dimension != 5 &&
+        const bool parallelSafe = useViewBacking() && !m_trace && !drawDepth && m_color.pitch >= m_color.width && m_texture.dimension != 5 &&
                                   std::none_of(m_pixelTextures.begin(), m_pixelTextures.end(),
                                                [](const auto &surface) { return surface.imagePtr && surface.dimension == 5; });
         const auto workerCount = [&] {
@@ -1677,13 +1781,21 @@ namespace Core::Gfx {
             return end != value && *end == '\0' ? std::uint64_t(interval) : std::uint64_t(0);
         }();
         const auto verifyEvery = m_rasterVerifyEvery.value_or(verifyEnvironment);
+        static const bool nativeDepthEnabled = [] {
+            const auto *value = std::getenv("WEMU_NATIVE_DEPTH");
+            return !value || value[0] != '0';
+        }();
 
         // Defer geometry only when vertex execution cannot sample an earlier
         // triangle's output. Vertex-texture draws retain immediate execution.
-        const bool collectBackend = m_rasterBackend && !m_gpuRenderer && pixelProgram && useViewBacking() && m_color.pitch >= m_color.width &&
-                                    !m_color.aa && std::none_of(m_vertexTextures.begin(), m_vertexTextures.end(), [&](const auto &surface) {
-                                        return surface.imagePtr && (surface.dimension == 5 || makeSurfaceKey(surface) == makeSurfaceKey(m_color));
-                                    });
+        const bool collectBackend =
+                m_rasterBackend && !m_gpuRenderer && !m_stencilTest && (!m_depthTest || !m_depth.imagePtr || drawDepth) &&
+                (!drawDepth || (nativeDepthEnabled && m_rasterBackend->supportsDepth())) && pixelProgram && useViewBacking() &&
+                m_color.pitch >= m_color.width && !m_color.aa &&
+                std::none_of(m_vertexTextures.begin(), m_vertexTextures.end(), [&](const auto &surface) {
+                    return surface.imagePtr && (surface.dimension == 5 || makeSurfaceKey(surface) == makeSurfaceKey(m_color) ||
+                                                (drawDepth && m_depthWrite && makeSurfaceKey(surface) == makeSurfaceKey(m_depth)));
+                });
         std::vector<std::array<RasterVertex, 3>> preparedTriangles;
         auto rasterPrepared = [&](const RasterVertex(&rv)[3]) {
             prepareSoftwareInputs();
@@ -1740,20 +1852,34 @@ namespace Core::Gfx {
                         const float w0 = float(weight0), w1 = float(weight1), w2 = float(1.0 - weight0 - weight1);
                         if (!coverage.contains(double(xx) + 0.5, double(yy) + 0.5))
                             continue;
+                        LatteVsInterp::Output pixel;
                         const auto texel = shadeTexel(w0 * rv[0].u + w1 * rv[1].u + w2 * rv[2].u, w0 * rv[0].v + w1 * rv[1].v + w2 * rv[2].v,
-                                                      interpolateParams(rv, w0, w1, w2));
+                                                      interpolateParams(rv, w0, w1, w2), &pixel);
+                        if (pixel.discarded)
+                            continue;
+                        if (drawDepth) {
+                            if (unsigned(xx) >= m_depth.width || unsigned(yy) >= m_depth.height)
+                                continue;
+                            auto &stored = drawDepth->pixels[std::size_t(yy) * m_depth.pitch + xx];
+                            const float incoming = clampDepth(pixel.depthValid ? pixel.depth : w0 * rv[0].z + w1 * rv[1].z + w2 * rv[2].z);
+                            if (!depthCompare(incoming, stored, m_depthCompare))
+                                continue;
+                            if (m_depthWrite)
+                                stored = quantizeDepth(incoming, drawDepth->format);
+                        }
                         std::uint8_t *dst = row + static_cast<std::size_t>(xx) * 4;
                         const std::uint32_t a = texel[3];
                         result.pixels++;
                         result.alphaSum += a;
                         const auto out = targetBlendEnabled ? blendTexel(texel, dst, blend) : texel;
-                        if (channelMask & 0x1)
+                        const auto writeMask = pixel.depthValid && !pixel.colorValid ? 0u : channelMask;
+                        if (writeMask & 0x1)
                             dst[0] = out[0];
-                        if (channelMask & 0x2)
+                        if (writeMask & 0x2)
                             dst[1] = out[1];
-                        if (channelMask & 0x4)
+                        if (writeMask & 0x4)
                             dst[2] = out[2];
-                        if (channelMask & 0x8)
+                        if (writeMask & 0x8)
                             dst[3] = out[3];
                     }
                 }
@@ -1803,7 +1929,7 @@ namespace Core::Gfx {
             const std::uint32_t vis[3] = {idx[i0], idx[i1], idx[i2]};
             RasterVertex rv[3];
             for (int i = 0; i < 3; i++) {
-                if (runShader(vis[i], rv[i].x, rv[i].y, rv[i].u, rv[i].v, &rv[i].params, &rv[i].paramValid)) {
+                if (runShader(vis[i], rv[i].x, rv[i].y, rv[i].u, rv[i].v, &rv[i].params, &rv[i].paramValid, &rv[i].z, &rv[i].reciprocalW)) {
                     if (!rv[i].paramValid[0])
                         rv[i].params[0] = {1.0f, 1.0f, 1.0f, 1.0f};
                     continue;
@@ -1850,6 +1976,33 @@ namespace Core::Gfx {
                     break;
                 }
                 const auto surface = m_pixelTextures[binding.resource];
+                auto depthKey = makeSurfaceKey(surface);
+                depthKey.format = surface.format;
+                if (m_depthBackings.contains(depthKey)) {
+                    const auto *depthTexture = depthBacking(surface);
+                    if (!depthTexture) {
+                        supported = false;
+                        break;
+                    }
+                    textures.push_back(
+                            {binding, surface.width, surface.height, m_pixelSamplers[binding.sampler], [&, surface](unsigned x, unsigned y) {
+                                 return sampleTexture(surface, TextureSampler{}, (float(x) + .5f) / float(surface.width),
+                                                      (float(y) + .5f) / float(surface.height));
+                             }});
+                    if (std::endian::native == std::endian::little) {
+                        textures.back().r32Bytes = {reinterpret_cast<const std::uint8_t *>(depthTexture->pixels.data()),
+                                                    depthTexture->pixels.size() * sizeof(float)};
+                        textures.back().r32Pitch = surface.pitch;
+                    } else {
+                        auto &packed = ownedFloatTextures.emplace_back();
+                        for (unsigned y = 0; y < surface.height; ++y)
+                            packed.insert(packed.end(), depthTexture->pixels.data() + std::size_t(y) * surface.pitch,
+                                          depthTexture->pixels.data() + std::size_t(y) * surface.pitch + surface.width);
+                        textures.back().r32 = packed;
+                    }
+                    textures.back().r32Map = surface.compMap;
+                    continue;
+                }
                 if (shader.usesGather && !supportsGather(surface, m_pixelSamplers[binding.sampler])) {
                     supported = false;
                     break;
@@ -1917,6 +2070,14 @@ namespace Core::Gfx {
                             textures.back().unorm8Channels = texelBytes;
                             continue;
                         }
+                        if (surface.format == 0x80E && std::endian::native == std::endian::little &&
+                            (surface.tileMode <= 1 || surface.tileMode == 16) && surface.pitch >= surface.width &&
+                            std::uint64_t(surface.pitch) * surface.height * 4 <= surface.imageSize) {
+                            textures.back().r32Bytes = {base, std::size_t(surface.pitch) * surface.height * 4};
+                            textures.back().r32Pitch = surface.pitch;
+                            textures.back().r32Map = surface.compMap;
+                            continue;
+                        }
                         std::vector<std::uint8_t> decoded(std::size_t(surface.width) * surface.height * texelBytes);
                         bool complete = true;
                         for (unsigned y = 0; y < surface.height && complete; ++y)
@@ -1930,7 +2091,12 @@ namespace Core::Gfx {
                                 std::memcpy(pixel, base + offset, texelBytes);
                             }
                         if (complete) {
-                            if (surface.format == 0x80E) {
+                            if (surface.format == 0x80E && std::endian::native == std::endian::little) {
+                                ownedTextures.push_back(std::move(decoded));
+                                textures.back().r32Bytes = ownedTextures.back();
+                                textures.back().r32Pitch = surface.width;
+                                textures.back().r32Map = surface.compMap;
+                            } else if (surface.format == 0x80E) {
                                 auto &values = ownedFloatTextures.emplace_back(decoded.size() / 4);
                                 for (std::size_t i = 0; i < decoded.size(); i += 4) {
                                     values[i / 4] = decodeR32Float(decoded.data() + i, 0x00010203)[0];
@@ -1958,6 +2124,8 @@ namespace Core::Gfx {
                     if (!std::isfinite(rv.x) || !std::isfinite(rv.y))
                         supported = false;
                     RasterDraw::Vertex vertex{rv.x, rv.y, {}};
+                    vertex.z = rv.z;
+                    vertex.reciprocalW = rv.reciprocalW;
                     for (unsigned i = 0; i < pixelInputParams.size(); ++i)
                         if (pixelInputParams[i] >= 0)
                             vertex.inputs[i] = rv.params[pixelInputParams[i]];
@@ -1978,12 +2146,15 @@ namespace Core::Gfx {
                                 m_color.height,
                                 m_color.pitch,
                                 {m_scissor[0], m_scissor[1], m_scissor[2], m_scissor[3]},
-                                channelMask,
+                                shader.exportsColor ? channelMask : 0u,
                                 {targetBlendEnabled, blend.colorSrcBlend, blend.colorDstBlend, blend.colorCombine,
                                  blend.useAlphaBlend ? blend.alphaSrcBlend : blend.colorSrcBlend,
                                  blend.useAlphaBlend ? blend.alphaDstBlend : blend.colorDstBlend,
                                  blend.useAlphaBlend ? blend.alphaCombine : blend.colorCombine, m_blendConstant}};
                 draw.renderedTarget = renderedTarget;
+                if (drawDepth)
+                    draw.depth = {true,          m_depthWrite,   m_depthCompare, drawDepth->format, drawDepth->pixels,
+                                  m_depth.width, m_depth.height, m_depth.pitch,  drawDepth->pending};
                 static const bool deferReadback = [] {
                     const auto *value = std::getenv("WEMU_NATIVE_DEFER_READBACK");
                     return value && std::string_view(value) == "1";
@@ -1997,6 +2168,10 @@ namespace Core::Gfx {
                 if (result) {
                     if (result->size() != targetBytes)
                         throw std::runtime_error("Raster backend returned an incomplete target");
+                    if (drawDepth && m_depthWrite &&
+                        (result->depthReadback ? result->depthReadback->size() != drawDepth->pixels.size() * sizeof(float)
+                                               : result->depth.size() != drawDepth->pixels.size()))
+                        throw std::runtime_error("Raster backend returned an incomplete depth surface");
                     static const std::uint64_t nativeVerifyEnvironment = [] {
                         const auto *value = std::getenv("WEMU_NATIVE_VERIFY_EVERY");
                         if (!value || *value < '0' || *value > '9')
@@ -2012,6 +2187,7 @@ namespace Core::Gfx {
                         const auto verifyStart =
                                 (profile || nativeAudit) ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
                         result->resolve();
+                        result->resolveDepth();
                         // The backend has not changed target; feedback snapshots and
                         // prepared vertices are shared by both executions of this draw.
                         const auto savedStats = m_stats;
@@ -2020,6 +2196,17 @@ namespace Core::Gfx {
                             rasterPrepared(rv);
                         }
                         m_stats = savedStats;
+                        if (drawDepth && m_depthWrite) {
+                            unsigned differences{};
+                            float maximum{};
+                            for (std::size_t i = 0; i < result->depth.size(); ++i) {
+                                const auto error = std::fabs(drawDepth->pixels[i] - result->depth[i]);
+                                differences += error != 0.f;
+                                maximum = std::max(maximum, error);
+                            }
+                            Utils::Log::error("[NATIVE_DEPTH_VERIFY] frame={} draw={} different={} max_error={}", m_presentCount, m_stats.draws,
+                                              differences, maximum);
+                        }
                         std::size_t different{}, overOne{}, first = targetBytes, worst = targetBytes;
                         std::array<std::size_t, 4> channelDifferences{};
                         std::array<std::size_t, 4> channelOverOne{};
@@ -2091,6 +2278,11 @@ namespace Core::Gfx {
                     else {
                         m_pendingReadbacks.erase(makeSurfaceKey(m_color));
                         std::copy(result->rgba.begin(), result->rgba.end(), target);
+                    }
+                    if (drawDepth && m_depthWrite) {
+                        drawDepth->pending = std::move(result->depthReadback);
+                        if (!drawDepth->pending)
+                            std::copy(result->depth.begin(), result->depth.end(), drawDepth->pixels.begin());
                     }
                     m_stats.tris += vertices.size() / 3;
                     m_stats.pixels += result->pixels;
@@ -2177,6 +2369,10 @@ namespace Core::Gfx {
                         blend.colorSrcBlend, blend.colorDstBlend, blend.colorCombine, blend.useAlphaBlend ? blend.alphaSrcBlend : blend.colorSrcBlend,
                         blend.useAlphaBlend ? blend.alphaDstBlend : blend.colorDstBlend,
                         blend.useAlphaBlend ? blend.alphaCombine : blend.colorCombine, m_scissor[0], m_scissor[1], m_scissor[2], m_scissor[3]);
+                Utils::Log::error("[NATIVEDEPTH] frame={} draw={} image={:08X} size={}x{} pitch={} fmt={:X} test={} write={} compare={} "
+                                  "stencil={} supported_view={} near={} far={}",
+                                  m_presentCount, m_stats.draws, m_depth.imagePtr, m_depth.width, m_depth.height, m_depth.pitch, m_depth.format,
+                                  m_depthTest, m_depthWrite, m_depthCompare, m_stencilTest, drawDepth != nullptr, m_vpNear, m_vpFar);
                 for (const auto &binding: shader.textures) {
                     if (binding.resource >= m_pixelTextures.size() || binding.sampler >= m_pixelSamplers.size()) {
                         Utils::Log::error("[NATIVETEX] resource={} sampler={} out_of_range=1", binding.resource, binding.sampler);
@@ -2185,10 +2381,10 @@ namespace Core::Gfx {
                     const auto &texture = m_pixelTextures[binding.resource];
                     const auto &sampler = m_pixelSamplers[binding.sampler];
                     Utils::Log::error("[NATIVETEX] resource={} sampler={} size={}x{} dim={} fmt={:X} mip={} slice={} aa={} "
-                                      "feedback={} regs={:08X},{:08X},{:08X}",
+                                      "feedback={} tile={} pitch={} image_bytes={} regs={:08X},{:08X},{:08X}",
                                       binding.resource, binding.sampler, texture.width, texture.height, texture.dimension, texture.format,
                                       texture.firstMip, texture.firstSlice, texture.aa, makeSurfaceKey(texture) == makeSurfaceKey(m_color),
-                                      sampler.regs[0], sampler.regs[1], sampler.regs[2]);
+                                      texture.tileMode, texture.pitch, texture.imageSize, sampler.regs[0], sampler.regs[1], sampler.regs[2]);
                 }
             }
         }
@@ -2348,6 +2544,18 @@ namespace Core::Gfx {
         bool presented = false;
         for (const auto &cmd: stream.commands()) {
             switch (cmd.type) {
+                case Gx2Cmd::SetDepthBuffer:
+                    m_depth = parseSurface(cmd);
+                    break;
+                case Gx2Cmd::SetDepthStencilControl:
+                    m_depthTest = cmd.gpr[0] != 0;
+                    m_depthWrite = cmd.gpr[1] != 0;
+                    m_depthCompare = cmd.gpr[2];
+                    m_stencilTest = cmd.gpr[3] != 0;
+                    break;
+                case Gx2Cmd::ClearDepthStencilEx:
+                    clearDepthSurface(parseSurface(cmd), float(cmd.fpr[0]), cmd.gpr[2]);
+                    break;
                 case Gx2Cmd::ClearColor:
                 case Gx2Cmd::ClearBuffersEx: {
                     // ClearColor(colorBuffer, r, g, b, a): colour in f1..f4 (captured to fpr[0..3]).
@@ -2358,6 +2566,15 @@ namespace Core::Gfx {
                         m_gpuRenderer->gpuClearTarget(cs.imagePtr, cs.width, cs.height, m_clear);
                     else
                         clearSurface(cs, m_clear);
+                    if (cmd.type == Gx2Cmd::ClearBuffersEx) {
+                        Gx2Command depthCmd = cmd;
+                        depthCmd.gpr[0] = cmd.gpr[1];
+                        if (cmd.payload.size() >= 32)
+                            depthCmd.payload.assign(cmd.payload.begin() + 16, cmd.payload.begin() + 32);
+                        else
+                            depthCmd.payload.clear();
+                        clearDepthSurface(parseSurface(depthCmd), float(cmd.fpr[4]), cmd.gpr[3]);
+                    }
                     break;
                 }
                 case Gx2Cmd::SetColorBuffer:
@@ -2615,6 +2832,8 @@ namespace Core::Gfx {
                 case Gx2Cmd::SetViewport:
                     for (int i = 0; i < 4; i++)
                         m_vp[i] = static_cast<float>(cmd.fpr[i]);
+                    m_vpNear = float(cmd.fpr[4]);
+                    m_vpFar = float(cmd.fpr[5]);
                     break;
                 case Gx2Cmd::SetScissor:
                     for (int i = 0; i < 4; i++)

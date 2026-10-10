@@ -8,7 +8,7 @@
 #include <vector>
 
 namespace Core::Gfx {
-    enum class ShaderStage { Vertex, Fragment };
+    enum class ShaderStage { Vertex, Fragment, Compute };
 
     struct SpirvModule {
             std::vector<std::uint32_t> words;

@@ -194,7 +194,8 @@ namespace {
             words = 3;
         } else if (type == Core::Gfx::Gx2Cmd::SetColorBuffer || type == Core::Gfx::Gx2Cmd::SetDepthBuffer ||
                    type == Core::Gfx::Gx2Cmd::SetPixelTexture || type == Core::Gfx::Gx2Cmd::SetVertexTexture ||
-                   type == Core::Gfx::Gx2Cmd::ClearColor || type == Core::Gfx::Gx2Cmd::CopyColorBufferToScanBuffer) {
+                   type == Core::Gfx::Gx2Cmd::ClearColor || type == Core::Gfx::Gx2Cmd::ClearDepthStencilEx ||
+                   type == Core::Gfx::Gx2Cmd::ClearBuffersEx || type == Core::Gfx::Gx2Cmd::CopyColorBufferToScanBuffer) {
             // r3 points at a GX2ColorBuffer/DepthBuffer/Texture whose leading GX2Surface fields
             // the replay stage parses. The title often builds these structs on its STACK, so the
             // pointer is stale by frame-end replay — snapshot the struct now, at call time.
@@ -211,6 +212,29 @@ namespace {
             } catch (const Core::MemoryException &) {
                 c.payload.clear();
             }
+        }
+        if (type == Core::Gfx::Gx2Cmd::ClearBuffersEx && c.gpr[1]) {
+            // Both buffers may be stack allocated. Keep their snapshots together.
+            c.payload.resize(16);
+            try {
+                for (unsigned i = 0; i < 16; ++i)
+                    c.payload.push_back(cpu.m_memory.read<std::uint32_t>(c.gpr[1] + i * 4));
+            } catch (const Core::MemoryException &) {
+                c.payload.resize(16);
+            }
+        }
+        static const bool depthTrace = [] {
+            const auto *value = std::getenv("WEMU_DEPTH_TRACE");
+            return value && value[0] == '1';
+        }();
+        if (depthTrace && (type == Core::Gfx::Gx2Cmd::SetDepthBuffer || type == Core::Gfx::Gx2Cmd::SetDepthStencilControl ||
+                           type == Core::Gfx::Gx2Cmd::ClearDepthStencilEx || type == Core::Gfx::Gx2Cmd::ClearBuffersEx)) {
+            Utils::Log::error("[DEPTH_CAPTURE] cmd={} args={:X},{:X},{:X},{:X},{:X},{:X},{:X},{:X} "
+                              "floats={},{},{},{},{},{} size={}x{} fmt={:X} tile={} pitch={}",
+                              unsigned(type), c.gpr[0], c.gpr[1], c.gpr[2], c.gpr[3], c.gpr[4], c.gpr[5], c.gpr[6], c.gpr[7], c.fpr[0], c.fpr[1],
+                              c.fpr[2], c.fpr[3], c.fpr[4], c.fpr[5], c.payload.size() >= 16 ? c.payload[1] : 0,
+                              c.payload.size() >= 16 ? c.payload[2] : 0, c.payload.size() >= 16 ? c.payload[5] : 0,
+                              c.payload.size() >= 16 ? c.payload[12] : 0, c.payload.size() >= 16 ? c.payload[15] : 0);
         }
         // Boot-long probe: does the title EVER upload a nonzero projection (regs c7/c8, i.e.
         // words 28..35 of the vertex uniform-register file)? Logs the first hits only.
@@ -1074,6 +1098,23 @@ void RegisterGx2Functions()
     Core::syscallHandler.registerSyscall("GX2SetBlendControl", gx2_rec<C::SetBlendControl>);
     Core::syscallHandler.registerSyscall("GX2SetColorControl", gx2_rec<C::SetColorControl>);
     Core::syscallHandler.registerSyscall("GX2SetDepthStencilControl", gx2_rec<C::SetDepthStencilControl>);
+    Core::syscallHandler.registerSyscall("GX2SetDepthOnlyControl", [](Core::Interpreter &cpu) {
+        const auto saved = cpu.m_gpr[6];
+        cpu.m_gpr[6] = 0; // This entry point disables stencil testing.
+        recordCmd(cpu, Core::Gfx::Gx2Cmd::SetDepthStencilControl);
+        cpu.m_gpr[6] = saved;
+        cpu.m_gpr[3] = 0;
+    });
+    Core::syscallHandler.registerSyscall("GX2SetDepthStencilControlReg", [](Core::Interpreter &cpu) {
+        const auto word = cpu.m_memory.read<std::uint32_t>(cpu.m_gpr[3]);
+        Core::Gfx::Gx2Command command{Core::Gfx::Gx2Cmd::SetDepthStencilControl};
+        command.gpr = {(word >> 1) & 1, (word >> 2) & 1, (word >> 4) & 7,  word & 1,
+                       (word >> 7) & 1, (word >> 8) & 7, (word >> 14) & 7, (word >> 17) & 7};
+        command.payload = {word};
+        command.callerLr = cpu.m_lr + Core::Memory::MemoryMap::ApplicationCode;
+        Core::Gfx::gx2Stream().push(command);
+        cpu.m_gpr[3] = 0;
+    });
     Core::syscallHandler.registerSyscall("GX2SetTargetChannelMasks", gx2_rec<C::SetTargetChannelMasks>);
     Core::syscallHandler.registerSyscall("GX2DrawEx", gx2_rec<C::DrawEx>);
     Core::syscallHandler.registerSyscall("GX2DrawIndexedEx", gx2_rec<C::DrawIndexedEx>);

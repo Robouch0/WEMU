@@ -22,6 +22,8 @@ namespace Core::Gfx::Latte {
             std::vector<TextureBinding> textures;
             bool requiresBaseLevelOnly{};
             bool usesGather{};
+            bool exportsColor{true};
+            bool writesDepth{};
             explicit operator bool() const { return error.empty() && !source.empty(); }
     };
 
@@ -31,6 +33,8 @@ namespace Core::Gfx::Latte {
     // sampler2DArray pairs. Resource types specialize source and shader cache keys.
     // Unsupported programs return no source. The renderer must also validate resource
     // dimensions/formats, interpolation, and pipeline state before native dispatch.
+    // Whole-quad ALU is accepted only when helper writes cannot escape an enclosing
+    // mask and no implicit derivatives consume them; general quad execution falls back.
     FragmentShader lowerFragmentShader(const Program &program, std::span<const TextureType> resourceTypes = {});
 
     // Replayer-owned, single-threaded cache. Exact keys include resource specialization.

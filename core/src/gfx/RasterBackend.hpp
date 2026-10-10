@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstdint>
+#include <cstring>
 #include <exception>
 #include <functional>
 #include <memory>
@@ -10,6 +11,7 @@
 #include <stdexcept>
 #include <vector>
 
+#include "gfx/Depth.hpp"
 #include "gfx/LatteShaderLowering.hpp"
 #include "gfx/TextureSampler.hpp"
 
@@ -20,8 +22,9 @@ namespace Core::Gfx {
             virtual ~RasterImage() = default;
     };
     // Synchronous reference-raster ABI. All borrowed data expires when render returns.
-    // Positions and varyings are screen-space/affine, matching the current software
-    // path; this is not a claim of complete guest depth/perspective semantics.
+    // Positions include window depth and reciprocal clip W. Varyings interpolate
+    // perspectively for positive W; full clipping, stencil and multisampling are
+    // outside this ABI's validated native subset.
     // Texture views expose only reference base-level texels. Shader output is
     // rounded to RGBA8 before the reference's integer blend operations; a GPU
     // implementation must validate its conversion/blend tolerances separately.
@@ -29,6 +32,7 @@ namespace Core::Gfx {
             struct Vertex {
                     float x{}, y{};
                     std::array<std::array<float, 4>, 4> inputs{};
+                    float z{}, reciprocalW{1.f}; // window depth and perspective divisor
             };
             struct Texture {
                     Latte::TextureBinding binding;
@@ -54,6 +58,10 @@ namespace Core::Gfx {
                     // Array snapshots are layer-major, with identical row pitches.
                     // Arrays require explicit CPU snapshots; rendered aliases remain 2D.
                     unsigned layers{1};
+                    // Optional little-endian R32 texels, with pitch in texels. Avoids
+                    // expanding guest GPU words into a temporary host float array.
+                    std::span<const std::uint8_t> r32Bytes;
+                    unsigned r32Pitch{};
             };
             struct Blend {
                     bool enabled{};
@@ -73,6 +81,15 @@ namespace Core::Gfx {
             // Optional complete pre-draw target. Backends advertising this
             // capability may preserve active pixels on GPU; CPU fallback resolves it.
             std::shared_ptr<RasterReadback> renderedTarget;
+            struct Depth {
+                    using Format = DepthFormat;
+                    bool test{}, write{};
+                    unsigned compare{7}; // GX2/Vulkan: NEVER..ALWAYS
+                    Format format{Format::Float32};
+                    std::span<const float> target; // canonical depth, including padding
+                    unsigned width{}, height{}, pitch{};
+                    std::shared_ptr<RasterReadback> rendered;
+            } depth;
     };
 
     // Owns all data/resources needed after renderDeferred returns. Materialization
@@ -119,12 +136,25 @@ namespace Core::Gfx {
             std::vector<std::uint8_t> rgba; // complete target, including preserved padding
             std::uint64_t pixels{}, alphaSum{};
             std::shared_ptr<RasterReadback> readback;
+            std::vector<float> depth;
+            std::shared_ptr<RasterReadback> depthReadback;
             std::size_t size() const { return readback ? readback->size() : rgba.size(); }
             void resolve()
             {
                 if (readback) {
                     rgba = readback->resolve();
                     readback.reset();
+                }
+            }
+            void resolveDepth()
+            {
+                if (depthReadback) {
+                    const auto &bytes = depthReadback->resolve();
+                    if (bytes.size() % sizeof(float))
+                        throw std::runtime_error("Invalid depth readback size");
+                    depth.resize(bytes.size() / sizeof(float));
+                    std::memcpy(depth.data(), bytes.data(), bytes.size());
+                    depthReadback.reset();
                 }
             }
     };
@@ -139,6 +169,7 @@ namespace Core::Gfx {
             virtual std::optional<RasterResult> render(const RasterDraw &draw) = 0;
             virtual bool supportsRenderedTextures() const { return false; }
             virtual bool supportsRenderedTargets() const { return false; }
+            virtual bool supportsDepth() const { return false; }
             // Same borrowed-input lifetime as render; only the owned readback may
             // outlive this call. Backends without deferred support remain synchronous.
             virtual std::optional<RasterResult> renderDeferred(const RasterDraw &draw) { return render(draw); }

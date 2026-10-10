@@ -108,7 +108,7 @@ namespace Core::Gfx {
     std::shared_ptr<const SpirvModule> SpirvCompiler::compile(ShaderStage stage, std::string_view source)
     {
         auto result = std::make_shared<SpirvModule>();
-        if (stage != ShaderStage::Vertex && stage != ShaderStage::Fragment) {
+        if (stage != ShaderStage::Vertex && stage != ShaderStage::Fragment && stage != ShaderStage::Compute) {
             result->error = "Unsupported shader stage";
             return result;
         }
@@ -126,7 +126,9 @@ namespace Core::Gfx {
 #if defined(WEMU_RUNTIME_GLSLANG) && defined(WEMU_RUNTIME_SPIRV_VAL)
         try {
             TemporaryDirectory temporary;
-            const auto input = temporary.path / (stage == ShaderStage::Vertex ? "shader.vert" : "shader.frag");
+            const auto input = temporary.path / (stage == ShaderStage::Vertex     ? "shader.vert"
+                                                 : stage == ShaderStage::Fragment ? "shader.frag"
+                                                                                  : "shader.comp");
             const auto output = temporary.path / "shader.spv";
             const auto log = temporary.path / "tool.log";
             {

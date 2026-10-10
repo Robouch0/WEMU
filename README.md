@@ -137,7 +137,21 @@ explicit; no personal game path is embedded in the tool.
 
 `python3 scratchpad/raster_profile.py session.log` summarizes completed draw timings.
 `python3 scratchpad/compare_raster_profiles.py before.log after.log` compares matching
-draws. Their totals describe draw work, not whole-session FPS.
+draws. Add `--ignore-pixel-count` when comparing software and native paths: native
+draws currently omit pixel counts. Their totals describe draw work, not whole-session FPS.
+
+Native shader support includes isolated whole-quad
+ALU whose helper results cannot escape a masked region; general quad execution,
+implicit derivatives remain incomplete. Shared depth rendering supports depth
+exports, compare/write state, clears, perspective varyings and versioned GPU
+depth images. Float32 and UNORM16/24 depth views use canonical float storage;
+fixed-point writes are rounded in a GPU compute pass after depth comparison.
+Stencil, floating 24-bit depth, multisampling and complete clipping remain
+outside the validated native subset. `WEMU_NATIVE_DEPTH=0` selects software
+depth rendering for comparison while retaining the other native draw paths.
+Linear R32 float textures can upload their guest GPU bytes directly, including
+padded rows, without a temporary float expansion. Tiled sources retain layout
+conversion; component mapping, filtering and content-based reuse are preserved.
 
 ---
 

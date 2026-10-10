@@ -148,6 +148,8 @@ class Renderer {
 
         void createSyncObjects();
 
+        void createPresentSemaphores();
+
         void createCommandPool();
 
         void createImage(uint32_t width, uint32_t height, VkFormat format, VkImageTiling tiling, VkImageUsageFlags usage,
@@ -248,10 +250,12 @@ class Renderer {
 
         uint32_t m_currentFrame = 0;
 
-        VkBuffer m_tvStagingBuffer = VK_NULL_HANDLE;
-        VkDeviceMemory m_tvStagingMemory = VK_NULL_HANDLE;
+        std::vector<VkBuffer> m_tvStagingBuffers;
+        std::vector<VkDeviceMemory> m_tvStagingMemories;
+        std::vector<void *> m_tvStagingMapped;
         VkImage m_tvImage = VK_NULL_HANDLE;
         VkDeviceMemory m_tvImageMemory = VK_NULL_HANDLE;
+        bool m_tvImageInitialized = false;
 
         Core::Gfx::GpuQuadRasterizer *m_gpuQuad = nullptr; // lazily created on first gpuBegin(); freed in cleanup()
         Core::Gfx::GpuRenderGraph *m_gpuGraph = nullptr; // lazily created on first gpuBeginFrame(); freed in cleanup()
