@@ -8,6 +8,9 @@ int main()
     inherited.insert("PATH", "/usr/bin");
     inherited.insert("WEMU_NATIVE_CPU", "1");
     inherited.insert("WEMU_NATIVE_CACHE_DIR", "/inherited/cache");
+    inherited.insert("WEMU_SYSTEM_LANGUAGE", "ja");
+    inherited.insert("WEMU_SYSTEM_REGION", "1");
+    inherited.insert("WEMU_TITLE_REGION", "1");
     inherited.insert("WEMU_NATIVE_RASTER", "0");
     inherited.insert("WEMU_NO_FRAMESKIP", "0");
     inherited.insert("WEMU_NATIVE_VERIFY_EVERY", "1");
@@ -35,6 +38,11 @@ int main()
     if (noCache.value("WEMU_NATIVE_CPU") != "1" || noCache.contains("WEMU_NATIVE_CACHE_DIR")) return 1;
     const auto reference = desktopLaunchEnvironment(inherited, "/base", {}, false, "/ignored");
     if (reference.contains("WEMU_NATIVE_CPU") || reference.contains("WEMU_NATIVE_CACHE_DIR")) return 1;
+    if (environment.value("WEMU_SYSTEM_LANGUAGE") != "1" || environment.value("WEMU_SYSTEM_REGION") != "4"
+        || environment.value("WEMU_TITLE_REGION") != "4") return 1;
+    const auto french = desktopLaunchEnvironment(inherited, "/base", {}, true, "/private", 2, 2, 4);
+    if (french.value("WEMU_SYSTEM_LANGUAGE") != "2" || french.value("WEMU_SYSTEM_REGION") != "2"
+        || french.value("WEMU_TITLE_REGION") != "4") return 1;
     qInfo() << "Desktop GPU profile, host environment and experiment isolation passed";
     return 0;
 }

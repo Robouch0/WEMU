@@ -159,6 +159,9 @@ int main(const int ac, char const *const *av)
         }
 
         Core::Interpreter interpreter(std::move(binary));
+        std::cout << "[SYSTEM_CONFIG] language=" << interpreter.m_systemConfig.language
+                  << " platform_region=" << unsigned(interpreter.m_systemConfig.platformRegion)
+                  << " title_region=" << unsigned(interpreter.m_systemConfig.titleRegion) << std::endl;
 
         std::cout << "CPU 268437924 MEM -> " << std::hex << interpreter.m_memory.read<uint32_t>(268437924) << std::dec << std::endl;
 

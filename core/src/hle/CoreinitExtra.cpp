@@ -266,14 +266,16 @@ namespace {
             const std::string name = readGuestString(cpu, entry, 64);
             const std::uint32_t dataSize = cpu.m_memory.read<std::uint32_t>(entry + 0x4C);
             const std::uint32_t dataPtr = cpu.m_memory.read<std::uint32_t>(entry + 0x50);
+            if (const auto *trace = std::getenv("WEMU_SYSTEM_CONFIG_TRACE"); trace && trace[0] == '1')
+                Utils::Log::error("[SYSTEM_CONFIG] UC name={} type={} size={} data={:08X}", name, cpu.m_memory.read<std::uint32_t>(entry + 0x44),
+                                  dataSize, dataPtr);
             cpu.m_memory.write<std::uint32_t>(entry + 0x48, 0); // error = OK
             if (!dataPtr || !dataSize)
                 continue;
             for (std::uint32_t off = 0; off < dataSize; off++)
                 cpu.m_memory.write<std::uint8_t>(dataPtr + off, 0);
-            // English instead of the zero-default (Japanese).
-            if (dataSize == 4 && name.find("language") != std::string::npos)
-                cpu.m_memory.write<std::uint32_t>(dataPtr, 1);
+            if (dataSize == 4 && name == "cafe.language")
+                cpu.m_memory.write<std::uint32_t>(dataPtr, cpu.m_systemConfig.language);
             Utils::Log::debug("[UC] ReadSysConfig '{}' size={}", name, dataSize);
         }
         cpu.m_gpr[3] = 0;
@@ -284,8 +286,14 @@ namespace {
     void hle_MCP_GetSysProdSettings(Core::Interpreter &cpu)
     {
         const std::uint32_t out = cpu.m_gpr[4];
+        if (const auto *trace = std::getenv("WEMU_SYSTEM_CONFIG_TRACE"); trace && trace[0] == '1')
+            Utils::Log::error("[SYSTEM_CONFIG] MCP product settings out={:08X}", out);
         for (std::uint32_t off = 0; off < 0x46; off++) // MCPSysProdSettings is 0x46 bytes
             cpu.m_memory.write<std::uint8_t>(out + off, 0);
+        // Byte offsets in MCPSysProdSettings, not a 32-bit language/region enum.
+        // Title region describes the dump; platform region describes the console.
+        cpu.m_memory.write<std::uint8_t>(out + 3, cpu.m_systemConfig.platformRegion);
+        cpu.m_memory.write<std::uint8_t>(out + 0xB, cpu.m_systemConfig.titleRegion);
         cpu.m_gpr[3] = 0;
     }
 

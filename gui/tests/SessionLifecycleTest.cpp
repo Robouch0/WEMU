@@ -3,10 +3,59 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QTemporaryDir>
+#include <QSettings>
 #include <QThread>
 #include <gtest/gtest.h>
 
 #include "EmulatorLauncher.hpp"
+#include "LocaleSettings.hpp"
+
+TEST(SessionSettingsTest, RegionMetadataIsParsedAsHexAndMalformedFilesFallBack)
+{
+    QTemporaryDir directory;
+    ASSERT_TRUE(directory.isValid());
+    ASSERT_TRUE(QDir().mkpath(directory.path() + "/code"));
+    ASSERT_TRUE(QDir().mkpath(directory.path() + "/meta"));
+    const auto rpx = directory.path() + "/code/game.rpx";
+    EXPECT_EQ(titleRegionForLaunch(rpx), 4u);
+    QFile meta(directory.path() + "/meta/meta.xml");
+    for (const auto &test: {std::pair{"<menu><region>00000002</region></menu>", 2u},
+                            std::pair{"<menu><region>00000001</region></menu>", 1u},
+                            std::pair{"<menu><region>00000010</region></menu>", 16u},
+                            std::pair{"<menu><region>0000007F</region></menu>", 4u},
+                            std::pair{"<menu><region>bad-value</region></menu>", 4u},
+                            std::pair{"<menu><region>00000002</region>", 4u}}) {
+        ASSERT_TRUE(meta.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        meta.write(test.first);
+        meta.close();
+        EXPECT_EQ(titleRegionForLaunch(rpx), test.second);
+    }
+}
+
+TEST(SessionSettingsTest, LanguageAndRegionPersistAndRejectInvalidSelections)
+{
+    QSettings settings;
+    settings.remove("emulation/systemLanguage");
+    settings.remove("emulation/systemRegion");
+    EmulatorLauncher first;
+    EXPECT_EQ(first.systemLanguage(), 1);
+    EXPECT_EQ(first.systemRegion(), 0);
+    first.setSystemLanguage(2);
+    first.setSystemRegion(2);
+    first.setSystemLanguage(-1);
+    first.setSystemRegion(3);
+    EmulatorLauncher second;
+    EXPECT_EQ(second.systemLanguage(), 2);
+    EXPECT_EQ(second.systemRegion(), 2);
+    settings.setValue("emulation/systemLanguage", 999);
+    settings.setValue("emulation/systemRegion", -1);
+    EXPECT_EQ(second.systemLanguage(), 1);
+    EXPECT_EQ(second.systemRegion(), 0);
+    settings.setValue("emulation/systemLanguage", "not-a-language");
+    EXPECT_EQ(second.systemLanguage(), 1);
+    settings.remove("emulation/systemLanguage");
+    settings.remove("emulation/systemRegion");
+}
 
 TEST(SessionLifecycleTest, MissingFilesKeepTheLibraryAvailable)
 {
@@ -53,6 +102,10 @@ int main(int argc, char **argv)
     QCoreApplication app(argc, argv);
     app.setOrganizationName("WemuSessionTests");
     app.setApplicationName("SessionLifecycle");
+    QTemporaryDir settingsDirectory;
+    if (!settingsDirectory.isValid()) return 1;
+    QSettings::setDefaultFormat(QSettings::IniFormat);
+    QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settingsDirectory.path());
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();
 }

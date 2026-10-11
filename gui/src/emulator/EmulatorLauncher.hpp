@@ -22,6 +22,8 @@ class EmulatorLauncher : public QObject {
         Q_PROPERTY(double presentFps READ presentFps NOTIFY statisticsChanged)
         Q_PROPERTY(double movieFps READ movieFps NOTIFY statisticsChanged)
         Q_PROPERTY(QString gameTitle READ gameTitle NOTIFY sessionChanged)
+        Q_PROPERTY(int systemLanguage READ systemLanguage WRITE setSystemLanguage NOTIFY settingsChanged)
+        Q_PROPERTY(int systemRegion READ systemRegion WRITE setSystemRegion NOTIFY settingsChanged)
     public:
         explicit EmulatorLauncher(QObject *parent = nullptr);
         ~EmulatorLauncher() override;
@@ -37,6 +39,10 @@ class EmulatorLauncher : public QObject {
         double presentFps() const { return m_presentFps; }
         double movieFps() const { return m_movieFps; }
         QString gameTitle() const { return m_title; }
+        int systemLanguage() const;
+        int systemRegion() const;
+        void setSystemLanguage(int value);
+        void setSystemRegion(int value);
         Q_INVOKABLE void launch(const QString &rpxPath, const QString &title, const QString &contentPath);
         Q_INVOKABLE void stop();
         Q_INVOKABLE void openLog();
@@ -51,6 +57,7 @@ class EmulatorLauncher : public QObject {
         void logPathChanged();
         void sessionChanged();
         void statisticsChanged();
+        void settingsChanged();
         void frameReady(const QImage &image, quint64 sequence);
 
     protected:

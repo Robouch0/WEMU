@@ -23,6 +23,7 @@
 #include "gfx/Renderer.hpp"
 #include "hle/H264.hpp"
 #include "hle/LockedCache.hpp"
+#include "hle/SystemConfig.hpp"
 #include "hle/Scheduler.hpp"
 #include "utils/BeDecoder.hpp"
 #include "utils/Logger.hpp"
@@ -190,6 +191,7 @@ namespace Core {
 
             Core::Scheduler m_scheduler{}; // cooperative guest-thread scheduler
             Core::LockedCacheState m_lockedCache{};
+            Core::SystemConfig m_systemConfig{Core::SystemConfig::fromEnvironment()};
 
             std::map<std::uint32_t, std::vector<InstructionInfo>> m_instructionMap{};
 

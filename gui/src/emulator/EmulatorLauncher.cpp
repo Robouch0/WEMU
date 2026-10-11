@@ -15,6 +15,7 @@
 #include <QUuid>
 
 #include "LaunchEnvironment.hpp"
+#include "LocaleSettings.hpp"
 #include "SessionFrame.hpp"
 #include "frontend/QtSessionProtocol.hpp"
 
@@ -112,6 +113,34 @@ void EmulatorLauncher::setError(const QString &error)
     emit errorChanged();
 }
 
+int EmulatorLauncher::systemLanguage() const
+{
+    bool valid{};
+    const auto value = QSettings().value("emulation/systemLanguage", 1).toInt(&valid);
+    return valid && Core::SystemConfig::validLanguage(unsigned(value)) ? value : 1;
+}
+
+int EmulatorLauncher::systemRegion() const
+{
+    bool valid{};
+    const auto value = QSettings().value("emulation/systemRegion", 0).toInt(&valid);
+    return valid && (value == 0 || Core::SystemConfig::validRegion(unsigned(value))) ? value : 0;
+}
+
+void EmulatorLauncher::setSystemLanguage(int value)
+{
+    if (!Core::SystemConfig::validLanguage(unsigned(value)) || value == systemLanguage()) return;
+    QSettings().setValue("emulation/systemLanguage", value);
+    emit settingsChanged();
+}
+
+void EmulatorLauncher::setSystemRegion(int value)
+{
+    if ((value != 0 && !Core::SystemConfig::validRegion(unsigned(value))) || value == systemRegion()) return;
+    QSettings().setValue("emulation/systemRegion", value);
+    emit settingsChanged();
+}
+
 void EmulatorLauncher::launch(const QString &rpxPath, const QString &title, const QString &contentPath)
 {
     if (running())
@@ -147,8 +176,10 @@ void EmulatorLauncher::launch(const QString &rpxPath, const QString &title, cons
         // A missing/unusable cache falls back to JIT; it never prevents launch.
         if (!cacheRoot.isEmpty() && QDir().mkpath(cacheRoot)) nativeCache = cacheRoot + "/ppc-native";
     }
+    const auto titleRegion = titleRegionForLaunch(rpxPath);
+    const auto region = systemRegion() ? unsigned(systemRegion()) : titleRegion;
     const auto environment = desktopLaunchEnvironment(QProcessEnvironment::systemEnvironment(), contentPath, font,
-                                                     nativeCpu, nativeCache);
+                                                     nativeCpu, nativeCache, unsigned(systemLanguage()), region, titleRegion);
     qInfo() << "[SESSION_CPU]" << (nativeCpu ? "native with interpreter fallback" : "interpreter")
             << "cache=" << nativeCache;
     const auto logs = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation) + "/logs";
