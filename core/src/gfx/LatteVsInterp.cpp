@@ -1,5 +1,7 @@
 #include "gfx/LatteVsInterp.hpp"
 
+#include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -145,6 +147,8 @@ namespace Core::Gfx {
         std::memset(regs.gpr, 0, compiled.registerCount * sizeof(regs.gpr[0]));
         bool pred = true;
         bool active = true;
+        std::array<int, 4> address{};
+        std::array<bool, 4> addressValid{};
         bool skippedPixelExport = false;
         std::array<bool, 32> activeStack{};
         unsigned activeDepth = 0;
@@ -166,17 +170,23 @@ namespace Core::Gfx {
             float v = 0.0f;
             if (s.sel < 128) {
                 v = regs.gpr[s.sel][s.chan];
-            } else if (s.sel >= 128 && s.sel < 192) { // kcache-style selects in some encodings
-                const std::uint32_t idx = (s.sel - 128) * 4 + s.chan;
-                v = idx < constCount * 4 ? consts[idx] : 0.0f;
-            } else if (s.sel >= 256 && s.sel < 288 && kc[0].mode && kcache) {
-                // Uniform-block mode: sel 256..287 reads kcache bank 0's window.
-                v = kcache(kc[0].bank, kc[0].addr * 16 + (s.sel - 256), s.chan);
-            } else if (s.sel >= 288 && s.sel < 320 && kc[1].mode && kcache) {
-                v = kcache(kc[1].bank, kc[1].addr * 16 + (s.sel - 288), s.chan);
+            } else if (s.sel >= 128 && s.sel < 192) {
+                const auto window = (s.sel - 128) / 32;
+                if (kc[window].mode) {
+                    // R700 KCACHE selectors are 128..191; CONST_FILE is 256..511.
+                    v = kcache ? kcache(kc[window].bank, kc[window].addr * 16 + (s.sel - 128) % 32, s.chan) : 0.0f;
+                } else {
+                    const std::uint32_t idx = (s.sel - 128) * 4 + s.chan;
+                    v = idx < constCount * 4 ? consts[idx] : 0.0f;
+                }
             } else if (s.sel >= 256) { // uniform-register mode: constant file c0..c255
-                const std::uint32_t idx = (s.sel - 256) * 4 + s.chan;
-                v = idx < constCount * 4 ? consts[idx] : 0.0f;
+                const int index = int(s.sel - 256) + (s.rel ? address[(inst.raw0 >> 26) & 3] : 0);
+                if (index < 0 || index >= 256)
+                    v = fromU32(0x7FFFFFFFu);
+                else {
+                    const auto idx = unsigned(index) * 4 + s.chan;
+                    v = idx < constCount * 4 ? consts[idx] : 0.0f;
+                }
             } else {
                 switch (s.sel) {
                     case SRC_0:
@@ -217,7 +227,22 @@ namespace Core::Gfx {
             const auto clause = compiled.clauses.find((std::uint64_t(addr) << 32) | count);
             if (clause == compiled.clauses.end())
                 return false;
+            if (compiled.usesAddressing)
+                addressValid.fill(false);
             for (const auto &group: clause->second) {
+                if (compiled.usesAddressing) {
+                    const bool addressWrite = std::any_of(group.begin(), group.end(), [](const auto &in) { return in.isAddressWrite(); });
+                    for (const auto &in: group) {
+                        // AR-relative constant reads require a previous group in
+                        // this clause. GPR and loop indexing remain unsupported.
+                        if (in.raw1 & (1u << 28))
+                            return false;
+                        for (unsigned i = 0; i < (in.op3 ? 3u : 2u); ++i)
+                            if (in.src[i].rel &&
+                                (in.src[i].sel < 256 || ((in.raw0 >> 26) & 7) > 3 || addressWrite || !addressValid[(in.raw0 >> 26) & 3]))
+                                return false;
+                    }
+                }
                 bool nextPred = pred, nextActive = active;
                 auto predicateResult = [&](bool condition, const AluInst &in, bool integer = false) {
                     if (in.raw1 & (1u << 3))
@@ -255,8 +280,6 @@ namespace Core::Gfx {
                 }
                 {
                     for (auto &in: group) {
-                        if (pixelStage && (in.src[0].rel || in.src[1].rel || (in.op3 && in.src[2].rel)))
-                            return false;
                         if (isDot && !in.scalarSlot)
                             continue;
                         // Per-instruction predication via PRED_SEL (0 = always run).
@@ -360,6 +383,20 @@ namespace Core::Gfx {
                                 case OP2_TRUNC:
                                     v = std::trunc(a);
                                     break;
+                                case OP2_MOVA:
+                                case OP2_MOVA_FLOOR:
+                                case OP2_MOVA_INT: {
+                                    const float rounded = in.op == OP2_MOVA_INT ? float(std::bit_cast<std::int32_t>(a))
+                                                          : in.op == OP2_MOVA   ? std::floor(a + .5f)
+                                                                                : std::floor(a);
+                                    const int index = !std::isfinite(rounded) || rounded < -256.f || rounded > 255.f ? -256 : int(rounded);
+                                    // Relative reads cannot share this group, so
+                                    // no source can observe a partial AR update.
+                                    address[in.dstChan] = index;
+                                    addressValid[in.dstChan] = true;
+                                    v = fromU32(std::uint32_t(index));
+                                    break;
+                                }
                                 case OP2_SIN:
                                     // R700/Latte trigonometric inputs use turns, as
                                     // emitted by LLVM R600 and Cemu's Latte backend.
@@ -572,11 +609,17 @@ namespace Core::Gfx {
                     std::fprintf(stderr, "  export type=%u base=%u gpr=%u sel=(%u,%u,%u,%u) v=(%g,%g,%g,%g)\n", type, arrayBase, rwGpr, sel[0],
                                  sel[1], sel[2], sel[3], v[0], v[1], v[2], v[3]);
                 if (type == 1 && arrayBase >= 60) { // POS export
-                    std::memcpy(out.pos.data(), v, 16);
-                    out.valid = true;
+                    for (unsigned channel = 0; channel < 4; ++channel)
+                        if (sel[channel] != 7) {
+                            out.pos[channel] = v[channel];
+                            out.valid = true;
+                        }
                 } else if (type == 2 && arrayBase < 4) { // PARAM export
-                    std::memcpy(out.params[arrayBase].data(), v, 16);
-                    out.paramValid[arrayBase] = true;
+                    for (unsigned channel = 0; channel < 4; ++channel)
+                        if (sel[channel] != 7) {
+                            out.params[arrayBase][channel] = v[channel];
+                            out.paramValid[arrayBase] = true;
+                        }
                 } else if (pixelStage && type == 0 && arrayBase == 0) {
                     std::memcpy(out.color.data(), v, 16);
                     out.colorValid = true;

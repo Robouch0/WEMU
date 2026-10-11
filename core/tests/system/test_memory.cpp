@@ -14,10 +14,13 @@ static_assert(std::is_nothrow_move_assignable_v<Core::Memory>);
 
 namespace {
     constexpr std::uint32_t app = Core::Memory::ApplicationCode;
-    constexpr std::array<std::pair<std::uint32_t, std::uint32_t>, 3> regions{{
+    constexpr std::array<std::pair<std::uint32_t, std::uint32_t>, 6> regions{{
             {app, 16},
             {Core::Memory::STACK_BASE, Core::Memory::STACK_SIZE},
             {Core::Memory::DIMPORT_BASE, Core::Memory::DIMPORT_SIZE},
+            {Core::Memory::LOCKED_CACHE_BASES[0], Core::Memory::LOCKED_CACHE_SIZE},
+            {Core::Memory::LOCKED_CACHE_BASES[1], Core::Memory::LOCKED_CACHE_SIZE},
+            {Core::Memory::LOCKED_CACHE_BASES[2], Core::Memory::LOCKED_CACHE_SIZE},
     }};
 
     template<typename T>

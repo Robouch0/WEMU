@@ -183,7 +183,7 @@ TEST(LatteLoweringTest, WholeQuadValuesCannotEscapeThroughExportsOrRestoredAlu)
     words[8] = 4u << 15;
     auto shader = lowerFragmentShader(*decodeProgram(words));
     EXPECT_FALSE(shader);
-    EXPECT_EQ(shader.error, "whole-quad value escapes masked region");
+    EXPECT_TRUE(shader.error.starts_with("whole-quad value escapes masked region:"));
     // Restoring then pushing again must not conceal an escaped register or PV/PS.
     for (unsigned selector: {4u, unsigned(SRC_PV), unsigned(SRC_PS)}) {
         for (bool scalar: {false, true}) {
@@ -213,7 +213,7 @@ TEST(LatteLoweringTest, WholeQuadValuesCannotEscapeThroughExportsOrRestoredAlu)
                 continue;
             shader = lowerFragmentShader(*decodeProgram(words));
             EXPECT_FALSE(shader) << selector << ' ' << scalar;
-            EXPECT_EQ(shader.error, "whole-quad value escapes masked region");
+            EXPECT_TRUE(shader.error.starts_with("whole-quad value escapes masked region:"));
         }
     }
 }
@@ -226,7 +226,7 @@ TEST(LatteLoweringTest, WholeQuadElseCanExposeTemporaryValues)
                            0x80000000u | SRC_1, (OP2_MOV << 7) | 16u | (4u << 21), 0x80000000u | 4u, (OP2_MOV << 7) | 16u | (3u << 21)});
     const auto shader = lowerFragmentShader(*program);
     EXPECT_FALSE(shader);
-    EXPECT_EQ(shader.error, "whole-quad value escapes masked region");
+    EXPECT_TRUE(shader.error.starts_with("whole-quad value escapes masked region:"));
 }
 
 TEST(LatteLoweringTest, WholeQuadMaskUpdatesAndUnscopedClausesRemainFallback)
@@ -243,7 +243,7 @@ TEST(LatteLoweringTest, WholeQuadMaskUpdatesAndUnscopedClausesRemainFallback)
     EXPECT_FALSE(lowerFragmentShader(*decodeProgram(words)));
 }
 
-TEST(LatteLoweringTest, WholeQuadImplicitDerivativeConsumersRemainFallback)
+TEST(LatteLoweringTest, WholeQuadImplicitSamplingRequiresRuntimeResourceProof)
 {
     const auto program = decodeProgram({6,
                                         9u << 26,
@@ -263,13 +263,104 @@ TEST(LatteLoweringTest, WholeQuadImplicitDerivativeConsumersRemainFallback)
                                         (OP2_MOV << 7) | 16u | (4u << 21),
                                         0x80000000u | 4u,
                                         (OP2_MOV << 7) | 16u | (3u << 21),
-                                        0x13u | (4u << 16),
+                                        0x10u | (4u << 16),
                                         5u | (0x688u << 9) | 0x30000000u,
                                         0x688u << 20,
                                         0});
     const auto shader = lowerFragmentShader(*program);
-    EXPECT_FALSE(shader);
-    EXPECT_EQ(shader.error, "whole-quad ALU with implicit texture derivatives requires quad execution");
+    ASSERT_TRUE(shader) << shader.error;
+    EXPECT_TRUE(shader.requiresDerivativeFreeSampling);
+    ASSERT_EQ(shader.textures.size(), 1u);
+    EXPECT_TRUE(shader.textures[0].implicitLod);
+    validateSpirv(shader);
+    auto explicitWords = program->words;
+    explicitWords[18] = (explicitWords[18] & ~31u) | 0x13u;
+    const auto explicitShader = lowerFragmentShader(*decodeProgram(explicitWords));
+    ASSERT_TRUE(explicitShader) << explicitShader.error;
+    EXPECT_FALSE(explicitShader.requiresDerivativeFreeSampling);
+    EXPECT_FALSE(explicitShader.textures[0].implicitLod);
+}
+
+TEST(VulkanRasterBackendTest, WholeQuadImplicitSamplingAcceptsOnlyDerivativeFreeResources)
+{
+    using namespace Core::Gfx;
+    if (!std::getenv("WEMU_TEST_VULKAN") || !SpirvCompiler::available())
+        GTEST_SKIP();
+    const auto program = decodeProgram({6,
+                                        9u << 26,
+                                        7,
+                                        (8u << 26) | (1u << 30),
+                                        9,
+                                        CF_TEX << 23,
+                                        8,
+                                        10u << 26,
+                                        3u << 15,
+                                        (CF_EXP_DONE << 23) | (1u << 21) | 0x688u,
+                                        0,
+                                        CF_RETURN << 23,
+                                        0x80000000u | (1u << 13),
+                                        (OP2_PRED_SETGT << 7) | 12u,
+                                        0x80000000u | SRC_1,
+                                        (OP2_MOV << 7) | 16u | (4u << 21),
+                                        0x80000000u | 5u,
+                                        (OP2_MOV << 7) | 16u | (3u << 21),
+                                        0x10u | (4u << 16),
+                                        5u | (0x688u << 9) | 0x30000000u,
+                                        0x688u << 20,
+                                        0});
+    const auto shader = lowerFragmentShader(*program);
+    ASSERT_TRUE(shader) << shader.error;
+    ASSERT_TRUE(shader.requiresDerivativeFreeSampling);
+    std::vector<RasterDraw::Vertex> vertices;
+    for (const auto xy:
+         {std::array{0.f, 0.f}, std::array{4.f, 0.f}, std::array{4.f, 4.f}, std::array{0.f, 0.f}, std::array{4.f, 4.f}, std::array{0.f, 4.f}}) {
+        RasterDraw::Vertex vertex{xy[0], xy[1], {}};
+        vertex.inputs[0][0] = xy[0] / 2.f - 1.f;
+        vertices.push_back(vertex);
+    }
+    std::array<std::uint8_t, 64> target{};
+    const std::array color{64.f / 255.f, .5f, .75f, 1.f};
+    RasterDraw::Texture texture{shader.textures[0], 2, 2, {}, [&](unsigned, unsigned) { return color; }};
+    texture.sourceMipCount = 1;
+    RasterDraw draw{shader, vertices, {}, {&texture, 1}, target, 4, 4, 4, {0, 0, 4, 4}, 15, {}};
+    VulkanRasterBackend backend;
+    for (unsigned filter: {0u, 1u}) {
+        texture.sampler.regs[0] = 2u | (2u << 3) | (filter << 9) | (filter << 12);
+        const auto output = backend.render(draw);
+        ASSERT_TRUE(output) << backend.lastError();
+        for (unsigned y = 0; y < 4; ++y)
+            for (unsigned x = 0; x < 4; ++x) {
+                std::array<std::array<float, 4>, 4> inputs{};
+                inputs[0][0] = (float(x) + .5f) / 2.f - 1.f;
+                const auto expected = LatteVsInterp::runPixel(*program, inputs, nullptr, 0,
+                                                              [&](unsigned, unsigned, const std::array<float, 4> &, std::array<float, 4> &rgba) {
+                                                                  rgba = color;
+                                                                  return true;
+                                                              });
+                ASSERT_TRUE(expected.colorValid);
+                for (unsigned c = 0; c < 4; ++c)
+                    EXPECT_EQ(output->rgba[(y * 4 + x) * 4 + c], std::lround(expected.color[c] * 255.f));
+            }
+    }
+    const auto validSampler = texture.sampler;
+    const auto validSubmissions = backend.queueSubmissions();
+    texture.binding.implicitLod = false; // The compiled shader owns this requirement.
+    for (unsigned mipCount: {0u, 2u, 8u}) {
+        texture.sourceMipCount = mipCount;
+        EXPECT_FALSE(backend.render(draw));
+    }
+    texture.sourceMipCount = 1;
+    texture.sourceFirstMip = 1;
+    EXPECT_FALSE(backend.render(draw));
+    texture.sourceFirstMip = 0;
+    texture.sampler.regs[0] ^= 1u << 12; // Min and mag now disagree.
+    EXPECT_FALSE(backend.render(draw));
+    texture.sampler = validSampler;
+    texture.sampler.regs[0] |= 1u << 19; // Anisotropic filtering consumes derivatives.
+    EXPECT_FALSE(backend.render(draw));
+    EXPECT_EQ(backend.queueSubmissions(), validSubmissions);
+    texture.sampler = validSampler;
+    ASSERT_TRUE(backend.render(draw)) << backend.lastError();
 }
 
 TEST(SpirvCompilerTest, RejectsInvalidRequestsWithoutTools)
@@ -1656,8 +1747,8 @@ TEST(LatteLoweringTest, RejectsUnsupportedProgramsWithoutPartialSource)
     words[1] = 9u << 26;
     reject(words); // unbalanced ALU_PUSH_BEFORE
     words = base;
-    words[0] |= 1u << 30;
-    reject(words); // uniform window
+    words[0] |= 3u << 30;
+    reject(words); // loop-indexed uniform window
     words = base;
     words[2] |= 1u << 13;
     reject(words); // position export
@@ -2404,6 +2495,63 @@ TEST(VulkanPointsTest, FloatPointsBlendWithoutClampingAndPreserveMasksPaddingAnd
     EXPECT_EQ(readFloatColor(result->rgba.data()), (std::array{1.25f, -.75f, 4.5f, .125f}));
 }
 
+TEST(LatteLoweringTest, FragmentKcacheWindowsUseBanksAndOffsetsWhileConstantFileStaysIndependent)
+{
+    using namespace Core::Gfx;
+    const std::vector<std::uint32_t> words{2u | (3u << 22) | (7u << 26) | (1u << 30),
+                                           (8u << 26) | (3u << 18) | (1u << 2) | (2u << 10) | 2u,
+                                           0,
+                                           (CF_EXP_DONE << 23) | (1u << 21) | 0x688u,
+                                           128u,
+                                           (OP2_MOV << 7) | 16u,
+                                           162u | (1u << 10),
+                                           (OP2_MOV << 7) | 16u | (1u << 29),
+                                           256u | (2u << 10),
+                                           (OP2_MOV << 7) | 16u | (2u << 29),
+                                           0x80000000u | 128u | (3u << 10),
+                                           (OP2_MOV << 7) | 16u | (3u << 29)};
+    const auto program = decodeProgram(words);
+    const auto shader = lowerFragmentShader(*program);
+    ASSERT_TRUE(shader) << shader.error;
+    ASSERT_EQ(shader.uniforms.size(), 2u);
+    EXPECT_EQ(shader.uniforms[0], (FragmentShader::UniformReference{3, 16}));
+    EXPECT_EQ(shader.uniforms[1], (FragmentShader::UniformReference{7, 34}));
+    std::array<float, 1024> constants{};
+    constants[2] = .75f;
+    std::array<std::array<float, 4>, 4> inputs{};
+    const auto fetch = [](unsigned bank, unsigned index, unsigned channel) {
+        if (bank == 3 && index == 16)
+            return channel == 3 ? 1.f : .25f;
+        if (bank == 7 && index == 34)
+            return .5f;
+        return -10.f;
+    };
+    const auto reference = Core::Gfx::LatteVsInterp::runPixel(*program, inputs, constants.data(), 256, {}, fetch);
+    ASSERT_TRUE(reference.colorValid);
+    EXPECT_EQ(reference.color, (std::array{.25f, .5f, .75f, 1.f}));
+    ASSERT_NO_FATAL_FAILURE(validateSpirv(shader));
+    if (!std::getenv("WEMU_TEST_VULKAN"))
+        return;
+    std::array<RasterDraw::Vertex, 3> vertices{{{0, 0, {}}, {2, 0, {}}, {0, 2, {}}}};
+    std::array<std::uint8_t, 4> target{};
+    std::array<float, 8> uniforms{.25f, 0, 0, 1, 0, .5f, 0, 0};
+    RasterDraw draw{shader, vertices, constants, {}, target, 1, 1, 1, {0, 0, 1, 1}, 15, {}};
+    draw.uniforms = uniforms;
+    VulkanRasterBackend backend;
+    const auto first = backend.render(draw);
+    ASSERT_TRUE(first) << backend.lastError();
+    for (unsigned c = 0; c < 4; ++c)
+        EXPECT_LE(std::abs(int(first->rgba[c]) - std::array{64, 128, 191, 255}[c]), 1);
+    uniforms[0] = .5f;
+    uniforms[5] = .25f;
+    const auto changed = backend.render(draw);
+    ASSERT_TRUE(changed) << backend.lastError();
+    for (unsigned c = 0; c < 4; ++c)
+        EXPECT_LE(std::abs(int(changed->rgba[c]) - std::array{128, 64, 191, 255}[c]), 1);
+    draw.uniforms = {};
+    EXPECT_FALSE(backend.render(draw));
+}
+
 TEST(LatteVertexTest, UniformWindowsAndExplicitTextureSamplingCompileWithSharedAlu)
 {
     // R1.x takes bank 3, vector 16; POS0 exports R1 and PARAM0 exports R2.
@@ -2415,7 +2563,7 @@ TEST(LatteVertexTest, UniformWindowsAndExplicitTextureSamplingCompileWithSharedA
                                            (CF_EXP_DONE << 23) | (1u << 21) | 0x688u,
                                            0,
                                            0,
-                                           0x80000000u | 256u,
+                                           0x80000000u | 128u,
                                            (OP2_MOV << 7) | 16u | (1u << 21)};
     const auto shader = lowerVertexShader(*decodeProgram(words));
     ASSERT_TRUE(shader) << shader.error;
@@ -2578,7 +2726,7 @@ TEST(VulkanPointsTest, FloatBlendEquationsAndVertexUniformWindowsPreserveHdrValu
                                            (CF_EXP_DONE << 23) | (1u << 21) | 0x688u,
                                            0,
                                            0,
-                                           0x80000000u | 256u,
+                                           0x80000000u | 128u,
                                            (OP2_MOV << 7) | 16u | (1u << 21)};
     auto vertex = std::make_shared<const VertexShader>(lowerVertexShader(*decodeProgram(words)));
     ASSERT_TRUE(*vertex) << vertex->error;
@@ -2605,6 +2753,34 @@ TEST(VulkanPointsTest, FloatBlendEquationsAndVertexUniformWindowsPreserveHdrValu
     }
 }
 
+TEST(VulkanRasterBackendTest, DynamicViewportAndScissorReusePipelinesAcrossTargetSizes)
+{
+    using namespace Core::Gfx;
+    if (!std::getenv("WEMU_TEST_VULKAN"))
+        GTEST_SKIP();
+    const auto shader = lowerFragmentShader(*decodeProgram({0, (CF_EXP_DONE << 23) | (1u << 21) | 0x688u}));
+    ASSERT_TRUE(shader) << shader.error;
+    VulkanRasterBackend backend;
+    for (const auto dimensions: {std::array{4u, 4u}, std::array{8u, 3u}, std::array{3u, 7u}, std::array{4u, 4u}}) {
+        const auto width = dimensions[0], height = dimensions[1], pitch = width + 2;
+        std::vector<std::uint8_t> target(pitch * height * 4, 19);
+        std::array<RasterDraw::Vertex, 3> vertices{{{0, 0, {}}, {float(width * 2), 0, {}}, {0, float(height * 2), {}}}};
+        for (auto &vertex: vertices)
+            vertex.inputs[0] = {1, 0, 0, 1};
+        RasterDraw draw{shader, vertices, {}, {}, target, width, height, pitch, {1, 1, int(width) - 1, int(height) - 1}, 15, {}};
+        const auto result = backend.render(draw);
+        ASSERT_TRUE(result) << backend.lastError();
+        for (unsigned y = 0; y < height; ++y)
+            for (unsigned x = 0; x < pitch; ++x) {
+                const auto offset = (y * pitch + x) * 4;
+                const auto expected =
+                        x >= 1 && x < width && y >= 1 ? std::array<std::uint8_t, 4>{255, 0, 0, 255} : std::array<std::uint8_t, 4>{19, 19, 19, 19};
+                EXPECT_EQ((std::array{result->rgba[offset], result->rgba[offset + 1], result->rgba[offset + 2], result->rgba[offset + 3]}), expected);
+            }
+    }
+    EXPECT_EQ(backend.pipelineCreations(), 1u);
+}
+
 TEST(VulkanRasterBackendTest, ColdScissorVariantsKeepHotResourcesAndOlderSnapshotsAlive)
 {
     using namespace Core::Gfx;
@@ -2626,7 +2802,8 @@ TEST(VulkanRasterBackendTest, ColdScissorVariantsKeepHotResourcesAndOlderSnapsho
         draw.scissor = {0, 0, 4, 4};
         ASSERT_TRUE(backend.renderDeferred(draw)) << backend.lastError();
     }
-    EXPECT_EQ(backend.reusedDraws(), 69u); // One extra bundle preserves the first live snapshot.
+    EXPECT_EQ(backend.reusedDraws(), 139u); // One extra bundle preserves the first live snapshot.
+    EXPECT_EQ(backend.pipelineCreations(), 1u); // Scissor variants share dynamic pipeline state.
     first->resolve();
     for (unsigned y = 0; y < 4; ++y)
         for (unsigned x = 0; x < 6; ++x) {
@@ -3157,4 +3334,283 @@ TEST(LatteLoweringTest, TruncConsumesScalarResultWithoutRegisterWrites)
         EXPECT_EQ(reference.color, (std::array{expected, 0.f, 0.f, 0.f}));
         ASSERT_NO_FATAL_FAILURE(compareNativeControlFlow(*program, inputs, reference.color));
     }
+}
+
+TEST(LatteLoweringTest, AddressFloorAndTruncHaveDistinctHardwareOpcodes)
+{
+    EXPECT_EQ(unsigned(OP2_TRUNC), 0x11u);
+    EXPECT_EQ(unsigned(OP2_MOVA_FLOOR), 0x16u);
+    // Use literal ISA encodings so a mistaken shared enum cannot bless both backends.
+    const auto program = decodeProgram({2, (8u << 26) | (1u << 18), 3u << 15, (CF_EXP_DONE << 23) | (1u << 21), 0x80000000u | 256u, 0x16u << 7,
+                                        0x80000000u | 272u | (1u << 9), (0x19u << 7) | 16u | (3u << 21)});
+    const auto fragment = lowerFragmentShader(*program);
+    ASSERT_TRUE(fragment) << fragment.error;
+    FragmentShader vertex;
+    vertex.source = probeVertexSource;
+    std::vector<std::uint32_t> vs, ps;
+    ASSERT_NO_FATAL_FAILURE(validateSpirv(vertex, &vs, "vert"));
+    ASSERT_NO_FATAL_FAILURE(validateSpirv(fragment, &ps));
+    std::array<float, 1024> constants{};
+    for (unsigned i = 1; i < 256; ++i)
+        constants[i * 4] = float(i) / 256.f;
+    for (float index: {-16.f, -2.75f, -0.f, 0.f, 1.75f, 239.f, -17.f, 240.f, 255.f, 256.f, -257.f, std::numeric_limits<float>::infinity(),
+                       std::numeric_limits<float>::quiet_NaN()}) {
+        SCOPED_TRACE(index);
+        constants[0] = index;
+        const int address = !std::isfinite(index) || index < -256.f || index >= 256.f ? -256 : int(std::floor(index));
+        const int selected = 16 + address;
+        const auto reference = Core::Gfx::LatteVsInterp::runPixel(*program, {}, constants.data(), 256, {});
+        ASSERT_TRUE(reference.colorValid);
+        if (selected < 0 || selected >= 256)
+            EXPECT_EQ(std::bit_cast<std::uint32_t>(reference.color[0]), 0x7FFFFFFFu);
+        else
+            EXPECT_EQ(reference.color[0], constants[unsigned(selected) * 4]);
+        if (std::getenv("WEMU_TEST_VULKAN")) {
+            VulkanFragmentProbe probe;
+            probe.initialize(vs, ps, constants);
+            for (const auto &pixel: probe.draw({})) {
+                if (std::isnan(reference.color[0]))
+                    EXPECT_TRUE(std::isnan(pixel[0]));
+                else
+                    EXPECT_EQ(pixel[0], reference.color[0]);
+            }
+        }
+    }
+}
+
+TEST(LatteLoweringTest, AddressComponentsRequirePriorGroupsAndResetEveryClause)
+{
+    for (unsigned component = 0; component < 4; ++component) {
+        auto words = std::vector<std::uint32_t>{2,
+                                                (8u << 26) | (1u << 18),
+                                                3u << 15,
+                                                (CF_EXP_DONE << 23) | (1u << 21),
+                                                0x80000000u | 256u,
+                                                (OP2_MOVA_INT << 7) | (component << 29),
+                                                0x80000000u | 260u | (1u << 9) | (component << 26),
+                                                (OP2_MOV << 7) | 16u | (3u << 21)};
+        const auto program = decodeProgram(words);
+        const auto fragment = lowerFragmentShader(*program);
+        ASSERT_TRUE(fragment) << fragment.error;
+        std::array<float, 1024> constants{};
+        constants[0] = std::bit_cast<float>(std::int32_t(-2));
+        constants[8] = .75f;
+        const auto reference = Core::Gfx::LatteVsInterp::runPixel(*program, {}, constants.data(), 256, {});
+        ASSERT_TRUE(reference.colorValid);
+        EXPECT_EQ(reference.color[0], .75f);
+        ASSERT_NO_FATAL_FAILURE(validateSpirv(fragment));
+        auto vertexWords = words;
+        vertexWords[2] = 60u | (1u << 13) | (3u << 15);
+        const auto vertex = lowerVertexShader(*decodeProgram(vertexWords));
+        ASSERT_TRUE(vertex) << vertex.error;
+        ASSERT_NO_FATAL_FAILURE(validateSpirv(vertex, nullptr, "vert"));
+        const auto vertexReference = Core::Gfx::LatteVsInterp::run(vertexWords, {}, constants.data(), 256);
+        ASSERT_TRUE(vertexReference.valid);
+        EXPECT_EQ(vertexReference.pos[0], .75f);
+        words[6] = (words[6] & ~(7u << 26)) | (4u << 26);
+        EXPECT_FALSE(lowerFragmentShader(*decodeProgram(words))); // LOOP needs loop state.
+        EXPECT_FALSE(Core::Gfx::LatteVsInterp::runPixel(*decodeProgram(words), {}, constants.data(), 256, {}).colorValid);
+    }
+    for (const auto &words:
+         {// Reading an unwritten AR is not the same as an implicit zero offset.
+          std::vector<std::uint32_t>{2, 8u << 26, 3u << 15, (CF_EXP_DONE << 23) | (1u << 21), 0x80000000u | 256u | (1u << 9),
+                                     (OP2_MOV << 7) | 16u | (3u << 21)},
+          // A MOVA and relative read cannot share their simultaneous ALU group.
+          std::vector<std::uint32_t>{2, (8u << 26) | (1u << 18), 3u << 15, (CF_EXP_DONE << 23) | (1u << 21), 256u, OP2_MOVA_FLOOR << 7,
+                                     0x80000000u | 256u | (1u << 9), (OP2_MOV << 7) | 16u | (3u << 21) | (1u << 29)},
+          // AR is clause local, even if the previous clause wrote it.
+          std::vector<std::uint32_t>{3, 8u << 26, 4, 8u << 26, 3u << 15, (CF_EXP_DONE << 23) | (1u << 21), 0x80000000u | SRC_1, OP2_MOVA_FLOOR << 7,
+                                     0x80000000u | 256u | (1u << 9), (OP2_MOV << 7) | 16u | (3u << 21)}}) {
+        const auto program = decodeProgram(words);
+        EXPECT_FALSE(lowerFragmentShader(*program));
+        EXPECT_FALSE(Core::Gfx::LatteVsInterp::runPixel(*program, {}, nullptr, 0, {}).colorValid);
+    }
+}
+
+TEST(LatteLoweringTest, WholeQuadDeadWritesCanBeOverwrittenAfterReconvergence)
+{
+    const std::vector<std::uint32_t> words{5,
+                                           9u << 26,
+                                           6,
+                                           (8u << 26) | (1u << 30),
+                                           7,
+                                           10u << 26,
+                                           8,
+                                           8u << 26,
+                                           4u << 15,
+                                           (CF_EXP_DONE << 23) | (1u << 21) | 0x688u,
+                                           0x80000000u | (1u << 13),
+                                           (OP2_PRED_SETGT << 7) | 12u,
+                                           0x80000000u | SRC_1,
+                                           (OP2_MOV << 7) | 16u | (4u << 21),
+                                           0x80000000u | SRC_0,
+                                           (OP2_MOV << 7) | 16u | (3u << 21),
+                                           0x80000000u | SRC_HALF,
+                                           (OP2_MOV << 7) | 16u | (4u << 21)};
+    const auto program = decodeProgram(words);
+    for (float input: {-1.f, 1.f}) {
+        VulkanFragmentProbe::Inputs inputs{};
+        inputs[0][0] = input;
+        const auto reference = Core::Gfx::LatteVsInterp::runPixel(*program, inputs, nullptr, 0, {});
+        ASSERT_TRUE(reference.colorValid);
+        EXPECT_EQ(reference.color, (std::array{.5f, 0.f, 0.f, 0.f}));
+        ASSERT_NO_FATAL_FAILURE(compareNativeControlFlow(*program, inputs, reference.color));
+    }
+    auto selfRead = words;
+    selfRead[16] = 0x80000000u | 4u;
+    EXPECT_FALSE(lowerFragmentShader(*decodeProgram(selfRead)));
+    auto predicated = words;
+    predicated[16] |= 3u << 29;
+    EXPECT_FALSE(lowerFragmentShader(*decodeProgram(predicated)));
+    auto partial = words;
+    partial[13] |= 1u << 29; // Whole-quad Y survives the ordinary X overwrite.
+    EXPECT_FALSE(lowerFragmentShader(*decodeProgram(partial)));
+}
+
+TEST(LatteLoweringTest, MaskedVertexExportsPreserveEarlierComponentsAndEmptyExports)
+{
+    const std::vector<std::uint32_t> words{60u | (1u << 13) | (1u << 15),
+                                           (CF_EXP << 23) | 0x688u,
+                                           60u | (1u << 13) | (2u << 15),
+                                           (CF_EXP_DONE << 23) | 0xFC7u, // Only Y, from R2.x.
+                                           (2u << 13) | (1u << 15),
+                                           (CF_EXP << 23) | 0x688u,
+                                           (2u << 13) | (2u << 15),
+                                           (CF_EXP << 23) | 0x5FFu, // Only W, from R2.z.
+                                           (1u << 13) | 60u,
+                                           (CF_EXP_DONE << 23) | (1u << 21) | 0xFFFu};
+    const auto vertex = lowerVertexShader(*decodeProgram(words));
+    ASSERT_TRUE(vertex) << vertex.error;
+    ASSERT_NO_FATAL_FAILURE(validateSpirv(vertex, nullptr, "vert"));
+    VulkanFragmentProbe::Inputs attributes{};
+    attributes[0] = {-.5f, .5f, .25f, 1.f};
+    attributes[1] = {-.25f, .75f, 2.f, 3.f};
+    const auto reference = Core::Gfx::LatteVsInterp::run(words, attributes, nullptr, 0);
+    ASSERT_TRUE(reference.valid);
+    EXPECT_EQ(reference.pos, (std::array{-.5f, -.25f, .25f, 1.f}));
+    ASSERT_TRUE(reference.paramValid[0]);
+    EXPECT_EQ(reference.params[0], (std::array{-.5f, .5f, .25f, 2.f}));
+    EXPECT_EQ(vertex.parameterMask, 1u);
+    if (std::getenv("WEMU_TEST_VULKAN")) {
+        using namespace Core::Gfx;
+        const auto fragment = lowerFragmentShader(*decodeProgram({0, (CF_EXP_DONE << 23) | (1u << 21) | 0x688u}));
+        std::array<RasterDraw::Vertex, 2> points{};
+        for (unsigned i = 0; i < points.size(); ++i) {
+            points[i].inputs[0] = {i ? .5f : -.5f, 0.f, .25f, 1.f};
+            points[i].inputs[1] = {0.f, 0.f, .75f, 0.f};
+        }
+        std::array<std::uint8_t, 32> target{};
+        RasterDraw draw{fragment, points, {}, {}, target, 2, 1, 2, {0, 0, 2, 1}, 15, {}};
+        draw.topology = RasterDraw::Topology::Points;
+        draw.colorFormat = ColorFormat::RGBA32Float;
+        draw.vertexStage = {std::make_shared<VertexShader>(vertex), {}, {}, {0, -1, -1, -1}, {0, 0, 2, 1, 0, 1}};
+        VulkanRasterBackend backend;
+        const auto result = backend.render(draw);
+        ASSERT_TRUE(result) << backend.lastError();
+        EXPECT_EQ(readFloatColor(result->rgba.data()), (std::array{-.5f, 0.f, .25f, .75f}));
+        EXPECT_EQ(readFloatColor(result->rgba.data() + 16), (std::array{.5f, 0.f, .25f, .75f}));
+    }
+    auto invalid = words;
+    invalid[1] = (invalid[1] & ~7u) | 6u;
+    EXPECT_FALSE(lowerVertexShader(*decodeProgram(invalid)));
+}
+
+TEST(LatteLoweringTest, WholeQuadConditionalPopPoisonsOnlyTheTakenEdge)
+{
+    const std::vector<std::uint32_t> words{6,
+                                           9u << 26,
+                                           7,
+                                           (8u << 26) | (1u << 30),
+                                           5,
+                                           (0x0Au << 23) | 1u,
+                                           8,
+                                           10u << 26,
+                                           9,
+                                           8u << 26,
+                                           3u << 15,
+                                           (CF_EXP_DONE << 23) | (1u << 21) | 0x688u,
+                                           0x80000000u | (1u << 13),
+                                           (OP2_PRED_SETGT << 7) | 12u,
+                                           0x80000000u | SRC_1,
+                                           (OP2_MOV << 7) | 16u | (4u << 21),
+                                           0x80000000u | 4u,
+                                           (OP2_MOV << 7) | 16u | (3u << 21),
+                                           0x80000000u | SRC_HALF,
+                                           (OP2_MOV << 7) | 16u | (4u << 21)};
+    const auto program = decodeProgram(words);
+    for (float value: {-1.f, 1.f}) {
+        VulkanFragmentProbe::Inputs inputs{};
+        inputs[0][0] = value;
+        const auto reference = Core::Gfx::LatteVsInterp::runPixel(*program, inputs, nullptr, 0, {});
+        ASSERT_TRUE(reference.colorValid);
+        EXPECT_EQ(reference.color, (std::array{value > 0 ? 1.f : 0.f, 0.f, 0.f, 0.f}));
+        ASSERT_NO_FATAL_FAILURE(compareNativeControlFlow(*program, inputs, reference.color));
+    }
+    auto escaped = words;
+    escaped[10] = 4u << 15;
+    // The jump skips the root overwrite. Its incoming helper value must remain
+    // poisoned when the taken and fall-through paths meet at the export.
+    EXPECT_FALSE(lowerFragmentShader(*decodeProgram(escaped)));
+}
+
+TEST(LatteLoweringTest, UniformWholeQuadMasksPermitLiveValuesAfterReconvergence)
+{
+    auto words = isolatedWholeQuadProgram();
+    words[10] = 0x80000000u | 256u | (SRC_HALF << 13);
+    words[8] = 4u << 15;
+    const auto program = decodeProgram(words);
+    const auto shader = lowerFragmentShader(*program);
+    ASSERT_TRUE(shader) << shader.error;
+    FragmentShader vertex;
+    vertex.source = probeVertexSource;
+    std::vector<std::uint32_t> vs, ps;
+    ASSERT_NO_FATAL_FAILURE(validateSpirv(vertex, &vs, "vert"));
+    ASSERT_NO_FATAL_FAILURE(validateSpirv(shader, &ps));
+    for (float constant: {0.f, 1.f}) {
+        std::array<float, 1024> constants{};
+        constants[0] = constant;
+        const auto reference = Core::Gfx::LatteVsInterp::runPixel(*program, {}, constants.data(), 256, {});
+        ASSERT_TRUE(reference.colorValid);
+        EXPECT_EQ(reference.color, (std::array{constant, 0.f, 0.f, 0.f}));
+        if (std::getenv("WEMU_TEST_VULKAN")) {
+            VulkanFragmentProbe probe;
+            probe.initialize(vs, ps, constants);
+            for (const auto &pixel: probe.draw({}))
+                EXPECT_EQ(pixel, reference.color);
+        }
+    }
+    // The same control flow becomes unsafe when its gate reads interpolated data.
+    words[10] = 0x80000000u | (SRC_HALF << 13);
+    EXPECT_FALSE(lowerFragmentShader(*decodeProgram(words)));
+}
+
+TEST(LatteLoweringTest, PredicatedWritesUsePreGroupUniformityFacts)
+{
+    const auto program = decodeProgram({5,
+                                        (8u << 26) | (2u << 18),
+                                        8,
+                                        9u << 26,
+                                        9,
+                                        (8u << 26) | (1u << 30),
+                                        10,
+                                        10u << 26,
+                                        5u << 15,
+                                        (CF_EXP_DONE << 23) | (1u << 21) | 0x688u,
+                                        0x80000000u | (SRC_0 << 13),
+                                        (OP2_PRED_SETGT << 7) | 8u,
+                                        SRC_1 | (SRC_0 << 13),
+                                        (OP2_PRED_SETGT << 7) | 8u,
+                                        0x80000000u | SRC_1 | (3u << 29),
+                                        (OP2_MOV << 7) | 16u | (4u << 21),
+                                        0x80000000u | 4u | (SRC_0 << 13),
+                                        (OP2_PRED_SETGT << 7) | 12u,
+                                        0x80000000u | SRC_1,
+                                        (OP2_MOV << 7) | 16u | (5u << 21),
+                                        0x80000000u | SRC_0,
+                                        (OP2_MOV << 7) | 16u | (6u << 21)});
+    // The constant predicate write shares a group with a MOV predicated by
+    // the previous varying predicate. Its destination is still varying.
+    const auto shader = lowerFragmentShader(*program);
+    EXPECT_FALSE(shader);
+    EXPECT_TRUE(shader.error.starts_with("whole-quad value escapes masked region:"));
 }

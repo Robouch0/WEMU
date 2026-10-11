@@ -4,7 +4,8 @@
 #include <QString>
 
 inline QProcessEnvironment desktopLaunchEnvironment(QProcessEnvironment environment, const QString &contentPath,
-                                                    const QString &sharedFont)
+                                                    const QString &sharedFont, bool nativeCpu = false,
+                                                    const QString &nativeCache = {})
 {
     // Keep host display/audio configuration, but never inherit emulation experiments.
     for (const auto &key : environment.keys())
@@ -18,6 +19,10 @@ inline QProcessEnvironment desktopLaunchEnvironment(QProcessEnvironment environm
                             "WEMU_NATIVE_RESIDENT_TEXTURES", "WEMU_NATIVE_RESIDENT_TARGETS"})
         environment.insert(key, "1");
     if (!sharedFont.isEmpty()) environment.insert("WEMU_SHARED_FONT", sharedFont);
+    if (nativeCpu) {
+        environment.insert("WEMU_NATIVE_CPU", "1");
+        if (!nativeCache.isEmpty()) environment.insert("WEMU_NATIVE_CACHE_DIR", nativeCache);
+    }
     if (environment.value("QT_WEMU_INPUT_TRACE") == "1") environment.insert("WEMU_VPAD_TRACE", "1");
     return environment;
 }

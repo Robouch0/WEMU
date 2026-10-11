@@ -106,6 +106,14 @@ namespace Core::Gfx {
 
         std::uint8_t byteFromUnit(const double v) { return static_cast<std::uint8_t>(std::lround(std::clamp(v, 0.0, 1.0) * 255.0)); }
 
+        float interpolateValue(float a, float b, float c, float w0, float w1, float w2)
+        {
+            // Rounded barycentric weights need not sum to exactly one. Constant
+            // attributes and depth planes must stay constant, especially at LESS
+            // and EQUAL depth tests against a previously rendered plane.
+            return a == b && a == c ? a : w0 * a + w1 * b + w2 * c;
+        }
+
         std::uint8_t clampByte(const int v) { return static_cast<std::uint8_t>(std::clamp(v, 0, 255)); }
 
         bool shouldDumpAfterDraw(const std::uint32_t draw)
@@ -1340,13 +1348,11 @@ namespace Core::Gfx {
                 return true;
             }
             const auto kcache = [&](std::uint32_t bank, std::uint32_t vec4Idx, std::uint32_t chan) -> float {
-                // kcache bank N maps to some GX2 uniform-block location N+bias. The +1 was inferred
-                // from MK8 binding locations 1..4 against CF banks starting at 0, but it has never
-                // been confirmed against a draw that lands correctly; WEMU_KCACHE_BIAS overrides it
-                // so the mapping can be settled by experiment rather than inference.
+                // CF KCACHE banks select the corresponding GX2 uniform-block
+                // location directly. Keep the explicit diagnostic offset opt-in.
                 static const std::uint32_t bias = []() {
                     const char *e = std::getenv("WEMU_KCACHE_BIAS");
-                    return e ? static_cast<std::uint32_t>(std::atoi(e)) : 1u;
+                    return e ? static_cast<std::uint32_t>(std::atoi(e)) : 0u;
                 }();
                 bank += bias;
                 if (bank >= m_vsBlocks.size())
@@ -1572,7 +1578,7 @@ namespace Core::Gfx {
             std::array<std::array<float, 4>, 4> out{};
             for (int p = 0; p < 4; p++)
                 for (int c = 0; c < 4; c++)
-                    out[p][c] = p0 * rv[0].params[p][c] + p1 * rv[1].params[p][c] + p2 * rv[2].params[p][c];
+                    out[p][c] = interpolateValue(rv[0].params[p][c], rv[1].params[p][c], rv[2].params[p][c], p0, p1, p2);
             return out;
         };
 
@@ -2005,7 +2011,8 @@ namespace Core::Gfx {
                             if (unsigned(xx) >= m_depth.width || unsigned(yy) >= m_depth.height)
                                 continue;
                             auto &stored = drawDepth->pixels[std::size_t(yy) * m_depth.pitch + xx];
-                            const float incoming = clampDepth(pixel.depthValid ? pixel.depth : w0 * rv[0].z + w1 * rv[1].z + w2 * rv[2].z);
+                            const float incoming =
+                                    clampDepth(pixel.depthValid ? pixel.depth : interpolateValue(rv[0].z, rv[1].z, rv[2].z, w0, w1, w2));
                             if (!depthCompare(incoming, stored, m_depthCompare))
                                 continue;
                             if (m_depthWrite)
@@ -2338,6 +2345,12 @@ namespace Core::Gfx {
                     }
                 }
             }
+            for (auto &texture: textures) {
+                const auto &surfaces = texture.binding.binding > 17 ? m_vertexTextures : m_pixelTextures;
+                const auto &surface = surfaces[texture.binding.resource];
+                texture.sourceMipCount = surface.mipCount;
+                texture.sourceFirstMip = surface.firstMip;
+            }
             std::vector<RasterDraw::Vertex> vertices;
             for (const auto &triangle: preparedTriangles) {
                 const auto &a = triangle[0], &b = triangle[1], &c = triangle[2];
@@ -2394,11 +2407,17 @@ namespace Core::Gfx {
                                  blend.useAlphaBlend ? blend.alphaSrcBlend : blend.colorSrcBlend,
                                  blend.useAlphaBlend ? blend.alphaDstBlend : blend.colorDstBlend,
                                  blend.useAlphaBlend ? blend.alphaCombine : blend.colorCombine, m_blendConstant}};
+                std::vector<float> pixelUniforms;
+                pixelUniforms.reserve(shader.uniforms.size() * 4);
+                for (const auto &reference: shader.uniforms)
+                    for (unsigned c = 0; c < 4; ++c)
+                        pixelUniforms.push_back(pixelConstants(reference.bank, reference.index, c));
+                draw.uniforms = pixelUniforms;
                 std::vector<float> vertexUniforms;
                 if (nativeVertexShader) {
                     static const unsigned bias = [] {
                         const auto *v = std::getenv("WEMU_KCACHE_BIAS");
-                        return v ? unsigned(std::atoi(v)) : 1u;
+                        return v ? unsigned(std::atoi(v)) : 0u;
                     }();
                     for (const auto &reference: nativeVertexShader->uniforms)
                         for (unsigned c = 0; c < 4; ++c) {
@@ -2673,11 +2692,12 @@ namespace Core::Gfx {
                     }
                     const auto &texture = m_pixelTextures[binding.resource];
                     const auto &sampler = m_pixelSamplers[binding.sampler];
-                    Utils::Log::error("[NATIVETEX] resource={} sampler={} size={}x{} dim={} fmt={:X} mip={} slice={} aa={} "
+                    Utils::Log::error("[NATIVETEX] resource={} sampler={} size={}x{} dim={} fmt={:X} mip={}/{} slice={} aa={} "
                                       "feedback={} tile={} pitch={} image_bytes={} regs={:08X},{:08X},{:08X}",
                                       binding.resource, binding.sampler, texture.width, texture.height, texture.dimension, texture.format,
-                                      texture.firstMip, texture.firstSlice, texture.aa, makeSurfaceKey(texture) == makeSurfaceKey(m_color),
-                                      texture.tileMode, texture.pitch, texture.imageSize, sampler.regs[0], sampler.regs[1], sampler.regs[2]);
+                                      texture.firstMip, texture.mipCount, texture.firstSlice, texture.aa,
+                                      makeSurfaceKey(texture) == makeSurfaceKey(m_color), texture.tileMode, texture.pitch, texture.imageSize,
+                                      sampler.regs[0], sampler.regs[1], sampler.regs[2]);
                 }
             }
         }

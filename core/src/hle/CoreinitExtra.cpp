@@ -374,7 +374,6 @@ namespace {
             cpu.m_memory.write<std::uint32_t>(cpu.m_gpr[6], fontSize);
         cpu.m_gpr[3] = fontSize ? 1 : 0;
     }
-    void hle_LCHardwareIsAvailable(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
     void hle_OSGetOverlayArenaRange(Core::Interpreter &cpu)
     {
         if (cpu.m_gpr[3])
@@ -806,9 +805,6 @@ void RegisterCoreinitExtraFunctions()
     sh.registerSyscall("OSTryLockMutex", hle_OSTryLockMutex);
     sh.registerSyscall("ENVGetEnvironmentVariable", hle_ENVGetEnvironmentVariable);
     sh.registerSyscall("OSGetSharedData", hle_OSGetSharedData);
-    sh.registerSyscall("LCHardwareIsAvailable", hle_LCHardwareIsAvailable);
-    sh.registerSyscall("LCGetMaxSize", hle_ghs_noop);
-    sh.registerSyscall("LCGetAllocatableSize", hle_ghs_noop);
     sh.registerSyscall("OSIsEnabledOverlayArena", hle_ghs_noop);
     sh.registerSyscall("OSEnableOverlayArena", hle_ghs_noop);
     sh.registerSyscall("OSDisableOverlayArena", hle_ghs_noop);

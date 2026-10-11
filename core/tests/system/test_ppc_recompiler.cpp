@@ -408,6 +408,34 @@ TEST_F(PpcFetchInterpreterTest, NativePrefixSuffixKeepsBranchStoreAndFaultBounda
 }
 
 #ifdef WEMU_HAS_LLVM
+TEST_F(PpcNativeTest, LockedCacheMemoryAccessFallsBackAtExactInstruction)
+{
+    constexpr auto app = Core::Memory::ApplicationCode;
+    const std::array words{0x38630001u, 0x80A40000u}; // addi r3,r3,1; lwz r5,0(r4)
+    const auto block = Block::decode(app, words);
+    ASSERT_TRUE(block);
+    NativeCompiler compiler;
+    NativeBlock jit(compiler, *block), aot(compiler, emitObject(*block));
+    for (const auto cache: Core::Memory::LOCKED_CACHE_BASES) {
+        cpu->m_memory.write<std::uint32_t>(cache, 0xDEADBEEF);
+        for (auto *native: {&jit, &aot}) {
+            std::array<std::uint32_t, 32> registers{};
+            registers[3] = 7;
+            registers[4] = cache;
+            const auto &ram = cpu->m_memory.getMemory();
+            ExecutionState state{registers.data(), {{cpu->m_memory.hostPtr(app, ram.size()), ram.size(), app}, {}, {}}};
+            EXPECT_EQ(native->execute(state), 1u);
+            EXPECT_EQ(state.nextPc, app + 4);
+            EXPECT_EQ(registers[3], 8u);
+            EXPECT_EQ(registers[5], 0u);
+            std::copy(registers.begin(), registers.end(), cpu->m_gpr);
+            cpu->executeInstruction(EncodedInstruction(words[1]));
+            EXPECT_EQ(cpu->m_gpr[3], 8u);
+            EXPECT_EQ(cpu->m_gpr[5], 0xDEADBEEFu);
+        }
+    }
+}
+
 TEST_F(PpcNativeTest, CheckedMemoryJitAndAotMatchInterpreterForWidthsUpdatesAndAliases)
 {
     NativeCompiler compiler;

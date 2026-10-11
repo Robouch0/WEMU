@@ -50,6 +50,7 @@ add_library(core STATIC
         src/hle/MemHeap.cpp
         src/hle/CoreinitExtra.hpp
         src/hle/CoreinitExtra.cpp
+        src/hle/LockedCache.cpp
         src/hle/H264.cpp
         src/video/H264Decoder.cpp
         src/hle/Ax.hpp

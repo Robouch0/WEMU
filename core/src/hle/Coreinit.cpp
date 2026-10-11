@@ -1083,4 +1083,5 @@ void RegisterCoreinitFunctions()
 
     // Online/account service libraries (nn::ac/fp/olv/boss/ec, AOC) + async login callbacks
     RegisterNnOnlineFunctions();
+    RegisterLockedCacheFunctions();
 }

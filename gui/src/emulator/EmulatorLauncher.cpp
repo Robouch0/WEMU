@@ -136,7 +136,21 @@ void EmulatorLauncher::launch(const QString &rpxPath, const QString &title, cons
         return;
     }
     const auto font = QSettings().value("emulation/sharedFont").toString();
-    const auto environment = desktopLaunchEnvironment(QProcessEnvironment::systemEnvironment(), contentPath, font);
+    bool nativeCpu = false;
+#ifdef WEMU_GUI_HAS_LLVM
+    nativeCpu = QSettings().value("emulation/nativeCpu", true).toBool();
+#endif
+    QString nativeCache;
+    if (nativeCpu) {
+        const auto cacheRoot = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+        // ObjectCache creates/checks the leaf directory with private permissions.
+        // A missing/unusable cache falls back to JIT; it never prevents launch.
+        if (!cacheRoot.isEmpty() && QDir().mkpath(cacheRoot)) nativeCache = cacheRoot + "/ppc-native";
+    }
+    const auto environment = desktopLaunchEnvironment(QProcessEnvironment::systemEnvironment(), contentPath, font,
+                                                     nativeCpu, nativeCache);
+    qInfo() << "[SESSION_CPU]" << (nativeCpu ? "native with interpreter fallback" : "interpreter")
+            << "cache=" << nativeCache;
     const auto logs = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation) + "/logs";
     if (!QDir().mkpath(logs)) {
         setError("Cannot create the session log directory.");

@@ -136,3 +136,20 @@ are dropped while Vulkan and driver thread state are still available. The same
 cleanup applies on normal Stop and exception exits; creating another host
 replayer initializes its backend independently. Destructors drain pending work
 without propagating submission exceptions.
+
+## Dynamic viewport and scissor
+
+Vulkan viewport and scissor values are now recorded per draw using core dynamic
+state. Pipeline identity retains shaders, descriptors, blend/depth state, target
+format and topology, but no longer includes target dimensions, scissor rectangles
+or attachment load operations. Resource identity still includes dimensions and
+load policy so backing images, framebuffers and uploads stay correct. Compatible
+pipelines are shared across these variants; clipping and output pixels stay the
+same. A pipeline-limit drain is needed only for a new pipeline at the limit.
+
+Tests verify different target sizes and padded/clipped output, repeated scissor
+changes with a single pipeline, live older snapshots and depth comparisons under
+synchronization validation. `pipelineCreations()` records graphics pipeline
+creation for diagnostics. This follows the Vulkan rules for
+[dynamic state](https://docs.vulkan.org/spec/latest/chapters/pipelines.html#pipelines-dynamic-state)
+and [render-pass compatibility](https://docs.vulkan.org/spec/latest/chapters/renderpass.html#renderpass-compatibility).

@@ -78,6 +78,8 @@ namespace Core::Gfx::Latte {
                             maxLitChan = std::max(maxLitChan, src.chan);
                         }
                     }
+                    result->usesAddressing |=
+                            in.isAddressWrite() || bool(in.raw1 & (1u << 28)) || in.src[0].rel || in.src[1].rel || (in.op3 && in.src[2].rel);
                     const bool transOnly = !in.op3 && ((in.op >= 0x60 && in.op <= 0x6F) || in.op == OP2_FLT_TO_UINT);
                     in.scalarSlot = transOnly || (vectorSlots & (1u << in.dstChan));
                     if (!in.scalarSlot)

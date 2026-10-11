@@ -1205,6 +1205,28 @@ TEST_F(Gx2CaptureTest, DepthClearsExportsOcclusionAndSamplingMatchNative)
         native.replay(gx2Stream(), &cpu->m_memory);
         if (backend)
             EXPECT_EQ(backend->completedDraws(), 1u) << backend->lastError();
+        if (format == 0x80Eu) {
+            // Equal-depth fractional geometry must remain occluded by LESS.
+            // Independently rounded weights previously made a constant .25
+            // plane drift below the stored value in isolated pixels.
+            gx2Stream().clear();
+            record("GX2SetPixelShader", {psColorHeader});
+            record("GX2DrawEx", {4, 6, 0, 1});
+            record("GX2CopyColorBufferToScanBuffer", {colorHeader, 1});
+            gx2Stream().push(Gx2Command{Gx2Cmd::SwapScanBuffers});
+            mesh(-.5f, {1, 0, 0, 1});
+            for (unsigned v = 0; v < 6; ++v) {
+                const float x = v == 1 || v == 3 || v == 4 ? .88711f : -.84383f;
+                const float y = v == 0 || v == 1 || v == 3 ? .67123f : -.95371f;
+                cpu->m_memory.write<std::uint32_t>(vertices + v * 32, std::bit_cast<std::uint32_t>(x));
+                cpu->m_memory.write<std::uint32_t>(vertices + v * 32 + 4, std::bit_cast<std::uint32_t>(y));
+            }
+            reference.replay(gx2Stream(), &cpu->m_memory);
+            native.replay(gx2Stream(), &cpu->m_memory);
+            for (std::size_t i = 0; i < reference.framebuffer().size(); i += 4)
+                EXPECT_EQ(reference.framebuffer()[i], 0);
+            EXPECT_EQ(native.framebuffer(), reference.framebuffer());
+        }
         // A stencil-only clear leaves depth .25; z=.5 is occluded.
         gx2Stream().clear();
         cpu->m_fpr[1] = 1;
@@ -1434,6 +1456,33 @@ TEST_F(Gx2CaptureTest, IndexedPointsPreserveHdrFloatTargetsThroughVertexTextureS
             native.replay(gx2Stream(), &cpu->m_memory);
             EXPECT_EQ(backend->completedDraws(), 2u) << backend->lastError();
             EXPECT_EQ(native.comparedNativeDraws(), 2u);
+            EXPECT_EQ(native.differingNativeDraws(), 0u);
+            EXPECT_EQ(native.framebuffer(), reference.framebuffer());
+        }
+        // Reference/native must read captured bank 3 bytes, not registers or
+        // the later contents of the reused guest buffer.
+        auto blockPs = scaledPs;
+        blockPs[0] |= (3u << 22) | (1u << 30);
+        cpu->m_memory.write<unsigned>(0x28013010, 1);
+        cpu->m_memory.write<unsigned>(0x28013014, 7);
+        shader(0x28013000, 0xA4, 0x28014000, blockPs);
+        for (unsigned c = 0; c < 4; ++c)
+            cpu->m_memory.write<unsigned>(0x28015000 + c * 4, std::byteswap(std::bit_cast<unsigned>(.25f)));
+        gx2Stream().clear();
+        record("GX2SetPixelShader", {0x28013000});
+        record("GX2SetPixelUniformBlock", {3, 16, 0x28015000});
+        for (unsigned c = 0; c < 4; ++c)
+            cpu->m_memory.write<unsigned>(0x28015000 + c * 4, 0);
+        record("GX2DrawIndexedEx", {1, 96, type, INDEX, 0, 1});
+        record("GX2CopyColorBufferToScanBuffer", {OUT, 1});
+        reference.replay(gx2Stream(), &cpu->m_memory);
+        const auto &blockFb = reference.framebuffer();
+        EXPECT_EQ((std::array{blockFb[offset], blockFb[offset + 1], blockFb[offset + 2], blockFb[offset + 3]}),
+                  (std::array<std::uint8_t, 4>{255, 0, 32, 128}));
+        if (backend) {
+            native.replay(gx2Stream(), &cpu->m_memory);
+            EXPECT_EQ(backend->completedDraws(), 3u) << backend->lastError();
+            EXPECT_EQ(native.comparedNativeDraws(), 3u);
             EXPECT_EQ(native.differingNativeDraws(), 0u);
             EXPECT_EQ(native.framebuffer(), reference.framebuffer());
         }

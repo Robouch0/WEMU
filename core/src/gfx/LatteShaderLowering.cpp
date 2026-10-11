@@ -36,6 +36,55 @@ namespace Core::Gfx::Latte {
 
     namespace {
 
+        // Monotone uniformity facts: masked writes can lose a fact but cannot
+        // invent one. Only a proven all-lane overwrite can replace it. Constants
+        // are uniform; interpolated inputs, relative reads and samples are not.
+        class UniformValues {
+            public:
+                explicit UniformValues(bool vertexStage = false)
+                {
+                    for (auto &reg: registers)
+                        reg.fill(true);
+                    for (unsigned i = 0; i < 4; ++i)
+                        registers[i + unsigned(vertexStage)].fill(false);
+                }
+                bool read(const Src &src) const
+                {
+                    if (src.rel)
+                        return false;
+                    if (src.sel < 128)
+                        return registers[src.sel][src.chan];
+                    if (src.sel == SRC_PV)
+                        return previous[src.chan];
+                    return src.sel != SRC_PS || scalar;
+                }
+                void write(const AluInst &in, bool value, bool allActive, bool maskUniform)
+                {
+                    const auto update = [&](bool &fact) {
+                        if (allActive && !in.predSel)
+                            fact = value;
+                        else
+                            fact = fact && value && maskUniform && (!in.predSel || predicate);
+                    };
+                    if (in.writeMask)
+                        update(registers[in.dstGpr][in.dstChan]);
+                    update(in.scalarSlot ? scalar : previous[in.dstChan]);
+                }
+                void merge(const UniformValues &other)
+                {
+                    for (unsigned reg = 0; reg < registers.size(); ++reg)
+                        for (unsigned channel = 0; channel < 4; ++channel)
+                            registers[reg][channel] = registers[reg][channel] && other.registers[reg][channel];
+                    for (unsigned channel = 0; channel < 4; ++channel)
+                        previous[channel] = previous[channel] && other.previous[channel];
+                    scalar = scalar && other.scalar;
+                    predicate = predicate && other.predicate;
+                }
+                std::array<std::array<bool, 4>, 128> registers{};
+                std::array<bool, 4> previous{true, true, true, true};
+                bool scalar{true}, predicate{true};
+        };
+
         // Whole-quad ALU may write registers for inactive lanes. A lane-local
         // lowering is equivalent only while those extra writes stay unobservable:
         // no derivatives, mask updates, or reads after their mask is restored.
@@ -44,20 +93,23 @@ namespace Core::Gfx::Latte {
                 void read(const Src &src, unsigned depth) const
                 {
                     if (src.sel < 128 && src.chan < 4)
-                        check(m_registers[src.sel][src.chan], depth);
+                        check(m_registers[src.sel][src.chan], depth, src);
                     else if (src.sel == SRC_PV && src.chan < 4)
-                        check(m_previous[src.chan], depth);
+                        check(m_previous[src.chan], depth, src);
                     else if (src.sel == SRC_PS)
-                        check(m_scalar, depth);
+                        check(m_scalar, depth, src);
                 }
-                void write(const AluInst &in, unsigned depth)
+                void write(const AluInst &in, unsigned depth, bool wholeQuad, bool unconditional)
                 {
+                    const auto update = [&](unsigned &scope) {
+                        if (wholeQuad)
+                            scope = std::max(scope, depth);
+                        else if (in.predSel == 0 && (depth || unconditional))
+                            scope = std::min(scope, depth);
+                    };
                     if (in.writeMask)
-                        m_registers[in.dstGpr][in.dstChan] = std::max(m_registers[in.dstGpr][in.dstChan], depth);
-                    if (in.scalarSlot)
-                        m_scalar = std::max(m_scalar, depth);
-                    else
-                        m_previous[in.dstChan] = std::max(m_previous[in.dstChan], depth);
+                        update(m_registers[in.dstGpr][in.dstChan]);
+                    update(in.scalarSlot ? m_scalar : m_previous[in.dstChan]);
                 }
                 void restore(unsigned depth)
                 {
@@ -68,17 +120,33 @@ namespace Core::Gfx::Latte {
                         escape(scope, depth);
                     escape(m_scalar, depth);
                 }
+                void textureWrite(unsigned reg, unsigned channel, unsigned depth, bool unconditional)
+                {
+                    if (depth || unconditional)
+                        m_registers[reg][channel] = std::min(m_registers[reg][channel], depth);
+                }
+                void merge(const WholeQuadWrites &other)
+                {
+                    for (unsigned reg = 0; reg < m_registers.size(); ++reg)
+                        for (unsigned channel = 0; channel < 4; ++channel)
+                            m_registers[reg][channel] = std::max(m_registers[reg][channel], other.m_registers[reg][channel]);
+                    for (unsigned channel = 0; channel < 4; ++channel)
+                        m_previous[channel] = std::max(m_previous[channel], other.m_previous[channel]);
+                    m_scalar = std::max(m_scalar, other.m_scalar);
+                }
 
             private:
-                static void check(unsigned scope, unsigned depth)
+                static void check(unsigned scope, unsigned depth, const Src &src)
                 {
                     if (scope > depth)
-                        throw std::runtime_error("whole-quad value escapes masked region");
+                        throw std::runtime_error(std::format("whole-quad value escapes masked region: source={}.{} scope={} depth={}", src.sel,
+                                                             src.chan, scope, depth));
                 }
                 static void escape(unsigned &scope, unsigned depth)
                 {
                     // Once a scope has ended, another PUSH must not hide the
-                    // escaped value. Keep even overwritten values conservatively.
+                    // escaped value. Only a proven unconditional overwrite can
+                    // remove it; masked or predicated writes cannot.
                     if (scope > depth)
                         scope = 33;
                 }
@@ -90,33 +158,36 @@ namespace Core::Gfx::Latte {
         struct LoweringConstants {
                 FragmentShader &shader;
                 std::array<unsigned, 2> bank{}, address{}, mode{};
-                bool vertex{};
+                std::array<bool, 4> addressValid{};
                 std::string read(const Src &src)
                 {
-                    if (vertex && src.sel >= 256 && src.sel < 320 && mode[(src.sel - 256) / 32]) {
-                        const auto window = (src.sel - 256) / 32;
-                        FragmentShader::UniformReference ref{bank[window], address[window] * 16 + (src.sel - 256) % 32};
+                    if (src.sel >= 128 && src.sel < 192 && mode[(src.sel - 128) / 32]) {
+                        const auto window = (src.sel - 128) / 32;
+                        FragmentShader::UniformReference ref{bank[window], address[window] * 16 + (src.sel - 128) % 32};
                         auto it = std::find(shader.uniforms.begin(), shader.uniforms.end(), ref);
                         if (it == shader.uniforms.end()) {
                             if (shader.uniforms.size() >= 512)
-                                throw std::runtime_error("vertex uniform reference budget exceeded");
+                                throw std::runtime_error("uniform reference budget exceeded");
                             it = shader.uniforms.insert(it, ref);
                         }
                         return std::format("u.k[{}][{}]", std::distance(shader.uniforms.begin(), it), src.chan);
                     }
-                    return std::format("u.c[{}][{}]", src.sel - 256, src.chan);
+                    return std::format("u.c[{}][{}]", src.sel >= 256 ? src.sel - 256 : src.sel - 128, src.chan);
                 }
         };
         std::string source(const Src &s, const AluInst &instruction, LoweringConstants &constants)
         {
-            if (s.rel || s.chan > 3)
-                throw std::runtime_error("relative or invalid ALU source");
+            if (s.chan > 3)
+                throw std::runtime_error("invalid ALU source channel");
             std::string value;
-            if (s.sel < 128)
+            if (s.rel) {
+                const auto indexMode = (instruction.raw0 >> 26) & 7;
+                if (s.sel < 256 || s.sel >= 512 || indexMode > 3 || !constants.addressValid[indexMode])
+                    throw std::runtime_error("unsupported or uninitialized relative ALU source");
+                value = std::format("relativeConstant({}+ar[{}],{})", s.sel - 256, indexMode, s.chan);
+            } else if (s.sel < 128)
                 value = std::format("r[{}][{}]", s.sel, s.chan);
-            else if (s.sel < 192)
-                value = std::format("u.c[{}][{}]", s.sel - 128, s.chan);
-            else if (s.sel >= 256 && s.sel < 512)
+            else if (s.sel < 192 || (s.sel >= 256 && s.sel < 512))
                 value = constants.read(s);
             else
                 switch (s.sel) {
@@ -192,10 +263,13 @@ namespace Core::Gfx::Latte {
         {
             // Mask updates are modeled only for predicate-set operations.
             const auto condition = predicateCondition(in, constants);
-            constexpr std::uint32_t sourceMask = 0xE3BFFDFFu;
+            // INDEX_MODE only affects relative operands; their AR validation is
+            // performed by source(). Accept the four AR components and LOOP.
             const std::uint32_t destinationMask = in.op3 ? 0xEFFFFDFFu : condition.empty() ? 0xEFFFFFF3u : 0xEFFFFFFFu;
-            if ((in.raw0 & ~sourceMask) || (in.raw1 & ~destinationMask) || in.predSel == 1)
+            if ((in.raw1 & ~destinationMask) || in.predSel == 1)
                 throw std::runtime_error("unsupported ALU addressing or control flags");
+            if (((in.raw0 >> 26) & 7) > 4)
+                throw std::runtime_error("reserved ALU index mode");
             // R700 BANK_SWIZZLE schedules register-bank reads, not operand components.
             // Functional execution reads the pre-group state without bank contention.
             const auto bankSwizzle = (in.raw1 >> 18) & 7;
@@ -303,6 +377,12 @@ namespace Core::Gfx::Latte {
                     return "floor(" + a + ")";
                 case OP2_TRUNC:
                     return "truncReference(" + a + ")";
+                case OP2_MOVA:
+                    return "intBitsToFloat(addressReference(floor(" + a + "+0.5)))";
+                case OP2_MOVA_FLOOR:
+                    return "intBitsToFloat(addressReference(floor(" + a + ")))";
+                case OP2_MOVA_INT:
+                    return "intBitsToFloat(addressIntReference(floatBitsToInt(" + a + ")))";
                 case OP2_SIN:
                     return "sin(" + a + "/0.1591549367)";
                 case OP2_COS:
@@ -334,6 +414,12 @@ namespace Core::Gfx::Latte {
             std::array<bool, 128> used{};
             std::size_t at = 0;
             while ((at = body.find("r[", at)) != std::string::npos) {
+                // Match the GPR identifier, not a suffix such as the AR's ar[].
+                if (at && ((body[at - 1] >= 'a' && body[at - 1] <= 'z') || (body[at - 1] >= 'A' && body[at - 1] <= 'Z') ||
+                           (body[at - 1] >= '0' && body[at - 1] <= '9') || body[at - 1] == '_')) {
+                    at += 2;
+                    continue;
+                }
                 auto end = at + 2;
                 unsigned reg = 0;
                 if (end == body.size() || body[end] < '0' || body[end] > '9')
@@ -370,7 +456,7 @@ namespace Core::Gfx::Latte {
     {
         FragmentShader result;
         result.exportsColor = false;
-        LoweringConstants constants{result, {}, {}, {}, vertexStage};
+        LoweringConstants constants{result, {}, {}, {}};
         try {
             if (!program.valid || program.words.size() < 2)
                 throw std::runtime_error("invalid shader structure");
@@ -381,21 +467,34 @@ namespace Core::Gfx::Latte {
                 body += "vec4 position=vec4(0.0,0.0,0.0,1.0); vec4 parameters[4]; for(int i=0;i<4;++i) parameters[i]=vec4(0.0);\n";
             body += "vec4 pv=vec4(0.0); float ps=0.0;\nbool pred=true,laneActive=true,wroteOutput=false; bool activeStack[32]; uint pc=0u;\n";
             bool exported = false, terminated = false;
-            bool wholeQuadUsed = false, implicitSamples = false;
+            bool varyingWholeQuadUsed = false, implicitSamples = false;
             bool maskedControl = false;
+            bool rootMaskChanged = false;
             WholeQuadWrites wholeQuadWrites;
+            std::map<unsigned, WholeQuadWrites> incomingWholeQuadWrites;
+            UniformValues uniformValues(vertexStage);
+            std::map<unsigned, UniformValues> incomingUniformValues;
+            bool maskUniform = true, allActive = true;
+            bool varyingControlSeen = false;
+            std::array<bool, 32> uniformMaskStack{}, allActiveStack{};
             unsigned depth = 0;
             std::vector<unsigned> entryDepth;
             std::vector<std::pair<unsigned, unsigned>> jumpTargets;
             const auto &words = program.words;
             for (std::size_t cf = 0; cf + 1 < words.size(); cf += 2) {
                 const auto w0 = words[cf], w1 = words[cf + 1];
+                if (const auto incoming = incomingWholeQuadWrites.find(cf / 2); incoming != incomingWholeQuadWrites.end())
+                    wholeQuadWrites.merge(incoming->second);
+                if (const auto incoming = incomingUniformValues.find(cf / 2); incoming != incomingUniformValues.end())
+                    uniformValues.merge(incoming->second);
                 entryDepth.push_back(depth);
                 body += std::format("if(pc<={}u) {{\n", cf / 2);
                 const auto push = [&] {
                     maskedControl = true;
                     if (depth == 32)
                         throw std::runtime_error("control-flow stack overflow");
+                    uniformMaskStack[depth] = maskUniform;
+                    allActiveStack[depth] = allActive;
                     body += std::format("activeStack[{}]=laneActive;\n", depth++);
                 };
                 const auto pop = [&](unsigned count) {
@@ -403,6 +502,8 @@ namespace Core::Gfx::Latte {
                         throw std::runtime_error("control-flow stack underflow");
                     if (count) {
                         depth -= count;
+                        maskUniform = uniformMaskStack[depth];
+                        allActive = allActiveStack[depth];
                         wholeQuadWrites.restore(depth);
                         body += std::format("laneActive=activeStack[{}];\n", depth);
                     }
@@ -410,7 +511,7 @@ namespace Core::Gfx::Latte {
                 if (isAluClause(w1)) {
                     const auto kind = cfAluInst(w1);
                     const bool wholeQuad = w1 & (1u << 30);
-                    if (kind < 8 || kind > 11 || (!vertexStage && ((w0 >> 30) || (w1 & 3))) || (vertexStage && wholeQuad) ||
+                    if (kind < 8 || kind > 11 || (w0 >> 30) == 3 || (w1 & 3) == 3 || (vertexStage && wholeQuad) ||
                         (wholeQuad && (kind != 8 || !depth)))
                         throw std::runtime_error(std::format("unsupported ALU clause: cf={} kind={} uniform={} whole_quad={}", cf / 2, kind,
                                                              bool((w0 >> 30) || (w1 & 3)), bool(w1 & (1u << 30))));
@@ -419,13 +520,32 @@ namespace Core::Gfx::Latte {
                     constants.mode = {(w0 >> 30) & 3, w1 & 3};
                     if (kind == 9)
                         push();
-                    wholeQuadUsed |= wholeQuad;
                     const auto key = (std::uint64_t(w0 & 0x3FFFFF) << 32) | (((w1 >> 18) & 127) + 1);
                     const auto it = program.clauses.find(key);
                     if (it == program.clauses.end())
                         throw std::runtime_error("missing ALU clause");
-                    body += "if(laneActive) {\n";
+                    constants.addressValid.fill(false);
+                    const bool clauseAllActive = allActive && std::none_of(jumpTargets.begin(), jumpTargets.end(),
+                                                                           [&](const auto &target) { return target.first > cf / 2; });
+                    // After any varying execute mask, keep this proof disabled:
+                    // stack joins would need additional per-edge mask facts.
+                    const bool clauseMaskUniform = maskUniform && !varyingControlSeen;
+                    varyingWholeQuadUsed |= wholeQuad && !clauseMaskUniform;
+                    body += "if(laneActive) { ivec4 ar=ivec4(0);\n";
                     for (const auto &group: it->second) {
+                        const bool unconditional =
+                                depth == 0 &&
+                                std::none_of(jumpTargets.begin(), jumpTargets.end(), [&](const auto &target) { return target.first > cf / 2; }) &&
+                                !rootMaskChanged;
+                        if (std::any_of(group.begin(), group.end(), [](const auto &in) { return in.isAddressWrite(); })) {
+                            for (const auto &in: group) {
+                                if (in.isAddressWrite() && (in.predSel || in.omod || in.clamp))
+                                    throw std::runtime_error("unsupported predicated or modified address write");
+                                for (unsigned operand = 0; operand < (in.op3 ? 3u : 2u); ++operand)
+                                    if (in.src[operand].rel)
+                                        throw std::runtime_error("address write and relative read share an ALU group");
+                            }
+                        }
                         body += "{ bool nextPred=pred, nextActive=laneActive;\n";
                         const bool dotGroup = !group.empty() && !group[0].op3 && (group[0].op == OP2_DOT4 || group[0].op == OP2_DOT4_IEEE);
                         if (dotGroup) {
@@ -447,8 +567,18 @@ namespace Core::Gfx::Latte {
                                                [](const auto &in) { return !in.op3 && (in.op == OP2_DOT4 || in.op == OP2_DOT4_IEEE); }))
                             throw std::runtime_error("DOT4 must start its vector group");
 
+                        std::array<bool, 5> uniformResults{};
+                        const bool groupPredicateUniform = uniformValues.predicate;
+                        bool nextPredicateUniform = groupPredicateUniform, nextMaskUniform = maskUniform, nextAllActive = allActive;
+                        bool dotUniform = true;
+                        if (dotGroup)
+                            for (unsigned i = 0; i < 4; ++i)
+                                dotUniform &= uniformValues.read(group[i].src[0]) && uniformValues.read(group[i].src[1]);
                         for (unsigned i = 0; i < group.size(); ++i) {
                             const auto &in = group[i];
+                            uniformResults[i] = !dotGroup || in.scalarSlot ? uniformValues.read(in.src[0]) && uniformValues.read(in.src[1]) &&
+                                                                                     (!in.op3 || uniformValues.read(in.src[2]))
+                                                                           : dotUniform;
                             if (wholeQuad && !in.op3 && (in.raw1 & 12u))
                                 throw std::runtime_error("whole-quad ALU mask updates require quad execution");
                             for (unsigned operand = 0; operand < (in.op3 ? 3u : 2u); ++operand)
@@ -467,20 +597,39 @@ namespace Core::Gfx::Latte {
                         // All sources read the pre-group state. Commit only after every RHS.
                         for (unsigned i = 0; i < group.size(); ++i) {
                             const auto &in = group[i];
-                            if (wholeQuad)
-                                wholeQuadWrites.write(in, depth);
+                            wholeQuadWrites.write(in, depth, wholeQuad && !clauseMaskUniform, unconditional);
+                            uniformValues.write(in, uniformResults[i], clauseAllActive, clauseMaskUniform && (!in.predSel || groupPredicateUniform));
+                            if (!in.op3 && (in.raw1 & 8u))
+                                nextPredicateUniform = clauseAllActive && !in.predSel
+                                                               ? uniformResults[i]
+                                                               : nextPredicateUniform && uniformResults[i] && clauseMaskUniform &&
+                                                                         (!in.predSel || groupPredicateUniform);
+                            if (!in.op3 && (in.raw1 & 4u)) {
+                                nextMaskUniform = nextMaskUniform && uniformResults[i] && (!in.predSel || groupPredicateUniform);
+                                nextAllActive = false;
+                            }
                             body += std::format("if(e{}) {{\n", i);
                             if (!in.op3 && (in.raw1 & 8u))
                                 body += std::format("nextPred=p{};\n", i);
                             if (!in.op3 && (in.raw1 & 4u))
                                 maskedControl = true;
+                            if (!in.op3 && (in.raw1 & 4u) && depth == 0)
+                                rootMaskChanged = true;
                             if (!in.op3 && (in.raw1 & 4u))
                                 body += std::format("nextActive=p{};\n", i);
                             if (in.writeMask)
                                 body += std::format("r[{}][{}]=t{};\n", in.dstGpr, in.dstChan, i);
+                            if (in.isAddressWrite()) {
+                                body += std::format("ar[{}]=floatBitsToInt(t{});\n", in.dstChan, i);
+                                constants.addressValid[in.dstChan] = true;
+                            }
                             body += in.scalarSlot ? std::format("ps=t{};\n", i) : std::format("pv[{}]=t{};\n", in.dstChan, i);
                             body += "}\n";
                         }
+                        uniformValues.predicate = nextPredicateUniform;
+                        maskUniform = nextMaskUniform;
+                        varyingControlSeen |= !maskUniform;
+                        allActive = nextAllActive;
                         body += "pred=nextPred; laneActive=nextActive; }\n";
                     }
                     body += "}\n";
@@ -519,7 +668,7 @@ namespace Core::Gfx::Latte {
                             result.requiresBaseLevelOnly = true;
                         if (texOp == 0x0F)
                             result.usesGather = true;
-                        implicitSamples |= texOp == 0x13;
+                        implicitSamples |= texOp != 0x13; // SAMPLE/gather; SAMPLE_LZ is explicit.
                         const unsigned resource = (t0 >> 8) & 255, sampler = (t2 >> 15) & 31;
                         auto binding = std::find_if(result.textures.begin(), result.textures.end(),
                                                     [&](const auto &b) { return b.resource == resource && b.sampler == sampler; });
@@ -530,6 +679,7 @@ namespace Core::Gfx::Latte {
                             result.textures.push_back({resource, sampler, unsigned(result.textures.size() + 1), type});
                             binding = result.textures.end() - 1;
                         }
+                        binding->implicitLod |= texOp != 0x13;
                         const auto reg = std::format("r[{}]", (t0 >> 16) & 127);
                         for (unsigned c = 0; c < 4; ++c) {
                             const auto selector = (t2 >> (20 + c * 3)) & 7;
@@ -561,8 +711,14 @@ namespace Core::Gfx::Latte {
                         }
                         for (unsigned c = 0; c < 4; ++c) {
                             const auto selector = (t1 >> (9 + c * 3)) & 7;
-                            if (selector != 7)
+                            if (selector != 7) {
+                                uniformValues.registers[t1 & 127][c] = false;
                                 body += std::format("r[{}][{}]={};\n", t1 & 127, c, select("sampled", selector));
+                                wholeQuadWrites.textureWrite(t1 & 127, c, depth,
+                                                             !rootMaskChanged &&
+                                                                     std::none_of(jumpTargets.begin(), jumpTargets.end(),
+                                                                                  [&](const auto &target) { return target.first > cf / 2; }));
+                            }
                         }
                         body += "}\n";
                     }
@@ -576,12 +732,23 @@ namespace Core::Gfx::Latte {
                             throw std::runtime_error("unsupported vertex export addressing or target");
                         const auto reg = std::format("r[{}]", (w0 >> 15) & 127);
                         const auto dst = type == 1 ? std::string("position") : std::format("parameters[{}]", target);
-                        body += std::format("if(laneActive) {{ {}=vec4({},{},{},{}); {} }}\n", dst, select(reg, w1 & 7), select(reg, (w1 >> 3) & 7),
-                                            select(reg, (w1 >> 6) & 7), select(reg, (w1 >> 9) & 7), type == 1 ? "wroteOutput=true;" : "");
-                        if (type == 1)
-                            exported = true;
-                        else
-                            result.parameterMask |= 1u << target;
+                        bool writesComponent = false;
+                        body += "if(laneActive) {\n";
+                        for (unsigned channel = 0; channel < 4; ++channel) {
+                            const auto selector = (w1 >> (channel * 3)) & 7;
+                            if (selector != 7) {
+                                body += std::format("{}[{}]={};\n", dst, channel, select(reg, selector));
+                                writesComponent = true;
+                            }
+                        }
+                        if (writesComponent) {
+                            if (type == 1) {
+                                body += "wroteOutput=true;\n";
+                                exported = true;
+                            } else
+                                result.parameterMask |= 1u << target;
+                        }
+                        body += "}\n";
                     } else {
                         constexpr auto export1Mask = 0xFFFu | (1u << 21) | (1u << 22) | (127u << 23) | (1u << 31);
                         const auto target = w0 & 0x1FFF;
@@ -618,12 +785,23 @@ namespace Core::Gfx::Latte {
                         if (w0 <= cf / 2 || count > depth)
                             throw std::runtime_error("unsupported backward jump or stack pop");
                         jumpTargets.emplace_back(w0, depth - count);
-                        if (count)
-                            wholeQuadWrites.restore(depth - count);
+                        // A conditional jump restores the mask only on its taken
+                        // edge. Poisoning the fall-through here wrongly rejects
+                        // values still confined to that branch's original mask.
+                        auto takenWrites = wholeQuadWrites;
+                        takenWrites.restore(depth - count);
+                        incomingWholeQuadWrites[w0].merge(takenWrites);
+                        if (const auto incoming = incomingUniformValues.find(w0); incoming != incomingUniformValues.end())
+                            incoming->second.merge(uniformValues);
+                        else
+                            incomingUniformValues.emplace(w0, uniformValues);
                         if (op == 0x0D && !depth)
                             throw std::runtime_error("ELSE without stack entry");
-                        if (op == 0x0D)
+                        if (op == 0x0D) {
                             wholeQuadWrites.restore(depth - 1);
+                            maskUniform = maskUniform && uniformMaskStack[depth - 1];
+                            allActive = false;
+                        }
                         body += op == 0x0A ? "if(!laneActive) {\n" : "if(laneActive) {\n";
                         if (count)
                             body += std::format("laneActive=activeStack[{}];\n", depth - count);
@@ -657,8 +835,11 @@ namespace Core::Gfx::Latte {
                 throw std::runtime_error("missing color/depth export or shader termination");
             if (result.exportsColor && result.writesDepth && maskedControl)
                 throw std::runtime_error("conditional mixed color/depth exports require per-output lane masks");
-            if (wholeQuadUsed && implicitSamples)
-                throw std::runtime_error("whole-quad ALU with implicit texture derivatives requires quad execution");
+            // Emission uses explicit base LOD. With one source mip, identical
+            // min/mag filters and no anisotropy, implicit sampling produces the
+            // same texels without helper derivatives. Validate that per draw;
+            // shader-wide rejection would also discard these safe resources.
+            result.requiresDerivativeFreeSampling = varyingWholeQuadUsed && implicitSamples;
             if (depth)
                 throw std::runtime_error("unbalanced control-flow stack");
             for (const auto [target, expectedDepth]: jumpTargets)
@@ -688,6 +869,9 @@ namespace Core::Gfx::Latte {
                         "layout(set=0,binding=17,std140) uniform Constants { vec4 c[256]; vec4 borders[16]; vec4 sampling[16]; vec4 k[512]; } u;\n"
                         "layout(push_constant) uniform Viewport { vec2 scale; float depthEnabled; float unused; vec4 window; vec2 depth; "
                         "layout(offset=48) ivec4 inputParams; } viewport;\n");
+            } else if (!result.uniforms.empty()) {
+                const auto end = result.source.find(" } u;");
+                result.source.insert(end, " vec4 k[512];");
             }
             result.source += R"(
 // R700 truncates finite values and retains the low integer bits. Decode the
@@ -707,6 +891,15 @@ uint floatToUintBits(float value) {
     if(isnan(value)||value<=0.0) return 0u;
     if(value>=4294967296.0) return 4294967295u;
     return uint(value);
+}
+int addressReference(float value) {
+    return isnan(value)||isinf(value)||value < -256.0||value > 255.0 ? -256 : int(value);
+}
+int addressIntReference(int value) {
+    return value < -256||value > 255 ? -256 : value;
+}
+float relativeConstant(int index,int channel) {
+    return index < 0||index >= 256 ? uintBitsToFloat(2147483647u) : u.c[index][channel];
 }
 float arrayCoordinate(float v,int mode) {
     if(mode==0) return fract(v);

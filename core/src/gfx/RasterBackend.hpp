@@ -68,6 +68,9 @@ namespace Core::Gfx {
                     bool renderedDepth{};
                     std::span<const std::uint8_t> rgba32Bytes;
                     unsigned rgba32Pitch{};
+                    // Original guest resource, independent of the base-only upload.
+                    // Zero mip count means unknown, so it cannot prove LOD invariance.
+                    unsigned sourceMipCount{}, sourceFirstMip{};
             };
             struct Blend {
                     bool enabled{};
@@ -106,6 +109,9 @@ namespace Core::Gfx {
                     std::array<int, 4> inputParams{-1, -1, -1, -1};
                     std::array<float, 6> viewport{};
             } vertexStage;
+            // Static kcache references in shader.uniforms, four floats each;
+            // replayer snapshots the actual fragment uniform-block values.
+            std::span<const float> uniforms;
     };
 
     // Owns all data/resources needed after renderDeferred returns. Materialization

@@ -535,6 +535,13 @@ void Core::Interpreter::run()
         m_pc = m_nextPc;
         m_retired++;
     }
+#ifdef WEMU_HAS_LLVM
+    if (native && native->cacheEnabled()) {
+        const auto &s = native->stats();
+        Utils::Log::error("[NATIVECACHE] session hits={} misses={} writes={} link_failures={}", s.cacheHits, s.cacheMisses, s.cacheWrites,
+                          s.cacheLinkFailures);
+    }
+#endif
     Utils::Log::info("[EMU] Exited. PC=0x{:08X}", ppc_pc);
 }
 

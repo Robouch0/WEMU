@@ -21,9 +21,11 @@
 //  - ALU OP2: ADD MUL MUL_IEEE MAX MIN MOV NOP FRACT FLOOR TRUNC SIN COS DOT4 DOT4_IEEE RECIP_IEEE
 //    RECIPSQRT_IEEE, float/int conversions and integer shifts; OP3: MULADD MULADD_IEEE,
 //    CNDE/CNDGT/CNDGE and integer variants. neg/abs/omod/clamp honoured.
-//  - Sources: GPR (0-127), kcache banks (128-191 -> treated as the constant file), constant file
+//  - Sources: GPR (0-127), static kcache banks (128-191), constant file
 //    (256-511), literals (253), PV/PS (254/255), 0/1/1-int/0.5 inline constants
 //    (248/249/250/252).
+//  - Clause-local MOVA/MOVA_FLOOR/MOVA_INT address registers and AR-relative
+//    constant-file reads. Relative GPR/kcache/loop operands remain unsupported.
 //  - Groups: instructions until LAST=1 read pre-group register state; writes commit at group end;
 //    PV/PS updated per group; literal dwords follow each group.
 //

@@ -14,6 +14,7 @@ namespace Core::Gfx::Latte {
     struct TextureBinding {
             unsigned resource, sampler, binding;
             TextureType type{TextureType::TwoD};
+            bool implicitLod{};
     };
 
     struct FragmentShader {
@@ -21,6 +22,9 @@ namespace Core::Gfx::Latte {
             std::string error;
             std::vector<TextureBinding> textures;
             bool requiresBaseLevelOnly{};
+            // Varying whole-quad masks need a runtime proof that implicit
+            // sampling cannot observe derivatives (one mip, equal filters).
+            bool requiresDerivativeFreeSampling{};
             bool usesGather{};
             bool exportsColor{true};
             bool writesDepth{};
@@ -40,8 +44,10 @@ namespace Core::Gfx::Latte {
     // sampler2DArray pairs. Resource types specialize source and shader cache keys.
     // Unsupported programs return no source. The renderer must also validate resource
     // dimensions/formats, interpolation, and pipeline state before native dispatch.
-    // Whole-quad ALU is accepted only when helper writes cannot escape an enclosing
-    // mask and no implicit derivatives consume them; general quad execution falls back.
+    // Whole-quad ALU is accepted when helper writes stay inside their mask or are
+    // safely overwritten. Forward edges merge helper-value provenance. Uniform
+    // execute masks can retain live values across reconvergence. Varying escaping
+    // values retain fallback; implicit consumers require derivative-free textures.
     FragmentShader lowerFragmentShader(const Program &program, std::span<const TextureType> resourceTypes = {});
     struct VertexShader : FragmentShader {};
     VertexShader lowerVertexShader(const Program &program, std::span<const TextureType> resourceTypes = {});

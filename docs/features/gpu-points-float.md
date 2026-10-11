@@ -132,3 +132,107 @@ forwarding independently of vector PV. Tests exercise both forwarding paths,
 signed truncation, exceptional inputs, both-stage SPIR-V and Vulkan comparisons
 within the supported trigonometric input domain. These are shared ISA operations;
 no game-specific shader replacement is used.
+
+## Static uniform blocks in both shader stages
+
+Fragment translation now supports the same static kcache windows as vertex
+translation. Shader references identify a bank and vec4 offset; GX2 replay supplies
+four floats per reference from captured uniform-block bytes, and Vulkan refreshes
+those values for each draw. Missing block words read zero. Both full snapshots
+are checked before dispatch, with a 512-vector native uniform budget. Loop-indexed
+windows and relative addressing retain software fallback.
+
+This also corrects shared source decoding: Latte kcache selectors are 128–191,
+while 256–511 selects the constant-register file even inside a clause using kcache.
+Active static windows use their declared bank and 16-vector address units.
+Vertex bank N now maps directly to GX2 uniform-block location N; the previous
+unverified +1 default is removed. The existing WEMU_KCACHE_BIAS diagnostic remains
+an explicit opt-in. Both reference execution and Vulkan lowering use the corrected
+selector interpretation. Uniform-off legacy constant views remain supported.
+
+Tests distinguish both windows/banks/offsets from the constant-register file,
+verify reference floats and Vulkan UNORM output within the established one-unit
+conversion tolerance, refresh changed values, reject incomplete uniform snapshots,
+and replay a real GX2 block upload after its guest source has been reused.
+Geometry/material pixels can change because previously incorrect block reads now
+receive real data. This is a general shader correction, not a per-title override.
+
+Primary references:
+[Latte selectors and kcache modes](https://github.com/decaf-emu/decaf-emu/blob/master/src/libgpu/latte/latte_enum_sq.h),
+[GX2 uniform-block register mapping](https://github.com/decaf-emu/decaf-emu/blob/master/src/libdecaf/src/cafe/libraries/gx2/gx2_shaders.cpp),
+and [Cemu uniform submission](https://github.com/cemu-project/Cemu/blob/main/src/Cafe/OS/libs/gx2/GX2_shader_legacy.cpp).
+
+
+## Address registers, export masks and helper-value lifetime
+
+Latte `TRUNC` uses opcode `0x11`. Opcode `0x16` is `MOVA_FLOOR`, which updates
+an address-register component even when its GPR write mask is disabled. The
+shared decoder, reference interpreter and Vulkan lowerer now distinguish those
+operations and implement `MOVA`, `MOVA_FLOOR` and `MOVA_INT`. AR-relative
+constant-file reads select the instruction's AR component, apply the signed
+offset, and return the documented NaN for an out-of-range constant index.
+Address registers are valid only within their ALU clause. A relative read needs
+an earlier address-writing group; simultaneous AR writes/relative reads,
+uninitialized AR components, relative GPR/kcache operands and loop-indexed
+addressing retain fallback. Native address writes with predication or result
+modifiers also retain fallback. Ordinary shaders avoid the interpreter's
+address-validation path when decoded programs contain no addressing operations.
+
+Vertex POS/PARAM selector `7` masks a component. Both execution paths preserve
+previously exported components, including across repeated exports. An entirely
+masked export neither clears an earlier value nor invents a valid parameter.
+Selector `6` remains unsupported by native lowering.
+
+Whole-quad lowering tracks helper-value lifetime per register component and
+PV/PS slot. Ordinary, unpredicated overwrites can remove stale helper values
+inside the current mask; an unconditional overwrite after reconvergence can
+remove them entirely. Texture writes participate in the same analysis. A
+conditional jump applies stack restoration to its taken edge, then merges that
+state at its forward target. It does not poison values on the fall-through
+path. Predicated/partial writes, skipped overwrites and live helper values
+escaping their original varying mask remain conservative software fallbacks.
+
+The lowerer also proves uniform execute masks. Constants and zero-initialized
+registers start uniform; interpolated attributes and sampled values do not.
+Register/PV/PS facts follow simultaneous ALU groups, predication and forward
+joins. Masked writes can lose a fact; only a proven all-lane overwrite replaces
+it. Predicate facts use the pre-group state. After any varying execute mask,
+this proof stays disabled until shader termination, keeping stack joins
+conservative. Under a proven uniform mask the whole quad is active or inactive
+together, so live values can survive reconvergence without extra helper writes.
+This extends the proven subset; it does not implement general quad execution.
+`SAMPLE` (`0x10`) and gather are classified as implicit, while `SAMPLE_LZ`
+(`0x13`) is explicit base LOD. Varying whole-quad programs with implicit samples
+carry a runtime resource requirement. Each implicit binding must expose exactly
+one original source mip at level zero, identical minification/magnification
+filters and no anisotropy. Those samples cannot observe derivatives, so the
+existing explicit-base-LOD emission remains valid. Missing mip metadata,
+multiple levels, differing filters and anisotropy retain software fallback
+before any GPU submission. The requirement comes from the compiled shader;
+caller-supplied binding metadata cannot bypass it. Live helper values escaping
+their mask still fail lowering. Uniform-mask programs continue to obey the
+existing native texture/LOD restrictions.
+
+A shader-wide implicit-derivative rejection initially moved a full-screen
+cinematic pass back to the CPU. Validating the actual resources per draw keeps
+that derivative-free pass accelerated without accepting general quad execution.
+
+Regression tests use literal ISA opcode encodings, negative/fractional address
+indices, AR components and clause resets, masked POS/PARAM preservation with
+Vulkan float-target readback, and conditional-pop helper-value lifetime. The
+existing rejection tests still cover observable helper writes. A mixed-lane
+Vulkan/reference test covers derivative-free sampling and rejects unsafe mip,
+filter and anisotropy changes even after a compatible draw was cached.
+Primary encodings are documented in
+[Decaf's Latte instruction table](https://github.com/decaf-emu/decaf-emu/blob/master/src/libgpu/latte/latte_instructions_def.inl)
+and the address/whole-quad behavior in AMD's *R600 Instruction Set Architecture*,
+sections 3.6.2, 4.6.1–4.6.3 and the MOVA instruction descriptions.
+
+
+Reference interpolation preserves exactly equal vertex attributes and window
+depth values. Independently rounded barycentric weights can otherwise make a
+constant depth plane drift by one floating-point unit, causing incorrect LESS or
+EQUAL decisions against a previous plane. The general constant-value path avoids
+that drift; varying attributes retain the existing interpolation. A captured
+GX2 regression covers fractional geometry at exactly equal Float32 depth and
+checks both reference occlusion and Vulkan readback.

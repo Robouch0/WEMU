@@ -57,9 +57,12 @@ namespace Core::Gfx::Latte {
         OP2_SETGE_DX10 = 0x0E,
         OP2_SETNE_DX10 = 0x0F,
         OP2_FRACT = 0x10,
+        OP2_TRUNC = 0x11,
         OP2_RNDNE = 0x13,
         OP2_FLOOR = 0x14,
-        OP2_TRUNC = 0x16,
+        OP2_MOVA = 0x15,
+        OP2_MOVA_FLOOR = 0x16,
+        OP2_MOVA_INT = 0x18,
         OP2_MOV = 0x19,
         OP2_NOP = 0x1A,
         OP2_PRED_SETE = 0x20,
@@ -134,12 +137,14 @@ namespace Core::Gfx::Latte {
             {
                 return !op3 && ((op >= OP2_PRED_SETE && op <= OP2_PRED_SETNE_PUSH) || (op >= OP2_PRED_SETE_INT && op <= OP2_PRED_SETNE_INT));
             }
+            [[nodiscard]] bool isAddressWrite() const { return !op3 && (op == OP2_MOVA || op == OP2_MOVA_FLOOR || op == OP2_MOVA_INT); }
     };
 
     struct Program {
             std::vector<std::uint32_t> words;
             std::unordered_map<std::uint64_t, std::vector<std::vector<AluInst>>> clauses;
             bool valid{true};
+            bool usesAddressing{};
             unsigned registerCount{5};
     };
 

@@ -4,8 +4,10 @@ The experimental LLVM 19 backend uses one integer frontend and lowering for
 runtime JIT, emitted host objects and persistent object caching. Enable the build
 with `-DWEMU_ENABLE_LLVM=ON`. `WEMU_NATIVE_CPU=1` selects hot native prefixes;
 the interpreter handles unsupported instructions and stays available as the
-reference. The desktop launcher continues to use its established interpreter
-profile until native execution demonstrates a consistent commercial-title gain.
+reference. LLVM-enabled desktop builds select native execution by default and
+retain the interpreter for unsupported instructions and failed compilation. Builds without
+LLVM use the interpreter. Set the desktop QSettings key `emulation/nativeCpu` to
+`false` for a reference launch; inherited `WEMU_*` experiments stay isolated.
 
 The integer frontend also handles signed/unsigned comparisons, CR record
 forms, sign extension, negation, count-leading-zero, LR/CTR moves, direct
@@ -62,8 +64,17 @@ version, host architecture/features and data layout. Older register-only objects
 cannot be reused under the new ABI. Persistent objects are trusted compiler output,
 never guest code; existing integrity/permission checks remain in place.
 
-Set `WEMU_NATIVE_CACHE_DIR` to a private directory to retain compiler-produced
-objects. `WEMU_NATIVE_PROFILE=1` adds prefix-length, unsupported-opcode and native
+The desktop launcher stores compiler-produced objects in
+`QStandardPaths::CacheLocation/ppc-native` (normally
+`~/.cache/WEMU/WEMU/ppc-native` on Linux). The core creates the leaf with mode
+0700 and checks ownership and permissions; unavailable caches fall back to JIT.
+The cache is shared across titles because keys include validated guest words and
+PC, compiler semantics and host capabilities. It stores native code, not saves or
+a snapshot of game state: every launch still executes the real boot. First-use
+compilation can be slow; subsequent launches link compatible cached objects.
+A normal session exit reports `[NATIVECACHE] session hits/misses/writes` in its log.
+For standalone experiments, set `WEMU_NATIVE_CACHE_DIR` to a private directory to
+retain compiler-produced objects. `WEMU_NATIVE_PROFILE=1` adds prefix-length, unsupported-opcode and native
 cache/dispatch statistics; it adds CPU bookkeeping and should be disabled for
 headline on/off timing comparisons. Unsupported floating-point, flags and control
 flow still use the interpreter. This backend is shared across games and contains
@@ -90,3 +101,8 @@ interpreter's original predecoded store boundary and validates every additional
 live instruction word before using a compiled binding. Hook addresses and
 unsupported instructions stop lookahead. Semantics version 5 separates objects
 compiled before cross-store execution and code-write exits.
+
+Locked-cache memory is mapped by the shared memory service. It is currently
+outside the native ABI's three region descriptors, so a native load/store exits
+precisely before that access and the interpreter completes it. Existing cached
+objects keep their ABI and remain usable.

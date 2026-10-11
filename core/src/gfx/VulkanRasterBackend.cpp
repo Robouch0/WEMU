@@ -221,12 +221,10 @@ namespace Core::Gfx {
                 }
                 struct PipelineKey {
                         std::vector<std::uint32_t> vertex, fragment, bindings;
-                        unsigned width{}, height{}, channelMask{};
-                        std::array<std::int32_t, 4> scissor{};
+                        unsigned channelMask{};
                         std::array<unsigned, 11> blend{};
                         std::array<unsigned, 4> depth{};
                         unsigned topology{}, colorFormat{};
-                        bool overwriteTarget{};
                         auto operator<=>(const PipelineKey &) const = default;
                 };
                 struct PipelineBundle {
@@ -243,6 +241,7 @@ namespace Core::Gfx {
                 std::string deviceName;
                 std::uint64_t readbackTransfers{}, residentTextureCopies{}, directTextureBindings{}, directTextureBytes{};
                 std::uint64_t targetUploadTransfers{}, targetCopyTransfers{}, fullOverwriteDraws{};
+                std::uint64_t pipelineCreations{};
                 VkDescriptorSetLayout depthQuantizeSetLayout{};
                 VkPipelineLayout depthQuantizeLayout{};
                 VkPipeline depthQuantizePipeline{};
@@ -575,7 +574,7 @@ void main() {
                 }
 
                 void initialize(const std::vector<std::uint32_t> &vertex, const std::vector<std::uint32_t> &fragment,
-                                const std::array<float, 1152> &constants, const std::array<float, 3200> &vertexConstants,
+                                const std::array<float, 3200> &constants, const std::array<float, 3200> &vertexConstants,
                                 const std::vector<Texture> &textures, const RasterDraw &draw, const std::shared_ptr<ColorImage> &targetSource,
                                 const std::shared_ptr<ColorImage> &depthSource, bool overwriteTarget)
                 {
@@ -712,12 +711,14 @@ void main() {
                     targetBuffer = buffer(draw.target.size(), VK_BUFFER_USAGE_TRANSFER_SRC_BIT, targetMemory);
                     if (!fullOverwrite && !targetSource)
                         upload(targetMemory, draw.target.data(), draw.target.size());
-                    Context::PipelineKey key{vertex, fragment, {}, draw.width, draw.height, draw.channelMask, draw.scissor};
+                    // Dimensions/scissors are dynamic, and attachment load ops
+                    // do not affect render-pass compatibility. Share one pipeline
+                    // across these draw variants instead of compiling each size.
+                    Context::PipelineKey key{vertex, fragment, {}, draw.channelMask};
                     key.blend = blendKey(draw.blend);
                     key.depth = depthKey(draw.depth);
                     key.topology = unsigned(draw.topology);
                     key.colorFormat = unsigned(draw.colorFormat);
-                    key.overwriteTarget = fullOverwrite;
                     for (const auto &texture: textures)
                         key.bindings.push_back(texture.binding);
                     if (const auto it = context.pipelines.find(key); it != context.pipelines.end()) {
@@ -809,6 +810,10 @@ void main() {
                         viewportState.viewportCount = viewportState.scissorCount = 1;
                         viewportState.pViewports = &viewport;
                         viewportState.pScissors = &scissor;
+                        constexpr VkDynamicState dynamicStates[]{VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+                        VkPipelineDynamicStateCreateInfo dynamic{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+                        dynamic.dynamicStateCount = std::size(dynamicStates);
+                        dynamic.pDynamicStates = dynamicStates;
                         VkPipelineRasterizationStateCreateInfo raster{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
                         raster.polygonMode = VK_POLYGON_MODE_FILL;
                         raster.lineWidth = 1;
@@ -842,6 +847,7 @@ void main() {
                         gp.pVertexInputState = &input;
                         gp.pInputAssemblyState = &assembly;
                         gp.pViewportState = &viewportState;
+                        gp.pDynamicState = &dynamic;
                         gp.pRasterizationState = &raster;
                         gp.pMultisampleState = &samples;
                         gp.pColorBlendState = &blending;
@@ -853,6 +859,7 @@ void main() {
                         gp.layout = layout;
                         gp.renderPass = pass;
                         check(vkCreateGraphicsPipelines(device, pipelineCache, 1, &gp, nullptr, &pipeline), "create pipeline");
+                        ++context.pipelineCreations;
                         if (context.pipelines.size() >= 128)
                             context.clearPipelines();
                         context.pipelines.emplace(std::move(key), Context::PipelineBundle{setLayout, layout, pipeline});
@@ -961,6 +968,10 @@ void main() {
                     transitionDirectTextures(true);
                     vkCmdBeginRenderPass(command, &rp, VK_SUBPASS_CONTENTS_INLINE);
                     vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+                    const VkViewport viewport{0, 0, float(draw.width), float(draw.height), 0, 1};
+                    const auto scissor = clippedScissor(draw);
+                    vkCmdSetViewport(command, 0, 1, &viewport);
+                    vkCmdSetScissor(command, 0, 1, &scissor);
                     vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &descriptor, 0, nullptr);
                     const float scale[]{2.0f / float(draw.width), 2.0f / float(draw.height), draw.depth.test ? 1.f : 0.f};
                     struct VertexPush {
@@ -1305,7 +1316,7 @@ void main() {
                     return result;
                 }
 
-                bool refresh(const std::array<float, 1152> &constants, const std::array<float, 3200> &vertexConstants,
+                bool refresh(const std::array<float, 3200> &constants, const std::array<float, 3200> &vertexConstants,
                              const std::vector<Texture> &textures, const RasterDraw &draw, bool retainTextures,
                              const std::shared_ptr<ColorImage> &targetSource, const std::shared_ptr<ColorImage> &depthSource)
                 {
@@ -1704,15 +1715,16 @@ void main() {
     struct VulkanRasterBackend::Impl {
             struct ResourceKey {
                     Context::PipelineKey pipeline;
-                    unsigned pitch{}, vertexCount{};
+                    unsigned width{}, height{}, pitch{}, vertexCount{};
+                    bool overwriteTarget{};
                     unsigned depthWidth{}, depthHeight{}, depthPitch{};
                     std::vector<std::uint32_t> textureShape;
                     unsigned chainSlot{};
                     bool sameDraw(const ResourceKey &other) const
                     {
-                        return pipeline == other.pipeline && pitch == other.pitch && vertexCount == other.vertexCount &&
-                               depthWidth == other.depthWidth && depthHeight == other.depthHeight && depthPitch == other.depthPitch &&
-                               textureShape == other.textureShape;
+                        return pipeline == other.pipeline && width == other.width && height == other.height && pitch == other.pitch &&
+                               vertexCount == other.vertexCount && overwriteTarget == other.overwriteTarget && depthWidth == other.depthWidth &&
+                               depthHeight == other.depthHeight && depthPitch == other.depthPitch && textureShape == other.textureShape;
                     }
                     auto operator<=>(const ResourceKey &) const = default;
             };
@@ -1755,6 +1767,7 @@ void main() {
     std::uint64_t VulkanRasterBackend::fullOverwriteDraws() const noexcept { return m_impl->context ? m_impl->context->fullOverwriteDraws : 0; }
     std::uint64_t VulkanRasterBackend::residentTargetCopies() const noexcept { return m_impl->residentTargetCopies; }
     std::uint64_t VulkanRasterBackend::readbackTransfers() const noexcept { return m_impl->context ? m_impl->context->readbackTransfers : 0; }
+    std::uint64_t VulkanRasterBackend::pipelineCreations() const noexcept { return m_impl->context ? m_impl->context->pipelineCreations : 0; }
 
     std::optional<RasterResult> VulkanRasterBackend::render(const RasterDraw &draw) { return renderImpl(draw, false); }
 
@@ -1797,7 +1810,7 @@ void main() {
             draw.target.size() > std::size_t{64} * 1024 * 1024)
             return reject("Unsupported target dimensions");
         if ((draw.topology == RasterDraw::Topology::Triangles && draw.vertices.size() % 3) || draw.vertices.size() > 262144 ||
-            draw.constants.size() > 1024 ||
+            draw.constants.size() > 1024 || draw.uniforms.size() != draw.shader.uniforms.size() * 4 || draw.uniforms.size() > 2048 ||
             draw.textures.size() != draw.shader.textures.size() + (draw.vertexStage.shader ? draw.vertexStage.shader->textures.size() : 0) ||
             draw.textures.size() > 32)
             return reject("Unsupported draw inputs");
@@ -1867,6 +1880,9 @@ void main() {
                  texture.r32Pitch < texture.width || std::uint64_t(texture.r32Pitch) * texture.height * texture.layers * 4 > texture.r32Bytes.size()))
                 return reject("Invalid little-endian R32 texture snapshot");
             const auto r = texture.sampler.regs[0];
+            if (binding.binding <= 16 && draw.shader.requiresDerivativeFreeSampling && found->implicitLod &&
+                (texture.sourceMipCount != 1 || texture.sourceFirstMip || ((r >> 9) & 7) != ((r >> 12) & 7) || ((r >> 19) & 7)))
+                return reject("Whole-quad implicit sampling requires one mip, equal filters and no anisotropy");
             // Match the reference's base-level magnification filter. Other addressing
             // modes need separate border/mirror-clamp validation before acceleration.
             if ((r & 7) > 2 || ((r >> 3) & 7) > 2 || ((r >> 9) & 7) > 1)
@@ -2090,13 +2106,14 @@ void main() {
                 }
             textures.push_back(std::move(uploaded));
         }
-        std::array<float, 1152> constants{};
+        std::array<float, 3200> constants{};
         std::array<float, 3200> vertexConstants{};
         if (draw.vertexStage.shader) {
             std::copy(draw.vertexStage.constants.begin(), draw.vertexStage.constants.end(), vertexConstants.begin());
             std::copy(draw.vertexStage.uniforms.begin(), draw.vertexStage.uniforms.end(), vertexConstants.begin() + 1152);
         }
         std::copy(draw.constants.begin(), draw.constants.end(), constants.begin());
+        std::copy(draw.uniforms.begin(), draw.uniforms.end(), constants.begin() + 1152);
         for (const auto &texture: draw.textures) {
             const auto border = texture.sampler.border();
             const auto slot = texture.binding.binding - (texture.binding.binding > 17 ? 18 : 1);
@@ -2109,12 +2126,14 @@ void main() {
             stageConstants[offset + 2] = float((sampler >> 9) & 7);
         }
         Impl::ResourceKey key;
-        key.pipeline = {vertex->words, fragment->words, {}, draw.width, draw.height, draw.channelMask, draw.scissor};
+        key.pipeline = {vertex->words, fragment->words, {}, draw.channelMask};
         key.pipeline.blend = blendKey(draw.blend);
         key.pipeline.depth = depthKey(draw.depth);
         key.pipeline.topology = unsigned(draw.topology);
         key.pipeline.colorFormat = unsigned(draw.colorFormat);
-        key.pipeline.overwriteTarget = overwriteTarget;
+        key.width = draw.width;
+        key.height = draw.height;
+        key.overwriteTarget = overwriteTarget;
         key.depthWidth = draw.depth.test ? draw.depth.width : 0;
         key.depthHeight = draw.depth.test ? draw.depth.height : 0;
         key.depthPitch = draw.depth.test ? draw.depth.pitch : 0;
@@ -2161,7 +2180,7 @@ void main() {
             if (it == m_impl->resources.end()) {
                 // Pipeline bundles must stay alive while their resources are
                 // executable. A pipeline-cache reset is the exceptional full drain.
-                if (m_impl->context->pipelines.size() >= 128) {
+                if (m_impl->context->pipelines.size() >= 128 && !m_impl->context->pipelines.contains(key.pipeline)) {
                     for (auto &[oldKey, entry]: m_impl->resources)
                         entry.value->finishPending();
                     m_impl->resources.clear();

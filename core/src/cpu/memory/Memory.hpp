@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <array>
 #include <bit>
 #include <cinttypes>
 #include <cstring>
@@ -44,6 +45,8 @@ namespace Core {
             static constexpr uint32_t MIN_HEAP_ALIGN = 4;
             static constexpr uint32_t DIMPORT_BASE = 0xC0000000; // dimport slots
             static constexpr uint32_t DIMPORT_SIZE = 0x4000; // 16 KB
+            static constexpr std::uint32_t LOCKED_CACHE_SIZE = 0x4000;
+            static constexpr std::array<std::uint32_t, 3> LOCKED_CACHE_BASES{0xFFC00000, 0xFFC40000, 0xFFC80000};
 
             explicit Memory(const std::size_t &size = ApplicationMemoryEnd - ApplicationCode) :
                 m_memory(), m_virtAddress(ApplicationCode), m_memSize(size)
@@ -51,6 +54,7 @@ namespace Core {
                 m_memory.resize(size);
                 m_stack.resize(STACK_SIZE);
                 m_dimport.resize(DIMPORT_SIZE);
+                m_lockedCache.resize(LOCKED_CACHE_SIZE * LOCKED_CACHE_BASES.size());
             }
 
             // Guest RAM has one owner. Transfer its buffers without copying or reallocating them.
@@ -83,6 +87,11 @@ namespace Core {
                 const std::size_t importOffset = static_cast<std::size_t>(address) - DIMPORT_BASE;
                 if (address >= DIMPORT_BASE && importOffset < m_dimport.size() && bytes <= m_dimport.size() - importOffset)
                     return reinterpret_cast<const std::uint8_t *>(m_dimport.data() + importOffset);
+                for (std::size_t core = 0; core < LOCKED_CACHE_BASES.size(); ++core) {
+                    const auto cacheOffset = static_cast<std::size_t>(address) - LOCKED_CACHE_BASES[core];
+                    if (address >= LOCKED_CACHE_BASES[core] && cacheOffset < LOCKED_CACHE_SIZE && bytes <= LOCKED_CACHE_SIZE - cacheOffset)
+                        return reinterpret_cast<const std::uint8_t *>(m_lockedCache.data() + core * LOCKED_CACHE_SIZE + cacheOffset);
+                }
                 return nullptr;
             }
 
@@ -145,6 +154,7 @@ namespace Core {
             std::vector<char> m_memory;
             std::vector<char> m_stack;
             std::vector<char> m_dimport;
+            std::vector<char> m_lockedCache;
             std::size_t m_heapPtr = HEAP_BASE;
             std::size_t m_virtAddress;
             std::size_t m_memSize;

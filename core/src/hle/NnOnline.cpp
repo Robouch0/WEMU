@@ -156,12 +156,6 @@ void RegisterNnOnlineFunctions()
     sh.registerSyscall("WPADGetSpeakerVolume", retFalse);
     sh.registerSyscall("VPADStopMotor", ok);
     sh.registerSyscall("FSGetLastErrorCodeForViewer", ok); // FS_ERROR_OK
-    sh.registerSyscall("LCIsDMAEnabled", retFalse);
-    sh.registerSyscall("LCEnableDMA", ok);
-    sh.registerSyscall("LCDisableDMA", ok);
-    sh.registerSyscall("LCGetUnallocated", [](Core::Interpreter &cpu) { cpu.m_gpr[3] = 0x4000u; }); // 16 KB LC free
-    sh.registerSyscall("LCAlloc", retFalse); // no locked-cache buffer (title has a fallback)
-    sh.registerSyscall("LCDealloc", ok);
     sh.registerSyscall("MIXInit", ok);
     sh.registerSyscall("MIXInitInputControl", ok);
     sh.registerSyscall("MIXInitDeviceControl", ok);

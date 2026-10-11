@@ -22,6 +22,7 @@
 #include "cpu/types/Instruction.hpp"
 #include "gfx/Renderer.hpp"
 #include "hle/H264.hpp"
+#include "hle/LockedCache.hpp"
 #include "hle/Scheduler.hpp"
 #include "utils/BeDecoder.hpp"
 #include "utils/Logger.hpp"
@@ -98,6 +99,7 @@ namespace Core {
             void reset()
             {
                 m_h264.reset();
+                m_lockedCache = {};
                 m_blockCache.clear();
                 m_failed = false;
                 m_pc = 0;
@@ -187,6 +189,7 @@ namespace Core {
             Core::FloatingPointStatusAndControlRegister m_fpscr{};
 
             Core::Scheduler m_scheduler{}; // cooperative guest-thread scheduler
+            Core::LockedCacheState m_lockedCache{};
 
             std::map<std::uint32_t, std::vector<InstructionInfo>> m_instructionMap{};
 
