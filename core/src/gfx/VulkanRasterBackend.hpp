@@ -26,6 +26,11 @@ namespace Core::Gfx {
             std::uint64_t retainedTargetDraws() const noexcept;
             std::uint64_t retainedTextureUploads() const noexcept;
             std::uint64_t residentTextureCopies() const noexcept;
+            std::uint64_t directTextureBindings() const noexcept;
+            std::uint64_t directTextureBytes() const noexcept;
+            std::uint64_t targetUploadTransfers() const noexcept;
+            std::uint64_t targetCopyTransfers() const noexcept;
+            std::uint64_t fullOverwriteDraws() const noexcept;
             std::uint64_t residentTargetCopies() const noexcept;
             std::uint64_t readbackTransfers() const noexcept;
 

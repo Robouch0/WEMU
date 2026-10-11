@@ -411,19 +411,23 @@ namespace Core::Gfx {
 
     } // namespace
 
-    void Gx2Replayer::buildClearFrame()
+    void Gx2Replayer::buildClearFrame(unsigned coveredWidth, unsigned coveredHeight)
     {
-        m_fb.assign(static_cast<std::size_t>(kWidth) * kHeight * 4, 0);
+        m_fb.resize(static_cast<std::size_t>(kWidth) * kHeight * 4);
         const auto toByte = [](float f) { return static_cast<std::uint8_t>(std::lround(std::clamp(f, 0.0f, 1.0f) * 255.0f)); };
         const std::uint8_t r = toByte(m_clear[0]);
         const std::uint8_t g = toByte(m_clear[1]);
         const std::uint8_t b = toByte(m_clear[2]);
-        for (std::size_t i = 0; i < m_fb.size(); i += 4) {
-            m_fb[i + 0] = r;
-            m_fb[i + 1] = g;
-            m_fb[i + 2] = b;
-            m_fb[i + 3] = 0xFF; // X
-        }
+        // Scanout overwrites the covered rectangle immediately. Clear only its
+        // margins, including when a new source is smaller than the last frame.
+        for (unsigned y = 0; y < kHeight; ++y)
+            for (unsigned x = y < coveredHeight ? coveredWidth : 0; x < kWidth; ++x) {
+                const auto i = (std::size_t(y) * kWidth + x) * 4;
+                m_fb[i + 0] = r;
+                m_fb[i + 1] = g;
+                m_fb[i + 2] = b;
+                m_fb[i + 3] = 0xFF; // X
+            }
     }
 
     std::size_t Gx2Replayer::SurfaceKeyHash::operator()(const SurfaceKey &k) const noexcept
@@ -2674,19 +2678,27 @@ namespace Core::Gfx {
 
     void Gx2Replayer::copyToScanBuffer(const Surface &s)
     {
-        buildClearFrame();
         m_stats.scanPtr = s.imagePtr;
-        if (!s.imagePtr)
+        if (!s.imagePtr) {
+            buildClearFrame();
             return;
+        }
         const auto *backing = useViewBacking() ? findViewBacking(s) : nullptr;
         const std::uint8_t *base = backing ? backing->data() : nullptr;
         if (!base) {
-            if (!m_mem)
+            if (!m_mem) {
+                buildClearFrame();
                 return;
+            }
             base = m_mem->hostPtr(s.imagePtr);
-            if (!base || !m_mem->hostPtr(s.imagePtr + s.pitch * s.height * colorElementBytes(colorFormat(s.format)) - 1))
+            if (!base || !m_mem->hostPtr(s.imagePtr + s.pitch * s.height * colorElementBytes(colorFormat(s.format)) - 1)) {
+                buildClearFrame();
                 return;
+            }
         }
+        const std::uint32_t rows = std::min(kHeight, s.height);
+        const std::uint32_t cols = std::min(kWidth, s.width);
+        buildClearFrame(cols, rows);
         if (s.format == 0x823) {
             for (unsigned y = 0; y < std::min(kHeight, s.height); ++y)
                 for (unsigned x = 0; x < std::min(kWidth, s.width); ++x) {
@@ -2696,8 +2708,6 @@ namespace Core::Gfx {
                 }
             return;
         }
-        const std::uint32_t rows = std::min(kHeight, s.height);
-        const std::uint32_t cols = std::min(kWidth, s.width);
         for (std::uint32_t y = 0; y < rows; y++) {
             const std::uint8_t *src = base + static_cast<std::size_t>(y) * s.pitch * 4;
             std::uint8_t *dst = m_fb.data() + static_cast<std::size_t>(y) * kWidth * 4;

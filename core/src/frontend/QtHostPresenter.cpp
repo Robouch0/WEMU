@@ -22,10 +22,15 @@ namespace Core::Frontend {
 
     bool QtHostPresenter::connected() const { return !m_stopping && m_socket.state() == QLocalSocket::ConnectedState; }
 
-    bool QtHostPresenter::send(const QByteArray &body)
+    bool QtHostPresenter::send(const QByteArray &body, std::span<const std::uint8_t> payload)
     {
-        const auto bytes = WemuSession::packet(body);
+        const auto bytes = WemuSession::packetHeader(body, qsizetype(payload.size()));
         if (!connected() || m_socket.write(bytes) != bytes.size())
+            return false;
+        // QLocalSocket copies queued bytes before write returns, so the caller's
+        // framebuffer can be reused as soon as this synchronous send completes.
+        if (!payload.empty() &&
+            m_socket.write(reinterpret_cast<const char *>(payload.data()), qsizetype(payload.size())) != qsizetype(payload.size()))
             return false;
         while (connected() && m_socket.bytesToWrite()) {
             m_socket.flush();
@@ -86,8 +91,7 @@ namespace Core::Frontend {
         WemuSession::configure(stream);
         stream << quint32(WemuSession::Type::Frame) << ++m_sequence << quint32(width) << quint32(height) << statistics.presentFps
                << statistics.movieFps << quint64(statistics.presents) << quint64(statistics.movies);
-        body.append(reinterpret_cast<const char *>(rgba.data()), qsizetype(rgba.size()));
-        if (!send(body))
+        if (!send(body, rgba))
             return false;
         // Two-frame pipeline, like the standalone presentation slots. Every visible frame is acknowledged in order.
         while (connected() && m_sequence - m_acknowledged >= 2)

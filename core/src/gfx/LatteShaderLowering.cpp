@@ -651,6 +651,7 @@ namespace Core::Gfx::Latte {
             for (const auto [target, expectedDepth]: jumpTargets)
                 if (target >= entryDepth.size() || entryDepth[target] != expectedDepth)
                     throw std::runtime_error("jump target has incompatible control-flow stack");
+            result.alwaysWritesColor = !vertexStage && result.exportsColor && !result.writesDepth && !maskedControl && jumpTargets.empty();
             result.source = "#version 450\nlayout(location=0) in vec4 inputs[4];\nlayout(location=0) out vec4 color;\n"
                             "layout(set=0,binding=0,std140) uniform Constants { vec4 c[256]; vec4 borders[16]; vec4 sampling[16]; } u;\n"
                             "float arrayLayerReference(float x,int layers) { float v=clamp(x,0.0,float(layers-1)); "

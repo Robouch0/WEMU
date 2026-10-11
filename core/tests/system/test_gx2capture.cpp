@@ -1443,3 +1443,46 @@ TEST_F(Gx2CaptureTest, IndexedPointsPreserveHdrFloatTargetsThroughVertexTextureS
                 cpu->m_memory.write<unsigned>(VERTS + v * 24 + c * 4, std::bit_cast<unsigned>(vertices[v][c]));
     }
 }
+
+TEST_F(Gx2CaptureTest, ScanoutClearsOnlyMarginsAndInvalidSourcesDoNotRetainPreviousPixels)
+{
+    using namespace Core::Gfx;
+    constexpr std::uint32_t header = 0x28001000, image = 0x28100000;
+    auto *pixels = cpu->m_memory.hostPtr(image);
+    ASSERT_NE(pixels, nullptr);
+    const auto bytes = Gx2Replayer::kWidth * Gx2Replayer::kHeight * 4;
+    std::fill_n(pixels, bytes, 73);
+    Gx2Replayer replayer;
+    const auto present = [&](unsigned width, unsigned height, unsigned format, std::uint32_t address) {
+        gx2Stream().clear();
+        surface(header, address, bytes, width, height, width, 1);
+        cpu->m_memory.write<std::uint32_t>(header + 0x14, format);
+        gx2Stream().push(Gx2Command{Gx2Cmd::ClearColor, {}, {0.25, 0.5, 0.75, 1}});
+        cpu->m_gpr[3] = header;
+        cpu->m_gpr[4] = 1;
+        call("GX2CopyColorBufferToScanBuffer");
+        gx2Stream().push(Gx2Command{Gx2Cmd::SwapScanBuffers});
+        replayer.replay(gx2Stream(), &cpu->m_memory);
+    };
+    present(Gx2Replayer::kWidth, Gx2Replayer::kHeight, 0x1A, image);
+    ASSERT_EQ(replayer.framebuffer().size(), bytes);
+    EXPECT_EQ(replayer.framebuffer().front(), 73);
+    EXPECT_EQ(replayer.framebuffer().back(), 73);
+    for (const auto format: {0x1Au, 0x823u}) {
+        if (format == 0x823)
+            for (unsigned i = 0; i < 2 * 3; ++i)
+                writeFloatColor(pixels + i * 16, {.2f, .4f, .6f, 1.f}, 15);
+        present(2, 3, format, image);
+        const auto &frame = replayer.framebuffer();
+        const auto pixel = [&](unsigned x, unsigned y) {
+            const auto index = (y * Gx2Replayer::kWidth + x) * 4;
+            return std::array{frame[index], frame[index + 1], frame[index + 2], frame[index + 3]};
+        };
+        EXPECT_EQ(pixel(0, 0), (format == 0x1A ? std::array<std::uint8_t, 4>{73, 73, 73, 73} : std::array<std::uint8_t, 4>{51, 102, 153, 255}));
+        for (const auto xy: {std::array{2u, 0u}, std::array{0u, 3u}, std::array{1279u, 719u}})
+            EXPECT_EQ(pixel(xy[0], xy[1]), (std::array<std::uint8_t, 4>{64, 128, 191, 255}));
+    }
+    present(2, 3, 0x1A, 0); // Invalid scan source still produces the complete clear frame.
+    EXPECT_EQ(replayer.framebuffer()[0], 64);
+    EXPECT_EQ(replayer.framebuffer().back(), 255);
+}

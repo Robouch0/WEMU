@@ -24,6 +24,7 @@ namespace Core::Gfx::Latte {
             bool usesGather{};
             bool exportsColor{true};
             bool writesDepth{};
+            bool alwaysWritesColor{}; // Proven unconditional export, with no lane-mask changes or jumps.
             struct UniformReference {
                     unsigned bank{}, index{};
                     bool operator==(const UniformReference &) const = default;

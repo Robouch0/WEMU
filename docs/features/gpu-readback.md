@@ -34,3 +34,74 @@ software writes to an unrelated target, native continuation, feedback snapshots,
 and final presentation. Enable `WEMU_NATIVE_DEFER_READBACK=1`,
 `WEMU_NATIVE_RESIDENT_TEXTURES=1` and `WEMU_NATIVE_RESIDENT_TARGETS=1` when running
 the deferred-readback regression cases directly.
+
+## Direct resident color sampling
+
+Compatible RGBA8 and RGBA32 float render targets can be sampled through cached
+Vulkan image views, without copying their pixels into an intermediate sampling
+image. Component mappings remain part of each view. Vertex and fragment stages
+share this path; duplicate bindings of the same image share one layout
+transition. Source images remain alive until the submission completes.
+
+Target/depth input copies occur before sampling transitions. Each source returns
+to its canonical transfer-source layout after the draw, preserving later GPU
+consumers and deferred CPU readbacks. A draw sampling its own output keeps the
+snapshot-copy path. Stale or foreign images still resolve their saved CPU
+version. Depth retains the existing D32-to-R32 transfer path.
+
+CPU uploads and copied textures remain available when direct sampling cannot be
+used, including when a reused bundle changes from GPU inputs to CPU snapshots.
+`WEMU_NATIVE_DIRECT_TEXTURES=0` selects the copy path for controlled comparisons.
+Native timing logs distinguish actual resident texture copies from direct
+bindings and the corresponding avoided-copy bytes. Presentation still reads
+pixels back to the CPU and uploads them to Qt; cross-process GPU sharing is
+outside this change.
+
+## Complete target overwrites
+
+The shader translator marks unconditional color exports only when execution
+masks, jumps and depth exports cannot suppress a color write. The backend combines
+that proof with exact full-target scissor/geometry checks: two triangles must
+cover a rectangle's four corners and share its diagonal, with unit reciprocal W.
+Blending, partial channel masks, depth testing and GPU vertex stages exclude this
+path. Bounding boxes alone do not establish coverage.
+
+For those draws, Vulkan uses a discard load operation and skips uploading or
+copying the previous active target pixels. Padding and older readback versions
+remain preserved. Other draws retain their existing load/transfer behavior.
+`WEMU_NATIVE_TARGET_OVERWRITE=0` disables this optimization independently for
+comparisons. Timing counters record target uploads, target copies and proven
+full-overwrite draws.
+
+## Preserve live GPU versions when reusing resources
+
+With lazy readback enabled, a bundle whose color or depth ticket still needs a
+CPU transfer stays intact. The cache selects another free bundle with the same
+pipeline and texture shape. It searches existing slots, including across holes
+left by eviction, before allocating another bundle. Discarded or materialized
+tickets allow normal reuse.
+
+This keeps offscreen surfaces available to later GPU consumers instead of
+forcing them through GPU readback and CPU reupload merely to recycle a bundle.
+It can trade additional cached GPU storage and image copies for fewer CPU/GPU
+round trips. The existing 64-entry/768 MiB estimated cache limits remain;
+eviction materializes live tickets before releasing their resources. Older
+color/depth versions, row padding, software fallback and foreign-context inputs
+retain their snapshot behavior. `WEMU_NATIVE_PRESERVE_IMAGES=0` disables this
+selection policy for controlled comparisons.
+
+## Reduce scanout and desktop frame copies
+
+CPU scanout clears only pixels outside the rectangle its next copy overwrites.
+Smaller sources clear their uncovered margins each time, and invalid sources
+still produce a complete clear frame. RGBA8 and float-to-RGBA8 scanout retain
+their existing pixel values and dimensions.
+
+The isolated core writes frame metadata and its pixel span separately to the
+local socket, avoiding full-frame body and packet temporaries. The receiver can
+transfer a complete packet buffer into the decoder; the Qt image then keeps
+immutable packet storage alive through a cleanup callback, including references
+held by the render thread. Writable QImage copies detach normally. Protocol
+version, bounds checks, ordered acknowledgements and the two-frame queue remain
+unchanged. GPU readback, socket transport and Qt texture upload still occur;
+this does not add cross-process GPU texture sharing.

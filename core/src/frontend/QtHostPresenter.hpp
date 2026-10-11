@@ -16,7 +16,7 @@ namespace Core::Frontend {
             void paused(bool value, const Statistics &statistics) override;
 
         private:
-            bool send(const QByteArray &body);
+            bool send(const QByteArray &body, std::span<const std::uint8_t> payload = {});
             void receive(std::chrono::milliseconds wait);
             QLocalSocket m_socket;
             QByteArray m_incoming;

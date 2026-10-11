@@ -131,7 +131,7 @@ namespace Core::Gfx {
                     std::uint32_t alphaCombine{0}; // ADD
             };
 
-            void buildClearFrame();
+            void buildClearFrame(unsigned coveredWidth = 0, unsigned coveredHeight = 0);
             Surface parseSurface(std::uint32_t addr);
             Surface parseSurface(const Gx2Command &cmd); // prefers the call-time struct snapshot
             void dumpSurface(const Surface &s, const char *kind, bool force = false);

@@ -98,8 +98,8 @@ target_link_libraries(wemu_launch_environment_tests PRIVATE Qt6::Core)
 add_test(NAME wemu_launch_environment_tests COMMAND wemu_launch_environment_tests)
 
 add_executable(wemu_session_protocol_tests tests/SessionProtocolTest.cpp)
-target_include_directories(wemu_session_protocol_tests PRIVATE ../core/src)
-target_link_libraries(wemu_session_protocol_tests PRIVATE Qt6::Core gtest_main)
+target_include_directories(wemu_session_protocol_tests PRIVATE ../core/src src/emulator)
+target_link_libraries(wemu_session_protocol_tests PRIVATE Qt6::Core Qt6::Gui gtest_main)
 add_test(NAME wemu_session_protocol_tests COMMAND wemu_session_protocol_tests)
 
 add_executable(wemu_session_lifecycle_tests tests/SessionLifecycleTest.cpp src/emulator/EmulatorLauncher.cpp)

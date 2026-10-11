@@ -550,11 +550,14 @@ TEST(VulkanRasterBackendTest, RenderedTexturesUseGpuVersionsAndMaterializeStaleO
     auto pending = backend.renderDeferred(draw);
     ASSERT_TRUE(pending);
     EXPECT_EQ(materializations, 0u);
-    EXPECT_EQ(backend.residentTextureCopies(), 1u);
+    EXPECT_EQ(backend.residentTextureCopies(), 0u);
+    EXPECT_EQ(backend.directTextureBindings(), 1u);
     pending->resolve();
     EXPECT_EQ(pending->rgba, reference->rgba);
 
-    // Reusing the producer bundle overwrites its GPU image but preserves old tickets.
+    // A materialized ticket permits bundle reuse. Its CPU snapshot must still
+    // work after the old GPU version is overwritten.
+    original->resolve();
     producer.texel = [](unsigned, unsigned) { return std::array{0.f, 1.f, 0.f, 1.f}; };
     draw.textures = {&producer, 1};
     auto newer = backend.renderDeferred(draw);
@@ -563,13 +566,15 @@ TEST(VulkanRasterBackendTest, RenderedTexturesUseGpuVersionsAndMaterializeStaleO
     auto stale = backend.render(draw);
     ASSERT_TRUE(stale);
     EXPECT_EQ(materializations, 1u);
-    EXPECT_EQ(backend.residentTextureCopies(), 1u);
+    EXPECT_EQ(backend.residentTextureCopies(), 0u);
+    EXPECT_EQ(backend.directTextureBindings(), 1u);
     EXPECT_EQ(stale->rgba, reference->rgba);
 
     consumer.rendered = newer->readback;
     auto current = backend.render(draw);
     ASSERT_TRUE(current);
-    EXPECT_EQ(backend.residentTextureCopies(), 2u);
+    EXPECT_EQ(backend.residentTextureCopies(), 0u);
+    EXPECT_EQ(backend.directTextureBindings(), 2u);
     EXPECT_EQ(current->rgba[0], 0);
     EXPECT_EQ(current->rgba[1], 255);
     // A different device/context must use the CPU snapshot, never a foreign VkImage.
@@ -578,7 +583,7 @@ TEST(VulkanRasterBackendTest, RenderedTexturesUseGpuVersionsAndMaterializeStaleO
     ASSERT_TRUE(imported);
     EXPECT_EQ(imported->rgba, current->rgba);
     EXPECT_EQ(foreign.residentTextureCopies(), 0u);
-    // CPU upload after a GPU copy must not compare against obsolete staging bytes.
+    // CPU upload after a direct GPU binding must not compare against obsolete staging bytes.
     consumer.rendered.reset();
     consumer.unorm8 = original->resolve();
     auto cpuUploaded = backend.render(draw);
@@ -588,14 +593,34 @@ TEST(VulkanRasterBackendTest, RenderedTexturesUseGpuVersionsAndMaterializeStaleO
     ASSERT_TRUE(chained && chained->readback);
     consumer.unorm8 = {};
     const auto copiesBeforeChain = backend.residentTextureCopies();
+    const auto directBeforeChain = backend.directTextureBindings();
     for (unsigned i = 0; i < 8; ++i) {
         consumer.rendered = chained->readback;
-        chained = backend.renderDeferred(draw); // source and destination share a bundle
+        chained = backend.renderDeferred(draw); // Live source rotates to a different bundle.
         ASSERT_TRUE(chained && chained->readback);
     }
     chained->resolve();
     EXPECT_EQ(chained->rgba, reference->rgba);
-    EXPECT_EQ(backend.residentTextureCopies(), copiesBeforeChain + 8);
+    EXPECT_EQ(backend.residentTextureCopies(), copiesBeforeChain);
+    EXPECT_EQ(backend.directTextureBindings(), directBeforeChain + 8);
+
+    // A resolved source can reuse its own bundle. Preserve self-feedback with
+    // a GPU snapshot copy even though a CPU snapshot is also available.
+    VulkanRasterBackend feedbackBackend(true, true);
+    consumer.rendered.reset();
+    consumer.unorm8 = original->resolve();
+    chained = feedbackBackend.renderDeferred(draw);
+    ASSERT_TRUE(chained && chained->readback);
+    consumer.unorm8 = {};
+    for (unsigned i = 0; i < 8; ++i) {
+        chained->readback->resolve();
+        consumer.rendered = chained->readback;
+        chained = feedbackBackend.renderDeferred(draw);
+        ASSERT_TRUE(chained && chained->readback);
+    }
+    chained->resolve();
+    EXPECT_EQ(chained->rgba, reference->rgba);
+    EXPECT_EQ(feedbackBackend.residentTextureCopies(), 8u);
 }
 
 TEST(VulkanRasterBackendTest, ResidentTargetsPreserveUntouchedPixelsAndFallbackSnapshots)
@@ -2600,7 +2625,7 @@ TEST(VulkanRasterBackendTest, ColdScissorVariantsKeepHotResourcesAndOlderSnapsho
         draw.scissor = {0, 0, 4, 4};
         ASSERT_TRUE(backend.renderDeferred(draw)) << backend.lastError();
     }
-    EXPECT_EQ(backend.reusedDraws(), 70u);
+    EXPECT_EQ(backend.reusedDraws(), 69u); // One extra bundle preserves the first live snapshot.
     first->resolve();
     for (unsigned y = 0; y < 4; ++y)
         for (unsigned x = 0; x < 6; ++x) {
@@ -2608,4 +2633,286 @@ TEST(VulkanRasterBackendTest, ColdScissorVariantsKeepHotResourcesAndOlderSnapsho
             EXPECT_EQ((std::array{first->rgba[offset], first->rgba[offset + 1], first->rgba[offset + 2], first->rgba[offset + 3]}),
                       (x < 4 ? std::array<std::uint8_t, 4>{255, 0, 0, 255} : std::array<std::uint8_t, 4>{19, 19, 19, 19}));
         }
+}
+
+TEST(VulkanRasterBackendTest, DirectAliasesPreserveTargetCopiesSwizzlesAndDeferredVersions)
+{
+    using namespace Core::Gfx;
+    if (!std::getenv("WEMU_TEST_VULKAN") || !SpirvCompiler::available())
+        GTEST_SKIP();
+    const auto producer = lowerFragmentShader(*decodeProgram({0, (CF_EXP_DONE << 23) | (1u << 21) | 0x688u}));
+    ASSERT_TRUE(producer) << producer.error;
+    std::array<RasterDraw::Vertex, 3> vertices{{{0, 0, {}}, {4, 0, {}}, {0, 4, {}}}};
+    for (auto &v: vertices)
+        v.inputs[0] = {.25f, .5f, .75f, 1.f};
+    std::vector<std::uint8_t> target(3 * 2 * 16);
+    for (unsigned y = 0; y < 2; ++y)
+        writeFloatColor(target.data() + (y * 3 + 2) * 16, {-7.f, -8.f, -9.f, -10.f}, 15);
+    RasterDraw make{producer, vertices, {}, {}, target, 2, 2, 3, {0, 0, 2, 2}, 15, {}};
+    make.colorFormat = ColorFormat::RGBA32Float;
+    VulkanRasterBackend backend(true, true);
+    auto source = backend.renderDeferred(make);
+    ASSERT_TRUE(source && source->readback) << backend.lastError();
+    unsigned materializations{};
+    auto original = source->readback;
+    auto wrapped = std::make_shared<RasterReadback>(
+            original->size(),
+            [&] {
+                ++materializations;
+                return original->resolve();
+            },
+            original->image());
+    Latte::FragmentShader shader;
+    shader.source = R"(#version 450
+layout(location=0) out vec4 color;
+layout(set=0,binding=1) uniform sampler2D first;
+layout(set=0,binding=2) uniform sampler2D second;
+void main() { color=textureLod(first,vec2(.25),0.0)+textureLod(second,vec2(.25),0.0); }
+)";
+    shader.textures = {{0, 0, 1}, {0, 1, 2}};
+    std::array<RasterDraw::Texture, 2> textures;
+    for (unsigned i = 0; i < 2; ++i) {
+        textures[i].binding = shader.textures[i];
+        textures[i].width = textures[i].height = 2;
+        textures[i].unorm8Pitch = 3;
+        textures[i].renderedFormat = ColorFormat::RGBA32Float;
+        textures[i].rendered = wrapped;
+        textures[i].texel = [](unsigned, unsigned) -> std::array<float, 4> { throw std::runtime_error("Unexpected CPU sampling"); };
+    }
+    textures[1].unorm8Map = 0x02000105;
+    std::array<RasterDraw::Vertex, 1> point{{{.5f, .5f, {}}}};
+    RasterDraw draw{shader, point, {}, textures, target, 2, 2, 3, {0, 0, 2, 2}, 15, {}};
+    draw.colorFormat = ColorFormat::RGBA32Float;
+    draw.topology = RasterDraw::Topology::Points;
+    draw.renderedTarget = wrapped; // Same source is copied to the destination and sampled twice.
+    auto output = backend.renderDeferred(draw);
+    ASSERT_TRUE(output && output->readback) << backend.lastError();
+    EXPECT_EQ(materializations, 0u);
+    EXPECT_EQ(backend.readbackTransfers(), 0u);
+    EXPECT_EQ(backend.residentTextureCopies(), 0u);
+    EXPECT_EQ(backend.directTextureBindings(), 2u);
+    EXPECT_EQ(backend.directTextureBytes(), 2u * 2u * 2u * 16u);
+    output->resolve();
+    EXPECT_EQ(readFloatColor(output->rgba.data()), (std::array{1.f, .75f, 1.25f, 2.f}));
+    EXPECT_EQ(readFloatColor(output->rgba.data() + 16), (std::array{.25f, .5f, .75f, 1.f}));
+    for (unsigned y = 0; y < 2; ++y)
+        EXPECT_EQ(readFloatColor(output->rgba.data() + (y * 3 + 2) * 16), (std::array{-7.f, -8.f, -9.f, -10.f}));
+
+    // Switch the same bundle to CPU snapshots after it started with direct images.
+    const auto &bytes = original->resolve();
+    for (auto &texture: textures) {
+        texture.rendered.reset();
+        texture.rgba32Bytes = bytes;
+        texture.rgba32Pitch = 3;
+    }
+    draw.renderedTarget.reset();
+    auto cpu = backend.render(draw);
+    ASSERT_TRUE(cpu) << backend.lastError();
+    EXPECT_EQ(readFloatColor(cpu->rgba.data()), (std::array{1.f, .75f, 1.25f, 2.f}));
+    EXPECT_EQ(backend.directTextureBindings(), 2u);
+
+    // A subsequent producer overwrite preserves the old deferred result.
+    for (auto &v: vertices)
+        v.inputs[0] = {2.f, 3.f, 4.f, 5.f};
+    ASSERT_TRUE(backend.renderDeferred(make)) << backend.lastError();
+    EXPECT_EQ(readFloatColor(original->resolve().data()), (std::array{.25f, .5f, .75f, 1.f}));
+    EXPECT_EQ(readFloatColor(output->rgba.data()), (std::array{1.f, .75f, 1.25f, 2.f}));
+}
+
+TEST(LatteLoweringTest, UnconditionalColorProofRejectsExecutionMasksAndDepthExports)
+{
+    const auto plain = lowerFragmentShader(*decodeProgram({0, (CF_EXP_DONE << 23) | (1u << 21) | 0x688u}));
+    ASSERT_TRUE(plain);
+    EXPECT_TRUE(plain.alwaysWritesColor);
+    for (unsigned flags: {0u, 4u, 8u, 12u}) {
+        const auto shader = lowerFragmentShader(
+                *decodeProgram({2, 8u << 26, 0, (CF_EXP_DONE << 23) | (1u << 21) | 0x688u, 0x80000000u, (OP2_PRED_SETGT << 7) | flags}));
+        ASSERT_TRUE(shader) << shader.error;
+        EXPECT_EQ(shader.alwaysWritesColor, !(flags & 4));
+    }
+    const auto depth = lowerFragmentShader(*decodeProgram({61, (CF_EXP_DONE << 23) | (1u << 21) | 0xFF8u}));
+    ASSERT_TRUE(depth) << depth.error;
+    EXPECT_FALSE(depth.alwaysWritesColor);
+    EXPECT_FALSE(lowerFragmentShader(*decodeProgram({})).alwaysWritesColor);
+}
+
+TEST(VulkanRasterBackendTest, FullOverwriteAvoidsInitialTransfersOnlyWithCompleteCoverageAndUnconditionalWrites)
+{
+    using namespace Core::Gfx;
+    if (!std::getenv("WEMU_TEST_VULKAN") || !SpirvCompiler::available())
+        GTEST_SKIP();
+    auto shader = lowerFragmentShader(*decodeProgram({0, (CF_EXP_DONE << 23) | (1u << 21) | 0x688u}));
+    ASSERT_TRUE(shader && shader.alwaysWritesColor);
+    std::array<RasterDraw::Vertex, 6> vertices{{{0, 0, {}}, {4, 0, {}}, {4, 3, {}}, {0, 0, {}}, {4, 3, {}}, {0, 3, {}}}};
+    for (auto &v: vertices)
+        v.inputs[0] = {.25f, .5f, .75f, 1.f};
+    std::vector<std::uint8_t> target(6 * 3 * 4, 41);
+    for (unsigned y = 0; y < 3; ++y)
+        std::fill(target.begin() + (y * 6 + 4) * 4, target.begin() + (y + 1) * 6 * 4, 251);
+    RasterDraw draw{shader, vertices, {}, {}, target, 4, 3, 6, {0, 0, 4, 3}, 15, {}};
+    VulkanRasterBackend backend(true, true);
+    shader.alwaysWritesColor = false;
+    auto reference = backend.render(draw);
+    ASSERT_TRUE(reference) << backend.lastError();
+    const auto uploads = backend.targetUploadTransfers();
+    shader.alwaysWritesColor = true;
+    auto first = backend.renderDeferred(draw);
+    ASSERT_TRUE(first && first->readback) << backend.lastError();
+    EXPECT_EQ(backend.targetUploadTransfers(), uploads);
+    EXPECT_EQ(backend.targetCopyTransfers(), 0u);
+    EXPECT_EQ(backend.fullOverwriteDraws(), 1u);
+    draw.renderedTarget = first->readback;
+    auto second = backend.renderDeferred(draw);
+    ASSERT_TRUE(second && second->readback) << backend.lastError();
+    EXPECT_EQ(backend.targetCopyTransfers(), 0u);
+    EXPECT_EQ(backend.fullOverwriteDraws(), 2u);
+    first->resolve();
+    second->resolve();
+    EXPECT_EQ(first->rgba, reference->rgba);
+    EXPECT_EQ(second->rgba, reference->rgba);
+    draw.renderedTarget.reset();
+    draw.channelMask = 5;
+    ASSERT_TRUE(backend.render(draw));
+    EXPECT_EQ(backend.fullOverwriteDraws(), 2u);
+    draw.channelMask = 15;
+    draw.blend = {true, 1, 1, 0, 1, 1, 0, {}};
+    ASSERT_TRUE(backend.render(draw));
+    EXPECT_EQ(backend.fullOverwriteDraws(), 2u);
+    draw.blend = {};
+    draw.scissor = {0, 0, 3, 3};
+    auto clipped = backend.render(draw);
+    ASSERT_TRUE(clipped);
+    EXPECT_EQ(clipped->rgba[3 * 4], 41);
+    EXPECT_EQ(backend.fullOverwriteDraws(), 2u);
+    draw.scissor = {0, 0, 4, 3};
+    vertices[5] = vertices[4]; // bounding box covers the target, but the triangle pair does not.
+    auto hole = backend.render(draw);
+    ASSERT_TRUE(hole);
+    EXPECT_EQ(hole->rgba[(2 * 6) * 4], 41);
+    EXPECT_EQ(backend.fullOverwriteDraws(), 2u);
+    vertices[5] = {0, 3, {}};
+    vertices[5].inputs[0] = {.25f, .5f, .75f, 1.f};
+    for (auto &v: vertices)
+        v.reciprocalW = .5f;
+    ASSERT_TRUE(backend.render(draw));
+    EXPECT_EQ(backend.fullOverwriteDraws(), 2u);
+    for (auto &v: vertices) {
+        v.reciprocalW = 1.f;
+        v.z = .5f;
+    }
+    std::vector<float> depths(6 * 3, 0.f);
+    draw.depth = {true, false, 3, DepthFormat::Float32, depths, 4, 3, 6, {}};
+    auto rejected = backend.render(draw);
+    ASSERT_TRUE(rejected);
+    EXPECT_EQ(rejected->rgba, target);
+    EXPECT_EQ(backend.fullOverwriteDraws(), 2u);
+    draw.depth = {};
+    shader =
+            lowerFragmentShader(*decodeProgram({2, 8u << 26, 0, (CF_EXP_DONE << 23) | (1u << 21) | 0x688u, 0x80000000u, (OP2_PRED_SETGT << 7) | 4u}));
+    ASSERT_TRUE(shader && !shader.alwaysWritesColor);
+    auto masked = backend.render(draw);
+    ASSERT_TRUE(masked);
+    EXPECT_EQ(masked->rgba, target);
+    EXPECT_EQ(backend.fullOverwriteDraws(), 2u);
+
+    shader = lowerFragmentShader(*decodeProgram({0, (CF_EXP_DONE << 23) | (1u << 21) | 0x688u}));
+    std::vector<std::uint8_t> hdr(6 * 3 * 16);
+    for (unsigned y = 0; y < 3; ++y)
+        for (unsigned x = 0; x < 6; ++x)
+            writeFloatColor(hdr.data() + (y * 6 + x) * 16, {-7.f, -8.f, -9.f, -10.f}, 15);
+    for (auto &v: vertices)
+        v.inputs[0] = {2.f, 3.f, -1.f, .5f};
+    draw.colorFormat = ColorFormat::RGBA32Float;
+    draw.target = hdr;
+    const auto oldUploads = backend.targetUploadTransfers();
+    auto floating = backend.render(draw);
+    ASSERT_TRUE(floating);
+    EXPECT_EQ(backend.targetUploadTransfers(), oldUploads);
+    EXPECT_EQ(backend.fullOverwriteDraws(), 3u);
+    for (unsigned y = 0; y < 3; ++y)
+        for (unsigned x = 0; x < 6; ++x)
+            EXPECT_EQ(readFloatColor(floating->rgba.data() + (y * 6 + x) * 16),
+                      (x < 4 ? std::array{2.f, 3.f, -1.f, .5f} : std::array{-7.f, -8.f, -9.f, -10.f}));
+}
+
+TEST(VulkanRasterBackendTest, IndependentLiveColorAndDepthVersionsStayResidentUntilRead)
+{
+    using namespace Core::Gfx;
+    if (!std::getenv("WEMU_TEST_VULKAN") || !SpirvCompiler::available())
+        GTEST_SKIP();
+    const auto shader = lowerFragmentShader(*decodeProgram({0, (CF_EXP_DONE << 23) | (1u << 21) | 0x688u}));
+    ASSERT_TRUE(shader) << shader.error;
+    for (const auto format: {ColorFormat::RGBA8, ColorFormat::RGBA32Float}) {
+        std::array<RasterDraw::Vertex, 3> vertices{{{0, 0, {}}, {8, 0, {}}, {0, 8, {}}}};
+        std::vector<std::uint8_t> target(6 * 4 * colorElementBytes(format), 19);
+        std::vector<float> depth(6 * 4, .9f);
+        RasterDraw draw{shader, vertices, {}, {}, target, 4, 4, 6, {0, 0, 4, 4}, 15, {}};
+        draw.colorFormat = format;
+        draw.depth = {true, true, 7, DepthFormat::Float32, depth, 4, 4, 6, {}};
+        auto backend = std::make_unique<VulkanRasterBackend>(true, true);
+        std::vector<RasterResult> snapshots;
+        for (unsigned i = 1; i <= 8; ++i) {
+            for (auto &vertex: vertices) {
+                vertex.inputs[0] = {float(i) / 16, .25f, .5f, 1};
+                vertex.z = float(i) / 16;
+            }
+            auto result = backend->renderDeferred(draw);
+            ASSERT_TRUE(result) << backend->lastError();
+            snapshots.push_back(std::move(*result));
+        }
+        EXPECT_EQ(backend->readbackTransfers(), 0u);
+        backend.reset(); // Tickets keep the Vulkan device and their versions alive.
+        for (unsigned i = 0; i < snapshots.size(); ++i) {
+            auto &result = snapshots[i];
+            result.resolve();
+            result.resolveDepth();
+            for (unsigned y = 0; y < 4; ++y)
+                for (unsigned x = 0; x < 6; ++x) {
+                    const auto offset = (y * 6 + x) * colorElementBytes(format);
+                    if (x < 4) {
+                        if (format == ColorFormat::RGBA8)
+                            EXPECT_NEAR(result.rgba[offset], std::round(float(i + 1) * 255 / 16), 1);
+                        else
+                            EXPECT_EQ(readFloatColor(result.rgba.data() + offset), (std::array{float(i + 1) / 16, .25f, .5f, 1.f}));
+                        EXPECT_FLOAT_EQ(result.depth[y * 6 + x], float(i + 1) / 16);
+                    } else {
+                        for (unsigned b = 0; b < colorElementBytes(format); ++b)
+                            EXPECT_EQ(result.rgba[offset + b], 19);
+                        EXPECT_FLOAT_EQ(result.depth[y * 6 + x], .9f);
+                    }
+                }
+        }
+    }
+}
+
+TEST(VulkanRasterBackendTest, LiveVersionRotationRemainsBoundedAndDiscardedTicketsReuseWithoutReadback)
+{
+    using namespace Core::Gfx;
+    if (!std::getenv("WEMU_TEST_VULKAN") || !SpirvCompiler::available())
+        GTEST_SKIP();
+    const auto shader = lowerFragmentShader(*decodeProgram({0, (CF_EXP_DONE << 23) | (1u << 21) | 0x688u}));
+    ASSERT_TRUE(shader) << shader.error;
+    std::array<RasterDraw::Vertex, 3> vertices{{{0, 0, {}}, {8, 0, {}}, {0, 8, {}}}};
+    std::vector<std::uint8_t> target(64, 19);
+    RasterDraw draw{shader, vertices, {}, {}, target, 4, 4, 4, {0, 0, 4, 4}, 15, {}};
+    VulkanRasterBackend backend(true, true);
+    std::vector<RasterResult> snapshots;
+    for (unsigned i = 0; i < 70; ++i) {
+        for (auto &vertex: vertices)
+            vertex.inputs[0] = {float(i) / 255, 0, 0, 1};
+        auto result = backend.renderDeferred(draw);
+        ASSERT_TRUE(result) << backend.lastError();
+        snapshots.push_back(std::move(*result));
+    }
+    EXPECT_EQ(backend.readbackTransfers(), 6u); // The existing 64-entry cache bound still applies.
+    for (unsigned i = 0; i < snapshots.size(); ++i) {
+        snapshots[i].resolve();
+        EXPECT_EQ(snapshots[i].rgba[0], i);
+    }
+    snapshots.clear();
+    const auto transfers = backend.readbackTransfers();
+    for (unsigned i = 0; i < 8; ++i)
+        ASSERT_TRUE(backend.renderDeferred(draw)) << backend.lastError();
+    EXPECT_EQ(backend.readbackTransfers(), transfers);
+    EXPECT_GE(backend.reusedDraws(), 7u);
 }

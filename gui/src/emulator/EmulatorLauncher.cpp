@@ -15,6 +15,7 @@
 #include <QUuid>
 
 #include "LaunchEnvironment.hpp"
+#include "SessionFrame.hpp"
 #include "frontend/QtSessionProtocol.hpp"
 
 namespace {
@@ -264,14 +265,11 @@ void EmulatorLauncher::readChannel()
                 double presentFps{}, movieFps{};
                 stream >> sequence >> width >> height >> presentFps >> movieFps >> presents >> movies;
                 const auto offset = stream.device()->pos();
-                if (m_frames.size() + unsigned(m_awaitingFrame != 0) >= 2 || sequence != m_lastFrame + 1 || !width || !height || width > 4096 ||
-                    height > 4096 || std::uint64_t(width) * height * 4 != std::uint64_t(body.size() - offset))
+                if (stream.status() != QDataStream::Ok || m_frames.size() + unsigned(m_awaitingFrame != 0) >= 2 || sequence != m_lastFrame + 1 ||
+                    !width || !height || width > 4096 || height > 4096 || std::uint64_t(width) * height * 4 != std::uint64_t(body.size() - offset))
                     throw std::runtime_error("Invalid game framebuffer");
-                const QImage borrowed(reinterpret_cast<const uchar *>(body.constData() + offset), int(width), int(height), int(width * 4),
-                                      QImage::Format_RGBX8888);
-                const auto image = borrowed.copy();
-                if (image.isNull())
-                    throw std::runtime_error("Cannot allocate the game display image");
+                const auto image = WemuSession::frameImage(std::move(body), offset, width, height);
+                body = {};
                 m_lastFrame = sequence;
                 m_frames.push_back({image, sequence, presentFps, movieFps});
                 dispatchFrame();
