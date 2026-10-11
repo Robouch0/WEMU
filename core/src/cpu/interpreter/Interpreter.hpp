@@ -12,6 +12,7 @@
 #include <format>
 #include <iostream>
 #include <map>
+#include <memory>
 #include <vector>
 
 #include "Registers.hpp"
@@ -24,6 +25,10 @@
 #include "hle/Scheduler.hpp"
 #include "utils/BeDecoder.hpp"
 #include "utils/Logger.hpp"
+
+#ifdef WEMU_HAS_LLVM
+    #include "cpu/recompiler/LlvmBackend.hpp"
+#endif
 
 namespace Core {
     static constexpr std::uint32_t INSTR_SIZE = sizeof(std::uint32_t);
@@ -220,7 +225,7 @@ namespace Core {
             // the existing instruction table remains the source of truth — and it is the natural next
             // step after the decode cache. It is opt-in while it proves out, so the working boot path
             // is never at risk. Cached words are revalidated against live guest memory;
-            // stores end blocks so rewritten following instructions are fetched again.
+            // interpreted blocks end at stores; native lookahead guards code writes.
             struct DecodedInstr {
                     RawHandler fn;
                     EncodedInstruction instr;
@@ -229,6 +234,9 @@ namespace Core {
                     std::vector<DecodedInstr> instrs; // straight-line run, terminator (branch) last
 #ifdef WEMU_HAS_LLVM
                     std::vector<std::uint32_t> nativeWords; // supported prefix, empty when not eligible
+                    mutable Ppc::NativeBinding nativeCode; // Cache invalidation expires this binding.
+                    mutable unsigned nativeVisits{}; // Admit hot decoded versions before entering the bounded native cache.
+                    bool nativeLoop{}, nativeLookahead{};
                     unsigned nativePrefixLength{}; // includes ineligible single-instruction prefixes
 #endif
             };
@@ -238,9 +246,9 @@ namespace Core {
 
             // Build (or fetch) the block starting at the current m_pc. Blocks end at a control-flow
             // instruction, a hooked address, an illegal word, or a length cap.
-            const Block &getBlock(Utils::BeDecoder &decoder, std::uint32_t startPc);
+            const Block &getBlock(Utils::BeDecoder &decoder, std::uint32_t startPc, bool nativeLookahead = false);
             // Execute a whole block; returns the number of instructions retired (for slice accounting).
-            std::uint32_t runBlock(const Block &block);
+            std::uint32_t runBlock(const Block &block, std::size_t first = 0);
 
             // Import sentinel (st_value >= 0xC0000000) -> symbol name, for BCTR HLE dispatch.
             std::unordered_map<std::uint32_t, const std::string *> m_importBySentinel{};

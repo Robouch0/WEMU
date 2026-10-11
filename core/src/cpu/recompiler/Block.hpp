@@ -6,7 +6,33 @@
 #include <vector>
 
 namespace Core::Ppc {
-    enum class IntegerOp { Add, Subtract, Multiply, And, Or, Xor, RotateMask, RotateInsert, ShiftLeft, ShiftRight };
+    enum class IntegerOp {
+        Add,
+        Subtract,
+        Multiply,
+        And,
+        Or,
+        Xor,
+        RotateMask,
+        RotateInsert,
+        ShiftLeft,
+        ShiftRight,
+        Load,
+        Store,
+        CompareSigned,
+        CompareUnsigned,
+        Negate,
+        SignExtend8,
+        SignExtend16,
+        LeadingZeros,
+        ReadLink,
+        WriteLink,
+        ReadCounter,
+        WriteCounter,
+        Branch,
+        BranchConditional,
+        BranchLinkRegister
+    };
     struct Operand {
             bool constant;
             std::uint32_t value;
@@ -16,13 +42,21 @@ namespace Core::Ppc {
             unsigned destination;
             Operand lhs, rhs;
             std::uint32_t mask{0xFFFFFFFFu};
+            unsigned memoryBytes{};
+            bool signedLoad{};
+            unsigned updateRegister{}; // Zero means no address update; update RA=0 is invalid.
+            bool record{};
+            unsigned conditionField{};
     };
 
-    // Register-only subset. Unsupported words reject the whole block.
-    // PC advancement and interpreter fallback belong to the dispatcher.
+    // Integer, condition/control-flow and checked-memory subset. Unsupported words
+    // reject the whole block. Branches must be final; stores require code-write exits.
     class Block {
         public:
             static bool supports(std::uint32_t word);
+            static bool stores(std::uint32_t word);
+            static bool branches(std::uint32_t word);
+            static bool loopsToStart(std::uint32_t pc, std::span<const std::uint32_t> words);
             static std::optional<Block> decode(std::uint32_t pc, std::span<const std::uint32_t> words);
             [[nodiscard]] std::span<const RegisterOperation> operations() const { return m_operations; }
             [[nodiscard]] std::span<const std::uint32_t> words() const { return m_words; }

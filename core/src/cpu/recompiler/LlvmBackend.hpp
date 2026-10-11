@@ -6,6 +6,28 @@
 #include "Block.hpp"
 
 namespace Core::Ppc {
+    struct MemoryRegion {
+            std::uint8_t *data{};
+            std::uint64_t size{};
+            std::uint32_t base{};
+    };
+    // Plain host ABI shared by runtime JIT and cached/AOT objects. Unmapped
+    // memory exits before the instruction, leaving precise interpreter fallback.
+    struct ExecutionState {
+            std::uint32_t *registers{};
+            MemoryRegion regions[3]{};
+            // LR uses the interpreter's code-buffer offset; nextPc is a guest address.
+            std::uint32_t condition{}, summaryOverflow{}, link{}, counter{}, nextPc{};
+            std::uint32_t instructionBudget{}; // Zero executes one block; runtime loops retire at most 64 instructions.
+    };
+
+    class NativeBlock;
+    // Non-owning, valid only through its single-threaded dispatcher generation.
+    struct NativeBinding {
+            NativeBlock *code{};
+            std::uint64_t epoch{};
+    };
+
     class NativeCompiler {
         public:
             NativeCompiler();
@@ -27,7 +49,9 @@ namespace Core::Ppc {
             ~NativeBlock();
             NativeBlock(const NativeBlock &) = delete;
             NativeBlock &operator=(const NativeBlock &) = delete;
+            // Convenience for register-only clients; full guest execution requires state.
             void execute(std::span<std::uint32_t, 32> registers) const;
+            unsigned execute(ExecutionState &state) const;
 
         private:
             struct Impl;

@@ -282,6 +282,10 @@ namespace Core::Gfx::Latte {
                     return "uintBitsToFloat(floatBitsToInt(" + a + ") >= floatBitsToInt(" + b + ") ? 4294967295u : 0u)";
                 case OP2_SETGT_INT:
                     return "uintBitsToFloat(floatBitsToInt(" + a + ") > floatBitsToInt(" + b + ") ? 4294967295u : 0u)";
+                case OP2_FLT_TO_INT:
+                    return "uintBitsToFloat(floatToIntBits(" + a + "))";
+                case OP2_FLT_TO_UINT:
+                    return "uintBitsToFloat(floatToUintBits(" + a + "))";
                 case OP2_INT_TO_FLT:
                     return "float(floatBitsToInt(" + a + "))";
                 case OP2_UINT_TO_FLT:
@@ -297,6 +301,12 @@ namespace Core::Gfx::Latte {
                     return "0.0";
                 case OP2_FLOOR:
                     return "floor(" + a + ")";
+                case OP2_TRUNC:
+                    return "truncReference(" + a + ")";
+                case OP2_SIN:
+                    return "sin(" + a + "/0.1591549367)";
+                case OP2_COS:
+                    return "cos(" + a + "/0.1591549367)";
                 case OP2_RNDNE:
                     return "roundEvenReference(" + a + ")";
                 case OP2_FRACT:
@@ -622,8 +632,11 @@ namespace Core::Gfx::Latte {
                             body += std::format(" else {{ laneActive=activeStack[{}]&&!laneActive; }}", depth - 1);
                         body += "\n";
                     } else {
-                        if (w0 || (op == 0x0B && count))
-                            throw std::runtime_error("unsupported stack control fields");
+                        // R700 POP never jumps; its address field is ignored.
+                        // Retain strict PUSH handling until its reconvergence fields are modeled.
+                        if (op == 0x0B && (w0 || count))
+                            throw std::runtime_error(std::format("unsupported stack control fields: cf={} op={} count={} words={:08X},{:08X}", cf / 2,
+                                                                 op, count, w0, w1));
                         if (op == 0x0B)
                             push();
                         else
@@ -661,6 +674,8 @@ namespace Core::Gfx::Latte {
                             "float maxReference(float a,float b) { return isnan(a) ? b : isnan(b) ? a : max(a,b); }\n"
                             "float roundEvenReference(float x) { if(isnan(x)||isinf(x)) return x; float v=roundEven(x); "
                             "return v==0.0 ? uintBitsToFloat(floatBitsToUint(x)&2147483648u) : v; }\n"
+                            "float truncReference(float x) { if(isnan(x)||isinf(x)) return x; float v=trunc(x); "
+                            "return v==0.0 ? uintBitsToFloat(floatBitsToUint(x)&2147483648u) : v; }\n"
                             "float logReference(float x) { if(isnan(x)) return x; if(x==0.0) return uintBitsToFloat(4286578688u); "
                             "if(x<0.0) return uintBitsToFloat(2143289344u); if(isinf(x)) return x; return log2(x); }\n"
                             "float logClamped(float x) { float v=logReference(x); return isinf(v)&&v<0.0 ? -uintBitsToFloat(2139095039u) : v; }\n";
@@ -675,6 +690,24 @@ namespace Core::Gfx::Latte {
                         "layout(offset=48) ivec4 inputParams; } viewport;\n");
             }
             result.source += R"(
+// R700 truncates finite values and retains the low integer bits. Decode the
+// float explicitly so host casts and SPIR-V conversion overflow cannot disagree.
+uint floatToIntBits(float value) {
+    uint bits=floatBitsToUint(value), sign=bits>>31;
+    int exponent=int((bits>>23)&255u)-127;
+    uint fraction=bits&8388607u;
+    if(exponent==128) return fraction!=0u ? 0u : sign!=0u ? 2147483648u : 2147483647u;
+    if(exponent<0||exponent>=55) return 0u;
+    uint magnitude=fraction|8388608u;
+    if(exponent<23) magnitude>>=uint(23-exponent);
+    else magnitude<<=uint(exponent-23);
+    return sign!=0u ? 0u-magnitude : magnitude;
+}
+uint floatToUintBits(float value) {
+    if(isnan(value)||value<=0.0) return 0u;
+    if(value>=4294967296.0) return 4294967295u;
+    return uint(value);
+}
 float arrayCoordinate(float v,int mode) {
     if(mode==0) return fract(v);
     if(mode==1) { float t=mod(v,2.0); return t>1.0 ? 2.0-t : t; }

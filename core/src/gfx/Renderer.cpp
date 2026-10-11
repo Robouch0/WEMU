@@ -1,7 +1,6 @@
 //
 // Created by nicolas on 5/21/26.
 //
-
 #include "Renderer.hpp"
 
 #include <chrono>
@@ -11,6 +10,7 @@
 
 #include "GpuQuadRasterizer.hpp"
 #include "GpuRenderGraph.hpp"
+#include "utils/FrameProfiler.hpp"
 
 // Wii U targets 60 fps. Cap flip_tv so the interpreter doesn't run faster than real hardware when the swapchain has spare images to return
 // immediately.
@@ -52,14 +52,17 @@ Renderer::Renderer(VkInstance instance, VkSurfaceKHR surface, uint32_t w, uint32
 
 void Renderer::flip_tv(const std::uint8_t *rgbx, std::uint32_t w, std::uint32_t h)
 {
-    if (m_hostPresenter) {
-        m_presentRate.record(Core::UI::FrameRate::Clock::now());
-        if (!m_hostPresenter->present({rgbx, std::size_t(w) * h * 4}, w, h, hostStatistics()))
-            m_open = false;
-        pacePresentation();
-        return;
+    {
+        Core::Profile::Scope presenting(Core::Profile::Stage::Present);
+        if (m_hostPresenter) {
+            m_presentRate.record(Core::UI::FrameRate::Clock::now());
+            if (!m_hostPresenter->present({rgbx, std::size_t(w) * h * 4}, w, h, hostStatistics()))
+                m_open = false;
+            pacePresentation();
+        } else
+            presentFrame(rgbx, w, h, true);
     }
-    presentFrame(rgbx, w, h, true);
+    Core::Profile::report(guest_present_count(), movie_frame_count());
 }
 
 void Renderer::presentFrame(const std::uint8_t *rgbx, std::uint32_t w, std::uint32_t h, bool guestFrame)
@@ -208,6 +211,7 @@ void Renderer::presentFrame(const std::uint8_t *rgbx, std::uint32_t w, std::uint
 
 void Renderer::pacePresentation()
 {
+    Core::Profile::Scope pacing(Core::Profile::Stage::Pacing);
     using Clock = std::chrono::steady_clock;
     const auto elapsed = Clock::now() - m_lastFlip;
     if (m_pacingReady && elapsed < kTargetFrameTime)
@@ -230,20 +234,34 @@ void Renderer::processHostCommands(std::chrono::milliseconds wait)
             case Action::Pause:
                 m_pauseMenu.requestPause();
                 m_hostButtons = 0;
+                m_hostButtonSamples.clear();
                 break;
             case Action::Resume:
                 m_pauseMenu.resume();
                 break;
             case Action::Stop:
                 m_pauseMenu.stop();
+                m_hostButtons = 0;
+                m_hostButtonSamples.clear();
                 break;
             case Action::Buttons:
-                m_hostButtons = command.value;
+                if (m_pauseMenu.state() == Core::UI::PauseMenu::State::Running && command.value != m_hostButtons) {
+                    // Retain real input transitions until guest controller reads.
+                    // A slow frame must not collapse a complete tap into release.
+                    constexpr std::size_t maximumSamples = 32;
+                    if (m_hostButtonSamples.size() == maximumSamples)
+                        m_hostButtonSamples.pop_front();
+                    m_hostButtonSamples.push_back(command.value);
+                    m_hostButtons = command.value;
+                }
                 break;
         }
     }
-    if (!m_hostPresenter->connected() || m_pauseMenu.state() == Core::UI::PauseMenu::State::Stopping)
+    if (!m_hostPresenter->connected() || m_pauseMenu.state() == Core::UI::PauseMenu::State::Stopping) {
+        m_hostButtons = 0;
+        m_hostButtonSamples.clear();
         m_open = false;
+    }
 }
 
 void Renderer::gpuBegin()
@@ -341,6 +359,7 @@ void Renderer::service_pause(const std::function<void()> &onPaused)
         while (m_open && m_pauseMenu.state() == Core::UI::PauseMenu::State::Paused)
             processHostCommands(std::chrono::milliseconds(50));
         m_hostButtons = 0;
+        m_hostButtonSamples.clear();
         m_presentRate.reset();
         m_movieRate.reset();
         m_pacingReady = false;
@@ -380,6 +399,16 @@ void Renderer::service_pause(const std::function<void()> &onPaused)
     m_movieRate.reset();
     m_pacingReady = false;
     m_pauseBackground.clear();
+}
+
+std::uint32_t Renderer::sample_buttons()
+{
+    if (m_hostPresenter && m_pauseMenu.state() == Core::UI::PauseMenu::State::Running && !m_hostButtonSamples.empty()) {
+        const auto buttons = m_hostButtonSamples.front();
+        m_hostButtonSamples.pop_front();
+        return buttons;
+    }
+    return get_buttons();
 }
 
 std::uint32_t Renderer::get_buttons() const

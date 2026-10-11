@@ -18,7 +18,7 @@
 //    Pixel FETCH4 uses a separate caller-provided gather callback (normalized,
 //    direct addressing, zero offsets); callers must enforce resource/LOD support.
 //    VTX clauses, derivatives, LOD selection, discard, and multiple color exports are incomplete.
-//  - ALU OP2: ADD MUL MUL_IEEE MAX MIN MOV NOP FRACT FLOOR DOT4 DOT4_IEEE RECIP_IEEE
+//  - ALU OP2: ADD MUL MUL_IEEE MAX MIN MOV NOP FRACT FLOOR TRUNC SIN COS DOT4 DOT4_IEEE RECIP_IEEE
 //    RECIPSQRT_IEEE, float/int conversions and integer shifts; OP3: MULADD MULADD_IEEE,
 //    CNDE/CNDGT/CNDGE and integer variants. neg/abs/omod/clamp honoured.
 //  - Sources: GPR (0-127), kcache banks (128-191 -> treated as the constant file), constant file

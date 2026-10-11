@@ -201,6 +201,8 @@ void EmulatorLauncher::sendCommand(quint32 action, quint32 value)
 {
     if (!m_socket || !m_connected)
         return;
+    if (action == 4 && qEnvironmentVariableIntValue("QT_WEMU_INPUT_TRACE") == 1)
+        qInfo("[SESSION_BUTTONS] mask=%08x", value);
     QByteArray body;
     QDataStream stream(&body, QIODevice::WriteOnly);
     WemuSession::configure(stream);
@@ -269,6 +271,10 @@ void EmulatorLauncher::readChannel()
                     !width || !height || width > 4096 || height > 4096 || std::uint64_t(width) * height * 4 != std::uint64_t(body.size() - offset))
                     throw std::runtime_error("Invalid game framebuffer");
                 const auto image = WemuSession::frameImage(std::move(body), offset, width, height);
+                if (qEnvironmentVariableIntValue("QT_WEMU_INPUT_TRACE") == 1 &&
+                    (!m_hasFrame || sequence % 300 == 0 || (movieFps < 0 && m_movieFps >= 0)))
+                    qInfo("[SESSION_FRAME] presents=%llu movies=%llu present_fps=%.2f movie_fps=%.2f",
+                          static_cast<unsigned long long>(presents), static_cast<unsigned long long>(movies), presentFps, movieFps);
                 body = {};
                 m_lastFrame = sequence;
                 m_frames.push_back({image, sequence, presentFps, movieFps});

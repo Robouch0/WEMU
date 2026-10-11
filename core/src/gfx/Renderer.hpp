@@ -3,6 +3,7 @@
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_vulkan.h>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -86,6 +87,7 @@ class Renderer {
         [[nodiscard]] std::uint64_t movie_frame_count() const { return m_movieRate.total(); }
 
         [[nodiscard]] std::uint32_t get_buttons() const;
+        [[nodiscard]] std::uint32_t sample_buttons();
 
         [[nodiscard]] bool is_open() const { return m_open; }
 
@@ -283,6 +285,7 @@ class Renderer {
         Core::UI::PauseMenu m_pauseMenu;
         std::unique_ptr<Core::Gfx::HostPresenter> m_hostPresenter;
         std::uint32_t m_hostButtons{};
+        std::deque<std::uint32_t> m_hostButtonSamples;
         Core::UI::FrameRate m_presentRate, m_movieRate;
         std::vector<std::uint8_t> m_pauseBackground;
         std::uint32_t m_lastGameSlot{};

@@ -4,7 +4,6 @@
 ** File description:
 ** Interpreter
 */
-
 #include "Interpreter.hpp"
 
 #include <algorithm>
@@ -18,6 +17,7 @@
 #include "hle/AsyncCallbacks.hpp"
 #include "hle/Ax.hpp"
 #include "utils/Diagnostics.hpp"
+#include "utils/FrameProfiler.hpp"
 #include "utils/Logger.hpp"
 #ifdef WEMU_HAS_LLVM
     #include "cpu/recompiler/Dispatcher.hpp"
@@ -68,6 +68,7 @@ Core::Interpreter::Interpreter(Core::Binary binary) : m_binary(std::move(binary)
 
 void Core::Interpreter::run()
 {
+    Profile::timeline().reset();
     // Instruction and data accesses must observe the same guest memory.
     Diag::applyGuestPatches(*this);
     auto instructionDecoder = Utils::BeDecoder(std::span<const char>(m_memory.getMemory()));
@@ -141,11 +142,19 @@ void Core::Interpreter::run()
     std::array<std::uint64_t, 65> prefixCounts{};
     std::array<std::uint64_t, 64> prefixStops{};
     std::array<std::uint64_t, 2048> prefixExtendedStops{};
+    Ppc::ExecutionState nativeState{m_gpr, {}};
+    const auto &ram = m_memory.getMemory();
+    nativeState.regions[0] = {m_memory.hostPtr(Memory::ApplicationCode, ram.size()), ram.size(), Memory::ApplicationCode};
+    nativeState.regions[1] = {m_memory.hostPtr(Memory::STACK_BASE, Memory::STACK_SIZE), Memory::STACK_SIZE, Memory::STACK_BASE};
+    nativeState.regions[2] = {m_memory.hostPtr(Memory::DIMPORT_BASE, Memory::DIMPORT_SIZE), Memory::DIMPORT_SIZE, Memory::DIMPORT_BASE};
     std::unique_ptr<Ppc::Dispatcher> native;
     if (const char *enabled = std::getenv("WEMU_NATIVE_CPU"); enabled && enabled[0] == '1' && jitFastPath) {
         try {
             const char *cache = std::getenv("WEMU_NATIVE_CACHE_DIR");
-            native = std::make_unique<Ppc::Dispatcher>(4096, 256, cache ? cache : "");
+            Profile::Scope compiling(Profile::Stage::Compile);
+            // Decoded versions count hotness before cache admission, so cold
+            // prefixes cannot evict compiled code or repeatedly link objects.
+            native = std::make_unique<Ppc::Dispatcher>(16384, 1, cache ? cache : "", 4);
             Utils::Log::error("[NATIVECPU] enabled: supported hot prefixes with interpreter fallback");
             if (cache && *cache)
                 Utils::Log::error("[NATIVECPU] private object cache enabled={}", native->cacheEnabled());
@@ -242,6 +251,7 @@ void Core::Interpreter::run()
                 break;
             }
             if (m_renderer && m_renderer->pause_requested()) {
+                Profile::Scope paused(Profile::Stage::Pause);
                 m_renderer->service_pause([&] {
                     Utils::Log::error("[SESSION] paused retired={} tick={} presents={} movies={}", m_retired, m_scheduler.now(),
                                       m_renderer->guest_present_count(), m_renderer->movie_frame_count());
@@ -450,6 +460,7 @@ void Core::Interpreter::run()
         }
         if (ppc_pc >= m_hooks_min && ppc_pc <= m_hooks_max) {
             if (auto it = m_hooks.find(ppc_pc); it != m_hooks.end()) {
+                Profile::Scope hle(Profile::Stage::Hle);
                 it->second(*this);
                 m_pc = m_lr;
                 continue;
@@ -458,7 +469,11 @@ void Core::Interpreter::run()
         // Fast path: execute a whole pre-decoded block. The tick cadence keys off m_retired (updated
         // here), so whole-block execution stays accounted for without a separate countdown.
         if (jitFastPath) {
+#ifdef WEMU_HAS_LLVM
+            const Block &blk = getBlock(instructionDecoder, m_pc, bool(native));
+#else
             const Block &blk = getBlock(instructionDecoder, m_pc);
+#endif
             if (!blk.instrs.empty()) {
 #ifdef WEMU_HAS_LLVM
                 if (profileNative) {
@@ -470,15 +485,38 @@ void Core::Interpreter::run()
                             ++prefixExtendedStops[word & 2047];
                     }
                 }
-                if (native && !blk.nativeWords.empty()) {
+                if (native && blk.nativeWords.size() >= 2 && (blk.nativeWords.size() >= 4 || blk.nativeLoop)) {
                     const auto budget =
                             static_cast<unsigned>(std::min<std::uint64_t>(64, nextServiceTickAt > m_retired ? nextServiceTickAt - m_retired : 0));
                     try {
-                        const unsigned n = native->execute(ppc_pc, blk.nativeWords, m_gpr, budget);
+                        nativeState.condition = m_cr.raw;
+                        nativeState.summaryOverflow = m_xer.so;
+                        nativeState.link = m_lr;
+                        nativeState.counter = m_ctr;
+                        nativeState.instructionBudget = budget;
+                        unsigned n{};
+                        if (blk.nativeWords.size() <= budget) {
+                            if (const auto *code = native->bound(blk.nativeCode)) {
+                                n = code->execute(nativeState);
+                                native->recordExecution(n);
+                            } else {
+                                if (blk.nativeVisits < 256)
+                                    ++blk.nativeVisits;
+                                if (blk.nativeVisits >= 256)
+                                    n = native->execute(ppc_pc, blk.nativeWords, nativeState, budget, &blk.nativeCode);
+                            }
+                        }
                         if (n) {
-                            m_pc += n * Core::INSTR_SIZE;
+                            m_pc = nativeState.nextPc - Memory::ApplicationCode;
                             m_nextPc = m_pc;
+                            m_cr.raw = nativeState.condition;
+                            m_lr = nativeState.link;
+                            m_ctr = nativeState.counter;
+                            // Finish this decoded version's remaining instructions without
+                            // fetching and dispatching the same suffix as another block.
                             m_retired += n;
+                            if (blk.nativeWords.size() < blk.instrs.size())
+                                m_retired += runBlock(blk, n);
                             continue;
                         }
                     } catch (const std::exception &error) {
@@ -531,16 +569,29 @@ InstructionID Core::Interpreter::findInstructionID(const EncodedInstruction &ins
     throw Core::InterpreterException("No instruction found with this fields. (opcode == " + std::to_string(instr.opcd) + ")");
 }
 
-const Core::Interpreter::Block &Core::Interpreter::getBlock(Utils::BeDecoder &decoder, const std::uint32_t startPc)
+const Core::Interpreter::Block &Core::Interpreter::getBlock(Utils::BeDecoder &decoder, const std::uint32_t startPc, bool nativeLookahead)
 {
     if (const auto it = m_blockCache.find(startPc); it != m_blockCache.end()) {
         decoder.seek(startPc);
         bool unchanged = !it->second.instrs.empty();
+#ifdef WEMU_HAS_LLVM
+        unchanged &= !nativeLookahead || it->second.nativeLookahead;
+#else
+        (void) nativeLookahead;
+#endif
         for (const auto &instruction: it->second.instrs)
             if (decoder.extractSwap<std::uint32_t>() != instruction.instr.raw) {
                 unchanged = false;
                 break;
             }
+#ifdef WEMU_HAS_LLVM
+        if (unchanged && nativeLookahead)
+            for (unsigned i = it->second.instrs.size(); i < it->second.nativeWords.size(); ++i)
+                if (decoder.extractSwap<std::uint32_t>() != it->second.nativeWords[i]) {
+                    unchanged = false;
+                    break;
+                }
+#endif
         if (unchanged)
             return it->second;
         m_blockCache.erase(it);
@@ -624,16 +675,36 @@ const Core::Interpreter::Block &Core::Interpreter::getBlock(Utils::BeDecoder &de
             break;
         ++b.nativePrefixLength;
     }
-    if (b.nativePrefixLength >= 2)
+    b.nativeLookahead = nativeLookahead;
+    if (b.nativePrefixLength >= 2 || nativeLookahead)
         for (unsigned i = 0; i < b.nativePrefixLength; ++i)
             b.nativeWords.push_back(b.instrs[i].instr.raw);
+    // The reference block still stops at stores. Native code can continue only
+    // because every store exits when it touches any of this validated code.
+    if (nativeLookahead && !b.nativeWords.empty() && b.nativePrefixLength == b.instrs.size() && Ppc::Block::stores(b.nativeWords.back())) {
+        while (b.nativeWords.size() < 64) {
+            const auto next = startPc + static_cast<std::uint32_t>(b.nativeWords.size() * 4);
+            const auto ppc = next + Memory::ApplicationCode;
+            if ((ppc >= m_hooks_min && ppc <= m_hooks_max && m_hooks.contains(ppc)) || std::uint64_t(next) + 4 > m_memory.getMemory().size())
+                break;
+            decoder.seek(next);
+            const auto word = decoder.extractSwap<std::uint32_t>();
+            if (!Ppc::Block::supports(word))
+                break;
+            b.nativeWords.push_back(word);
+            if (Ppc::Block::branches(word))
+                break;
+        }
+        b.nativePrefixLength = b.nativeWords.size();
+    }
+    b.nativeLoop = Ppc::Block::loopsToStart(startPc + Memory::ApplicationCode, b.nativeWords);
 #endif
     return m_blockCache.emplace(startPc, std::move(b)).first->second;
 }
 
-std::uint32_t Core::Interpreter::runBlock(const Block &block)
+std::uint32_t Core::Interpreter::runBlock(const Block &block, std::size_t first)
 {
-    for (std::size_t i = 0; i < block.instrs.size(); i++) {
+    for (std::size_t i = first; i < block.instrs.size(); i++) {
         const DecodedInstr &di = block.instrs[i];
         m_nextPc = m_pc + Core::INSTR_SIZE;
         try {
@@ -648,17 +719,17 @@ std::uint32_t Core::Interpreter::runBlock(const Block &block)
                 const std::uint32_t faulting = m_scheduler.currentHandle();
                 if (faulting != m_scheduler.mainHandle() && m_scheduler.exitCurrent(*this)) {
                     Utils::Log::error("[EMU] thread 0x{:08X} killed by fault at PC=0x{:08X}; continuing boot", faulting, ppc);
-                    return static_cast<std::uint32_t>(i + 1); // m_pc was moved to the next thread
+                    return static_cast<std::uint32_t>(i + 1 - first); // m_pc was moved to the next thread
                 }
                 m_failed = true;
                 m_running = false;
-                return static_cast<std::uint32_t>(i + 1);
+                return static_cast<std::uint32_t>(i + 1 - first);
             }
             // Non-fatal: fall through and advance past the instruction, mirroring step().
         }
         m_pc = m_nextPc;
     }
-    return static_cast<std::uint32_t>(block.instrs.size());
+    return static_cast<std::uint32_t>(block.instrs.size() - first);
 }
 
 void Core::Interpreter::executeInstruction(const EncodedInstruction &instr)

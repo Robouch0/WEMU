@@ -4,6 +4,17 @@
 #include "hle/Coreinit.hpp"
 #include "hle/CoreinitExtra.hpp"
 
+namespace {
+    class InputPresenter final : public Core::Gfx::HostPresenter {
+        public:
+            std::vector<Command> commands;
+            bool connected() const override { return true; }
+            std::vector<Command> poll(std::chrono::milliseconds) override { return std::exchange(commands, {}); }
+            bool present(std::span<const std::uint8_t>, std::uint32_t, std::uint32_t, const Statistics &) override { return true; }
+            void paused(bool, const Statistics &) override {}
+    };
+} // namespace
+
 // Cooperative scheduler: create/resume/yield/exit and sleep-based wakeups.
 class SchedulerTest : public InstructionTest {
     protected:
@@ -59,6 +70,37 @@ TEST_F(SchedulerTest, VpadReadInitializesOneCompleteSampleAndTracksEdges)
     Core::syscallHandler.get("VPADInit")(*cpu);
     read();
     EXPECT_EQ(cpu->m_memory.read<std::uint32_t>(BUF + 4), 0x4000u);
+}
+
+TEST_F(SchedulerTest, VpadReadObservesPressAndReleaseReceivedBetweenGuestPolls)
+{
+    RegisterCoreinitFunctions();
+    cpu->m_controllerMask = 0;
+    Core::syscallHandler.get("VPADInit")(*cpu);
+    auto presenter = std::make_unique<InputPresenter>();
+    auto *transport = presenter.get();
+    Renderer renderer(std::move(presenter));
+    cpu->m_renderer = &renderer;
+    constexpr unsigned buffer = 0x28001000, error = 0x28002000;
+    const auto read = [&] {
+        cpu->m_gpr[3] = 0;
+        cpu->m_gpr[4] = buffer;
+        cpu->m_gpr[5] = 1;
+        cpu->m_gpr[6] = error;
+        Core::syscallHandler.get("VPADRead")(*cpu);
+    };
+    using Action = Core::Gfx::HostPresenter::Action;
+    transport->commands = {{Action::Buttons, 0x8000}, {Action::Buttons, 0}};
+    read();
+    EXPECT_EQ(cpu->m_memory.read<std::uint32_t>(buffer), 0x8000u);
+    EXPECT_EQ(cpu->m_memory.read<std::uint32_t>(buffer + 4), 0x8000u);
+    read();
+    EXPECT_EQ(cpu->m_memory.read<std::uint32_t>(buffer), 0u);
+    EXPECT_EQ(cpu->m_memory.read<std::uint32_t>(buffer + 8), 0x8000u);
+    read();
+    EXPECT_EQ(cpu->m_memory.read<std::uint32_t>(buffer + 4), 0u);
+    EXPECT_EQ(cpu->m_memory.read<std::uint32_t>(buffer + 8), 0u);
+    cpu->m_renderer = nullptr;
 }
 
 TEST_F(SchedulerTest, OsClockReadsShareSchedulerTimeWithoutAdvancingIt)

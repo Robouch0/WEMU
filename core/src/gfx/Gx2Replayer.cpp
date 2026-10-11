@@ -17,6 +17,7 @@
 #include "gfx/SurfaceLayout.hpp"
 #include "gfx/TextureFormat.hpp"
 #include "gfx/TriangleCoverage.hpp"
+#include "utils/FrameProfiler.hpp"
 #include "utils/Logger.hpp"
 
 namespace Core::Gfx {
@@ -1900,6 +1901,10 @@ namespace Core::Gfx {
             const auto *execution = std::getenv("WEMU_VS_EXEC");
             return (!v || v[0] != '0') && (!execution || execution[0] != '0');
         }();
+        static const bool gpuTriangleVertexEnabled = [] {
+            const auto *v = std::getenv("WEMU_NATIVE_TRIANGLE_VERTEX");
+            return v && v[0] == '1';
+        }();
         if (collectBackend && (mode == 1 || mode == 4 || mode == 0x13) && gpuVertexEnabled && m_rasterBackend->supportsVertexStage() &&
             !m_fetchLayout.empty()) {
             const auto candidate = m_vertexShaderCache.get(m_vsProgram);
@@ -1912,8 +1917,10 @@ namespace Core::Gfx {
             });
             // Point batches amortize vertex setup; texture shaders also avoid
             // CPU reads of resident surfaces even for small draws. Keep ordinary
-            // triangle placement/interpolation on the established reference path.
-            if (*candidate && resourcesSupported && ((mode == 1 && count >= 64) || !candidate->textures.empty())) {
+            // triangle placement/interpolation on the established reference path
+            // unless explicitly benchmarking broader vertex execution.
+            if (*candidate && resourcesSupported &&
+                ((mode == 1 && count >= 64) || !candidate->textures.empty() || (mode != 1 && gpuTriangleVertexEnabled))) {
                 nativeVertexShader = candidate;
                 nativeVertexExecution = true;
             }
@@ -2782,6 +2789,7 @@ namespace Core::Gfx {
 
     void Gx2Replayer::replay(const Gx2CommandStream &stream, Core::Memory *mem)
     {
+        Profile::Scope replay(Profile::Stage::Replay);
         m_mem = mem;
         m_lastDrawColor = {};
         // GPU path: open a fresh GPU frame; draws append triangles, the present writes back to m_fb.

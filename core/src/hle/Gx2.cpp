@@ -26,6 +26,16 @@
 
 namespace {
 
+    struct HostReplayState {
+            std::unique_ptr<Core::Gfx::Gx2Replayer> replayer;
+            bool nativeInitialized{};
+    };
+    HostReplayState &hostReplayState()
+    {
+        static HostReplayState state;
+        return state;
+    }
+
     constexpr std::uint32_t alignUp(std::uint32_t v, std::uint32_t a) { return (v + a - 1) & ~(a - 1); }
     constexpr std::uint32_t GX2_BUFFER_ALIGN = 0x800;
 
@@ -321,7 +331,10 @@ namespace {
                 c.payload.clear();
             }
         }
-        static Core::Gfx::Gx2Replayer replayer;
+        auto &host = hostReplayState();
+        if (!host.replayer)
+            host.replayer = std::make_unique<Core::Gfx::Gx2Replayer>();
+        auto &replayer = *host.replayer;
         // WEMU_GPU rasterises the frame on the GPU (Vulkan) instead of the software rasteriser.
         //   =1 -> the general multi-target render graph (offscreen buffers + render-to-texture)
         //   =2 -> the legacy single-target quad compositor (flattens everything to the scan target)
@@ -333,7 +346,7 @@ namespace {
             replayer.setGpuRenderer(cpu.m_renderer);
             replayer.setGpuRenderGraph(gpuMode == 1);
         }
-        static const bool nativeInitialized = [&] {
+        if (!host.nativeInitialized) {
             const auto *enabled = std::getenv("WEMU_NATIVE_RASTER");
             if (!gpuMode && enabled && enabled[0] == '1') {
                 const char *textureReuse = std::getenv("WEMU_NATIVE_TEXTURE_REUSE");
@@ -342,9 +355,8 @@ namespace {
                                                                                            lazyReadback && std::string_view(lazyReadback) == "1"));
                 Utils::Log::error("[GX2] experimental translated Vulkan raster backend enabled; unsupported draws remain software");
             }
-            return true;
-        }();
-        (void) nativeInitialized;
+            host.nativeInitialized = true;
+        }
         // Frame-content telemetry: how much GX2 work the title recorded this frame.
         if (g_swapCount < 3 || (g_swapCount % 300) == 0)
             Utils::Log::error("[GX2] swap #{}: {} cmds, {} draws this frame", g_swapCount, Core::Gfx::gx2Stream().size(),
@@ -1038,6 +1050,15 @@ namespace Core::Gfx {
         return stream;
     }
 } // namespace Core::Gfx
+
+void ReleaseGx2HostResources() noexcept
+{
+    // Drop worker/image/readback owners while Vulkan, renderer and guest memory
+    // are still alive, rather than during process-static destruction.
+    auto &host = hostReplayState();
+    host.replayer.reset();
+    host.nativeInitialized = false;
+}
 
 void RegisterGx2Functions()
 {

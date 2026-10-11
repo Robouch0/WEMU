@@ -849,7 +849,7 @@ static void hle_VPADRead(Core::Interpreter &cpu)
 
     if (cpu.m_renderer)
         cpu.m_renderer->poll_events();
-    std::uint32_t hold = (cpu.m_renderer ? cpu.m_renderer->get_buttons() : 0u) | cpu.m_controllerMask;
+    std::uint32_t hold = (cpu.m_renderer ? cpu.m_renderer->sample_buttons() : 0u) | cpu.m_controllerMask;
 
     // WEMU_AUTO_A=1: pulse the confirm buttons so unattended boots pass "press +/A" gates (MK8's
     // title is "Press +"). Pulsing is driven by the VPADRead CALL COUNT, not wall time, so the
@@ -869,6 +869,12 @@ static void hle_VPADRead(Core::Interpreter &cpu)
 
     std::uint32_t trigger = hold & ~cpu.m_vpadPreviousHold;
     std::uint32_t released = cpu.m_vpadPreviousHold & ~hold;
+    static const bool traceInput = [] {
+        const char *value = std::getenv("WEMU_VPAD_TRACE");
+        return value && value[0] == '1';
+    }();
+    if (traceInput && (trigger || released || cpu.m_vpadReadCount == 1 || cpu.m_vpadReadCount % 256 == 0))
+        Utils::Log::error("[VPAD_INPUT] read={} hold={:08X} trigger={:08X} release={:08X}", cpu.m_vpadReadCount, hold, trigger, released);
 
     // One complete sample: centered sticks, no touch/motion, and an identity orientation.
     for (std::uint32_t offset = 0; offset < 0xAC; offset += 4)

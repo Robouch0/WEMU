@@ -105,3 +105,34 @@ held by the render thread. Writable QImage copies detach normally. Protocol
 version, bounds checks, ordered acknowledgements and the two-frame queue remain
 unchanged. GPU readback, socket transport and Qt texture upload still occur;
 this does not add cross-process GPU texture sharing.
+
+## Batched submissions and lazy readback copies
+
+`WEMU_NATIVE_BATCH_SUBMITS=1` lets draw commands share a pooled completion fence
+in batches of up to four command buffers. Immediate submission remains the default
+because the measured Pikmin movie path did not gain FPS from delaying
+submissions. The small bound lets the GPU begin work while guest execution continues;
+a CPU dependency, resource reuse or cache drain flushes the current batch.
+Each resource keeps its completion token and sampled-image owners until work
+completes. Completed tokens are reused only after their last resource releases
+them. Live color/depth tickets retain their existing per-version ownership.
+
+Lazy color and depth copies use a separate command pool. They can be recorded
+while their producer is queued or executing, then submitted on the same queue.
+The copy's fence completes the producer and copy with one host wait. Draw command
+pools and descriptor/staging data remain protected until completion; copy pools
+are reset only after the previous synchronous copy finishes.
+
+`WEMU_NATIVE_BATCH_SUBMITS=0` submits each command immediately for comparison;
+it retains the independent readback pool. Timing counters expose actual queue
+submissions, submitted command buffers and host fence waits. GPU execution and
+presentation still use the existing emulated ordering and CPU IPC path.
+
+## Host session teardown
+
+The GX2 host replayer is released through session-scope cleanup before renderer
+and guest memory destruction. Workers, cached images and deferred ticket owners
+are dropped while Vulkan and driver thread state are still available. The same
+cleanup applies on normal Stop and exception exits; creating another host
+replayer initializes its backend independently. Destructors drain pending work
+without propagating submission exceptions.

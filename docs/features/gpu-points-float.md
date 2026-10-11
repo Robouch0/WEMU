@@ -77,3 +77,58 @@ build/core/wemu_shader_lower captured-vs.hex translated.vert
 
 These paths use captured GPU state and real resources. They do not change guest
 clocks, video pacing or game code.
+
+## Float-to-integer ALU coverage
+
+The shared vertex/fragment lowerer supports `FLT_TO_INT` and `FLT_TO_UINT`.
+Integer results remain bit patterns in the shader register file, so subsequent
+integer ALU reads receive the original bits. Signed finite conversion truncates
+toward zero and keeps the low 32 bits using explicit IEEE-754 decomposition;
+it avoids undefined C++ casts and host-dependent SPIR-V overflow behavior.
+Unsigned conversion clamps negative inputs to zero and saturates positive
+out-of-range inputs. The reference interpreter uses the same defined boundaries.
+
+The R700 ISA documents truncation and low-bit signed conversion:
+[AMD R700 instruction-set reference](https://www.x.org/docs/AMD/old/R700-Family_Instruction_Set_Architecture.pdf).
+NaN maps to zero and infinities to the corresponding integer limit; these
+exceptional-input policies follow the later
+[AMD Evergreen reference](https://www.amd.com/content/dam/amd/en/documents/radeon-tech-docs/instruction-set-architectures/AMD_Evergreen-Family_Instruction_Set_Architecture.pdf)
+and still need direct Latte hardware confirmation. Tests compare raw conversion
+bits inside shaders, avoiding NaN payload loss through floating-point color
+attachments. Both vertex/fragment SPIR-V and native/reference execution are checked.
+
+These operations allow eligible vertex-texture shaders to remain on Vulkan.
+Unsupported instructions/resources continue to fall back; ordinary small
+triangle vertex passes retain the existing eligibility policy.
+
+`WEMU_NATIVE_TRIANGLE_VERTEX=1` enables broader ordinary-triangle vertex execution
+for validation/profiling. It is disabled by default: commercial-scene comparison
+found color differences beyond the established one-level tolerance, despite no
+Vulkan synchronization errors. Point batches and eligible vertex-texture shaders
+keep their established default eligibility. Pixel fidelity must be resolved
+before broader triangle execution is promoted.
+
+## Stack-pop control flow
+
+`CF_POP` accepts an ignored address field. The
+[AMD R700 ISA reference](https://www.x.org/docs/AMD/old/R700-Family_Instruction_Set_Architecture.pdf)
+specifies that POP never branches. The translator retains pop-count, mask-stack
+and supported-condition validation; it does not relax PUSH/ELSE/JUMP behavior.
+Masked execution/restoration is compared with the reference and Vulkan for zero,
+forward and out-of-range ignored addresses in both shader stages.
+
+## Truncation and scalar trigonometry
+
+Both shader stages support `TRUNC`, `SIN` and `COS`, including their reference
+execution. Truncation rounds toward zero, preserving zero's sign and passing
+through infinities/NaNs. Sine/cosine inputs are normalized turns; lowering converts
+them to radians for the host function. This follows
+[LLVM's R600 lowering](https://github.com/llvm/llvm-project/blob/main/llvm/lib/Target/AMDGPU/R600ISelLowering.cpp)
+and [Cemu's Latte implementation](https://github.com/cemu-project/Cemu/blob/main/src/Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompilerEmitGLSL.cpp).
+Hardware trigonometric approximation is not bit-exactly reproduced.
+
+The shared decoder classifies sine/cosine in the scalar ALU slot, preserving PS
+forwarding independently of vector PV. Tests exercise both forwarding paths,
+signed truncation, exceptional inputs, both-stage SPIR-V and Vulkan comparisons
+within the supported trigonometric input domain. These are shared ISA operations;
+no game-specific shader replacement is used.

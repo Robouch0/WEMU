@@ -12,6 +12,8 @@ extern "C" {
 #include <limits>
 #include <stdexcept>
 
+#include "utils/FrameProfiler.hpp"
+
 namespace Core::Video {
     namespace {
         struct PacketTag {
@@ -107,6 +109,7 @@ namespace Core::Video {
 
     std::vector<DecodedFrame> H264Decoder::decode(std::span<const std::uint8_t> bytes, double timestamp, std::uint32_t guestBuffer)
     {
+        Profile::Scope decoding(Profile::Stage::Video);
         if (bytes.empty() || bytes.size() > std::numeric_limits<int>::max())
             throw std::runtime_error("H264 invalid packet size");
         av_packet_unref(impl->packet);
@@ -124,6 +127,7 @@ namespace Core::Video {
 
     std::vector<DecodedFrame> H264Decoder::drain()
     {
+        Profile::Scope decoding(Profile::Stage::Video);
         const auto status = avcodec_send_packet(impl->context, nullptr);
         if (status != AVERROR_EOF)
             check(status, "H264 drain");

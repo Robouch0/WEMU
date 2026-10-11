@@ -17,8 +17,8 @@
 #include <vulkan/vulkan.h>
 
 #include "gfx/SpirvCompiler.hpp"
+#include "utils/FrameProfiler.hpp"
 #include "utils/Logger.hpp"
-
 
 namespace Core::Gfx {
     namespace {
@@ -151,6 +151,74 @@ namespace Core::Gfx {
             return {depth.test ? unsigned(depth.format) + 1 : 0, unsigned(depth.test), unsigned(depth.write), depth.compare};
         }
         struct Context {
+                struct BatchFence {
+                        VkDevice device{};
+                        VkFence fence{};
+                        bool submitted{}, completed{};
+                        ~BatchFence()
+                        {
+                            if (fence)
+                                vkDestroyFence(device, fence, nullptr);
+                        }
+                };
+                bool batchSubmissions = [] {
+                    const auto *value = std::getenv("WEMU_NATIVE_BATCH_SUBMITS");
+                    return value && value[0] == '1';
+                }();
+                std::vector<VkCommandBuffer> pendingCommands;
+                std::shared_ptr<BatchFence> pendingBatch;
+                std::vector<std::shared_ptr<BatchFence>> batches;
+                std::uint64_t queueSubmissions{}, submittedCommands{}, submissionWaits{};
+                std::shared_ptr<BatchFence> enqueue(VkCommandBuffer command)
+                {
+                    if (!pendingBatch) {
+                        for (const auto &batch: batches) {
+                            if (batch.use_count() != 1 || !batch->completed)
+                                continue;
+                            pendingBatch = batch;
+                            check(vkResetFences(device, 1, &batch->fence), "reset batch fence");
+                            batch->submitted = batch->completed = false;
+                            break;
+                        }
+                        if (!pendingBatch) {
+                            pendingBatch = std::make_shared<BatchFence>();
+                            pendingBatch->device = device;
+                            VkFenceCreateInfo info{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+                            check(vkCreateFence(device, &info, nullptr, &pendingBatch->fence), "create batch fence");
+                            batches.push_back(pendingBatch);
+                        }
+                    }
+                    pendingCommands.push_back(command);
+                    auto result = pendingBatch;
+                    if (!batchSubmissions || pendingCommands.size() >= 4)
+                        flush();
+                    return result;
+                }
+                void flush()
+                {
+                    if (pendingCommands.empty())
+                        return;
+                    VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+                    submit.commandBufferCount = static_cast<std::uint32_t>(pendingCommands.size());
+                    submit.pCommandBuffers = pendingCommands.data();
+                    check(vkQueueSubmit(queue, 1, &submit, pendingBatch->fence), "submit draw batch");
+                    ++queueSubmissions;
+                    submittedCommands += pendingCommands.size();
+                    pendingBatch->submitted = true;
+                    pendingCommands.clear();
+                    pendingBatch.reset();
+                }
+                void wait(const std::shared_ptr<BatchFence> &batch, bool profile = true)
+                {
+                    if (!batch || batch->completed)
+                        return;
+                    Profile::Scope waiting(Profile::Stage::GpuWait, profile);
+                    if (!batch->submitted)
+                        flush();
+                    check(vkWaitForFences(device, 1, &batch->fence, VK_TRUE, UINT64_MAX), "wait draw batch");
+                    ++submissionWaits;
+                    batch->completed = true;
+                }
                 struct PipelineKey {
                         std::vector<std::uint32_t> vertex, fragment, bindings;
                         unsigned width{}, height{}, channelMask{};
@@ -182,10 +250,25 @@ namespace Core::Gfx {
                 unsigned timestampBits{};
                 float timestampPeriod{};
                 std::map<PipelineKey, PipelineBundle> pipelines;
-                void clearPipelines()
+                void drainNoThrow() noexcept
                 {
+                    try {
+                        flush();
+                    } catch (...) {
+                        // Failed submissions were never queued. Teardown still
+                        // drains earlier work without propagating exceptions.
+                        pendingCommands.clear();
+                        pendingBatch.reset();
+                    }
                     if (device)
                         vkDeviceWaitIdle(device);
+                    for (const auto &batch: batches)
+                        batch->completed = true;
+                    pendingCommands.clear();
+                    pendingBatch.reset();
+                }
+                void destroyPipelines() noexcept
+                {
                     for (const auto &[key, bundle]: pipelines) {
                         vkDestroyPipeline(device, bundle.pipeline, nullptr);
                         vkDestroyPipelineLayout(device, bundle.layout, nullptr);
@@ -193,12 +276,19 @@ namespace Core::Gfx {
                     }
                     pipelines.clear();
                 }
-                ~Context()
+                void clearPipelines()
                 {
+                    flush();
                     if (device)
                         vkDeviceWaitIdle(device);
+                    destroyPipelines();
+                }
+                ~Context()
+                {
+                    drainNoThrow();
+                    batches.clear();
                     if (device)
-                        clearPipelines();
+                        destroyPipelines();
                     if (depthQuantizePipeline)
                         vkDestroyPipeline(device, depthQuantizePipeline, nullptr);
                     if (depthQuantizeLayout)
@@ -440,12 +530,14 @@ void main() {
                 DrawResources &operator=(const DrawResources &) = delete;
                 ~DrawResources()
                 {
-                    if (inFlight)
-                        vkWaitForFences(device, 1, &completion, VK_TRUE, UINT64_MAX);
+                    try {
+                        context.wait(batch, false); // Static teardown can follow profiler TLS destruction.
+                    } catch (...) {
+                        context.drainNoThrow();
+                    }
+                    batch.reset();
                     if (gpuQueries)
                         vkDestroyQueryPool(device, gpuQueries, nullptr);
-                    if (completion)
-                        vkDestroyFence(device, completion, nullptr);
                     if (pipeline && !cachedPipeline)
                         vkDestroyPipeline(device, pipeline, nullptr);
                     if (layout && !cachedPipeline)
@@ -478,6 +570,8 @@ void main() {
                         vkFreeMemory(device, memory, nullptr);
                     if (pool)
                         vkDestroyCommandPool(device, pool, nullptr);
+                    if (readbackPool)
+                        vkDestroyCommandPool(device, readbackPool, nullptr);
                 }
 
                 void initialize(const std::vector<std::uint32_t> &vertex, const std::vector<std::uint32_t> &fragment,
@@ -493,8 +587,6 @@ void main() {
                         query.queryCount = 2;
                         check(vkCreateQueryPool(device, &query, nullptr, &gpuQueries), "create GPU timing queries");
                     }
-                    VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-                    check(vkCreateFence(device, &fenceInfo, nullptr, &completion), "create submission fence");
                     VkCommandPoolCreateInfo pi{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
                     pi.queueFamilyIndex = family;
                     pi.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
@@ -914,12 +1006,7 @@ void main() {
                         vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &barrier, 0, nullptr, 0,
                                              nullptr);
                     check(vkEndCommandBuffer(command), "end commands");
-                    VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
-                    submit.commandBufferCount = 1;
-                    submit.pCommandBuffers = &command;
-                    check(vkResetFences(device, 1, &completion), "reset submission fence");
-                    check(vkQueueSubmit(queue, 1, &submit, completion), "submit");
-                    inFlight = true;
+                    batch = context.enqueue(command);
                     submitted = true;
                     readbackValid = !lazyReadback;
                     depthReadbackValid = !lazyReadback;
@@ -1075,13 +1162,14 @@ void main() {
                                          nullptr, 1, &barrier);
                 }
 
-                void copyDepth(unsigned width, unsigned height, unsigned pitch)
+                void copyDepth(unsigned width, unsigned height, unsigned pitch, VkCommandBuffer destination = VK_NULL_HANDLE)
                 {
                     VkBufferImageCopy copy{};
                     copy.bufferRowLength = pitch;
                     copy.imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1};
                     copy.imageExtent = {width, height, 1};
-                    vkCmdCopyImageToBuffer(command, depthImage->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, depthReadback, 1, &copy);
+                    vkCmdCopyImageToBuffer(destination ? destination : command, depthImage->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                           depthReadback, 1, &copy);
                     ++context.readbackTransfers;
                 }
 
@@ -1101,29 +1189,53 @@ void main() {
                     return padding;
                 }
 
+                VkCommandBuffer beginReadback()
+                {
+                    if (!readbackPool) {
+                        VkCommandPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+                        poolInfo.queueFamilyIndex = family;
+                        check(vkCreateCommandPool(device, &poolInfo, nullptr, &readbackPool), "create readback pool");
+                        VkCommandBufferAllocateInfo allocate{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+                        allocate.commandPool = readbackPool;
+                        allocate.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+                        allocate.commandBufferCount = 1;
+                        check(vkAllocateCommandBuffers(device, &allocate, &readbackCommand), "allocate readback command");
+                    } else {
+                        // Every copy waits before returning, so this pool is idle.
+                        check(vkResetCommandPool(device, readbackPool, 0), "reset readback pool");
+                    }
+                    VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+                    check(vkBeginCommandBuffer(readbackCommand, &begin), "begin readback command");
+                    return readbackCommand;
+                }
+                void completeReadback(VkCommandBuffer copyCommand)
+                {
+                    const auto producer = batch;
+                    check(vkEndCommandBuffer(copyCommand), "end readback command");
+                    batch = context.enqueue(copyCommand);
+                    wait();
+                    // This queue's copy fence covers earlier submissions too. Mark
+                    // the producer token complete without another host fence wait.
+                    if (producer)
+                        producer->completed = true;
+                }
+
                 std::vector<std::uint8_t> readDepth(unsigned width, unsigned height, unsigned pitch,
                                                     const std::shared_ptr<const std::vector<std::uint8_t>> &padding)
                 {
-                    wait();
+                    Profile::Scope reading(Profile::Stage::Readback);
                     if (!depthReadbackValid) {
-                        check(vkResetCommandPool(device, pool, 0), "reset depth readback commands");
-                        VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-                        check(vkBeginCommandBuffer(command, &begin), "begin depth readback commands");
-                        copyDepth(width, height, pitch);
+                        const auto copyCommand = beginReadback();
+                        copyDepth(width, height, pitch, copyCommand);
                         VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
                         barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
                         barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
-                        vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &barrier, 0, nullptr, 0,
+                        vkCmdPipelineBarrier(copyCommand, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &barrier, 0, nullptr, 0,
                                              nullptr);
-                        check(vkEndCommandBuffer(command), "end depth readback commands");
-                        VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
-                        submit.commandBufferCount = 1;
-                        submit.pCommandBuffers = &command;
-                        check(vkResetFences(device, 1, &completion), "reset depth readback fence");
-                        check(vkQueueSubmit(queue, 1, &submit, completion), "submit depth readback");
-                        inFlight = true;
-                        wait();
+                        completeReadback(copyCommand);
                         depthReadbackValid = true;
+                    } else {
+                        wait();
                     }
                     const auto elementBytes = sizeof(float);
                     std::vector<std::uint8_t> result(std::size_t(pitch) * height * sizeof(float));
@@ -1155,33 +1267,26 @@ void main() {
                 std::vector<std::uint8_t> readPixels(unsigned width, unsigned height, unsigned pitch,
                                                      const std::shared_ptr<const std::vector<std::uint8_t>> &padding)
                 {
-                    wait();
+                    Profile::Scope reading(Profile::Stage::Readback);
                     if (!readbackValid) {
                         // The image is still this ticket's version: reuse resolves live
                         // tickets before overwriting it. Discarded tickets need no transfer.
-                        check(vkResetCommandPool(device, pool, 0), "reset readback commands");
-                        VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-                        check(vkBeginCommandBuffer(command, &begin), "begin readback commands");
+                        const auto copyCommand = beginReadback();
                         VkBufferImageCopy copy{};
                         copy.bufferRowLength = pitch;
                         copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
                         copy.imageExtent = {width, height, 1};
-                        vkCmdCopyImageToBuffer(command, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback, 1, &copy);
+                        vkCmdCopyImageToBuffer(copyCommand, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback, 1, &copy);
                         ++context.readbackTransfers;
                         VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
                         barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
                         barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
-                        vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &barrier, 0, nullptr, 0,
+                        vkCmdPipelineBarrier(copyCommand, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &barrier, 0, nullptr, 0,
                                              nullptr);
-                        check(vkEndCommandBuffer(command), "end readback commands");
-                        VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
-                        submit.commandBufferCount = 1;
-                        submit.pCommandBuffers = &command;
-                        check(vkResetFences(device, 1, &completion), "reset readback fence");
-                        check(vkQueueSubmit(queue, 1, &submit, completion), "submit readback");
-                        inFlight = true;
-                        wait();
+                        completeReadback(copyCommand);
                         readbackValid = true;
+                    } else {
+                        wait();
                     }
                     std::vector<std::uint8_t> result(std::size_t(pitch) * height * imageElementBytes(colorImage->format));
                     void *mapped = nullptr;
@@ -1255,10 +1360,8 @@ void main() {
             private:
                 void wait()
                 {
-                    if (inFlight) {
-                        check(vkWaitForFences(device, 1, &completion, VK_TRUE, UINT64_MAX), "wait readback submission");
-                        inFlight = false;
-                    }
+                    context.wait(batch);
+                    batch.reset();
                     if (gpuTimingPending) {
                         std::array<std::uint64_t, 2> stamps{};
                         check(vkGetQueryPoolResults(device, gpuQueries, 0, 2, sizeof(stamps), stamps.data(), sizeof(std::uint64_t),
@@ -1544,10 +1647,9 @@ void main() {
                 Context &context;
                 std::weak_ptr<RasterReadback> pendingReadback;
                 std::weak_ptr<RasterReadback> pendingDepthReadback;
-                bool inFlight{};
+                std::shared_ptr<Context::BatchFence> batch;
                 bool readbackValid{};
                 bool depthReadbackValid{};
-                VkFence completion{};
                 VkQueryPool gpuQueries{};
                 bool gpuTimingPending{}, gpuTimingVertexShader{};
                 unsigned gpuTimingWidth{}, gpuTimingHeight{};
@@ -1556,8 +1658,8 @@ void main() {
                 VkPhysicalDevice physical{};
                 VkDevice device{};
                 VkQueue queue{};
-                VkCommandPool pool{};
-                VkCommandBuffer command{};
+                VkCommandPool pool{}, readbackPool{};
+                VkCommandBuffer command{}, readbackCommand{};
                 VkImage image{};
                 VkImageView view{};
                 VkImageView depthView{};
@@ -1658,8 +1760,13 @@ void main() {
 
     std::optional<RasterResult> VulkanRasterBackend::renderDeferred(const RasterDraw &draw) { return renderImpl(draw, true); }
 
+    std::uint64_t VulkanRasterBackend::queueSubmissions() const noexcept { return m_impl->context ? m_impl->context->queueSubmissions : 0; }
+    std::uint64_t VulkanRasterBackend::submittedCommandBuffers() const noexcept { return m_impl->context ? m_impl->context->submittedCommands : 0; }
+    std::uint64_t VulkanRasterBackend::submissionWaits() const noexcept { return m_impl->context ? m_impl->context->submissionWaits : 0; }
+
     std::optional<RasterResult> VulkanRasterBackend::renderImpl(const RasterDraw &inputDraw, bool deferReadback)
     {
+        Profile::Scope drawTime(Profile::Stage::NativeDraw);
         auto draw = inputDraw;
         m_impl->error.clear();
         const auto reject = [&](const char *reason) -> std::optional<RasterResult> {
@@ -2102,7 +2209,7 @@ void main() {
                               "shader_us={} context_us={} texture_us={} setup_us={} execute_us={} teardown_us={} readback_bytes={} "
                               "retained_textures={} retained_texture_bytes={} deferred={} resident_texture_copies={} resident_target_copies={} "
                               "readback_transfers={} direct_texture_bindings={} direct_texture_bytes={} target_upload_transfers={} "
-                              "target_copy_transfers={} full_overwrite_draws={}",
+                              "target_copy_transfers={} full_overwrite_draws={} queue_submissions={} submitted_commands={} submission_waits={}",
                               draw.width, draw.height, textures.size(), draw.vertices.size(), reused, m_impl->resources.size(), m_impl->resourceHits,
                               m_impl->retainedTargets, micros(t0, t1), micros(t1, t2), micros(t2, t3), micros(t3, t4), micros(t4, t5),
                               micros(t5, std::chrono::steady_clock::now()),
@@ -2111,7 +2218,8 @@ void main() {
                                       : std::uint64_t(region.extent.width) * region.extent.height * colorElementBytes(draw.colorFormat),
                               m_impl->retainedTextures, m_impl->retainedTextureBytes, deferReadback, residentTextureCopies(),
                               m_impl->residentTargetCopies, readbackTransfers(), directTextureBindings(), directTextureBytes(),
-                              m_impl->context->targetUploadTransfers, m_impl->context->targetCopyTransfers, m_impl->context->fullOverwriteDraws);
+                              m_impl->context->targetUploadTransfers, m_impl->context->targetCopyTransfers, m_impl->context->fullOverwriteDraws,
+                              queueSubmissions(), submittedCommandBuffers(), submissionWaits());
         }
         ++m_impl->completed;
         return result;

@@ -12,11 +12,13 @@
 #include "cpu/interpreter/SyscallHandler.hpp"
 #include "cpu/types/EncodedInstruction.hpp"
 #include "utils/Diagnostics.hpp"
+#include "utils/FrameProfiler.hpp"
 
 namespace Core::Instruction {
 
     void SC(Core::Interpreter &cpu, const EncodedInstruction &instr)
     {
+        Profile::Scope hle(Profile::Stage::Hle);
         Core::Symbol sym = cpu.m_binary.symbols[instr.bd];
 
         cpu.m_hle_redirected = false;

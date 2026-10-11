@@ -33,6 +33,9 @@ namespace Core::Gfx {
             std::uint64_t fullOverwriteDraws() const noexcept;
             std::uint64_t residentTargetCopies() const noexcept;
             std::uint64_t readbackTransfers() const noexcept;
+            std::uint64_t queueSubmissions() const noexcept;
+            std::uint64_t submittedCommandBuffers() const noexcept;
+            std::uint64_t submissionWaits() const noexcept;
 
         private:
             std::optional<RasterResult> renderImpl(const RasterDraw &draw, bool deferReadback);

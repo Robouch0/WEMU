@@ -160,7 +160,4 @@ namespace Core::Instruction {
         cpu.m_nextPc = cpu.m_ctr - Core::Memory::MemoryMap::ApplicationCode;
     }
 
-    // Fix BA: absolute branches must subtract ApplicationCode to get buffer offset
-    // (The existing Branch.cpp BA is wrong — it sets m_nextPc to the raw PPC address)
-
 } // namespace Core::Instruction

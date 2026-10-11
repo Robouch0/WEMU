@@ -2,6 +2,7 @@
 #include <cfenv>
 #include <cmath>
 #include <cstdlib>
+#include <format>
 #include <gtest/gtest.h>
 #include <limits>
 
@@ -2915,4 +2916,245 @@ TEST(VulkanRasterBackendTest, LiveVersionRotationRemainsBoundedAndDiscardedTicke
         ASSERT_TRUE(backend.renderDeferred(draw)) << backend.lastError();
     EXPECT_EQ(backend.readbackTransfers(), transfers);
     EXPECT_GE(backend.reusedDraws(), 7u);
+}
+
+TEST(VulkanRasterBackendTest, QueuedDrawsShareFenceAndReadbacksPreserveTheirVersions)
+{
+    using namespace Core::Gfx;
+    if (!std::getenv("WEMU_TEST_VULKAN") || !SpirvCompiler::available())
+        GTEST_SKIP();
+    const auto *setting = std::getenv("WEMU_NATIVE_BATCH_SUBMITS");
+    const bool batched = setting && setting[0] == '1';
+    const auto shader = lowerFragmentShader(*decodeProgram({0, (CF_EXP_DONE << 23) | (1u << 21) | 0x688u}));
+    ASSERT_TRUE(shader);
+    std::array<RasterDraw::Vertex, 3> vertices{{{0, 0, {}}, {8, 0, {}}, {0, 8, {}}}};
+    std::vector<std::uint8_t> target(64, 19);
+    RasterDraw draw{shader, vertices, {}, {}, target, 4, 4, 4, {0, 0, 4, 4}, 15, {}};
+    VulkanRasterBackend backend(true, true);
+    std::vector<RasterResult> snapshots;
+    for (unsigned i = 1; i <= 3; ++i) {
+        for (auto &vertex: vertices)
+            vertex.inputs[0] = {float(i) / 255, 0, 0, 1};
+        auto result = backend.renderDeferred(draw);
+        ASSERT_TRUE(result) << backend.lastError();
+        snapshots.push_back(std::move(*result));
+    }
+    EXPECT_EQ(backend.queueSubmissions(), batched ? 0u : 3u);
+    snapshots.back().resolve(); // Flush all producers plus this ticket's copy.
+    EXPECT_EQ(backend.submittedCommandBuffers(), 4u);
+    EXPECT_EQ(backend.queueSubmissions(), batched ? 1u : 4u);
+    EXPECT_EQ(backend.submissionWaits(), 1u);
+    for (unsigned i = 0; i < snapshots.size(); ++i) {
+        snapshots[i].resolve();
+        EXPECT_EQ(snapshots[i].rgba[0], i + 1);
+    }
+    EXPECT_EQ(backend.submittedCommandBuffers(), 6u);
+    EXPECT_EQ(backend.queueSubmissions(), batched ? 3u : 6u);
+    EXPECT_EQ(backend.submissionWaits(), 3u);
+}
+
+TEST(LatteLoweringTest, FloatIntegerConversionsPreserveBitsAcrossBoundariesOnReferenceAndVulkan)
+{
+    const std::array<std::pair<float, std::uint32_t>, 19> signedCases{{{0.f, 0},
+                                                                       {-0.f, 0},
+                                                                       {.75f, 0},
+                                                                       {-.75f, 0},
+                                                                       {1.75f, 1},
+                                                                       {-1.75f, 0xFFFFFFFF},
+                                                                       {2147483520.f, 0x7FFFFF80},
+                                                                       {-2147483648.f, 0x80000000},
+                                                                       {2147483648.f, 0x80000000},
+                                                                       {4294967040.f, 0xFFFFFF00},
+                                                                       {4294967296.f, 0},
+                                                                       {-4294967040.f, 256},
+                                                                       {4294967808.f, 512},
+                                                                       {-4294967808.f, 0xFFFFFE00},
+                                                                       {0x1p55f, 0},
+                                                                       {std::numeric_limits<float>::denorm_min(), 0},
+                                                                       {std::numeric_limits<float>::quiet_NaN(), 0},
+                                                                       {std::numeric_limits<float>::infinity(), 0x7FFFFFFF},
+                                                                       {-std::numeric_limits<float>::infinity(), 0x80000000}}};
+    for (const auto opcode: {OP2_FLT_TO_INT, OP2_FLT_TO_UINT}) {
+        const auto program =
+                decodeProgram({2, (8u << 26) | (2u << 18), 3u << 15, (CF_EXP_DONE << 23) | (1u << 21), 0x80000000u | 256u,
+                               (unsigned(opcode) << 7) | 16u | (3u << 21), 0x80000000u | 3u | (257u << 13), (OP2_XOR_INT << 7) | 16u | (3u << 21),
+                               0x80000000u | 3u | (SRC_1 << 13), SRC_0 | (OP3_CNDE_INT << 13) | (3u << 21)});
+        const auto fragment = lowerFragmentShader(*program);
+        ASSERT_TRUE(fragment) << fragment.error;
+        FragmentShader vertex;
+        vertex.source = probeVertexSource;
+        std::vector<std::uint32_t> vs, ps;
+        ASSERT_NO_FATAL_FAILURE(validateSpirv(vertex, &vs, "vert"));
+        ASSERT_NO_FATAL_FAILURE(validateSpirv(fragment, &ps));
+        for (const auto &[input, signedExpected]: signedCases) {
+            const auto expected = opcode == OP2_FLT_TO_INT          ? signedExpected
+                                  : std::isnan(input) || input <= 0 ? 0u
+                                  : input >= 4294967296.f           ? 0xFFFFFFFFu
+                                                                    : std::uint32_t(input);
+            std::array<float, 1024> constants{};
+            constants[0] = input;
+            constants[4] = std::bit_cast<float>(expected);
+            const auto reference = Core::Gfx::LatteVsInterp::runPixel(*program, {}, constants.data(), constants.size(), {});
+            ASSERT_TRUE(reference.colorValid);
+            for (float c: reference.color)
+                EXPECT_EQ(c, 1.f) << input << " opcode=" << opcode;
+            if (std::getenv("WEMU_TEST_VULKAN")) {
+                VulkanFragmentProbe probe;
+                probe.initialize(vs, ps, constants);
+                for (const auto &pixel: probe.draw({}))
+                    for (float c: pixel)
+                        EXPECT_EQ(c, 1.f) << input << " opcode=" << opcode;
+            }
+        }
+        // Both stages use the same ALU lowerer; exercise the vertex export too.
+        const auto convertedVertex =
+                lowerVertexShader(*decodeProgram({2, 8u << 26, 60u | (1u << 13) | (3u << 15), (CF_EXP_DONE << 23) | (1u << 21) | 0x688u, 0x80000000u,
+                                                  (unsigned(opcode) << 7) | 16u | (3u << 21)}));
+        ASSERT_TRUE(convertedVertex) << convertedVertex.error;
+        ASSERT_NO_FATAL_FAILURE(validateSpirv(convertedVertex, nullptr, "vert"));
+    }
+}
+
+TEST(LatteLoweringTest, PopIgnoresAddressAndRestoresMaskedExecution)
+{
+    for (const auto address: {0u, 7u, 0xFFFFFFFFu}) {
+        const std::vector<std::uint32_t> words{5,
+                                               9u << 26,
+                                               6,
+                                               8u << 26,
+                                               address,
+                                               (0x0Eu << 23) | 1u,
+                                               7,
+                                               8u << 26,
+                                               3u << 15,
+                                               (CF_EXP_DONE << 23) | (1u << 21) | 0x688u,
+                                               0x80000000u | (SRC_0 << 13),
+                                               (OP2_PRED_SETGT << 7) | 12u,
+                                               0x80000000u | SRC_1,
+                                               (OP2_MOV << 7) | 16u | (3u << 21),
+                                               0x80000000u | SRC_HALF,
+                                               (OP2_MOV << 7) | 16u | (3u << 21) | (1u << 29)};
+        const auto program = decodeProgram(words);
+        for (const auto input: {-2.f, 0.f, 2.f}) {
+            VulkanFragmentProbe::Inputs inputs{};
+            inputs[0][0] = input;
+            const auto reference = Core::Gfx::LatteVsInterp::runPixel(*program, inputs, nullptr, 0, {});
+            ASSERT_TRUE(reference.colorValid);
+            EXPECT_EQ(reference.color, (std::array{input > 0 ? 1.f : 0.f, .5f, 0.f, 0.f}));
+            ASSERT_NO_FATAL_FAILURE(compareNativeControlFlow(*program, inputs, reference.color));
+        }
+        auto vertexWords = words;
+        vertexWords[8] = 60u | (1u << 13) | (3u << 15);
+        const auto vertex = lowerVertexShader(*decodeProgram(vertexWords));
+        ASSERT_TRUE(vertex) << vertex.error;
+        ASSERT_NO_FATAL_FAILURE(validateSpirv(vertex, nullptr, "vert"));
+    }
+}
+
+TEST(LatteLoweringTest, TruncAndTrigonometryPreserveVectorAndScalarForwarding)
+{
+    FragmentShader probeVertex;
+    probeVertex.source = probeVertexSource;
+    std::vector<std::uint32_t> vs;
+    ASSERT_NO_FATAL_FAILURE(validateSpirv(probeVertex, &vs, "vert"));
+    for (const auto opcode: {OP2_TRUNC, OP2_SIN, OP2_COS}) {
+        for (const bool writeRegister: {false, true}) {
+            const auto forwarding = opcode == OP2_TRUNC ? SRC_PV : SRC_PS;
+            const std::vector<std::uint32_t> words{2,
+                                                   (8u << 26) | (1u << 18),
+                                                   3u << 15,
+                                                   (CF_EXP_DONE << 23) | (1u << 21) | 0x688u,
+                                                   0x80000000u | 256u,
+                                                   (unsigned(opcode) << 7) | (writeRegister ? 16u : 0u) | (3u << 21),
+                                                   0x80000000u | forwarding,
+                                                   (OP2_MOV << 7) | 16u | (3u << 21) | (1u << 29)};
+            const auto program = decodeProgram(words);
+            const auto fragment = lowerFragmentShader(*program);
+            ASSERT_TRUE(fragment) << fragment.error;
+            std::vector<std::uint32_t> ps;
+            ASSERT_NO_FATAL_FAILURE(validateSpirv(fragment, &ps));
+            auto vertexWords = words;
+            vertexWords[2] = 60u | (1u << 13) | (3u << 15);
+            const auto vertex = lowerVertexShader(*decodeProgram(vertexWords));
+            ASSERT_TRUE(vertex) << vertex.error;
+            ASSERT_NO_FATAL_FAILURE(validateSpirv(vertex, nullptr, "vert"));
+            std::array<float, 1024> constants{};
+            const std::array values{-2.75f, -1.f, -.5f, -.25f, -.125f, -0.f, 0.f, .125f, .25f, .5f, 1.f, 2.75f};
+            for (float value: values) {
+                // Hardware trig inputs have a bounded domain. Exercise ordinary
+                // normalized turns without asserting host behavior outside it.
+                if (opcode != OP2_TRUNC && std::abs(value) > .5f)
+                    continue;
+                SCOPED_TRACE(std::format("opcode={} input={}", unsigned(opcode), value));
+                constants[0] = value;
+                const float expected = opcode == OP2_TRUNC ? std::trunc(value)
+                                       : opcode == OP2_SIN ? std::sin(value / .1591549367f)
+                                                           : std::cos(value / .1591549367f);
+                const auto reference = Core::Gfx::LatteVsInterp::runPixel(*program, {}, constants.data(), constants.size(), {});
+                ASSERT_TRUE(reference.colorValid);
+                EXPECT_EQ(reference.color, (std::array{writeRegister ? expected : 0.f, expected, 0.f, 0.f}));
+                const auto vertexReference = Core::Gfx::LatteVsInterp::run(vertexWords, {}, constants.data(), constants.size());
+                ASSERT_TRUE(vertexReference.valid);
+                EXPECT_EQ(vertexReference.pos, reference.color);
+                if (std::getenv("WEMU_TEST_VULKAN")) {
+                    VulkanFragmentProbe probe;
+                    probe.initialize(vs, ps, constants);
+                    for (const auto &pixel: probe.draw({})) {
+                        for (unsigned channel = 0; channel < 4; ++channel)
+                            EXPECT_NEAR(pixel[channel], reference.color[channel], 2e-6f);
+                        if (opcode == OP2_TRUNC && expected == 0.f)
+                            EXPECT_EQ(std::signbit(pixel[1]), std::signbit(expected));
+                    }
+                }
+            }
+        }
+    }
+}
+
+TEST(LatteLoweringTest, TruncPreservesLargeAndExceptionalValuesOnReferenceAndVulkan)
+{
+    const auto program =
+            decodeProgram({2, 8u << 26, 3u << 15, (CF_EXP_DONE << 23) | (1u << 21), 0x80000000u | 256u, (OP2_TRUNC << 7) | 16u | (3u << 21)});
+    const auto fragment = lowerFragmentShader(*program);
+    ASSERT_TRUE(fragment) << fragment.error;
+    FragmentShader probeVertex;
+    probeVertex.source = probeVertexSource;
+    std::vector<std::uint32_t> vs, ps;
+    ASSERT_NO_FATAL_FAILURE(validateSpirv(probeVertex, &vs, "vert"));
+    ASSERT_NO_FATAL_FAILURE(validateSpirv(fragment, &ps));
+    for (float input: {2147483648.f, -2147483648.f, std::numeric_limits<float>::max(), std::numeric_limits<float>::infinity(),
+                       -std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN()}) {
+        std::array<float, 1024> constants{};
+        constants[0] = input;
+        const auto reference = Core::Gfx::LatteVsInterp::runPixel(*program, {}, constants.data(), constants.size(), {});
+        ASSERT_TRUE(reference.colorValid);
+        const auto check = [&](float output) {
+            if (std::isnan(input))
+                EXPECT_TRUE(std::isnan(output));
+            else
+                EXPECT_EQ(output, input);
+        };
+        check(reference.color[0]);
+        if (std::getenv("WEMU_TEST_VULKAN")) {
+            VulkanFragmentProbe probe;
+            probe.initialize(vs, ps, constants);
+            for (const auto &pixel: probe.draw({}))
+                check(pixel[0]);
+        }
+    }
+}
+
+TEST(LatteLoweringTest, TruncConsumesScalarResultWithoutRegisterWrites)
+{
+    const auto program = decodeProgram({2, (8u << 26) | (2u << 18), 3u << 15, (CF_EXP_DONE << 23) | (1u << 21) | 0x688u, 0x80000000u, OP2_SIN << 7,
+                                        0x80000000u | SRC_PS, OP2_TRUNC << 7, 0x80000000u | SRC_PV, (OP2_MOV << 7) | 16u | (3u << 21)});
+    for (float value: {-.25f, -.125f, .125f, .25f}) {
+        VulkanFragmentProbe::Inputs inputs{};
+        inputs[0][0] = value;
+        const auto reference = Core::Gfx::LatteVsInterp::runPixel(*program, inputs, nullptr, 0, {});
+        ASSERT_TRUE(reference.colorValid);
+        const float expected = std::trunc(std::sin(value / .1591549367f));
+        EXPECT_EQ(reference.color, (std::array{expected, 0.f, 0.f, 0.f}));
+        ASSERT_NO_FATAL_FAILURE(compareNativeControlFlow(*program, inputs, reference.color));
+    }
 }

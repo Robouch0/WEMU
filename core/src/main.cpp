@@ -174,6 +174,10 @@ int main(const int ac, char const *const *av)
 #endif
         Renderer renderer(std::move(hostPresenter));
         interpreter.m_renderer = &renderer;
+        struct GraphicsCleanup {
+                ~GraphicsCleanup() { ReleaseGx2HostResources(); }
+        } graphicsCleanup;
+
 
         Core::installStdlibHooks(interpreter, interpreter.m_binary);
         if (guiSession)

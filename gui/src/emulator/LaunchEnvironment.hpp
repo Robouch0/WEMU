@@ -18,5 +18,6 @@ inline QProcessEnvironment desktopLaunchEnvironment(QProcessEnvironment environm
                             "WEMU_NATIVE_RESIDENT_TEXTURES", "WEMU_NATIVE_RESIDENT_TARGETS"})
         environment.insert(key, "1");
     if (!sharedFont.isEmpty()) environment.insert("WEMU_SHARED_FONT", sharedFont);
+    if (environment.value("QT_WEMU_INPUT_TRACE") == "1") environment.insert("WEMU_VPAD_TRACE", "1");
     return environment;
 }

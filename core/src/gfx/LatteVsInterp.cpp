@@ -34,6 +34,29 @@ namespace Core::Gfx {
             std::memcpy(&u, &f, 4);
             return u;
         }
+        std::uint32_t floatToIntBits(float value)
+        {
+            const auto bits = asU32(value);
+            const auto sign = bits >> 31;
+            const int exponent = int((bits >> 23) & 255) - 127;
+            const auto fraction = bits & 0x7FFFFFu;
+            if (exponent == 128)
+                return fraction ? 0u : sign ? 0x80000000u : 0x7FFFFFFFu;
+            if (exponent < 0 || exponent >= 55)
+                return 0;
+            const auto mantissa = fraction | 0x800000u;
+            const auto magnitude = exponent < 23 ? mantissa >> (23 - exponent) : mantissa << (exponent - 23);
+            return sign ? 0u - magnitude : magnitude;
+        }
+        std::uint32_t floatToUintBits(float value)
+        {
+            if (std::isnan(value) || value <= 0.0f)
+                return 0;
+            if (value >= 4294967296.0f)
+                return 0xFFFFFFFFu;
+            return static_cast<std::uint32_t>(value);
+        }
+
         float fromU32(std::uint32_t u)
         {
             float f;
@@ -334,6 +357,17 @@ namespace Core::Gfx {
                                 case OP2_FLOOR:
                                     v = std::floor(a);
                                     break;
+                                case OP2_TRUNC:
+                                    v = std::trunc(a);
+                                    break;
+                                case OP2_SIN:
+                                    // R700/Latte trigonometric inputs use turns, as
+                                    // emitted by LLVM R600 and Cemu's Latte backend.
+                                    v = std::sin(a / 0.1591549367f);
+                                    break;
+                                case OP2_COS:
+                                    v = std::cos(a / 0.1591549367f);
+                                    break;
                                 case OP2_RNDNE:
                                     v = roundNearestEven(a);
                                     break;
@@ -355,7 +389,7 @@ namespace Core::Gfx {
                                     v = (a > 0.0f) ? 1.0f / std::sqrt(a) : 0.0f;
                                     break;
                                 case OP2_FLT_TO_INT:
-                                    v = fromU32(static_cast<std::uint32_t>(static_cast<std::int32_t>(a)));
+                                    v = fromU32(floatToIntBits(a));
                                     break;
                                 case OP2_INT_TO_FLT:
                                     v = static_cast<float>(static_cast<std::int32_t>(asU32(a)));
@@ -364,7 +398,7 @@ namespace Core::Gfx {
                                     v = static_cast<float>(asU32(a));
                                     break;
                                 case OP2_FLT_TO_UINT:
-                                    v = fromU32(static_cast<std::uint32_t>(a < 0.0f ? 0.0f : a));
+                                    v = fromU32(floatToUintBits(a));
                                     break;
                                 case OP2_AND_INT:
                                     v = fromU32(asU32(a) & asU32(b));

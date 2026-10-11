@@ -73,7 +73,42 @@ TEST(HostPresenterTest, SafePauseAcknowledgementPreservesCountersAndStopsInput)
     EXPECT_EQ(transport->frames, 0u);
     EXPECT_EQ(transport->timedPolls, 1u);
     EXPECT_EQ(renderer.get_buttons(), 0u);
+    EXPECT_EQ(renderer.sample_buttons(), 0u);
     EXPECT_EQ(renderer.movie_frame_count(), 1u);
+}
+
+TEST(HostPresenterTest, GuestInputSamplesPreserveTransitionOrderAndHeldState)
+{
+    auto presenter = std::make_unique<TestPresenter>();
+    auto *transport = presenter.get();
+    Renderer renderer(std::move(presenter));
+    transport->commands = {{Action::Buttons, 0x8000}, {Action::Buttons, 0x8200}, {Action::Buttons, 0x0200}, {Action::Buttons, 0}};
+    ASSERT_TRUE(renderer.poll_events());
+    EXPECT_EQ(renderer.get_buttons(), 0u);
+    for (const auto expected: {0x8000u, 0x8200u, 0x0200u, 0u, 0u})
+        EXPECT_EQ(renderer.sample_buttons(), expected);
+    transport->commands = {{Action::Buttons, 0x0200}, {Action::Buttons, 0x0200}};
+    ASSERT_TRUE(renderer.poll_events());
+    EXPECT_EQ(renderer.sample_buttons(), 0x0200u);
+    EXPECT_EQ(renderer.sample_buttons(), 0x0200u);
+    transport->commands = {{Action::Stop, 0}};
+    EXPECT_FALSE(renderer.poll_events());
+    EXPECT_EQ(renderer.sample_buttons(), 0u);
+}
+
+TEST(HostPresenterTest, InputBacklogIsBoundedAndCannotLeaveReleasedButtonsHeld)
+{
+    auto presenter = std::make_unique<TestPresenter>();
+    auto *transport = presenter.get();
+    Renderer renderer(std::move(presenter));
+    for (unsigned i = 0; i < 80; ++i)
+        transport->commands.push_back({Action::Buttons, i % 2 ? 0u : 0x8000u});
+    ASSERT_TRUE(renderer.poll_events());
+    unsigned presses{};
+    for (unsigned i = 0; i < 80; ++i)
+        presses += renderer.sample_buttons() != 0;
+    EXPECT_EQ(presses, 16u); // Only the latest 32 state transitions are retained.
+    EXPECT_EQ(renderer.sample_buttons(), 0u);
 }
 
 TEST(HostPresenterTest, StopDuringPauseDoesNotResumeTheGuest)

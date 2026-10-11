@@ -78,7 +78,7 @@ namespace Core::Gfx::Latte {
                             maxLitChan = std::max(maxLitChan, src.chan);
                         }
                     }
-                    const bool transOnly = !in.op3 && ((in.op >= 0x60 && in.op <= 0x6D) || in.op == OP2_FLT_TO_UINT);
+                    const bool transOnly = !in.op3 && ((in.op >= 0x60 && in.op <= 0x6F) || in.op == OP2_FLT_TO_UINT);
                     in.scalarSlot = transOnly || (vectorSlots & (1u << in.dstChan));
                     if (!in.scalarSlot)
                         vectorSlots |= 1u << in.dstChan;
