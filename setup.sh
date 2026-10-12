@@ -151,7 +151,10 @@ declare -a APT_PKGS=(
 # Fedora list
 declare -a DNF_PKGS=(
   gcc-c++ make cmake ninja-build ccache git pkgconf-pkg-config
-  zlib-devel ffmpeg-free-devel
+  zlib-devel
+  # Resolved by provide so dnf picks ffmpeg-devel (RPM Fusion) or
+  # libavcodec-free-devel (Fedora) depending on which FFmpeg is installed.
+  'pkgconfig(libavcodec)' 'pkgconfig(libavutil)' 'pkgconfig(libswscale)'
   vulkan-loader-devel vulkan-tools vulkan-validation-layers glslang glslc
   glfw-devel SDL2-devel SDL2_image-devel glm-devel
   qt6-qtbase-devel qt6-qtdeclarative-devel qt6-qtmultimedia-devel
