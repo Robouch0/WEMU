@@ -199,6 +199,17 @@ namespace Core::Gfx {
             std::vector<std::shared_ptr<ArraySnapshot>> m_arraySnapshots;
             std::optional<Surface> arraySlice(const Surface &surface, unsigned relative) const;
             std::shared_ptr<ArraySnapshot> arraySnapshot(const Surface &surface);
+            // Base-level sample() output for guest-memory textures (tiled/compressed), keyed by
+            // view and validated by a content hash so unchanged textures decode once.
+            struct DecodedTexture {
+                    std::uint64_t hash{}, used{};
+                    std::uint32_t hashedFrame{~0u};
+                    std::vector<std::uint8_t> rgba;
+            };
+            std::unordered_map<SurfaceKey, std::shared_ptr<DecodedTexture>, SurfaceKeyHash> m_decodedTextures;
+            std::uint64_t m_decodedBytes{}, m_decodedClock{};
+            std::shared_ptr<DecodedTexture> decodedTexture(const Surface &surface);
+            std::vector<float> volumeTexels(const Surface &surface) const;
 
             float m_clear[4]{0.0f, 0.0f, 0.0f, 1.0f}; // RGBA, 0..1
             std::vector<std::uint8_t> m_fb; // RGBX, kWidth*kHeight*4
@@ -251,6 +262,37 @@ namespace Core::Gfx {
             float m_vp[4]{0.0f, 0.0f, static_cast<float>(kWidth), static_cast<float>(kHeight)}; // x,y,w,h
             float m_vpNear{}, m_vpFar{1.f};
             std::int32_t m_scissor[4]{0, 0, kWidth, kHeight}; // x,y,w,h
+
+            // GX2ContextState shadowing: while a context is active the hardware mirrors every state
+            // register into it, and GX2SetContextState reloads the whole register set. MK8 switches
+            // between TV and DRC contexts mid-frame; without the reload, DRC depth/blend state leaks
+            // into the TV passes that follow.
+            struct ContextState {
+                    Surface color, depth;
+                    bool depthTest{}, depthWrite{}, stencilTest{};
+                    unsigned depthCompare{7};
+                    std::uint32_t colorTarget{};
+                    std::array<Surface, 16> pixelTextures{}, vertexTextures{};
+                    std::array<TextureSampler, 18> pixelSamplers{}, vertexSamplers{};
+                    std::array<BlendState, 8> blend{};
+                    std::array<std::uint8_t, 4> blendConstant{};
+                    std::array<std::uint32_t, 8> channelMask{};
+                    std::uint32_t targetBlendEnable{};
+                    bool colorWriteEnable{};
+                    std::array<float, 256> vsRegs{}, psRegs{};
+                    std::vector<std::uint32_t> vsProgram, psProgram, fetchLayout;
+                    std::array<std::vector<std::uint32_t>, 16> vsBlocks{}, psBlocks{};
+                    std::array<Attrib, 8> attribs{};
+                    std::array<std::uint32_t, 4> vertexSemantics{}, vertexOutputSemantics{}, pixelInputSemantics{};
+                    std::array<float, 4> viewport{};
+                    float viewportNear{}, viewportFar{};
+                    std::array<std::int32_t, 4> scissor{};
+            };
+            std::unordered_map<std::uint32_t, ContextState> m_contextStates;
+            std::uint32_t m_activeContext{0};
+            [[nodiscard]] ContextState captureContextState() const;
+            void restoreContextState(const ContextState &state);
+            void setContextState(std::uint32_t context);
 
             // Per-frame replay stats (logged around the WEMU_FB_DUMP frame to debug black output).
             struct Stats {

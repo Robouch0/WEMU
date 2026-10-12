@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <format>
+#include <limits>
 #include <stdexcept>
 #include <string>
 
@@ -17,6 +18,7 @@
 #include "gfx/SurfaceLayout.hpp"
 #include "gfx/TextureFormat.hpp"
 #include "gfx/TriangleCoverage.hpp"
+#include "gfx/VulkanRasterBackend.hpp"
 #include "utils/FrameProfiler.hpp"
 #include "utils/Logger.hpp"
 
@@ -695,6 +697,119 @@ namespace Core::Gfx {
         return result;
     }
 
+    std::shared_ptr<Gx2Replayer::DecodedTexture> Gx2Replayer::decodedTexture(const Surface &surface)
+    {
+        constexpr std::uint64_t budget = 256ull * 1024 * 1024;
+        const std::uint64_t bytes = std::uint64_t(surface.width) * surface.height * 4;
+        if (!m_mem || !surface.imagePtr || !surface.imageSize || !surface.width || !surface.height || bytes > 64ull * 1024 * 1024 ||
+            std::uint64_t(surface.imagePtr) + surface.imageSize > 0x100000000ull || findViewBacking(surface) || m_cpuWritten.contains(surface.imagePtr))
+            return {};
+        const auto *base = m_mem->hostPtr(surface.imagePtr);
+        const auto *last = m_mem->hostPtr(surface.imagePtr + surface.imageSize - 1);
+        if (!base || !last || std::uintptr_t(last) - std::uintptr_t(base) != surface.imageSize - 1)
+            return {};
+        auto &entry = m_decodedTextures[makeSurfaceKey(surface)];
+        // Guest memory cannot change while a frame replays, so one hash per frame suffices.
+        if (!entry || entry->hashedFrame != m_presentCount) {
+            std::uint64_t hash = 0x9E3779B97F4A7C15ull ^ surface.imageSize;
+            std::size_t i = 0;
+            for (; i + 8 <= surface.imageSize; i += 8) {
+                std::uint64_t word;
+                std::memcpy(&word, base + i, 8);
+                hash = (hash ^ word) * 0xFF51AFD7ED558CCDull;
+                hash ^= hash >> 32;
+            }
+            for (; i < surface.imageSize; ++i)
+                hash = (hash ^ base[i]) * 0x100000001B3ull;
+            if (entry && entry->hash == hash) {
+                entry->hashedFrame = m_presentCount;
+            } else {
+                if (entry)
+                    m_decodedBytes -= entry->rgba.size();
+                auto decoded = std::make_shared<DecodedTexture>();
+                decoded->hash = hash;
+                decoded->hashedFrame = m_presentCount;
+                decoded->rgba.resize(bytes);
+                for (unsigned y = 0; y < surface.height; ++y)
+                    for (unsigned x = 0; x < surface.width; ++x) {
+                        const auto texel = sample(surface, (float(x) + 0.5f) / float(surface.width), (float(y) + 0.5f) / float(surface.height));
+                        std::memcpy(decoded->rgba.data() + (std::size_t(y) * surface.width + x) * 4, texel.data(), 4);
+                    }
+                m_decodedBytes += bytes;
+                entry = std::move(decoded);
+            }
+        }
+        entry->used = ++m_decodedClock;
+        auto result = entry;
+        while (m_decodedBytes > budget && m_decodedTextures.size() > 1) {
+            auto oldest = m_decodedTextures.end();
+            for (auto it = m_decodedTextures.begin(); it != m_decodedTextures.end(); ++it)
+                if (it->second && it->second != result && (oldest == m_decodedTextures.end() || it->second->used < oldest->second->used))
+                    oldest = it;
+            if (oldest == m_decodedTextures.end())
+                break;
+            m_decodedBytes -= oldest->second->rgba.size();
+            m_decodedTextures.erase(oldest);
+        }
+        return result;
+    }
+
+    // Component-mapped RGBA32F texels of a 3D texture's base level, slice-major. Empty when
+    // the format or tiling is not decoded (thick tiling, compressed volumes).
+    std::vector<float> Gx2Replayer::volumeTexels(const Surface &surface) const
+    {
+        const auto format = surface.format & 0x3F;
+        const bool linear = surface.tileMode <= 1 || surface.tileMode == 16;
+        if (!m_mem || !surface.imagePtr || !surface.width || !surface.height || !surface.depth || surface.depth > 256 || surface.firstMip ||
+            surface.pitch < surface.width || !surface.imageSize || surface.imageSize % surface.depth ||
+            std::uint64_t(surface.width) * surface.height * surface.depth > 4u * 1024 * 1024 ||
+            (!linear && surface.tileMode != 2 && surface.tileMode != 4) || (format != 0x16 && format != 0x1A && format != 0x06))
+            return {};
+        const auto *base = m_mem->hostPtr(surface.imagePtr);
+        const auto *last = std::uint64_t(surface.imagePtr) + surface.imageSize <= 0x100000000ull ? m_mem->hostPtr(surface.imagePtr + surface.imageSize - 1) : nullptr;
+        if (!base || !last || std::uintptr_t(last) - std::uintptr_t(base) != surface.imageSize - 1)
+            return {};
+        const auto smallFloat = [](std::uint32_t bits, unsigned mantissaBits) {
+            const auto exponent = bits >> mantissaBits, mantissa = bits & ((1u << mantissaBits) - 1);
+            const float fraction = float(mantissa) / float(1u << mantissaBits);
+            if (exponent == 0)
+                return std::ldexp(fraction, -14);
+            if (exponent == 31)
+                return mantissa ? std::numeric_limits<float>::quiet_NaN() : std::numeric_limits<float>::infinity();
+            return std::ldexp(1.0f + fraction, int(exponent) - 15);
+        };
+        const std::uint32_t stride = surface.imageSize / surface.depth;
+        std::vector<float> texels(std::size_t(surface.width) * surface.height * surface.depth * 4);
+        for (unsigned z = 0; z < surface.depth; ++z) {
+            auto swizzle = surface.swizzle;
+            if (surface.tileMode == 4)
+                swizzle = (swizzle & ~0x700u) | (((((swizzle >> 8) & 7) + z * 2) & 7) << 8);
+            for (unsigned y = 0; y < surface.height; ++y)
+                for (unsigned x = 0; x < surface.width; ++x) {
+                    const std::uint64_t offset = std::uint64_t(z) * stride + (linear ? (std::uint64_t(y) * surface.pitch + x) * 4
+                                                                                     : tiledElementOffset(x, y, surface.pitch, 32, surface.tileMode, swizzle));
+                    if (offset + 4 > std::uint64_t(z + 1) * stride)
+                        return {};
+                    const std::uint32_t word = base[offset] | (base[offset + 1] << 8) | (base[offset + 2] << 16) | (std::uint32_t(base[offset + 3]) << 24);
+                    std::array<float, 4> raw{0, 0, 0, 1};
+                    if (format == 0x16) { // R11G11B10_FLOAT
+                        raw = {smallFloat(word & 0x7FF, 6), smallFloat((word >> 11) & 0x7FF, 6), smallFloat(word >> 22, 5), 1.0f};
+                    } else if (format == 0x06) { // R32_FLOAT
+                        raw[0] = asFloat(word);
+                    } else {
+                        for (unsigned c = 0; c < 4; ++c)
+                            raw[c] = float((word >> (c * 8)) & 255) / 255.0f;
+                    }
+                    auto *out = texels.data() + ((std::size_t(z) * surface.height + y) * surface.width + x) * 4;
+                    for (unsigned c = 0; c < 4; ++c) {
+                        const auto selector = (surface.compMap >> (24 - c * 8)) & 7;
+                        out[c] = selector < 4 ? raw[selector] : selector == 5 ? 1.0f : 0.0f;
+                    }
+                }
+        }
+        return texels;
+    }
+
     bool Gx2Replayer::supportsGather(const Surface &surface, const TextureSampler &sampler)
     {
         const auto state = sampler.regs[0];
@@ -1076,6 +1191,13 @@ namespace Core::Gfx {
                 return {128, 128, 128, 255};
             return {px[0], px[1], 0, 255};
         }
+        if (fmt == 0x05) { // R16_UNORM, little-endian GPU element
+            const std::uint32_t off = tiledElementOffset(tx, ty, s.pitch, 16, tile, s.swizzle);
+            const std::uint8_t *px = m_mem->hostPtr(s.imagePtr + off);
+            if (!px || !m_mem->hostPtr(s.imagePtr + off + 1))
+                return {128, 128, 128, 255};
+            return {px[1], 0, 0, 255};
+        }
         // Everything else: treat as RGBA8 (exact for our own intermediates and format 0x1A).
         const std::uint32_t off = tiledElementOffset(tx, ty, s.pitch, 32, tile, s.swizzle);
         const std::uint8_t *px = m_mem->hostPtr(s.imagePtr + off);
@@ -1101,20 +1223,29 @@ namespace Core::Gfx {
             if (buffer >= m_attribs.size())
                 return false;
             const auto &binding = m_attribs[buffer];
+            // GX2AttribFormat: the low byte selects the component layout; 0x100 = integer,
+            // 0x200 = signed, 0x800 = float (or integer scaled to float).
             const auto type = format & 0xFF;
-            const bool floating = type == 6 || type == 0xD || type == 0x11 || type == 0x13;
             unsigned components = 0, bytes = 0;
-            if (floating) {
-                components = type == 6 ? 1 : type == 0xD ? 2 : type == 0x11 ? 3 : 4;
-                bytes = 4;
-            } else if (type == 0 || type == 4 || type == 0xA) {
-                components = type == 0 ? 1 : type == 4 ? 2 : 4;
-                bytes = 1;
-            } else {
-                return false;
+            bool packed1010102 = false;
+            switch (type) {
+                case 0x00: components = 1, bytes = 1; break; // 8
+                case 0x04: components = 2, bytes = 1; break; // 8_8
+                case 0x0A: components = 4, bytes = 1; break; // 8_8_8_8
+                case 0x02: case 0x03: components = 1, bytes = 2; break; // 16 / 16 float
+                case 0x07: case 0x08: components = 2, bytes = 2; break; // 16_16 / float
+                case 0x0E: case 0x0F: components = 4, bytes = 2; break; // 16_16_16_16 / float
+                case 0x05: case 0x06: components = 1, bytes = 4; break; // 32 / 32 float
+                case 0x0C: case 0x0D: components = 2, bytes = 4; break; // 32_32 / float
+                case 0x10: case 0x11: components = 3, bytes = 4; break; // 32_32_32 / float
+                case 0x12: case 0x13: components = 4, bytes = 4; break; // 32_32_32_32 / float
+                case 0x0B: components = 1, bytes = 4, packed1010102 = true; break; // 2_10_10_10
+                default: return false;
             }
+            const bool floating = type == 0x03 || type == 0x06 || type == 0x08 || type == 0x0D || type == 0x0F || type == 0x11 || type == 0x13;
+            const bool integer = format & 0x100, isSigned = format & 0x200, scaled = (format & 0x800) && !floating;
             if (endian == 3)
-                endian = bytes == 4 ? 2 : 0;
+                endian = bytes == 4 ? 2 : bytes == 2 ? 1 : 0;
             const std::uint32_t index = m_fetchLayout[i + 4] == 1 ? 0 : vertex;
             const std::uint64_t start = std::uint64_t(index) * binding.stride + offset;
             if (!binding.addr || start + std::uint64_t(components) * bytes > binding.size ||
@@ -1124,6 +1255,27 @@ namespace Core::Gfx {
             const auto *p = m_mem->hostPtr(addr);
             if (!p || !m_mem->hostPtr(addr + components * bytes - 1))
                 return false;
+            const auto convert = [&](std::uint32_t bits, unsigned width) -> float {
+                const auto signBit = 1u << (width - 1);
+                const auto signedBits = std::int32_t(isSigned && (bits & signBit) && width < 32 ? bits | ~((signBit << 1) - 1) : bits);
+                if (integer && !scaled)
+                    return asFloat(isSigned ? std::uint32_t(signedBits) : bits); // raw integer bits for integer shader inputs
+                if (scaled || integer)
+                    return isSigned ? float(signedBits) : float(bits);
+                if (isSigned)
+                    return std::max(-1.0f, float(signedBits) / float(signBit - 1));
+                return width == 32 ? float(double(bits) / 4294967295.0) : float(bits) / float((signBit << 1) - 1);
+            };
+            const auto halfToFloat = [](std::uint32_t h) {
+                const std::uint32_t sign = (h & 0x8000u) << 16, exponent = (h >> 10) & 0x1F, mantissa = h & 0x3FF;
+                if (exponent == 0) {
+                    const float value = std::ldexp(float(mantissa), -24);
+                    return sign ? -value : value;
+                }
+                if (exponent == 31)
+                    return asFloat(sign | 0x7F800000u | (mantissa << 13));
+                return asFloat(sign | ((exponent + 112) << 23) | (mantissa << 13));
+            };
             std::array<float, 4> value{0, 0, 0, 1};
             for (unsigned c = 0; c < components; c++) {
                 std::uint32_t bits = 0;
@@ -1134,15 +1286,16 @@ namespace Core::Gfx {
                         return false;
                     bits |= std::uint32_t(p[swapped]) << (b * 8);
                 }
-                if (floating)
-                    value[c] = asFloat(bits);
-                else if (format & 0x100)
-                    value[c] = asFloat((format & 0x200) ? static_cast<std::uint32_t>(static_cast<std::int8_t>(bits)) : bits);
-                else if (format & 0x200)
-                    value[c] = (format & 0x800) ? float(static_cast<std::int8_t>(bits))
-                                                : std::max(-1.0f, float(static_cast<std::int8_t>(bits)) / 127.0f);
+                if (packed1010102) {
+                    for (unsigned k = 0; k < 3; ++k) {
+                        const auto field = (bits >> (k * 10)) & 0x3FF;
+                        value[k] = convert(field, 10);
+                    }
+                    value[3] = (integer || scaled) ? float(bits >> 30) : float(bits >> 30) / 3.0f;
+                } else if (floating)
+                    value[c] = bytes == 2 ? halfToFloat(bits) : asFloat(bits);
                 else
-                    value[c] = (format & 0x800) ? float(bits) : float(bits) / 255.0f;
+                    value[c] = convert(bits, bytes * 8);
             }
             auto &a = out[std::distance(m_vertexSemantics.begin(), semantic)];
             for (unsigned c = 0; c < 4; c++) {
@@ -1891,6 +2044,14 @@ namespace Core::Gfx {
 
         // Preserve pre-draw snapshots. Vertex texture feedback into a surface
         // modified by this draw remains on the reference path.
+        // GX2 bindings persist across draws, so only resources this vertex program samples can
+        // alias the target. Programs that cannot be lowered keep the conservative all-slot check.
+        const auto vertexProgram = m_rasterBackend && !m_vsProgram.empty() ? m_vertexShaderCache.get(m_vsProgram) : nullptr;
+        const auto vertexSamples = [&](const Surface &surface) {
+            const auto resource = static_cast<unsigned>(&surface - m_vertexTextures.data());
+            return !vertexProgram || !*vertexProgram ||
+                   std::any_of(vertexProgram->textures.begin(), vertexProgram->textures.end(), [&](const auto &binding) { return binding.resource == resource; });
+        };
         const bool collectBackend =
                 m_rasterBackend && !m_gpuRenderer && !m_stencilTest && (!m_depthTest || !m_depth.imagePtr || drawDepth) &&
                 (!drawDepth || (nativeDepthEnabled && m_rasterBackend->supportsDepth())) && pixelProgram && useViewBacking() &&
@@ -1898,7 +2059,7 @@ namespace Core::Gfx {
                 (mode != 1 || m_rasterBackend->supportsPoints()) &&
                 (targetFormat != ColorFormat::RGBA32Float || m_rasterBackend->supportsFloatTargets()) &&
                 std::none_of(m_vertexTextures.begin(), m_vertexTextures.end(), [&](const auto &surface) {
-                    return surface.imagePtr && (surface.dimension == 5 || makeSurfaceKey(surface) == makeSurfaceKey(m_color) ||
+                    return surface.imagePtr && vertexSamples(surface) && (surface.dimension == 5 || makeSurfaceKey(surface) == makeSurfaceKey(m_color) ||
                                                 (drawDepth && m_depthWrite && makeSurfaceKey(surface) == makeSurfaceKey(m_depth)));
                 });
         std::shared_ptr<const Latte::VertexShader> nativeVertexShader;
@@ -2152,13 +2313,17 @@ namespace Core::Gfx {
             for (unsigned i = 0; i < m_pixelTextures.size(); ++i)
                 if (m_pixelTextures[i].dimension == 5)
                     resourceTypes[i] = Latte::TextureType::TwoDArray;
+                else if (m_pixelTextures[i].dimension == 2)
+                    resourceTypes[i] = Latte::TextureType::ThreeD;
             const auto translatedShader = m_fragmentShaderCache.get(m_psProgram, resourceTypes);
             const auto &shader = *translatedShader;
             bool supported = bool(shader);
+            std::string unsupportedReason = supported ? std::string{} : "fragment shader not lowered: " + shader.error;
             std::vector<RasterDraw::Texture> textures;
             std::vector<std::vector<std::uint8_t>> ownedTextures;
             std::vector<std::vector<float>> ownedFloatTextures;
             std::vector<std::shared_ptr<ArraySnapshot>> arrays;
+            std::vector<std::shared_ptr<DecodedTexture>> decodedTextures;
             ownedTextures.reserve(shader.textures.size());
             ownedFloatTextures.reserve(shader.textures.size());
             auto allBindings = shader.textures;
@@ -2175,6 +2340,7 @@ namespace Core::Gfx {
                 const auto &boundSamplers = vertexBinding ? m_vertexSamplers : m_pixelSamplers;
                 if (binding.resource >= boundSurfaces.size() || binding.sampler >= boundSamplers.size()) {
                     supported = false;
+                    unsupportedReason = "replayer#1";
                     break;
                 }
                 const auto surface = boundSurfaces[binding.resource];
@@ -2184,6 +2350,7 @@ namespace Core::Gfx {
                     const auto *depthTexture = depthBacking(surface, !residentTextures);
                     if (!depthTexture) {
                         supported = false;
+                        unsupportedReason = "replayer#2";
                         break;
                     }
                     textures.push_back({binding, surface.width, surface.height, boundSamplers[binding.sampler], [&, surface](unsigned x, unsigned y) {
@@ -2214,12 +2381,20 @@ namespace Core::Gfx {
                 }
                 if (shader.usesGather && !supportsGather(surface, boundSamplers[binding.sampler])) {
                     supported = false;
+                    unsupportedReason = "replayer#3";
                     break;
                 }
                 if (surface.dimension == 5) {
                     auto snapshot = arraySnapshot(surface);
                     if (!snapshot) {
                         supported = false;
+                        unsupportedReason = std::format("replayer#4 ptr={:08X} {}x{} pitch={} depth={} slices={}+{} fmt={:X} tile={} size={:X}", // TEMP-ARRAYDIAG
+                                                        surface.imagePtr, surface.width, surface.height, surface.pitch, surface.depth,
+                                                        surface.firstSlice, surface.sliceCount, surface.format, surface.tileMode, surface.imageSize);
+                        for (const auto &[key, backing]: m_depthBackings) // TEMP-ARRAYDIAG
+                            if (key.imagePtr >= surface.imagePtr && key.imagePtr < surface.imagePtr + surface.imageSize)
+                                unsupportedReason += std::format(" depth@{:08X}:{}x{}:fmt{:X}:pending={}", key.imagePtr, key.width, key.height, key.format,
+                                                                 bool(backing.pending));
                         break;
                     }
                     textures.push_back({binding, surface.width, surface.height, boundSamplers[binding.sampler], [&, surface](unsigned x, unsigned y) {
@@ -2233,9 +2408,39 @@ namespace Core::Gfx {
                     arrays.push_back(std::move(snapshot));
                     continue;
                 }
+                if (surface.dimension == 2) {
+                    auto volume = volumeTexels(surface);
+                    if (volume.empty()) {
+                        supported = false;
+                        unsupportedReason = std::format("3D texture ptr={:08X} {}x{}x{} fmt={:X} tile={}", surface.imagePtr, surface.width,
+                                                        surface.height, surface.depth, surface.format, surface.tileMode);
+                        break;
+                    }
+                    textures.push_back({binding, surface.width, surface.height, boundSamplers[binding.sampler], [&, surface](unsigned x, unsigned y) {
+                                            return sampleTexture(surface, TextureSampler{}, (float(x) + .5f) / float(surface.width),
+                                                                 (float(y) + .5f) / float(surface.height));
+                                        }});
+                    textures.back().rgba32 = ownedFloatTextures.emplace_back(std::move(volume));
+                    textures.back().layers = surface.depth;
+                    continue;
+                }
+                if (!surface.imagePtr && !surface.width && !surface.height) {
+                    // Unbound slot: sampleTexture() returns zero texels through the
+                    // component selectors, so a 1x1 zero texture matches the reference.
+                    textures.push_back({binding, 1, 1, boundSamplers[binding.sampler], [&, surface](unsigned, unsigned) {
+                                            return sampleTexture(surface, TextureSampler{}, .5f, .5f);
+                                        }});
+                    textures.back().unorm8 = ownedTextures.emplace_back(4, std::uint8_t{0});
+                    textures.back().unorm8Pitch = 1;
+                    textures.back().unorm8Map = surface.compMap;
+                    continue;
+                }
                 if (!surface.imagePtr || !surface.width || !surface.height || surface.dimension != 1 || surface.aa || surface.firstMip ||
                     surface.firstSlice || surface.sliceCount != 1) {
                     supported = false;
+                    unsupportedReason = std::format("texture view ptr={:08X} {}x{} dim={} aa={} mip={}/{} slice={}/{} fmt={:X} tile={}", surface.imagePtr,
+                                                    surface.width, surface.height, surface.dimension, surface.aa, surface.firstMip, surface.mipCount,
+                                                    surface.firstSlice, surface.sliceCount, surface.format, surface.tileMode);
                     break;
                 }
                 const auto *backing = vertexBinding ? textureBacking(surface) : pixelBackings[binding.resource];
@@ -2280,6 +2485,45 @@ namespace Core::Gfx {
                         textures.back().rendered = pending->second;
                         textures.back().unorm8Pitch = surface.pitch;
                         textures.back().unorm8Map = surface.compMap;
+                        continue;
+                    }
+                }
+                if (format == 0x05 && !backing && surface.imageSize && m_mem && (surface.tileMode <= 4 || surface.tileMode == 16) &&
+                    surface.pitch >= surface.width && std::uint64_t(surface.imagePtr) + surface.imageSize <= 0x100000000ull) {
+                    // R16_UNORM (also how 16-bit depth is viewed as a texture): decode to R32
+                    // floats, matching sample()'s (R, 0, 0, 1) reference expansion.
+                    const auto *base = m_mem->hostPtr(surface.imagePtr);
+                    const auto *last = m_mem->hostPtr(surface.imagePtr + surface.imageSize - 1);
+                    if (base && last && std::uintptr_t(last) - std::uintptr_t(base) == surface.imageSize - 1) {
+                        auto &values = ownedFloatTextures.emplace_back(std::size_t(surface.width) * surface.height);
+                        const bool linear = surface.tileMode <= 1 || surface.tileMode == 16;
+                        bool complete = true;
+                        for (unsigned y = 0; y < surface.height && complete; ++y)
+                            for (unsigned x = 0; x < surface.width; ++x) {
+                                const std::uint64_t offset = linear ? (std::uint64_t(y) * surface.pitch + x) * 2
+                                                                    : tiledElementOffset(x, y, surface.pitch, 16, surface.tileMode, surface.swizzle);
+                                if (offset + 2 > surface.imageSize) {
+                                    complete = false;
+                                    break;
+                                }
+                                values[std::size_t(y) * surface.width + x] = float(base[offset] | (base[offset + 1] << 8)) / 65535.0f;
+                            }
+                        if (complete) {
+                            textures.back().r32 = values;
+                            textures.back().r32Map = surface.compMap;
+                            continue;
+                        }
+                    }
+                }
+                const bool linearView = surface.tileMode <= 1 || surface.tileMode == 16;
+                if (!backing && (!linearView || (format >= 0x31 && format <= 0x35)) && surface.format != 0x80E) {
+                    // Tiled or block-compressed guest textures: reuse the decoded base level.
+                    if (auto decoded = decodedTexture(surface)) {
+                        textures.back().unorm8 = decoded->rgba;
+                        textures.back().unorm8Pitch = surface.width;
+                        textures.back().unorm8Map = surface.compMap;
+                        textures.back().unorm8Channels = 4;
+                        decodedTextures.push_back(std::move(decoded));
                         continue;
                     }
                 }
@@ -2348,7 +2592,7 @@ namespace Core::Gfx {
             for (auto &texture: textures) {
                 const auto &surfaces = texture.binding.binding > 17 ? m_vertexTextures : m_pixelTextures;
                 const auto &surface = surfaces[texture.binding.resource];
-                texture.sourceMipCount = surface.mipCount;
+                texture.sourceMipCount = surface.imagePtr ? surface.mipCount : 1;
                 texture.sourceFirstMip = surface.firstMip;
             }
             std::vector<RasterDraw::Vertex> vertices;
@@ -2358,8 +2602,10 @@ namespace Core::Gfx {
                 if (!nativeVertexShader && std::fabs(area) < 0.5f)
                     continue;
                 for (const auto &rv: triangle) {
-                    if (!std::isfinite(rv.x) || !std::isfinite(rv.y))
+                    if (!std::isfinite(rv.x) || !std::isfinite(rv.y)) {
                         supported = false;
+                        unsupportedReason = "replayer#6";
+                    }
                     RasterDraw::Vertex vertex{rv.x, rv.y, {}};
                     vertex.z = rv.z;
                     vertex.reciprocalW = rv.reciprocalW;
@@ -2375,6 +2621,7 @@ namespace Core::Gfx {
             for (const auto &rv: preparedPoints) {
                 if (!std::isfinite(rv.x) || !std::isfinite(rv.y)) {
                     supported = false;
+                    unsupportedReason = "replayer#7";
                     break;
                 }
                 RasterDraw::Vertex vertex{rv.x, rv.y, {}};
@@ -2387,6 +2634,17 @@ namespace Core::Gfx {
                         if (pixelInputParams[i] >= 0)
                             vertex.inputs[i] = rv.params[pixelInputParams[i]];
                 vertices.push_back(vertex);
+            }
+            if (std::getenv("WEMU_SCAN_TRACE") && m_depthTest && !vertices.empty()) { // TEMP-SCANTRACE
+                float stored = -1.f;
+                if (auto *resolvedDepth = depthBacking(m_depth, true)) {
+                    const auto px = std::clamp<long>(long(vertices[0].x), 0, long(m_depth.width) - 1);
+                    const auto py = std::clamp<long>(long(vertices[0].y), 0, long(m_depth.height) - 1);
+                    stored = resolvedDepth->pixels[std::size_t(py) * m_depth.pitch + std::size_t(px)];
+                }
+                Utils::Log::error("[DEPTHEQ] frame={} draw={} cmp={} write={} z0={:.9f} z1={:.9f} stored={:.9f} depthFmt={} native_vs={}", m_presentCount,
+                                  m_stats.draws, m_depthCompare, m_depthWrite, vertices[0].z, vertices.size() > 1 ? vertices[1].z : 0.f, stored,
+                                  int(drawDepth ? drawDepth->format : DepthFormat::Float32), bool(nativeVertexShader));
             }
             bool committed = false;
             if (profile || nativeAudit)
@@ -2461,7 +2719,12 @@ namespace Core::Gfx {
                         return end != value && *end == '\0' ? std::uint64_t(interval) : std::uint64_t(0);
                     }();
                     const auto interval = m_nativeVerifyEvery.value_or(nativeVerifyEnvironment);
-                    const bool compare = interval && m_nativeDraws % interval == 0;
+                    // WEMU_NATIVE_VERIFY_FROM=N limits verification to presents >= N.
+                    static const std::uint32_t verifyFrom = [] {
+                        const auto *value = std::getenv("WEMU_NATIVE_VERIFY_FROM");
+                        return value ? std::uint32_t(std::strtoul(value, nullptr, 10)) : 0u;
+                    }();
+                    const bool compare = interval && m_presentCount >= verifyFrom && m_nativeDraws % interval == 0;
                     ++m_nativeDraws;
                     if (compare) {
                         const auto verifyStart =
@@ -2613,7 +2876,13 @@ namespace Core::Gfx {
             }
             nativeCommitted = committed;
             if (profile || nativeAudit)
-                Utils::Log::error("[NATIVERASTER] frame={} draw={} committed={}", m_presentCount, m_stats.draws, committed);
+                Utils::Log::error("[NATIVERASTER] frame={} draw={} committed={} supported={} vertices={} reason={}", m_presentCount, m_stats.draws,
+                                  committed, supported, vertices.size(), committed ? std::string{}
+                                  : !unsupportedReason.empty() ? unsupportedReason
+                                  : [&] {
+                                        const auto *vulkan = dynamic_cast<const VulkanRasterBackend *>(m_rasterBackend.get());
+                                        return vulkan ? vulkan->lastError() : std::string{};
+                                    }());
         }
         // GPU path: flush this draw's collected triangles with its texture (one draw call, one
         // texture upload — cached by address+content, so a static texture uploads once).
@@ -2646,6 +2915,58 @@ namespace Core::Gfx {
             std::snprintf(kind, sizeof(kind), "after_draw%03u", m_stats.draws);
             dumpSurface(m_color, kind, true);
         }
+        { // TEMP-SCANTRACE: luminance of the bound target after each draw on selected frames
+            static const char *frames = std::getenv("WEMU_DRAW_LUMA_FRAMES");
+            if (frames && std::strstr(frames, std::format(",{},", m_presentCount).c_str())) {
+                if (const auto *backing = findViewBacking(m_color)) {
+                    std::uint64_t sum = 0, n = 0;
+                    for (std::size_t i = 0; i + 3 < backing->size(); i += 64) {
+                        sum += (*backing)[i] + (*backing)[i + 1] + (*backing)[i + 2];
+                        n += 3;
+                    }
+                    std::string bound;
+                    for (unsigned t = 0; t < 4 && t < m_pixelTextures.size(); ++t)
+                        bound += std::format(" t{}={:08X}{}[{}x{} f{:X} t{} d{} m{}]", t, m_pixelTextures[t].imagePtr,
+                                             m_pendingReadbacks.contains(makeSurfaceKey(m_pixelTextures[t])) ? "p" : "", m_pixelTextures[t].width,
+                                             m_pixelTextures[t].height, m_pixelTextures[t].format, m_pixelTextures[t].tileMode,
+                                             m_pixelTextures[t].dimension, m_pixelTextures[t].mipCount);
+                    Utils::Log::error("[LUMA] frame={} draw={} image={:08X} mean={:.2f} native={}{} vp=({},{},{},{}) sc=({},{},{},{}) mask={:X} blend={}",
+                                      m_presentCount, m_stats.draws, m_color.imagePtr, n ? double(sum) / n : 0.0, nativeCommitted, bound, m_vp[0], m_vp[1],
+                                      m_vp[2], m_vp[3], m_scissor[0], m_scissor[1], m_scissor[2], m_scissor[3], channelMask, targetBlendEnabled);
+                    Utils::Log::error("[LUMA]   depth test={} write={} cmp={} image={:08X} {}x{} stencil={} vpz=({},{})", m_depthTest, m_depthWrite,
+                                      m_depthCompare, m_depth.imagePtr, m_depth.width, m_depth.height, m_stencilTest, m_vpNear, m_vpFar);
+                    for (std::size_t i = 0; i + 7 < m_fetchLayout.size(); i += 8)
+                        Utils::Log::error("[LUMA]   fetch loc={} buf={} off={} fmt={:X} type={} mask={:08X} endian={} stride={}", m_fetchLayout[i],
+                                          m_fetchLayout[i + 1], m_fetchLayout[i + 2], m_fetchLayout[i + 3], m_fetchLayout[i + 4], m_fetchLayout[i + 6],
+                                          m_fetchLayout[i + 7], m_fetchLayout[i + 1] < m_attribs.size() ? m_attribs[m_fetchLayout[i + 1]].stride : 0);
+                    for (std::uint32_t v = 0; v < 2; ++v) {
+                        std::array<std::array<float, 4>, 4> a{};
+                        if (fetchAttributes(v, a))
+                            Utils::Log::error("[LUMA]   v{} a0=({:.3f},{:.3f},{:.3f},{:.3f}) a1=({:.3f},{:.3f},{:.3f},{:.3f}) a2=({:.3f},{:.3f},{:.3f},{:.3f})", v,
+                                              a[0][0], a[0][1], a[0][2], a[0][3], a[1][0], a[1][1], a[1][2], a[1][3], a[2][0], a[2][1], a[2][2], a[2][3]);
+                    }
+                    std::string ps;
+                    for (unsigned c = 0; c < 8; ++c)
+                        ps += std::format(" c{}=({:.3f},{:.3f},{:.3f},{:.3f})", c, m_psRegs[c * 4], m_psRegs[c * 4 + 1], m_psRegs[c * 4 + 2], m_psRegs[c * 4 + 3]);
+                    Utils::Log::error("[LUMA]   psregs{} psblocks={}", ps, m_psBlocks.size());
+                    if (const char *dir = std::getenv("WEMU_FB_DUMP_DIR"); dir && m_color.pitch && colorElementBytes(colorFormat(m_color.format)) == 4) {
+                        const auto path = std::format("{}/draw_{:05}_{:03}_{:08X}.ppm", dir, m_presentCount, m_stats.draws, m_color.imagePtr);
+                        if (FILE *f = std::fopen(path.c_str(), "wb")) {
+                            std::fprintf(f, "P6\n%u %u\n255\n", m_color.width, m_color.height);
+                            for (std::uint32_t y = 0; y < m_color.height; ++y)
+                                for (std::uint32_t x = 0; x < m_color.width; ++x) {
+                                    const auto off = (std::size_t(y) * m_color.pitch + x) * 4;
+                                    if (off + 3 < backing->size())
+                                        std::fwrite(backing->data() + off, 1, 3, f);
+                                    else
+                                        std::fputc(0, f), std::fputc(0, f), std::fputc(0, f);
+                                }
+                            std::fclose(f);
+                        }
+                    }
+                }
+            }
+        }
         m_regsFresh = false; // uniform regs are per-draw: the next draw needs its own set
         m_psRegsFresh = false;
         if (profile || nativeAudit) {
@@ -2657,8 +2978,10 @@ namespace Core::Gfx {
                     hash *= 1099511628211ull;
                 }
             }
-            Utils::Log::error("[RASTER] frame={} draw={} us={} pixels={} ps={:016X} words={} target={}x{}", m_presentCount, m_stats.draws, elapsed,
-                              m_stats.pixels - pixelsBefore, hash, m_psProgram.size(), m_color.width, m_color.height);
+            Utils::Log::error("[RASTER] frame={} draw={} us={} pixels={} ps={:016X} words={} target={}x{} image={:08X} native={} stencil={} depth={}:{:08X} aa={} fmt={:X}",
+                              m_presentCount, m_stats.draws, elapsed, m_stats.pixels - pixelsBefore, hash, m_psProgram.size(), m_color.width,
+                              m_color.height, m_color.imagePtr, nativeCommitted, m_stencilTest, m_depthTest, m_depth.imagePtr, m_color.aa,
+                              m_color.format);
             Utils::Log::error("[RASTER_STAGES] frame={} draw={} native={} prepare_us={} execute_us={} verify_us={} fallback_us={} other_us={}",
                               m_presentCount, m_stats.draws, nativeCommitted, nativePrepareUs, nativeExecuteUs, nativeVerifyUs, fallbackUs,
                               elapsed - nativePrepareUs - nativeExecuteUs - nativeVerifyUs - fallbackUs);
@@ -2701,6 +3024,93 @@ namespace Core::Gfx {
                 }
             }
         }
+    }
+
+    Gx2Replayer::ContextState Gx2Replayer::captureContextState() const
+    {
+        ContextState state;
+        state.color = m_color;
+        state.depth = m_depth;
+        state.depthTest = m_depthTest;
+        state.depthWrite = m_depthWrite;
+        state.stencilTest = m_stencilTest;
+        state.depthCompare = m_depthCompare;
+        state.colorTarget = m_colorTarget;
+        state.pixelTextures = m_pixelTextures;
+        state.vertexTextures = m_vertexTextures;
+        state.pixelSamplers = m_pixelSamplers;
+        state.vertexSamplers = m_vertexSamplers;
+        state.blend = m_blend;
+        state.blendConstant = m_blendConstant;
+        state.channelMask = m_channelMask;
+        state.targetBlendEnable = m_targetBlendEnable;
+        state.colorWriteEnable = m_colorWriteEnable;
+        std::copy(std::begin(m_vsRegs), std::end(m_vsRegs), state.vsRegs.begin());
+        std::copy(std::begin(m_psRegs), std::end(m_psRegs), state.psRegs.begin());
+        state.vsProgram = m_vsProgram;
+        state.psProgram = m_psProgram;
+        state.fetchLayout = m_fetchLayout;
+        state.vsBlocks = m_vsBlocks;
+        state.psBlocks = m_psBlocks;
+        state.attribs = m_attribs;
+        state.vertexSemantics = m_vertexSemantics;
+        state.vertexOutputSemantics = m_vertexOutputSemantics;
+        state.pixelInputSemantics = m_pixelInputSemantics;
+        std::copy(std::begin(m_vp), std::end(m_vp), state.viewport.begin());
+        state.viewportNear = m_vpNear;
+        state.viewportFar = m_vpFar;
+        std::copy(std::begin(m_scissor), std::end(m_scissor), state.scissor.begin());
+        return state;
+    }
+
+    void Gx2Replayer::restoreContextState(const ContextState &state)
+    {
+        m_color = state.color;
+        m_depth = state.depth;
+        m_depthTest = state.depthTest;
+        m_depthWrite = state.depthWrite;
+        m_stencilTest = state.stencilTest;
+        m_depthCompare = state.depthCompare;
+        m_colorTarget = state.colorTarget;
+        m_pixelTextures = state.pixelTextures;
+        m_vertexTextures = state.vertexTextures;
+        m_pixelSamplers = state.pixelSamplers;
+        m_vertexSamplers = state.vertexSamplers;
+        m_blend = state.blend;
+        m_blendConstant = state.blendConstant;
+        m_channelMask = state.channelMask;
+        m_targetBlendEnable = state.targetBlendEnable;
+        m_colorWriteEnable = state.colorWriteEnable;
+        std::copy(state.vsRegs.begin(), state.vsRegs.end(), std::begin(m_vsRegs));
+        std::copy(state.psRegs.begin(), state.psRegs.end(), std::begin(m_psRegs));
+        m_vsProgram = state.vsProgram;
+        m_psProgram = state.psProgram;
+        m_fetchLayout = state.fetchLayout;
+        m_vsBlocks = state.vsBlocks;
+        m_psBlocks = state.psBlocks;
+        m_attribs = state.attribs;
+        m_vertexSemantics = state.vertexSemantics;
+        m_vertexOutputSemantics = state.vertexOutputSemantics;
+        m_pixelInputSemantics = state.pixelInputSemantics;
+        std::copy(state.viewport.begin(), state.viewport.end(), std::begin(m_vp));
+        m_vpNear = state.viewportNear;
+        m_vpFar = state.viewportFar;
+        std::copy(state.scissor.begin(), state.scissor.end(), std::begin(m_scissor));
+    }
+
+    void Gx2Replayer::setContextState(const std::uint32_t context)
+    {
+        // State written while a context was active belongs to it; a context seen for the first
+        // time starts from the current registers (GX2SetupContextStateEx captures live state).
+        if (std::getenv("WEMU_SCAN_TRACE")) // TEMP-SCANTRACE
+            Utils::Log::error("[CTX] frame={} after_draw={} {:08X} -> {:08X} known={} depthTest={}", m_presentCount, m_stats.draws, m_activeContext,
+                              context, m_contextStates.contains(context), m_depthTest);
+        if (m_activeContext)
+            m_contextStates[m_activeContext] = captureContextState();
+        if (context)
+            if (const auto found = m_contextStates.find(context); found != m_contextStates.end())
+                restoreContextState(found->second);
+        m_activeContext = context;
     }
 
     void Gx2Replayer::copyToScanBuffer(const Surface &s)
@@ -2793,11 +3203,23 @@ namespace Core::Gfx {
         }();
         // WEMU_FB_DUMP=0: refresh the dump every 100 presents (survives timeouts — the latest
         // frame is always on disk). Any other N dumps exactly present #N.
-        const bool periodic = dumpAt == 0 && m_presentCount > 0 && (m_presentCount % dumpEvery) == 0;
+        // WEMU_FB_DUMP_FROM/TO bound the periodic dumps to a window of presents.
+        static const std::uint32_t dumpFrom = [] {
+            const char *env = std::getenv("WEMU_FB_DUMP_FROM");
+            return env ? static_cast<std::uint32_t>(std::strtoul(env, nullptr, 10)) : 0u;
+        }();
+        static const std::uint32_t dumpTo = [] {
+            const char *env = std::getenv("WEMU_FB_DUMP_TO");
+            return env ? static_cast<std::uint32_t>(std::strtoul(env, nullptr, 10)) : 0xFFFFFFFFu;
+        }();
+        const bool periodic = dumpAt == 0 && m_presentCount > 0 && (m_presentCount % dumpEvery) == 0 && m_presentCount >= dumpFrom &&
+                              m_presentCount <= dumpTo;
         if ((!periodic && m_presentCount != dumpAt) || m_fb.empty())
             return;
         const char *dir = std::getenv("WEMU_FB_DUMP_DIR");
-        const std::string path = std::string(dir ? dir : ".") + "/wemu_frame.ppm";
+        // WEMU_FB_DUMP_NUMBERED=1 keeps every periodic dump instead of overwriting one file.
+        static const bool numbered = std::getenv("WEMU_FB_DUMP_NUMBERED") != nullptr;
+        const std::string path = std::string(dir ? dir : ".") + (numbered ? std::format("/wemu_frame_{:05}.ppm", m_presentCount) : "/wemu_frame.ppm");
         if (FILE *f = std::fopen(path.c_str(), "wb")) {
             std::fprintf(f, "P6\n%u %u\n255\n", kWidth, kHeight);
             for (std::size_t i = 0; i < m_fb.size(); i += 4)
@@ -2876,13 +3298,22 @@ namespace Core::Gfx {
                 case Gx2Cmd::SetDepthBuffer:
                     m_depth = parseSurface(cmd);
                     break;
+                case Gx2Cmd::SetContextState:
+                    setContextState(cmd.gpr[0]);
+                    break;
                 case Gx2Cmd::SetDepthStencilControl:
+                    if (std::getenv("WEMU_SCAN_TRACE")) // TEMP-SCANTRACE
+                        Utils::Log::error("[DEPTHCTL] frame={} after_draw={} test={} write={} cmp={} lr={:08X}", m_presentCount, m_stats.draws, cmd.gpr[0],
+                                          cmd.gpr[1], cmd.gpr[2], cmd.callerLr);
                     m_depthTest = cmd.gpr[0] != 0;
                     m_depthWrite = cmd.gpr[1] != 0;
                     m_depthCompare = cmd.gpr[2];
                     m_stencilTest = cmd.gpr[3] != 0;
                     break;
                 case Gx2Cmd::ClearDepthStencilEx:
+                    if (std::getenv("WEMU_SCAN_TRACE")) // TEMP-SCANTRACE
+                        Utils::Log::error("[DEPTHCLR] frame={} after_draw={} surface={:08X} depth={} flags={}", m_presentCount, m_stats.draws,
+                                          parseSurface(cmd).imagePtr, cmd.fpr[0], cmd.gpr[2]);
                     clearDepthSurface(parseSurface(cmd), float(cmd.fpr[0]), cmd.gpr[2]);
                     break;
                 case Gx2Cmd::ClearColor:
@@ -2891,6 +3322,9 @@ namespace Core::Gfx {
                     for (int i = 0; i < 4; i++)
                         m_clear[i] = static_cast<float>(cmd.fpr[i]);
                     const Surface cs = parseSurface(cmd);
+                    if (std::getenv("WEMU_SCAN_TRACE")) // TEMP-SCANTRACE
+                        Utils::Log::error("[SCAN] frame={} clear surface={:08X} after_draw={} rgba=({},{},{},{})", m_presentCount, cs.imagePtr, m_stats.draws,
+                                          m_clear[0], m_clear[1], m_clear[2], m_clear[3]);
                     if (m_gpuGraph && m_gpuRenderer)
                         m_gpuRenderer->gpuClearTarget(cs.imagePtr, cs.width, cs.height, m_clear);
                     else
@@ -2965,6 +3399,12 @@ namespace Core::Gfx {
                             texture.compMap = cmd.payload[0x84 / 4];
                         else if (m_mem && cmd.gpr[0])
                             texture.compMap = m_mem->read<std::uint32_t>(cmd.gpr[0] + 0x84);
+                        // A one-slice array view samples exactly like a 2D texture (the layer
+                        // coordinate clamps to 0), so keep it on the plain 2D paths.
+                        if (texture.dimension == 5 && texture.depth == 1 && texture.firstSlice == 0 && texture.sliceCount <= 1) {
+                            texture.dimension = 1;
+                            texture.sliceCount = 1;
+                        }
                         traceSurfaceAlias(texture, "texture");
                         dumpSurface(texture, "tex");
                     }
@@ -3216,6 +3656,8 @@ namespace Core::Gfx {
                     // the DRC copy would otherwise wipe the framebuffer with the gamepad surface.
                     // In GPU mode the scan-out is produced at SwapScanBuffers below, not this CPU copy;
                     // graph mode records which colour buffer is the TV source to read back at present.
+                    if (std::getenv("WEMU_SCAN_TRACE")) // TEMP-SCANTRACE
+                        Utils::Log::error("[SCAN] frame={} copy target={} surface={:08X}", m_presentCount, cmd.gpr[1], parseSurface(cmd).imagePtr);
                     if (cmd.gpr[1] & 1) {
                         m_lastScan = parseSurface(cmd);
                         if (m_gpuGraph)
@@ -3280,6 +3722,10 @@ namespace Core::Gfx {
                         else
                             buildClearFrame();
                     }
+                    if (std::getenv("WEMU_SCAN_TRACE")) // TEMP-SCANTRACE
+                        Utils::Log::error("[SCAN] frame={} presented={} lastScan={:08X} {}x{} fmt={:X} color={:08X} lastDraw={:08X} pending={}", m_presentCount,
+                                          presented, m_lastScan.imagePtr, m_lastScan.width, m_lastScan.height, m_lastScan.format, m_color.imagePtr,
+                                          m_lastDrawColor.imagePtr, m_pendingReadbacks.contains(makeSurfaceKey(m_lastScan)));
                     m_presentCount++;
                     if ((m_presentCount % 100) == 0)
                         Utils::Log::error("[GX2] replay #{}: draws={} tris={} points={} px={} avgA={} skip(t/a/p)={}/{}/{} scan=0x{:08X} nz={}",

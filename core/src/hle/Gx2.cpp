@@ -1,6 +1,7 @@
 #include "Gx2.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 
 #include "AsyncCallbacks.hpp"
@@ -9,6 +10,7 @@
 #include "cpu/interpreter/SyscallHandler.hpp"
 #include "cpu/memory/Memory.hpp"
 #include "gfx/Gx2CommandStream.hpp"
+#include "gfx/LatteProgram.hpp"
 #include "gfx/Gx2Replayer.hpp"
 #include "gfx/Renderer.hpp"
 #include "gfx/SurfaceLayout.hpp"
@@ -131,12 +133,96 @@ namespace {
     //
     // We record into a per-buffer command vector and splice it into the live stream on call.
     // Recording can nest (a list may call another), so pushes always go to the active sink.
+    // The open list belongs to the recording thread (GX2 keeps it per core): MK8 builds lists on
+    // worker threads while the render thread submits, and a shared sink would interleave their
+    // commands whenever the scheduler switches threads mid-recording.
     constexpr std::uint32_t kDlBytesPerCmd = 32; // nominal PM4 bytes per captured call
-    bool g_dlRecording = false;
-    std::uint32_t g_dlBuffer = 0;
-    std::vector<Core::Gfx::Gx2Command> g_dlCurrent;
+    struct OpenDisplayList {
+            std::uint32_t buffer{0};
+            std::vector<Core::Gfx::Gx2Command> commands;
+    };
+    std::unordered_map<std::uint32_t, std::vector<OpenDisplayList>> g_openLists; // by OSThread
+    std::vector<OpenDisplayList> &openLists(const Core::Interpreter &cpu) { return g_openLists[cpu.m_scheduler.currentHandle()]; }
     std::unordered_map<std::uint32_t, std::vector<Core::Gfx::Gx2Command>> g_displayLists;
     std::unordered_map<std::uint32_t, std::vector<std::uint32_t>> g_fetchLayouts;
+
+    // Fetch shaders loaded from a title's shader archives never pass through GX2InitFetchShaderEx,
+    // so rebuild their GX2AttribStream layout (location, buffer, offset, format, type, divisor,
+    // mask, endian) from the VTX_FETCH microcode itself.
+    std::vector<std::uint32_t> decodeFetchShader(Core::Interpreter &cpu, std::uint32_t shader)
+    {
+        using namespace Core::Gfx::Latte;
+        std::vector<std::uint32_t> layout;
+        try {
+            const auto size = cpu.m_memory.read<std::uint32_t>(shader + 8);
+            const auto program = cpu.m_memory.read<std::uint32_t>(shader + 0xC);
+            if (!program || size < 16 || size > 0x10000)
+                return layout;
+            // Latte microcode is stored little-endian in guest memory.
+            const auto word = [&](std::uint32_t index) { return std::byteswap(cpu.m_memory.read<std::uint32_t>(program + index * 4)); };
+            // VTX DATA_FORMAT -> GX2AttribFormat component/type code (low byte).
+            const auto attribType = [](std::uint32_t dataFormat) -> int {
+                switch (dataFormat) {
+                    case 0x01: return 0x00; // 8
+                    case 0x02: return 0x01; // 4_4
+                    case 0x05: return 0x02; // 16
+                    case 0x06: return 0x03; // 16 float
+                    case 0x07: return 0x04; // 8_8
+                    case 0x0D: return 0x05; // 32
+                    case 0x0E: return 0x06; // 32 float
+                    case 0x0F: return 0x07; // 16_16
+                    case 0x10: return 0x08; // 16_16 float
+                    case 0x19: return 0x0B; // 2_10_10_10 (X in the low bits)
+                    case 0x1A: return 0x0A; // 8_8_8_8
+                    case 0x1D: return 0x0C; // 32_32
+                    case 0x1E: return 0x0D; // 32_32 float
+                    case 0x1F: return 0x0E; // 16_16_16_16
+                    case 0x20: return 0x0F; // 16_16_16_16 float
+                    case 0x2F: return 0x10; // 32_32_32
+                    case 0x30: return 0x11; // 32_32_32 float
+                    case 0x22: return 0x12; // 32_32_32_32
+                    case 0x23: return 0x13; // 32_32_32_32 float
+                    default: return -1;
+                }
+            };
+            for (std::uint32_t cf = 0; cf + 1 < size / 4 && cf < 64; cf += 2) {
+                const auto w0 = word(cf), w1 = word(cf + 1);
+                const auto inst = cfInst(w1);
+                if (inst == CF_VTX || inst == CF_VTX_TC) {
+                    const auto count = (((w1 >> 10) & 7) | ((w1 >> 16) & 8)) + 1;
+                    for (std::uint32_t i = 0; i < count; ++i) {
+                        const auto base = w0 * 2 + i * 4;
+                        if (base + 3 > size / 4)
+                            return {};
+                        const auto v0 = word(base), v1 = word(base + 1), v2 = word(base + 2);
+                        const auto type = attribType((v1 >> 22) & 63);
+                        if (type < 0)
+                            return {};
+                        const auto numFormat = (v1 >> 28) & 3;
+                        const bool isFloat = type == 0x03 || type == 0x06 || type == 0x08 || type == 0x0D || type == 0x0F || type == 0x11 ||
+                                             type == 0x13;
+                        std::uint32_t format = std::uint32_t(type);
+                        if (numFormat == 1)
+                            format |= 0x100; // integer
+                        if ((v1 >> 30) & 1)
+                            format |= 0x200; // signed
+                        if (isFloat || numFormat == 2)
+                            format |= 0x800; // float / scaled
+                        const auto bufferId = (v0 >> 8) & 255;
+                        const auto location = (v0 & 31) == 1 ? (v1 & 255) : (v1 & 127); // semantic id or destination GPR
+                        const auto mask = (((v1 >> 9) & 7) << 24) | (((v1 >> 12) & 7) << 16) | (((v1 >> 15) & 7) << 8) | ((v1 >> 18) & 7);
+                        layout.insert(layout.end(), {location, bufferId >= 160 ? bufferId - 160 : bufferId, v2 & 0xFFFF, format, (v0 >> 5) & 3, 0,
+                                                     mask, (v2 >> 16) & 3});
+                    }
+                }
+                if (cfEop(w1) || inst == CF_RETURN)
+                    break;
+            }
+        } catch (const Core::MemoryException &) {
+            layout.clear();
+        }
+        return layout;
+    }
 
     // Bring-up telemetry: how much geometry actually flows through the display-list path.
     struct DlStats {
@@ -161,12 +247,12 @@ namespace {
                      (unsigned long long) g_dlStats.directDraws);
     }
 
-    void pushCmd(const Core::Gfx::Gx2Command &c)
+    void pushCmd(const Core::Interpreter &cpu, const Core::Gfx::Gx2Command &c)
     {
-        if (g_dlRecording) {
+        if (auto &lists = openLists(cpu); !lists.empty()) {
             if (isDrawCmd(c.type))
                 g_dlStats.recDraws++;
-            g_dlCurrent.push_back(c);
+            lists.back().commands.push_back(c);
         } else {
             if (isDrawCmd(c.type))
                 g_dlStats.directDraws++;
@@ -188,8 +274,28 @@ namespace {
         c.callerLr = cpu.m_lr + Core::Memory::MemoryMap::ApplicationCode;
         if (type == Core::Gfx::Gx2Cmd::SetFetchShader && c.gpr[0]) {
             const auto program = cpu.m_memory.read<std::uint32_t>(c.gpr[0] + 0xC);
-            if (const auto it = g_fetchLayouts.find(program); it != g_fetchLayouts.end())
-                c.payload = it->second;
+            auto it = g_fetchLayouts.find(program);
+            if (it == g_fetchLayouts.end()) {
+                it = g_fetchLayouts.emplace(program, decodeFetchShader(cpu, c.gpr[0])).first;
+                static const bool trace = std::getenv("WEMU_FETCH_TRACE") != nullptr;
+                if (trace && it->second.empty()) {
+                    std::string words;
+                    try {
+                        const auto size = cpu.m_memory.read<std::uint32_t>(c.gpr[0] + 8);
+                        for (std::uint32_t i = 0; i < 12; ++i)
+                            words += std::format(" {:08X}", cpu.m_memory.read<std::uint32_t>(program + i * 4));
+                        Utils::Log::error("[FETCHDECODE] program={:08X} size={} undecoded:{}", program, size, words);
+                    } catch (const Core::MemoryException &) {
+                        Utils::Log::error("[FETCHDECODE] program={:08X} unreadable", program);
+                    }
+                }
+                if (trace)
+                    for (std::size_t i = 0; i + 7 < it->second.size(); i += 8)
+                        Utils::Log::error("[FETCHDECODE] program={:08X} loc={} buf={} off={} fmt={:X} type={} mask={:08X} endian={}", program,
+                                          it->second[i], it->second[i + 1], it->second[i + 2], it->second[i + 3], it->second[i + 4], it->second[i + 6],
+                                          it->second[i + 7]);
+            }
+            c.payload = it->second;
         }
         // Uniform data lives in stack/ring memory the game reuses immediately — copy it now.
         std::uint32_t ptr = 0, words = 0;
@@ -261,7 +367,7 @@ namespace {
                 }
             }
         }
-        pushCmd(c); // into the open display list when recording, else straight into the frame
+        pushCmd(cpu, c); // into the open display list when recording, else straight into the frame
     }
 
     // One distinct function-pointer per command type (templates instantiate separate symbols).
@@ -809,22 +915,23 @@ namespace {
     void gx2_GetCurrentDisplayList(Core::Interpreter &cpu)
     {
         const std::uint32_t outBuf = cpu.m_gpr[3], outSize = cpu.m_gpr[4];
+        const auto &lists = openLists(cpu);
         if (outBuf)
-            cpu.m_memory.write<std::uint32_t>(outBuf, g_dlRecording ? g_dlBuffer : 0);
+            cpu.m_memory.write<std::uint32_t>(outBuf, lists.empty() ? 0 : lists.back().buffer);
         if (outSize)
-            cpu.m_memory.write<std::uint32_t>(outSize, g_dlRecording ? kDlBytesPerCmd * static_cast<std::uint32_t>(g_dlCurrent.size()) : 0);
-        cpu.m_gpr[3] = g_dlRecording ? 1u : 0u;
+            cpu.m_memory.write<std::uint32_t>(outSize,
+                                              lists.empty() ? 0 : kDlBytesPerCmd * static_cast<std::uint32_t>(lists.back().commands.size()));
+        cpu.m_gpr[3] = lists.empty() ? 0u : 1u;
     }
 
     // GX2BeginDisplayListEx(void *buffer, u32 size, BOOL profiling)
     void gx2_BeginDisplayListEx(Core::Interpreter &cpu)
     {
         g_dlStats.begins++;
-        if (g_dlRecording)
+        auto &lists = openLists(cpu);
+        if (!lists.empty())
             g_dlStats.nested++;
-        g_dlRecording = true;
-        g_dlBuffer = cpu.m_gpr[3];
-        g_dlCurrent.clear();
+        lists.push_back({cpu.m_gpr[3], {}});
         cpu.m_gpr[3] = 0;
     }
 
@@ -832,15 +939,20 @@ namespace {
     // list as empty and skip calling it.
     void gx2_EndDisplayList(Core::Interpreter &cpu)
     {
-        const std::uint32_t buf = cpu.m_gpr[3] ? cpu.m_gpr[3] : g_dlBuffer;
-        g_dlRecording = false;
+        auto &lists = openLists(cpu);
+        if (lists.empty()) {
+            cpu.m_gpr[3] = 0;
+            return;
+        }
+        auto open = std::move(lists.back());
+        lists.pop_back();
+        const std::uint32_t buf = cpu.m_gpr[3] ? cpu.m_gpr[3] : open.buffer;
         // Bound the cache: buffers are normally reused (so this stays small), but never let a
         // title that cycles through fresh buffers grow it without limit.
         if (g_displayLists.size() > 8192)
             g_displayLists.clear();
         auto &list = g_displayLists[buf];
-        list = std::move(g_dlCurrent);
-        g_dlCurrent.clear();
+        list = std::move(open.commands);
         g_dlStats.ends++;
         g_dlStats.recorded += list.size();
         if (list.empty())
@@ -863,7 +975,7 @@ namespace {
             for (const auto &c: cmds) {
                 if (isDrawCmd(c.type))
                     g_dlStats.splicedDraws++;
-                pushCmd(c);
+                pushCmd(cpu, c);
             }
         } else {
             g_dlStats.misses++;
@@ -1022,7 +1134,6 @@ namespace {
             "GX2SetTVEnable",
             "GX2SetTVGamma",
             "GX2SetTVScale",
-            "GX2SetupContextStateEx",
             "GX2SetVertexSampler",
             "GX2SetVertexSamplerBorderColor",
             "GX2SetVertexTexture",
@@ -1086,6 +1197,8 @@ void RegisterGx2Functions()
 
     // Captured render commands -> command stream.
     Core::syscallHandler.registerSyscall("GX2SetContextState", gx2_rec<C::SetContextState>);
+    // Setup makes the new context current, so following state belongs to it.
+    Core::syscallHandler.registerSyscall("GX2SetupContextStateEx", gx2_rec<C::SetContextState>);
     Core::syscallHandler.registerSyscall("GX2SetColorBuffer", gx2_rec<C::SetColorBuffer>);
     Core::syscallHandler.registerSyscall("GX2SetDepthBuffer", gx2_rec<C::SetDepthBuffer>);
     Core::syscallHandler.registerSyscall("GX2ClearColor", gx2_rec<C::ClearColor>);
@@ -1133,7 +1246,7 @@ void RegisterGx2Functions()
                        (word >> 7) & 1, (word >> 8) & 7, (word >> 14) & 7, (word >> 17) & 7};
         command.payload = {word};
         command.callerLr = cpu.m_lr + Core::Memory::MemoryMap::ApplicationCode;
-        Core::Gfx::gx2Stream().push(command);
+        pushCmd(cpu, command); // display-list recordings must keep state next to their draws
         cpu.m_gpr[3] = 0;
     });
     Core::syscallHandler.registerSyscall("GX2SetTargetChannelMasks", gx2_rec<C::SetTargetChannelMasks>);

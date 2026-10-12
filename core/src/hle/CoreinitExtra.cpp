@@ -349,32 +349,46 @@ namespace {
     void hle_OSGetSharedData(Core::Interpreter &cpu)
     {
         // (type, flags, u32 *outPtr, u32 *outSize). Titles use this for the system font (type
-        // 0-3 = chinese/korean/standard/taiwanese); nw::font/lyt init fails without one and the
-        // whole UI layer goes missing. WEMU_SHARED_FONT=<path to .bffnt> serves a real font file
-        // (loaded once into the internal HLE guest pool) for every requested type.
+        // 0-3 = chinese/korean/standard/taiwanese); the Cafe shared fonts are plain TrueType files.
+        // WEMU_SHARED_FONT=<path to .ttf> serves a dumped console font for every requested type.
+        // Like Cemu, fall back to a freely licensed system TTF instead of failing: titles such as
+        // MK8 dereference the returned font unconditionally and crash on a null result.
         static std::uint32_t fontPtr = 0, fontSize = 0;
         static bool loaded = false;
         if (!loaded) {
             loaded = true;
-            if (const char *path = std::getenv("WEMU_SHARED_FONT")) {
-                if (std::FILE *f = std::fopen(path, "rb")) {
-                    std::fseek(f, 0, SEEK_END);
-                    const long sz = std::ftell(f);
-                    std::fseek(f, 0, SEEK_SET);
-                    if (sz > 0 && sz < 64L * 1024 * 1024) {
-                        fontPtr = cpu.m_memory.heapAllocate(static_cast<std::uint32_t>(sz), 0x100);
-                        if (std::uint8_t *host = cpu.m_memory.hostPtr(fontPtr);
-                            host && std::fread(host, 1, static_cast<std::size_t>(sz), f) == static_cast<std::size_t>(sz))
-                            fontSize = static_cast<std::uint32_t>(sz);
-                        else
-                            fontPtr = 0;
-                    }
-                    std::fclose(f);
+            std::vector<std::string> candidates;
+            if (const char *path = std::getenv("WEMU_SHARED_FONT"))
+                candidates.emplace_back(path);
+            for (const char *path: {"/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                                    "/usr/share/fonts/TTF/DejaVuSans.ttf", "/usr/share/fonts/google-noto/NotoSans-Regular.ttf",
+                                    "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf", "/usr/share/fonts/noto/NotoSans-Regular.ttf",
+                                    "/usr/share/fonts/liberation-sans/LiberationSans-Regular.ttf",
+                                    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"})
+                candidates.emplace_back(path);
+            for (const auto &path: candidates) {
+                std::FILE *f = std::fopen(path.c_str(), "rb");
+                if (!f)
+                    continue;
+                std::fseek(f, 0, SEEK_END);
+                const long sz = std::ftell(f);
+                std::fseek(f, 0, SEEK_SET);
+                if (sz > 0 && sz < 64L * 1024 * 1024) {
+                    fontPtr = cpu.m_memory.heapAllocate(static_cast<std::uint32_t>(sz), 0x100);
+                    if (std::uint8_t *host = cpu.m_memory.hostPtr(fontPtr);
+                        host && std::fread(host, 1, static_cast<std::size_t>(sz), f) == static_cast<std::size_t>(sz))
+                        fontSize = static_cast<std::uint32_t>(sz);
+                    else
+                        fontPtr = 0;
                 }
-                Utils::Log::error("[HLE] OSGetSharedData: font '{}' -> guest 0x{:08X} ({} bytes)", path, fontPtr, fontSize);
-            } else {
-                Utils::Log::error("[HLE] OSGetSharedData type={} -> none (set WEMU_SHARED_FONT=<.bffnt> to provide one)", cpu.m_gpr[3]);
+                std::fclose(f);
+                if (fontSize) {
+                    Utils::Log::error("[HLE] OSGetSharedData: font '{}' -> guest 0x{:08X} ({} bytes)", path, fontPtr, fontSize);
+                    break;
+                }
             }
+            if (!fontSize)
+                Utils::Log::error("[HLE] OSGetSharedData type={} -> none (set WEMU_SHARED_FONT=<.ttf> to provide one)", cpu.m_gpr[3]);
         }
         if (cpu.m_gpr[5])
             cpu.m_memory.write<std::uint32_t>(cpu.m_gpr[5], fontPtr);
@@ -488,7 +502,8 @@ namespace {
 
     // ---- mvplayer.rpl (menu background movies) ------------------------------------------------
     // MK8 imports only Create/Destroy/Shutdown and drives the rest through the object:
-    // [obj+0] -> impl, [impl+0x184] -> method table, [table+slot] -> function, invoked via bctr.
+    // [obj+0] -> impl, [impl+0x184] or [obj+0x17C] -> method table, [table+slot] -> function,
+    // invoked via bctr.
     // No video is decoded: every table entry points at a real `li r3,0; blr` in .text so each
     // call returns 0 immediately. A bare `blr` is NOT enough: it leaves r3 = this, and the
     // title's wait loops (e.g. 0x027404E0 "spin until progress sum >= vcall(+0x24) total")
@@ -518,12 +533,14 @@ namespace {
                 cpu.m_memory.write<std::uint32_t>(table + off, kMvSlotBase + off);
             const std::uint32_t impl = cpu.m_memory.heapAllocate(kImplSize, 8);
             for (std::uint32_t off = 0; off < kImplSize; off += 4)
-                cpu.m_memory.write<std::uint32_t>(impl + off, off == 0x184 ? table : 0);
+                cpu.m_memory.write<std::uint32_t>(impl + off, off == 0x17C || off == 0x184 ? table : 0);
             g_mvPlayer = cpu.m_memory.heapAllocate(kObjSize, 8);
             for (std::uint32_t off = 0; off < kObjSize; off += 4)
                 cpu.m_memory.write<std::uint32_t>(g_mvPlayer + off, 0);
             cpu.m_memory.write<std::uint32_t>(g_mvPlayer, impl);
             // Some dispatch thunks skip the impl hop and read the table straight off the object.
+            // The table offset differs between title builds (0x184 in v4.1, 0x17C in others).
+            cpu.m_memory.write<std::uint32_t>(g_mvPlayer + 0x17C, table);
             cpu.m_memory.write<std::uint32_t>(g_mvPlayer + 0x184, table);
             Utils::Log::error("[HLE] MVPlayer::Create -> stub object 0x{:08X}", g_mvPlayer);
         }

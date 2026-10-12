@@ -189,7 +189,10 @@ add_executable(wemu_shader_lower src/gfx/tools/LowerShader.cpp)
 target_link_libraries(wemu_shader_lower PRIVATE core)
 
 if(WEMU_ENABLE_LLVM)
-    find_package(LLVM 19.1 REQUIRED CONFIG)
+    find_package(LLVM REQUIRED CONFIG)
+    if(LLVM_VERSION_MAJOR VERSION_LESS 19 OR LLVM_VERSION_MAJOR VERSION_GREATER 20)
+        message(FATAL_ERROR "WEMU_ENABLE_LLVM requires LLVM 19 or 20 (found ${LLVM_PACKAGE_VERSION})")
+    endif()
     set(ppc_identity "")
     foreach(ppc_source IN ITEMS src/cpu/recompiler/Block.cpp src/cpu/recompiler/Block.hpp
             src/cpu/recompiler/LlvmBackend.cpp src/cpu/recompiler/LlvmBackend.hpp)

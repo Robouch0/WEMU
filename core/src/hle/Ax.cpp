@@ -28,11 +28,54 @@ namespace {
     constexpr std::uint32_t kVoiceOffsets = 0x34;
     constexpr std::uint32_t kVoiceOffsetsSize = 0x14;
 
+    // Playback model: no samples are mixed, but a playing voice consumes its source at the
+    // SRC ratio each 3 ms frame, loops or stops at its end offset, and reports its position.
+    // Streamed sound players poll that position (and wait for clips to finish), so a voice
+    // that never advances stalls anything synchronised to audio.
+    // Offsets are kept absolute in AX address units: nibbles for ADPCM, samples for PCM.
     struct VoiceSlot {
             std::uint32_t guestPtr{0};
             bool used{false};
+            std::uint32_t state{0};
+            std::uint16_t format{0}, loopFlag{0};
+            std::uint32_t base{0}; // samples pointer the public offsets are relative to
+            std::uint64_t loop{0}, end{0}, current{0};
+            std::uint32_t loopCount{0};
+            double ratio{1.0}, fraction{0.0};
     };
     std::vector<VoiceSlot> g_voices;
+
+    constexpr std::uint16_t kFormatAdpcm = 0x00, kFormatPcm16 = 0x0A;
+    constexpr std::uint32_t kStateOffset = 0x04;
+
+    std::uint64_t addressUnits(std::uint32_t address, std::uint16_t format)
+    {
+        return format == kFormatAdpcm ? std::uint64_t(address) * 2 : format == kFormatPcm16 ? address / 2 : address;
+    }
+
+    // ADPCM frames are 8 bytes: two header nibbles, then 14 sample nibbles.
+    std::uint64_t unitsToSample(std::uint64_t units, std::uint16_t format)
+    {
+        if (format != kFormatAdpcm)
+            return units;
+        const auto inFrame = units % 16;
+        return units / 16 * 14 + (inFrame < 2 ? 0 : inFrame - 2);
+    }
+
+    std::uint64_t sampleToUnits(std::uint64_t sample, std::uint16_t format)
+    {
+        return format == kFormatAdpcm ? sample / 14 * 16 + sample % 14 + 2 : sample;
+    }
+
+    VoiceSlot *findVoice(std::uint32_t guestPtr)
+    {
+        for (auto &slot: g_voices)
+            if (slot.used && slot.guestPtr == guestPtr)
+                return &slot;
+        return nullptr;
+    }
+
+    void writeVoiceOffsets(Core::Interpreter &cpu, const VoiceSlot &voice);
 
     std::vector<std::uint32_t> g_appFrameCallbacks; // fired each audio frame by the pump below
     std::uint32_t g_frameCallback = 0;
@@ -65,6 +108,35 @@ namespace {
 
     bool hasCallbacks() { return g_frameCallback || !g_appFrameCallbacks.empty() || g_finalMix[0].callback || g_finalMix[1].callback; }
 
+    void advanceVoices(Core::Interpreter &cpu)
+    {
+        constexpr double kOutputSamples = 144.0; // 3 ms at 48 kHz
+        for (auto &voice: g_voices) {
+            if (!voice.used || voice.state != 1 || !voice.base)
+                continue;
+            const double consumed = kOutputSamples * voice.ratio + voice.fraction;
+            const auto whole = static_cast<std::uint64_t>(consumed);
+            voice.fraction = consumed - double(whole);
+            auto position = unitsToSample(voice.current, voice.format) + whole;
+            const auto endSample = unitsToSample(voice.end, voice.format);
+            if (position > endSample) {
+                const auto loopSample = unitsToSample(voice.loop, voice.format);
+                if (voice.loopFlag && loopSample <= endSample) {
+                    const auto length = endSample - loopSample + 1;
+                    const auto overrun = position - endSample - 1;
+                    voice.loopCount += static_cast<std::uint32_t>(1 + overrun / length);
+                    position = loopSample + overrun % length;
+                } else {
+                    position = endSample;
+                    voice.state = 0;
+                    cpu.m_memory.write<std::uint32_t>(voice.guestPtr + kStateOffset, 0);
+                }
+            }
+            voice.current = sampleToUnits(position, voice.format);
+            writeVoiceOffsets(cpu, voice);
+        }
+    }
+
     void buildPending(Core::Interpreter &cpu)
     {
         if (!g_frameCount)
@@ -74,6 +146,7 @@ namespace {
             Utils::Log::error("[AX_CLOCK] frame={} tick={} elapsed_ticks={} previous_deadline_quarters={}", g_frameCount, cpu.m_scheduler.now(),
                               cpu.m_scheduler.now() - g_firstFrameTick, g_nextFrameQuarterTicks);
         g_nextFrameQuarterTicks += kFrameQuarterTicks;
+        advanceVoices(cpu);
         g_pendingCbs.clear();
         g_pendingIdx = 0;
         if (g_frameCallback)
@@ -254,7 +327,7 @@ namespace {
                 cpu.m_memory.write<std::uint32_t>(slot.guestPtr + off, 0);
             cpu.m_memory.write<std::uint32_t>(slot.guestPtr + 0x00, i); // index
             cpu.m_memory.write<std::uint32_t>(slot.guestPtr + 0x08, cpu.m_gpr[3]); // priority
-            slot.used = true;
+            slot = {slot.guestPtr, true};
             cpu.m_gpr[3] = slot.guestPtr;
             return;
         }
@@ -312,10 +385,90 @@ namespace {
         cpu.m_gpr[3] = 0;
     }
 
+    // AXSetVoiceOffsets(voice, const AXVoiceOffsets *): offsets relative to offsets->data.
     void ax_SetVoiceOffsets(Core::Interpreter &cpu)
     {
-        if (cpu.m_gpr[3] && cpu.m_gpr[4])
+        if (cpu.m_gpr[3] && cpu.m_gpr[4]) {
             copyVoiceOffsets(cpu, cpu.m_gpr[4], cpu.m_gpr[3] + kVoiceOffsets);
+            if (auto *voice = findVoice(cpu.m_gpr[3])) {
+                const auto source = cpu.m_gpr[4];
+                voice->format = cpu.m_memory.read<std::uint16_t>(source);
+                voice->loopFlag = cpu.m_memory.read<std::uint16_t>(source + 2);
+                voice->base = cpu.m_memory.read<std::uint32_t>(source + 0x10);
+                const auto origin = addressUnits(voice->base, voice->format);
+                voice->loop = origin + cpu.m_memory.read<std::uint32_t>(source + 4);
+                voice->end = origin + cpu.m_memory.read<std::uint32_t>(source + 8);
+                voice->current = origin + cpu.m_memory.read<std::uint32_t>(source + 0xC);
+                voice->fraction = 0;
+            }
+        }
+        cpu.m_gpr[3] = 0;
+    }
+
+    // AXSetVoiceEndOffsetEx / AXSetVoiceLoopOffsetEx(voice, offset, samples)
+    void ax_SetVoiceEndOffsetEx(Core::Interpreter &cpu)
+    {
+        if (auto *voice = findVoice(cpu.m_gpr[3])) {
+            voice->end = addressUnits(cpu.m_gpr[5], voice->format) + cpu.m_gpr[4];
+            writeVoiceOffsets(cpu, *voice);
+        }
+        cpu.m_gpr[3] = 0;
+    }
+
+    void ax_SetVoiceLoopOffsetEx(Core::Interpreter &cpu)
+    {
+        if (auto *voice = findVoice(cpu.m_gpr[3])) {
+            voice->loop = addressUnits(cpu.m_gpr[5], voice->format) + cpu.m_gpr[4];
+            writeVoiceOffsets(cpu, *voice);
+        }
+        cpu.m_gpr[3] = 0;
+    }
+
+    // AXGetVoiceCurrentOffsetEx(voice, samples) -> current offset relative to samples.
+    void ax_GetVoiceCurrentOffsetEx(Core::Interpreter &cpu)
+    {
+        const auto *voice = findVoice(cpu.m_gpr[3]);
+        cpu.m_gpr[3] = voice ? static_cast<std::uint32_t>(voice->current - addressUnits(cpu.m_gpr[4], voice->format)) : 0;
+    }
+
+    void ax_GetVoiceLoopCount(Core::Interpreter &cpu)
+    {
+        const auto *voice = findVoice(cpu.m_gpr[3]);
+        cpu.m_gpr[3] = voice ? voice->loopCount : 0;
+    }
+
+    void ax_SetVoiceLoop(Core::Interpreter &cpu)
+    {
+        if (auto *voice = findVoice(cpu.m_gpr[3])) {
+            voice->loopFlag = static_cast<std::uint16_t>(cpu.m_gpr[4]);
+            writeVoiceOffsets(cpu, *voice);
+        }
+        cpu.m_gpr[3] = 0;
+    }
+
+    // AXSetVoiceState(voice, state): 0 = stopped, 1 = playing.
+    void ax_SetVoiceState(Core::Interpreter &cpu)
+    {
+        if (auto *voice = findVoice(cpu.m_gpr[3])) {
+            voice->state = cpu.m_gpr[4] & 0xFFFF;
+            cpu.m_memory.write<std::uint32_t>(voice->guestPtr + kStateOffset, voice->state);
+        }
+        cpu.m_gpr[3] = 0;
+    }
+
+    // AXSetVoiceSrc(voice, const AXVoiceSrc *): 16.16 fixed-point ratio in the first two halves.
+    void ax_SetVoiceSrc(Core::Interpreter &cpu)
+    {
+        if (auto *voice = findVoice(cpu.m_gpr[3]); voice && cpu.m_gpr[4])
+            voice->ratio = cpu.m_memory.read<std::uint16_t>(cpu.m_gpr[4]) + cpu.m_memory.read<std::uint16_t>(cpu.m_gpr[4] + 2) / 65536.0;
+        cpu.m_gpr[3] = 0;
+    }
+
+    // AXSetVoiceSrcRatio(voice, float ratio) -> AX_RESULT
+    void ax_SetVoiceSrcRatio(Core::Interpreter &cpu)
+    {
+        if (auto *voice = findVoice(cpu.m_gpr[3]); voice && cpu.m_fpr[1] >= 0 && cpu.m_fpr[1] < 64)
+            voice->ratio = cpu.m_fpr[1];
         cpu.m_gpr[3] = 0;
     }
 
@@ -339,13 +492,21 @@ namespace {
         cpu.m_gpr[3] = 0;
     }
 
+    void writeVoiceOffsets(Core::Interpreter &cpu, const VoiceSlot &voice)
+    {
+        const auto origin = addressUnits(voice.base, voice.format);
+        const auto offsets = voice.guestPtr + kVoiceOffsets;
+        cpu.m_memory.write<std::uint16_t>(offsets + 2, voice.loopFlag);
+        cpu.m_memory.write<std::uint32_t>(offsets + 4, static_cast<std::uint32_t>(voice.loop - origin));
+        cpu.m_memory.write<std::uint32_t>(offsets + 8, static_cast<std::uint32_t>(voice.end - origin));
+        cpu.m_memory.write<std::uint32_t>(offsets + 0xC, static_cast<std::uint32_t>(voice.current - origin));
+    }
+
     const char *const kNoops[] = {
             "AXDecodeAdpcmData",
             "AXGetDeviceMode",
             "AXGetDeviceUpsampleStage",
             "AXGetSwapProfile",
-            "AXGetVoiceCurrentOffsetEx",
-            "AXGetVoiceLoopCount",
             "AXInitProfile",
             "AXRegisterAuxCallback",
             "AXRmtAdvancePtr",
@@ -370,9 +531,6 @@ namespace {
             "AXSetVoiceBiquad",
             "AXSetVoiceBiquadCoefs",
             "AXSetVoiceDeviceMix",
-            "AXSetVoiceEndOffsetEx",
-            "AXSetVoiceLoop",
-            "AXSetVoiceLoopOffsetEx",
             "AXSetVoiceLpf",
             "AXSetVoiceLpfCoefs",
             "AXSetVoiceMixerSelect",
@@ -380,10 +538,7 @@ namespace {
             "AXSetVoiceRmtIIR",
             "AXSetVoiceRmtIIRCoefs",
             "AXSetVoiceRmtOn",
-            "AXSetVoiceSrc",
-            "AXSetVoiceSrcRatio",
             "AXSetVoiceSrcType",
-            "AXSetVoiceState",
             "AXSetVoiceType",
             "AXSetVoiceVe",
             "AXUserBegin",
@@ -420,6 +575,14 @@ void RegisterAxFunctions()
     Core::syscallHandler.registerSyscall("AXRegisterFrameCallback", ax_RegisterFrameCallback);
     Core::syscallHandler.registerSyscall("AXGetVoiceOffsets", ax_GetVoiceOffsets);
     Core::syscallHandler.registerSyscall("AXSetVoiceOffsets", ax_SetVoiceOffsets);
+    Core::syscallHandler.registerSyscall("AXSetVoiceEndOffsetEx", ax_SetVoiceEndOffsetEx);
+    Core::syscallHandler.registerSyscall("AXSetVoiceLoopOffsetEx", ax_SetVoiceLoopOffsetEx);
+    Core::syscallHandler.registerSyscall("AXGetVoiceCurrentOffsetEx", ax_GetVoiceCurrentOffsetEx);
+    Core::syscallHandler.registerSyscall("AXGetVoiceLoopCount", ax_GetVoiceLoopCount);
+    Core::syscallHandler.registerSyscall("AXSetVoiceLoop", ax_SetVoiceLoop);
+    Core::syscallHandler.registerSyscall("AXSetVoiceState", ax_SetVoiceState);
+    Core::syscallHandler.registerSyscall("AXSetVoiceSrc", ax_SetVoiceSrc);
+    Core::syscallHandler.registerSyscall("AXSetVoiceSrcRatio", ax_SetVoiceSrcRatio);
     Core::syscallHandler.registerSyscall("AXComputeLpfCoefs", ax_ComputeLpfCoefs);
     Core::syscallHandler.registerSyscall("AXGetAuxCallback", ax_GetAuxCallback);
     Core::syscallHandler.registerSyscall("AXRegisterDeviceFinalMixCallback", ax_RegisterDeviceFinalMixCallback);

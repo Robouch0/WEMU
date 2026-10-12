@@ -20,11 +20,11 @@ namespace Core::Gfx::Latte {
         }
         ++m_misses;
         auto shader = std::make_shared<const FragmentShader>(lowerFragmentShader(*decodeProgram(words), resourceTypes));
-        constexpr std::size_t maxBytes = std::size_t{32} * 1024 * 1024;
+        constexpr std::size_t maxBytes = std::size_t{256} * 1024 * 1024;
         const auto bytes = words.size() * sizeof(std::uint32_t) + resourceTypes.size() * sizeof(TextureType) + shader->source.size() +
                            shader->error.size() + shader->textures.size() * sizeof(TextureBinding);
         if (bytes <= maxBytes) {
-            if (m_entries.size() >= 128 || bytes > maxBytes - m_bytes) {
+            if (m_entries.size() >= maxEntries || bytes > maxBytes - m_bytes) {
                 m_entries.clear();
                 m_bytes = 0;
             }
@@ -660,26 +660,31 @@ namespace Core::Gfx::Latte {
                         constexpr auto tex1Mask = 127u | (0xFFFu << 9) | (15u << 28);
                         // TEX has three instruction words in a four-word slot. The
                         // final word is padding, not additional instruction flags.
-                        if ((texOp != 0x0F && texOp != 0x10 && texOp != 0x13) || (t0 & ~tex0Mask) || (t1 & ~tex1Mask) ||
+                        // 0x18/0x1B: SAMPLE_C/SAMPLE_C_LZ depth comparison against src.w.
+                        const bool compare = texOp == 0x18 || texOp == 0x1B;
+                        if ((texOp != 0x0F && texOp != 0x10 && texOp != 0x13 && !compare) || (t0 & ~tex0Mask) || (t1 & ~tex1Mask) ||
                             (t1 & 0x30000000) != 0x30000000 || (t2 & 0x7FFF))
                             throw std::runtime_error(std::format("unsupported texture instruction: cf={} slot={} op={} words={:08X},{:08X},{:08X}",
                                                                  cf / 2, i, texOp, t0, t1, t2));
-                        if (texOp == 0x10 || texOp == 0x0F)
+                        if (texOp == 0x10 || texOp == 0x0F || texOp == 0x18)
                             result.requiresBaseLevelOnly = true;
                         if (texOp == 0x0F)
                             result.usesGather = true;
-                        implicitSamples |= texOp != 0x13; // SAMPLE/gather; SAMPLE_LZ is explicit.
+                        const bool explicitLod = texOp == 0x13 || texOp == 0x1B;
+                        implicitSamples |= !explicitLod; // SAMPLE/gather/SAMPLE_C; the _LZ forms are explicit.
                         const unsigned resource = (t0 >> 8) & 255, sampler = (t2 >> 15) & 31;
                         auto binding = std::find_if(result.textures.begin(), result.textures.end(),
                                                     [&](const auto &b) { return b.resource == resource && b.sampler == sampler; });
                         if (binding == result.textures.end()) {
                             const auto type = resource < resourceTypes.size() ? resourceTypes[resource] : TextureType::TwoD;
-                            if (type != TextureType::TwoD && type != TextureType::TwoDArray)
+                            if (type != TextureType::TwoD && type != TextureType::TwoDArray && type != TextureType::ThreeD)
                                 throw std::runtime_error("unsupported texture resource type");
                             result.textures.push_back({resource, sampler, unsigned(result.textures.size() + 1), type});
                             binding = result.textures.end() - 1;
                         }
-                        binding->implicitLod |= texOp != 0x13;
+                        binding->implicitLod |= !explicitLod;
+                        if (compare && binding->type != TextureType::TwoD && std::getenv("WEMU_ARRAYDIAG") == nullptr) // TEMP-ARRAYDIAG
+                            throw std::runtime_error("array depth-compare sampling not yet supported");
                         const auto reg = std::format("r[{}]", (t0 >> 16) & 127);
                         for (unsigned c = 0; c < 4; ++c) {
                             const auto selector = (t2 >> (20 + c * 3)) & 7;
@@ -688,6 +693,11 @@ namespace Core::Gfx::Latte {
                         }
                         auto coords = std::format("{},{}", select(reg, (t2 >> 20) & 7), select(reg, (t2 >> 23) & 7));
                         const bool array = binding->type == TextureType::TwoDArray;
+                        const bool volume = binding->type == TextureType::ThreeD;
+                        if (volume && (compare || texOp == 0x0F))
+                            throw std::runtime_error("3D gather/depth-compare sampling not yet supported");
+                        if (volume)
+                            coords += std::format(",{}", select(reg, (t2 >> 26) & 7));
                         if (array)
                             coords += std::format(",arrayLayerReference({},textureSize(tex{},0).z)", select(reg, (t2 >> 26) & 7), binding->binding);
                         if (texOp == 0x0F) {
@@ -706,8 +716,18 @@ namespace Core::Gfx::Latte {
                                                 "else sampled=sampleArrayReference(tex{},vec3({}),u.sampling[{}]);\n",
                                                 select(reg, (t2 >> 20) & 7), select(reg, (t2 >> 23) & 7), select(reg, (t2 >> 26) & 7),
                                                 binding->binding - 1, binding->binding, coords, binding->binding - 1);
+                        } else if (compare) {
+                            // Shadow sample: (reference FUNC texel) with the sampler's
+                            // DEPTH_COMPARE_FUNCTION, stored in u.sampling[].w by the backend.
+                            body += std::format("{{ float reference={}; float texel=textureLod(tex{},vec2({}),0.0).r; "
+                                                "int compareFunction=int(u.sampling[{}].w); bool pass="
+                                                "compareFunction==1?reference<texel:compareFunction==2?reference==texel:"
+                                                "compareFunction==3?reference<=texel:compareFunction==4?reference>texel:"
+                                                "compareFunction==5?reference!=texel:compareFunction==6?reference>=texel:compareFunction==7; "
+                                                "vec4 sampled=vec4(pass?1.0:0.0);\n",
+                                                select(reg, (t2 >> 29) & 7), binding->binding, coords, binding->binding - 1);
                         } else {
-                            body += std::format("{{ vec4 sampled=textureLod(tex{},vec2({}),0.0);\n", binding->binding, coords);
+                            body += std::format("{{ vec4 sampled=textureLod(tex{},vec{}({}),0.0);\n", binding->binding, volume ? 3 : 2, coords);
                         }
                         for (unsigned c = 0; c < 4; ++c) {
                             const auto selector = (t1 >> (9 + c * 3)) & 7;
@@ -929,8 +949,8 @@ vec4 sampleArrayReference(sampler2DArray tex,vec3 p,vec4 state) {
 }
 )";
             for (const auto &b: result.textures)
-                result.source += std::format("layout(set=0,binding={}) uniform sampler2D{} tex{};\n", b.binding,
-                                             b.type == TextureType::TwoDArray ? "Array" : "", b.binding);
+                result.source += std::format("layout(set=0,binding={}) uniform sampler{} tex{};\n", b.binding,
+                                             b.type == TextureType::TwoDArray ? "2DArray" : b.type == TextureType::ThreeD ? "3D" : "2D", b.binding);
             body = scalarizeRegisters(std::move(body));
             if (result.writesDepth)
                 body.insert(body.find('\n') + 1, "gl_FragDepth=gl_FragCoord.z;\n");
@@ -969,7 +989,7 @@ vec4 sampleArrayReference(sampler2DArray tex,vec3 p,vec4 state) {
         if (const auto it = m_entries.find(words); it != m_entries.end())
             return it->second;
         auto shader = std::make_shared<const VertexShader>(lowerVertexShader(*decodeProgram(words)));
-        if (m_entries.size() >= 128)
+        if (m_entries.size() >= 4096)
             m_entries.clear();
         if (words.size() <= 16384 && shader->source.size() <= std::size_t{256} * 1024)
             m_entries.emplace(words, shader);

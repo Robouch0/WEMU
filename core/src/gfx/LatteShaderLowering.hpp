@@ -9,7 +9,7 @@
 
 namespace Core::Gfx::Latte {
 
-    enum class TextureType { TwoD, TwoDArray };
+    enum class TextureType { TwoD, TwoDArray, ThreeD };
 
     struct TextureBinding {
             unsigned resource, sampler, binding;
@@ -62,6 +62,9 @@ namespace Core::Gfx::Latte {
     // Replayer-owned, single-threaded cache. Exact keys include resource specialization.
     class FragmentShaderCache {
         public:
+            // A scene can use several hundred programs; clearing below that working set
+            // re-lowers (and recompiles) every shader each frame.
+            static constexpr std::size_t maxEntries = 4096;
             std::shared_ptr<const FragmentShader> get(const std::vector<std::uint32_t> &words, std::span<const TextureType> resourceTypes = {});
             std::size_t size() const { return m_entries.size(); }
             std::size_t hits() const { return m_hits; }

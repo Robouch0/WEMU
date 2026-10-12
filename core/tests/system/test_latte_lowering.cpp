@@ -51,9 +51,9 @@ TEST(LatteLoweringCacheTest, CachesFailuresAndKeepsResultsAliveAfterEviction)
     EXPECT_FALSE(*failed);
     EXPECT_EQ(failed, cache.get({}));
     const auto error = failed->error;
-    for (std::uint32_t i = 0; i < 256; ++i) {
+    for (std::uint32_t i = 0; i < 2 * FragmentShaderCache::maxEntries; ++i) {
         EXPECT_FALSE(*cache.get({i}));
-        EXPECT_LE(cache.size(), 128u);
+        EXPECT_LE(cache.size(), FragmentShaderCache::maxEntries);
     }
     EXPECT_EQ(failed->error, error);
     EXPECT_NE(failed, cache.get({}));

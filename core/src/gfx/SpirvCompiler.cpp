@@ -152,7 +152,7 @@ namespace Core::Gfx {
             if (!file || result->words[0] != 0x07230203u)
                 throw std::runtime_error("Invalid SPIR-V output");
             const auto bytesCached = key.second.size() + result->words.size() * sizeof(std::uint32_t);
-            if (m_cache.size() >= 128 || m_cacheBytes + bytesCached > std::size_t{32} * 1024 * 1024) {
+            if (m_cache.size() >= 4096 || m_cacheBytes + bytesCached > std::size_t{256} * 1024 * 1024) {
                 m_cache.clear();
                 m_cacheBytes = 0;
             }

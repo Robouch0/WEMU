@@ -242,6 +242,22 @@ void Core::Interpreter::run()
         m_lr = kDriveMenuInlineSentinel - Core::Memory::MemoryMap::ApplicationCode;
         m_gpr[3] = task;
     };
+    static const bool hotBlocks = std::getenv("WEMU_HOT_BLOCKS") != nullptr; // TEMP-HOTBLOCKS
+    std::unordered_map<std::uint32_t, std::uint64_t> hotBlockCounts; // TEMP-HOTBLOCKS
+    struct HotDump { // TEMP-HOTBLOCKS
+            std::unordered_map<std::uint32_t, std::uint64_t> &counts;
+            ~HotDump()
+            {
+                std::vector<std::pair<std::uint64_t, std::uint32_t>> v;
+                for (auto [pc, n]: counts) v.push_back({n, pc});
+                std::sort(v.rbegin(), v.rend());
+                std::uint64_t total = 0;
+                for (auto &e: v) total += e.first;
+                for (std::size_t i = 0; i < std::min<std::size_t>(40, v.size()); ++i)
+                    std::fprintf(stderr, "[HOTBLOCK] pc=0x%08X instrs=%llu share=%.2f%%\n", v[i].second + Core::Memory::MemoryMap::ApplicationCode,
+                                 (unsigned long long) v[i].first, 100.0 * v[i].first / double(total ? total : 1));
+            }
+    } hotDump{hotBlockCounts}; // TEMP-HOTBLOCKS
     std::uint64_t schedulerClockRetired = m_retired;
     while (m_running) {
         if (m_retired >= nextServiceTickAt) {
@@ -475,6 +491,8 @@ void Core::Interpreter::run()
             const Block &blk = getBlock(instructionDecoder, m_pc);
 #endif
             if (!blk.instrs.empty()) {
+                if (hotBlocks) // TEMP-HOTBLOCKS
+                    hotBlockCounts[m_pc] += blk.instrs.size(); // TEMP-HOTBLOCKS
 #ifdef WEMU_HAS_LLVM
                 if (profileNative) {
                     ++prefixCounts[blk.nativePrefixLength];
