@@ -25,4 +25,4 @@ signed IPA to re-sign and install with Feather, Sideloadly or AltStore.
 | `lib/gamepad/` | Control layout, multitouch input, painting |
 | `lib/screens/` | Connect, PIN pairing, library, GamePad view, settings |
 | `lib/storage.dart` | Known PCs, pairing tokens, preferences |
-| `lib/strings.dart` | French / English UI text |
+| `lib/strings.dart` | UI text |
