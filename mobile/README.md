@@ -14,8 +14,8 @@ flutter test
 flutter build apk --release   # Android: build/app/outputs/flutter-apk/app-release.apk
 ```
 
-iOS builds need macOS; CI (`.github/workflows/mobile.yml`) produces an unsigned
-IPA to sideload with Sideloadly or AltStore.
+iOS builds need macOS; CI (`.github/workflows/mobile.yml`) produces an ad-hoc
+signed IPA to re-sign and install with Feather, Sideloadly or AltStore.
 
 ## Layout
 

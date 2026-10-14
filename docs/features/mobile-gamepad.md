@@ -72,9 +72,10 @@ flutter pub get
 flutter build apk --release          # build/app/outputs/flutter-apk/app-release.apk
 ```
 
-The IPA needs macOS: `.github/workflows/mobile.yml` builds an unsigned IPA on a
-GitHub macOS runner (`wemu-gamepad-ipa` artifact) next to the APK. Install it with
-Sideloadly or AltStore, which sign it with your Apple ID.
+The IPA needs macOS: `.github/workflows/mobile.yml` builds an ad-hoc signed IPA
+on a GitHub macOS runner next to the APK. Both are uploaded unzipped (artifacts
+`wemu-gamepad.ipa` and `wemu-gamepad.apk`), so a phone downloads the file itself.
+Re-sign the IPA on install with Feather, Sideloadly or AltStore.
 
 ## Testing
 
