@@ -51,10 +51,11 @@ jobs:
       - run: flutter pub get
       - run: flutter build apk --release
       - run: mv build/app/outputs/flutter-apk/app-release.apk build/wemu-gamepad.apk
-      - uses: actions/upload-artifact@v4
+      # Unzipped, so a phone downloads the .apk itself rather than a zip around it.
+      - uses: actions/upload-artifact@v7
         with:
-          name: wemu-gamepad-apk
           path: mobile/build/wemu-gamepad.apk
+          archive: false
           if-no-files-found: error
 
   ios:
@@ -73,14 +74,19 @@ jobs:
           cache: true
       - run: flutter pub get
       - run: flutter build ios --release --no-codesign
+      # --no-codesign leaves the Runner executable with no signature at all, which
+      # re-signing tools (Feather/zsign, ESign) refuse. An ad-hoc signature gives
+      # them one to replace; Sideloadly and AltStore accept either.
+      - name: Ad-hoc sign
+        run: codesign --force --deep --sign - build/ios/iphoneos/Runner.app
       # An .ipa is a zip with the app bundle under Payload/.
       - name: Package IPA
         run: |
           mkdir -p build/ipa/Payload
           cp -R build/ios/iphoneos/Runner.app build/ipa/Payload/
           cd build/ipa && zip -qry ../wemu-gamepad.ipa Payload
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
-          name: wemu-gamepad-ipa
           path: mobile/build/wemu-gamepad.ipa
+          archive: false
           if-no-files-found: error
