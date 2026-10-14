@@ -151,7 +151,6 @@ void RegisterNnOnlineFunctions()
     sh.registerSyscall("KPADReadEx", retFalse); // 0 samples: no Wii Remotes connected
     sh.registerSyscall("KPADSetConnectCallback", ok);
     sh.registerSyscall("WPADProbe", [](Core::Interpreter &cpu) { cpu.m_gpr[3] = static_cast<std::uint32_t>(-1); }); // no controller
-    sh.registerSyscall("VPADGetTPCalibratedPoint", ok);
     sh.registerSyscall("VPADBASEGetHeadphoneStatus", retFalse);
     sh.registerSyscall("WPADGetSpeakerVolume", retFalse);
     sh.registerSyscall("VPADStopMotor", ok);

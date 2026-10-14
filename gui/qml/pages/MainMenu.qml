@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Dialogs
 import "../components/Theme.js" as Theme
+import gui 1.0
 
 Rectangle {
     id: page
@@ -83,6 +84,10 @@ Rectangle {
                 icon.name: "view-refresh"
                 enabled: !EmulatorLauncher.running && TitleScanner.searchPath !== ""
                 onClicked: TitleScanner.refresh()
+            }
+
+            RemoteGamepadBadge {
+                anchors.verticalCenter: parent.verticalCenter
             }
 
             Rectangle {

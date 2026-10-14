@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <limits>
 
 #include "SessionFrame.hpp"
 #include "frontend/QtSessionProtocol.hpp"
@@ -80,4 +81,36 @@ TEST(SessionProtocolTest, FrameStorageSurvivesPacketReuseAndWritableCopiesDetach
     EXPECT_THROW(WemuSession::frameImage(QByteArray(8, '\0'), -1, 2, 1), std::runtime_error);
     EXPECT_THROW(WemuSession::frameImage(QByteArray(8, '\0'), 9, 2, 1), std::runtime_error);
     EXPECT_THROW(WemuSession::frameImage(QByteArray(7, '\0'), 0, 2, 1), std::runtime_error);
+}
+
+TEST(SessionProtocolTest, GamepadStateRoundTripsAndClampsUntrustedValues)
+{
+    Core::Gfx::GamepadState state;
+    state.leftStick = {0.5f, -0.25f};
+    state.rightStick = {3.0f, std::numeric_limits<float>::quiet_NaN()};
+    state.touched = true;
+    state.touchX = 900;
+    state.touchY = 120;
+    state.accel = {0.0f, -1.0f, 20.0f};
+    state.gyro = {0.25f, 0.0f, -0.5f};
+    QByteArray body;
+    {
+        QDataStream out(&body, QIODevice::WriteOnly);
+        WemuSession::configure(out);
+        WemuSession::writeGamepad(out, state);
+    }
+    QDataStream in(body);
+    WemuSession::configure(in);
+    const auto read = WemuSession::readGamepad(in);
+    EXPECT_EQ(in.status(), QDataStream::Ok);
+    EXPECT_TRUE(in.atEnd());
+    EXPECT_FLOAT_EQ(read.leftStick[0], 0.5f);
+    EXPECT_FLOAT_EQ(read.leftStick[1], -0.25f);
+    EXPECT_FLOAT_EQ(read.rightStick[0], 1.0f);
+    EXPECT_FLOAT_EQ(read.rightStick[1], 0.0f);
+    EXPECT_TRUE(read.touched);
+    EXPECT_EQ(read.touchX, 853);
+    EXPECT_EQ(read.touchY, 120);
+    EXPECT_FLOAT_EQ(read.accel[2], 8.0f);
+    EXPECT_FLOAT_EQ(read.gyro[2], -0.5f);
 }

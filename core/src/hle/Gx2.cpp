@@ -702,11 +702,16 @@ namespace {
         static std::uint64_t s_lastHash = 0;
         static bool s_haveFrame = false;
         const std::uint64_t hash = Core::Gfx::gx2Stream().contentHash();
-        if (noSkip || !s_haveFrame || hash != s_lastHash) {
+        // A remote GamePad attached during a static stretch needs one rebuild to get its first image.
+        const bool drcWanted = cpu.m_renderer && cpu.m_renderer->drc_wanted();
+        replayer.setDrcCapture(drcWanted);
+        if (noSkip || !s_haveFrame || hash != s_lastHash || (drcWanted && replayer.drcFramebuffer().empty())) {
             replayer.replay(Core::Gfx::gx2Stream(), &cpu.m_memory);
             s_lastHash = hash;
             s_haveFrame = true;
         }
+        if (drcWanted && !replayer.drcFramebuffer().empty())
+            cpu.m_renderer->flip_drc(replayer.drcFramebuffer().data(), Core::Gfx::Gx2Replayer::kDrcWidth, Core::Gfx::Gx2Replayer::kDrcHeight);
         if (cpu.m_renderer)
             cpu.m_renderer->flip_tv(replayer.framebuffer().data(), Core::Gfx::Gx2Replayer::kWidth, Core::Gfx::Gx2Replayer::kHeight);
         Core::Gfx::gx2Stream().clear();

@@ -12,6 +12,7 @@
 #include "input/InputProfileManager.hpp"
 #include "input/KeyboardInput.hpp"
 #include "library/TitleScanner.hpp"
+#include "remote/RemoteGamepadServer.hpp"
 
 int main(int argc, char *argv[])
 {
@@ -34,12 +35,14 @@ int main(int argc, char *argv[])
     if (!parser.isSet("library") && (library.isEmpty() || !QDir(library).exists()))
         library = TitleScanner::defaultLibraryPath(QCoreApplication::applicationDirPath(), QDir::currentPath());
     if (!library.isEmpty()) scanner.scanDirectory(library, !parser.isSet("library"));
+    RemoteGamepadServer remoteGamepad(launcher, scanner);
     QQmlApplicationEngine engine;
     qmlRegisterType<GameView>("Wemu", 1, 0, "GameView");
     engine.rootContext()->setContextProperty("InputManager", &input);
     engine.rootContext()->setContextProperty("InputProfileManager", &profiles);
     engine.rootContext()->setContextProperty("TitleScanner", &scanner);
     engine.rootContext()->setContextProperty("EmulatorLauncher", &launcher);
+    engine.rootContext()->setContextProperty("RemoteGamepad", &remoteGamepad);
     QObject::connect(&engine, &QQmlApplicationEngine::objectCreationFailed, &app,
                      []() { QCoreApplication::exit(-1); }, Qt::QueuedConnection);
     QObject::connect(&app, &QGuiApplication::aboutToQuit, &input, &InputManager::stopPolling);

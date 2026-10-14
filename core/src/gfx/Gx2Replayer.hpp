@@ -42,6 +42,8 @@ namespace Core::Gfx {
         public:
             static constexpr std::uint32_t kWidth = 1280;
             static constexpr std::uint32_t kHeight = 720;
+            static constexpr std::uint32_t kDrcWidth = 854;
+            static constexpr std::uint32_t kDrcHeight = 480;
 
             // A count of one retains the serial reference path. Zero selects the default.
             void setRasterWorkerCount(unsigned count, std::uint64_t minPixels = 32768)
@@ -61,6 +63,10 @@ namespace Core::Gfx {
             void replay(const Gx2CommandStream &stream, Core::Memory *mem = nullptr);
 
             [[nodiscard]] const std::vector<std::uint8_t> &framebuffer() const noexcept { return m_fb; }
+            // GamePad (DRC) scan-out, kDrcWidth*kDrcHeight RGBX. Built only while capture is enabled
+            // (a remote GamePad is attached) and empty until the title scans a surface out to the DRC.
+            void setDrcCapture(bool on) noexcept { m_drcCapture = on; }
+            [[nodiscard]] const std::vector<std::uint8_t> &drcFramebuffer() const noexcept { return m_drcFb; }
             [[nodiscard]] std::uint32_t presentCount() const noexcept { return m_presentCount; }
 
             // GPU rasterisation (WEMU_GPU=1). When a renderer is supplied, each draw's screen-space
@@ -146,6 +152,7 @@ namespace Core::Gfx {
             void drawPrimitives(const Gx2Command &cmd, bool indexed);
             bool fetchAttributes(std::uint32_t vertex, std::array<std::array<float, 4>, 4> &out) const;
             void copyToScanBuffer(const Surface &s);
+            void copyToDrcBuffer(const Surface &s);
             void maybeDumpFrame();
             [[nodiscard]] std::array<std::uint8_t, 4> blendTexel(const std::array<std::uint8_t, 4> &src, const std::uint8_t *dst,
                                                                  const BlendState &blend) const;
@@ -226,6 +233,9 @@ namespace Core::Gfx {
             Surface m_texture; // texture selected by the current pixel shader
             std::array<Surface, 16> m_pixelTextures{}, m_vertexTextures{};
             Surface m_lastScan; // last surface scanned out to the TV (re-presented when a frame swaps without a copy)
+            Surface m_lastDrcScan; // same for the GamePad
+            std::vector<std::uint8_t> m_drcFb; // RGBX, kDrcWidth*kDrcHeight*4
+            bool m_drcCapture{};
             Surface m_lastDrawColor; // colour target used by the most recent replayed draw in this frame
             std::array<BlendState, 8> m_blend{};
             std::array<std::uint8_t, 4> m_blendConstant{0, 0, 0, 0};
