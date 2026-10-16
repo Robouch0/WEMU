@@ -96,9 +96,13 @@ namespace Core::Gfx::Latte {
             public:
                 void read(const Src &src, unsigned depth) const
                 {
-                    if (src.sel < 128 && src.chan < 4)
-                        check(m_registers[src.sel][src.chan], depth, src);
-                    else if (src.sel == SRC_PV && src.chan < 4)
+                    if (src.sel < 128 && src.chan < 4) {
+                        if (src.rel)
+                            for (const auto &reg: m_registers)
+                                check(reg[src.chan], depth, src);
+                        else
+                            check(m_registers[src.sel][src.chan], depth, src);
+                    } else if (src.sel == SRC_PV && src.chan < 4)
                         check(m_previous[src.chan], depth, src);
                     else if (src.sel == SRC_PS)
                         check(m_scalar, depth, src);
@@ -186,9 +190,13 @@ namespace Core::Gfx::Latte {
             std::string value;
             if (s.rel) {
                 const auto indexMode = (instruction.raw0 >> 26) & 7;
-                if (s.sel < 256 || s.sel >= 512 || indexMode > 3 || !constants.addressValid[indexMode])
+                if ((s.sel >= 128 && s.sel < 256) || s.sel >= 512 || indexMode > 3 || !constants.addressValid[indexMode])
                     throw std::runtime_error("unsupported or uninitialized relative ALU source");
-                value = std::format("relativeConstant({}+ar[{}],{})", s.sel - 256, indexMode, s.chan);
+                if (s.sel < 128) {
+                    const auto index = std::format("({}+ar[{}])", s.sel, indexMode);
+                    value = std::format("({0}>=0 && {0}<128 ? r[clamp({0},0,127)][{1}] : uintBitsToFloat(2147483647u))", index, s.chan);
+                } else
+                    value = std::format("relativeConstant({}+ar[{}],{})", s.sel - 256, indexMode, s.chan);
             } else if (s.sel < 128)
                 value = std::format("r[{}][{}]", s.sel, s.chan);
             else if (s.sel < 192 || (s.sel >= 256 && s.sel < 512))
@@ -525,8 +533,8 @@ namespace Core::Gfx::Latte {
                 if (isAluClause(w1)) {
                     const auto kind = cfAluInst(w1);
                     const bool wholeQuad = w1 & (1u << 30);
-                    if (kind < 8 || kind > 11 || (w0 >> 30) == 3 || (w1 & 3) == 3 || (vertexStage && wholeQuad) ||
-                        (wholeQuad && (kind != 8 || !depth)))
+                    if (kind < 8 || (kind > 11 && kind != 15) || (kind == 15 && !depth) || (w0 >> 30) == 3 || (w1 & 3) == 3 ||
+                        (vertexStage && wholeQuad) || (wholeQuad && (kind != 8 || !depth)))
                         throw std::runtime_error(std::format("unsupported ALU clause: cf={} kind={} uniform={} whole_quad={}", cf / 2, kind,
                                                              bool((w0 >> 30) || (w1 & 3)), bool(w1 & (1u << 30))));
                     constants.bank = {(w0 >> 22) & 15, (w0 >> 26) & 15};
@@ -659,6 +667,12 @@ namespace Core::Gfx::Latte {
                         pop(1);
                     if (kind == 11)
                         pop(2);
+                    if (kind == 15) {
+                        wholeQuadWrites.restore(depth - 1);
+                        maskUniform = maskUniform && uniformMaskStack[depth - 1];
+                        allActive = false;
+                        body += std::format("laneActive=activeStack[{}]&&!laneActive;\n", depth - 1);
+                    }
                     body += "}\n";
                     continue;
                 }
@@ -1080,7 +1094,18 @@ vec3 cubeDirectionReference(vec3 coord) {
                                              b.binding);
             for (const auto resource: cubeIndices)
                 body.insert(body.find('\n') + 1, std::format("float cubeIndex{}=0.0;\n", resource));
-            body = scalarizeRegisters(std::move(body));
+            // Static shaders retain scalar registers. AR-relative GPR sources
+            // need the complete register file, including zero-initialized gaps.
+            bool dynamicGpr = false;
+            for (const auto &[key, groups]: program.clauses)
+                for (const auto &group: groups)
+                    for (const auto &instruction: group)
+                        for (unsigned operand = 0; operand < (instruction.op3 ? 3u : 2u); ++operand)
+                            dynamicGpr |= instruction.src[operand].rel && instruction.src[operand].sel < 128;
+            if (dynamicGpr)
+                body.insert(body.find('\n') + 1, "vec4 r[128]; for(int i=0;i<128;++i) r[i]=vec4(0.0);\n");
+            else
+                body = scalarizeRegisters(std::move(body));
             if (result.writesDepth)
                 body.insert(body.find('\n') + 1, "gl_FragDepth=gl_FragCoord.z;\n");
             result.source += body;

@@ -5,7 +5,9 @@
 #include "gfx/LatteShaderLowering.hpp"
 #include "gfx/LatteSurfaceLayout.hpp"
 #include "gfx/LatteVsInterp.hpp"
+#include "gfx/SpirvCompiler.hpp"
 #include "gfx/TextureFormat.hpp"
+#include "gfx/VolumeSampler.hpp"
 #include "gfx/VulkanRasterBackend.hpp"
 
 using namespace Core::Gfx;
@@ -255,4 +257,118 @@ TEST(TextureFormatTest, SignedBc4PreservesNegativeEndpointsAndBothInterpolationM
             EXPECT_NEAR(decodeBc4Snorm(block.data(), i), expected, 1.e-7f);
         }
     }
+}
+
+TEST(LatteTextureTest, VolumeFilteringUsesNormalizedZAndIndependentAddressModes)
+{
+    TextureSampler sampler;
+    sampler.regs[0] = 2u | (2u << 3) | (2u << 6) | (1u << 9) | (1u << 12);
+    const auto fetch = [](unsigned x, unsigned y, unsigned z) { return std::array<float, 4>{float(x), float(y), float(z), 1}; };
+    EXPECT_EQ(sampleVolume(sampler, 2, 2, 2, .5f, .5f, .5f, fetch), (std::array<float, 4>{.5f, .5f, .5f, 1}));
+    EXPECT_EQ(sampleVolume(sampler, 2, 2, 2, .25f, .75f, -1, fetch), (std::array<float, 4>{0, 1, 0, 1}));
+    EXPECT_EQ(sampleVolume(sampler, 2, 2, 2, .25f, .75f, 2, fetch), (std::array<float, 4>{0, 1, 1, 1}));
+    sampler.regs[0] &= ~(7u << 6); // Repeat Z without changing XY's clamp mode.
+    EXPECT_EQ(sampleVolume(sampler, 2, 2, 2, .25f, .75f, 1.25f, fetch), (std::array<float, 4>{0, 1, 0, 1}));
+    EXPECT_EQ(sampleVolume(sampler, 2, 2, 2, .25f, .75f, -.25f, fetch), (std::array<float, 4>{0, 1, 1, 1}));
+    EXPECT_EQ(sampleVolume(sampler, 2, 2, 2, 0, 0, std::numeric_limits<float>::quiet_NaN(), fetch), sampler.border());
+}
+
+TEST(VulkanCubeTest, SharedSnapshotsKeepDuplicateBindingsVersionsAndDeviceLifetime)
+{
+    if (!std::getenv("WEMU_TEST_VULKAN") || !SpirvCompiler::available())
+        GTEST_SKIP();
+    using namespace Latte;
+    const auto shader = lowerFragmentShader(*decodeProgram({2, (CF_TEX << 23) | (1u << 10), 1u << 15, (CF_EXP_DONE << 23) | (1u << 21) | 0x688u, 0x13,
+                                                            0x300D1001, 0x68800000, 0, 0x113, 0x300D1001, 0x68808000, 0}));
+    ASSERT_TRUE(shader) << shader.error;
+    ASSERT_EQ(shader.textures.size(), 2u);
+    std::array<RasterDraw::Texture, 2> textures;
+    for (unsigned i = 0; i < 2; ++i) {
+        textures[i] = {shader.textures[i], 1, 1, {}, [](unsigned, unsigned) { return std::array<float, 4>{}; }};
+        textures[i].unorm8Pitch = 1;
+    }
+    std::array<RasterDraw::Vertex, 1> vertices{{{.5f, .5f, {{{.5f, .5f, 0, 1}}}}}};
+    std::array<std::uint8_t, 4> target{};
+    RasterDraw draw{shader, vertices, {}, textures, target, 1, 1, 1, {0, 0, 1, 1}, 15, {}};
+    draw.topology = RasterDraw::Topology::Points;
+    auto backend = std::make_unique<VulkanRasterBackend>(true, true);
+    std::vector<RasterResult> results;
+    std::weak_ptr<const std::vector<std::uint8_t>> firstOwner, lastOwner;
+    for (unsigned i = 0; i < 260; ++i) {
+        auto owner = std::make_shared<const std::vector<std::uint8_t>>(std::vector<std::uint8_t>{std::uint8_t(i % 240 + 1), 10, 20, 255});
+        if (!i)
+            firstOwner = owner;
+        lastOwner = owner;
+        draw.cullFront = i == 0; // Keep the first bundle alive while the other pipeline rotates.
+        for (auto &texture: textures) {
+            texture.unorm8 = *owner;
+            texture.snapshotOwner = owner;
+        }
+        auto result = backend->renderDeferred(draw);
+        ASSERT_TRUE(result) << backend->lastError();
+        results.push_back(std::move(*result));
+    }
+    // The strong cache evicted the first upload, but its other draw bundle
+    // still owns it. Recover it through the weak registry across pipelines.
+    auto first = firstOwner.lock();
+    ASSERT_TRUE(first);
+    for (auto &texture: textures) {
+        texture.unorm8 = *first;
+        texture.snapshotOwner = first;
+    }
+    auto recovered = backend->renderDeferred(draw);
+    ASSERT_TRUE(recovered) << backend->lastError();
+    results.push_back(std::move(*recovered));
+    first.reset();
+    EXPECT_EQ(backend->sharedTextureUploads(), 260u); // Duplicate bindings and surviving uploads are shared.
+    EXPECT_GE(backend->sharedTextureHits(), 262u);
+    EXPECT_LE(backend->sharedTextureBytes(), 257u * 8u); // Strong entries plus the separately retained first image.
+    backend.reset();
+    textures = {};
+    EXPECT_FALSE(lastOwner.expired()); // Deferred images retain the device and its shared cache.
+    for (unsigned i = 0; i < results.size(); ++i) {
+        results[i].resolve();
+        EXPECT_EQ(results[i].rgba, (std::vector<std::uint8_t>{std::uint8_t(i == 260 ? 1 : i % 240 + 1), 10, 20, 255}));
+    }
+    EXPECT_TRUE(firstOwner.expired());
+    results.clear();
+    EXPECT_TRUE(lastOwner.expired());
+}
+
+TEST(VulkanCubeTest, CompressedBaseLevelValidatesPayloadAndKeepsViewMapping)
+{
+    if (!std::getenv("WEMU_TEST_VULKAN") || !SpirvCompiler::available())
+        GTEST_SKIP();
+    using namespace Latte;
+    const auto shader = lowerFragmentShader(
+            *decodeProgram({2, CF_TEX << 23, 0, (CF_EXP_DONE << 23) | (1u << 21) | 0x688u, 0x10, 0x30000000u | (0x688u << 9), 1u << 23, 0}));
+    ASSERT_TRUE(shader) << shader.error;
+    ASSERT_EQ(shader.textures.size(), 1u);
+    std::array<std::uint8_t, 32> blocks{};
+    for (unsigned i = 0; i < blocks.size(); i += 8)
+        blocks[i] = blocks[i + 1] = 255; // White endpoint, palette index zero.
+    std::array<RasterDraw::Texture, 1> textures{{{shader.textures[0], 7, 5, {}, [](unsigned, unsigned) { return std::array<float, 4>{}; }}}};
+    textures[0].blocks = blocks;
+    textures[0].blockFormat = TextureBlockFormat::BC1;
+    std::array<RasterDraw::Vertex, 1> vertices{{{.5f, .5f, {{{.5f, .5f, 0, 1}}}}}};
+    std::array<std::uint8_t, 4> target{};
+    RasterDraw draw{shader, vertices, {}, textures, target, 1, 1, 1, {0, 0, 1, 1}, 15, {}};
+    draw.topology = RasterDraw::Topology::Points;
+    VulkanRasterBackend backend;
+    auto result = backend.render(draw);
+    ASSERT_TRUE(result) << backend.lastError();
+    EXPECT_EQ(result->rgba, (std::vector<std::uint8_t>{255, 255, 255, 255}));
+    textures[0].unorm8Map = 0x04050100; // ZERO, ONE, G, R.
+    result = backend.render(draw);
+    ASSERT_TRUE(result) << backend.lastError();
+    EXPECT_EQ(result->rgba, (std::vector<std::uint8_t>{0, 255, 255, 255}));
+    textures[0].blocks = std::span(blocks).first(31);
+    EXPECT_FALSE(backend.render(draw)); // Partial block is never submitted.
+    textures[0].blocks = blocks;
+    textures[0].unorm8 = target;
+    EXPECT_FALSE(backend.render(draw)); // Ambiguous representations are rejected.
+    textures[0].unorm8 = {};
+    textures[0].blockFormat = TextureBlockFormat::None;
+    EXPECT_FALSE(backend.render(draw));
+    EXPECT_EQ(backend.completedDraws(), 2u);
 }

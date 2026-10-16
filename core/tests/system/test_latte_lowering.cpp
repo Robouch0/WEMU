@@ -490,6 +490,13 @@ TEST(LatteLoweringTest, WholeQuadElseCanExposeTemporaryValues)
     const auto shader = lowerFragmentShader(*program);
     EXPECT_FALSE(shader);
     EXPECT_TRUE(shader.error.starts_with("whole-quad value escapes masked region:"));
+    auto aluElse = program->words;
+    aluElse[4] = 9;
+    aluElse[5] = 15u << 26;
+    aluElse.insert(aluElse.end(), {0x80000000u | SRC_0, OP2_NOP << 7});
+    const auto combined = lowerFragmentShader(*decodeProgram(aluElse));
+    EXPECT_FALSE(combined);
+    EXPECT_TRUE(combined.error.starts_with("whole-quad value escapes masked region:"));
 }
 
 TEST(LatteLoweringTest, WholeQuadMaskUpdatesAndUnscopedClausesRemainFallback)
@@ -2302,6 +2309,7 @@ void main() {
     for(int i=0;i<16;++i) inputs[i]=vec4(0.0);
     inputs[0].x=gl_Position.x;
 }
+
 )";
         const auto fragment = lowerFragmentShader(*program);
         ASSERT_TRUE(fragment) << fragment.error;
@@ -2332,6 +2340,45 @@ void main() {
     invalid = words;
     invalid[3] |= 1u << 8;
     EXPECT_FALSE(lowerFragmentShader(*decodeProgram(invalid))); // non-ACTIVE condition
+}
+
+TEST(LatteLoweringTest, AluElseAfterPreservesParentAndRunsBothBranchBodies)
+{
+    const auto program = decodeProgram({6,
+                                        9u << 26,
+                                        7,
+                                        9u << 26,
+                                        8,
+                                        15u << 26,
+                                        9,
+                                        11u << 26,
+                                        10,
+                                        8u << 26,
+                                        3u << 15,
+                                        (CF_EXP_DONE << 23) | (1u << 21) | 0x688u,
+                                        0x80000000u | (SRC_0 << 13),
+                                        (OP2_PRED_SETGT << 7) | 4u,
+                                        0x80000000u | (1u << 10) | (SRC_0 << 13),
+                                        (OP2_PRED_SETGT << 7) | 4u,
+                                        0x80000000u | SRC_1,
+                                        (OP2_MOV << 7) | 16u | (3u << 21),
+                                        0x80000000u | SRC_1,
+                                        (OP2_MOV << 7) | 16u | (3u << 21) | (1u << 29),
+                                        0x80000000u | SRC_1,
+                                        (OP2_MOV << 7) | 16u | (3u << 21) | (2u << 29)});
+    for (bool parent: {false, true})
+        for (bool branch: {false, true}) {
+            VulkanFragmentProbe::Inputs inputs{};
+            inputs[0][0] = parent ? 1.f : -1.f;
+            inputs[0][1] = branch ? 1.f : -1.f;
+            const auto out = Core::Gfx::LatteVsInterp::runPixel(*program, inputs, nullptr, 0, {});
+            ASSERT_TRUE(out.colorValid);
+            EXPECT_EQ(out.color, (std::array{parent && branch ? 1.f : 0.f, parent && !branch ? 1.f : 0.f, 1.f, 0.f}));
+            ASSERT_NO_FATAL_FAILURE(compareNativeControlFlow(*program, inputs, out.color));
+        }
+    const auto invalid = decodeProgram({2, 15u << 26, 0, (CF_EXP_DONE << 23) | (1u << 21) | 0x688u, 0x80000000u | SRC_1, (OP2_MOV << 7) | 16u});
+    EXPECT_FALSE(lowerFragmentShader(*invalid));
+    EXPECT_FALSE(Core::Gfx::LatteVsInterp::runPixel(*invalid, {}, nullptr, 0, {}).colorValid);
 }
 
 TEST(LatteLoweringTest, IntegerArithmeticAndShiftsMatchBitsOnVulkan)
@@ -3461,7 +3508,8 @@ TEST(VulkanRasterBackendTest, LiveVersionRotationRemainsBoundedAndDiscardedTicke
         ASSERT_TRUE(result) << backend.lastError();
         snapshots.push_back(std::move(*result));
     }
-    EXPECT_EQ(backend.readbackTransfers(), 6u); // The 384-entry resource cache preserves live versions during eviction.
+    EXPECT_EQ(backend.readbackTransfers(), 382u); // Eight live versions; older tickets materialize before bundle reuse.
+    EXPECT_EQ(backend.reusedDraws(), 382u);
     for (unsigned i = 0; i < snapshots.size(); ++i) {
         snapshots[i].resolve();
         EXPECT_NEAR(snapshots[i].rgba[0], std::round(float(i) * 255 / 512), 1);
@@ -4194,4 +4242,44 @@ TEST(VulkanDepthTest, SeparateVertexProgramsKeepSlopedPrepassEqualCoverage)
     ASSERT_TRUE(always) << backend.lastError();
     EXPECT_EQ(equal->rgba, always->rgba) << "EQUAL must preserve all pixels covered by the matching geometric prepass";
     EXPECT_NE(equal->rgba, color);
+}
+
+TEST(LatteLoweringTest, AddressRelativeGprReadsPreserveSimultaneousValuesAndBounds)
+{
+    // AR.x comes from c0.x in one ALU group; the following group reads
+    // GPR[4+AR.x]. Both inputs and zero-initialized higher registers are visible.
+    const auto program = decodeProgram({2, (8u << 26) | (1u << 18), 3u << 15, (CF_EXP_DONE << 23) | (1u << 21), 0x80000000u | 256u,
+                                        OP2_MOVA_FLOOR << 7, 0x80000000u | 4u | (1u << 9), (OP2_MOV << 7) | 16u | (3u << 21)});
+    const auto fragment = lowerFragmentShader(*program);
+    ASSERT_TRUE(fragment) << fragment.error;
+    EXPECT_NE(fragment.source.find("vec4 r[128]"), std::string::npos);
+    FragmentShader vertex;
+    vertex.source = probeVertexSource;
+    std::vector<unsigned> vs, ps;
+    ASSERT_NO_FATAL_FAILURE(validateSpirv(vertex, &vs, "vert"));
+    ASSERT_NO_FATAL_FAILURE(validateSpirv(fragment, &ps));
+    std::array<std::array<float, 4>, 4> inputs{};
+    for (unsigned i = 0; i < inputs.size(); ++i)
+        inputs[i][0] = float(i + 1) / 16.f;
+    for (float index: {-5.f, -4.f, -2.1f, 0.f, 1.75f, 11.f, 12.f, 123.f, 124.f}) {
+        SCOPED_TRACE(index);
+        std::array<float, 1024> constants{};
+        constants[0] = index;
+        const int selected = 4 + int(std::floor(index));
+        const auto result = Core::Gfx::LatteVsInterp::runPixel(*program, inputs, constants.data(), 256, {});
+        ASSERT_TRUE(result.colorValid);
+        if (selected < 0 || selected >= 128)
+            EXPECT_EQ(std::bit_cast<unsigned>(result.color[0]), 0x7FFFFFFFu);
+        else
+            EXPECT_EQ(result.color[0], selected < 4 ? inputs[unsigned(selected)][0] : 0.f);
+        if (std::getenv("WEMU_TEST_VULKAN")) {
+            VulkanFragmentProbe probe;
+            probe.initialize(vs, ps, constants);
+            for (const auto &pixel: probe.draw(inputs))
+                if (std::isnan(result.color[0]))
+                    EXPECT_TRUE(std::isnan(pixel[0]));
+                else
+                    EXPECT_EQ(pixel[0], result.color[0]);
+        }
+    }
 }

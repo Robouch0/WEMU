@@ -53,17 +53,26 @@ Tests cover cube faces and array selection, mip blending, sampler limits, HDR
 refresh, incomplete-chain rejection, reference edge/corner filtering, padded
 cube mip allocation, distinct burst outputs with native/reference agreement,
 and changing vertex counts without stale coverage. MK8 still exposes incomplete
-effects, depth precision limits and unsupported compressed lighting generation. A correct race scene and sustained 30 FPS remain unproven.
+effects, depth precision limits and unsupported compressed lighting generation.
+Mario Kart Stadium now reaches presented course-intro visuals; controllable racing,
+correct course lighting and sustained 30 FPS remain unproven.
 
 Signed BC4 (`0x234`) and BC5 (`0x235`) use signed RGTC endpoints and interpolation,
 including negative normalized values and the -128 endpoint clamp. Reference
-sampling applies the view component selectors before filtering. Native base-level
-decoding retains mapped RGBA32F snapshots instead of converting these values to
-UNORM8. The shared bounded decode cache accounts for the larger float storage,
+sampling applies the view component selectors before filtering. Expanded native
+snapshots retain mapped RGBA32F values instead of converting them to UNORM8.
+The shared bounded decode cache accounts for the larger float storage,
 keys the complete numeric format and refreshes after guest source changes.
 Signed cube/array/mip views can use the existing float mip snapshot path. Tests
 cover endpoint modes, point/linear sampling, component mapping and changed source
 bytes, with exact CPU/native agreement on the bounded RGBA8 sampling fixture.
+
+Pixel-stage packed R11G11B10 and RGBA32F array views use the float snapshot path
+as well. Selected layers retain HDR values and component mappings. Snapshot
+validation includes the canonical layers' render-write generations, so a clear
+or draw refreshes their contents even when guest RAM has not changed. Supported
+RGBA32F array slices use 16-byte texel addressing. Native vertex-stage HDR array
+sampling and native depth array snapshots retain their existing fallback.
 
 This corrects normal-map interpretation independently of any game or shader hash.
 Together with guest polygon offset, it substantially improves the inspected MK8
@@ -78,7 +87,27 @@ clipped to the logical image dimensions. Signed BC4/BC5 retain float values and
 component mapping. Source snapshots are compared exactly once per presentation, allowing vectorized
 byte comparison instead of a serial hash and detecting changes without hash
 collisions. Both source and decoded bytes count toward the 256 MiB cache budget
-and 64 MiB entry limit; changed guest bytes refresh the decoded image. Rendered
+and 128 MiB entry limit; changed guest bytes refresh the decoded image. The
+larger entry bound accommodates a near-4K BC atlas plus its compressed source
+without expanding a fallback upload to RGBA32F. Rendered
 aliases and cube/mip snapshots retain their existing versioned paths. Native vs
 reference regressions cover BC1–BC5, linear/micro/macro tiling, partial blocks,
 source mutation, and signed point/bilinear filtering.
+
+Pixel-stage base-level BC1, unsigned/signed BC4 and signed BC5 can instead upload
+tightly packed compressed blocks directly to Vulkan. The native path untiles
+blocks without expanding their pixels, preserving source-byte validation,
+immutable snapshot ownership and view component mapping. For a near-4K BC1
+atlas, both the image and its staging upload are about 8 MiB each instead of
+64 MiB each. Device compression support and sampled-format/filter features are
+checked before submission. Unsupported representations keep the reference path;
+BC2/BC3, unsigned BC5, vertex-stage compressed uploads and compressed arrays or
+mip chains retain their existing expanded snapshots.
+
+Hardware BC1–BC5 interpolation may vary by vendor. Tests bound unsigned native
+results using each sampled block's endpoint distance and the documented BC error
+tolerance, including the reference decoder's byte truncation; alpha coverage and
+untouched pixels remain exact. The diagnostic native/reference comparison still
+reports these differences rather than hiding them. See the
+[BC error tolerance specification](https://microsoft.github.io/DirectX-Specs/d3d/archive/D3D11_3_FunctionalSpec.htm#19.5.2)
+and [measured GPU decoder behavior](https://fgiesen.wordpress.com/2021/10/04/gpu-bcn-decoding/).

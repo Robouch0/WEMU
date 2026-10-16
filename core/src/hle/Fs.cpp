@@ -671,3 +671,9 @@ void RegisterFsFunctions()
     Core::syscallHandler.registerSyscall("SAVEGetSharedDataTitlePath", save_GetSharedDataTitlePath);
     Core::syscallHandler.registerSyscall("SAVEGetSharedSaveDataPath", save_GetSharedSaveDataPath);
 }
+
+std::string ResolveFsContentPath(const std::string &guestPath)
+{
+    const auto normalized = std::filesystem::path(guestPath).lexically_normal().generic_string();
+    return isWithinMount(normalized, "/vol/content") ? translatePath(normalized) : std::string{};
+}

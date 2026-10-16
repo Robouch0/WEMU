@@ -1,5 +1,6 @@
 #include <atomic>
 #include <bit>
+#include <cmath>
 #include <gtest/gtest.h>
 #include <stdexcept>
 
@@ -539,4 +540,16 @@ TEST(LatteVsTest, VertexTextureSampleUsesSelectorsAndPreservesMaskedChannels)
     EXPECT_FALSE(LatteVsInterp::run(program, attributes, nullptr, 0).valid);
     program[4] = (program[4] & ~31u) | 0x10u; // implicit-LOD SAMPLE is not implemented
     EXPECT_FALSE(LatteVsInterp::run(program, attributes, nullptr, 0, {}, sampler).valid);
+}
+
+TEST(TextureFormatTest, Rgb565UsesGpuByteOrderAndIndependentNormalizedChannels)
+{
+    for (const unsigned word: {0u, 0x1Fu, 0x7E0u, 0xF800u, 0xFFFFu, 0xAE91u}) {
+        const std::array<std::uint8_t, 2> bytes{std::uint8_t(word), std::uint8_t(word >> 8)};
+        const auto rgba = decodeRgb565(bytes.data());
+        EXPECT_EQ(rgba[0], std::lround(float(word & 31) * 255.f / 31.f));
+        EXPECT_EQ(rgba[1], std::lround(float((word >> 5) & 63) * 255.f / 63.f));
+        EXPECT_EQ(rgba[2], std::lround(float((word >> 11) & 31) * 255.f / 31.f));
+        EXPECT_EQ(rgba[3], 255);
+    }
 }

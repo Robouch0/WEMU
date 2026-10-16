@@ -17,6 +17,7 @@
 #include "gfx/TextureSampler.hpp"
 
 namespace Core::Gfx {
+    enum class TextureBlockFormat { None, BC1, BC4, BC4Signed, BC5Signed };
     class RasterReadback;
     // Backend-specific, versioned image identity. Never exposes a borrowed handle.
     struct RasterImage {
@@ -81,6 +82,12 @@ namespace Core::Gfx {
                     // Additional levels after the base snapshot. Multilevel uploads
                     // currently use component-mapped RGBA32F for every level.
                     std::span<const MipLevel> mips;
+                    // Identity/lifetime of immutable snapshot bytes. A changed image
+                    // must supply a new owner; permits sharing uploads across draws.
+                    std::shared_ptr<const void> snapshotOwner;
+                    // Tightly packed base-level 4x4 blocks, before view mapping.
+                    std::span<const std::uint8_t> blocks;
+                    TextureBlockFormat blockFormat{};
             };
             struct Blend {
                     bool enabled{};
@@ -217,6 +224,7 @@ namespace Core::Gfx {
             virtual bool supportsPoints() const { return false; }
             virtual bool supportsFloatTargets() const { return false; }
             virtual bool supportsVertexStage() const { return false; }
+            virtual bool supportsBlockTextures() const { return false; }
             // Same borrowed-input lifetime as render; only the owned readback may
             // outlive this call. Backends without deferred support remain synchronous.
             virtual std::optional<RasterResult> renderDeferred(const RasterDraw &draw) { return render(draw); }

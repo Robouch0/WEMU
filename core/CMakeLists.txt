@@ -20,7 +20,7 @@ if(NOT Vulkan_FOUND)
 endif()
 find_package(SDL2 REQUIRED)
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET libavcodec>=60 libavutil libswscale)
+pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET libavcodec>=60 libavformat libavutil libswscale)
 
 # ------------------------------------------------------------
 # 1. OPTIONS
@@ -51,9 +51,11 @@ add_library(core STATIC
         src/hle/MemHeap.cpp
         src/hle/CoreinitExtra.hpp
         src/hle/CoreinitExtra.cpp
+        src/hle/MvPlayer.cpp
         src/hle/LockedCache.cpp
         src/hle/H264.cpp
         src/video/H264Decoder.cpp
+        src/video/MovieDecoder.cpp
         src/hle/Ax.hpp
         src/hle/Ax.cpp
         src/hle/AsyncCallbacks.hpp

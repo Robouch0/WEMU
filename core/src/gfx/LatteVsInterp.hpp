@@ -30,7 +30,8 @@
 //    (256-511), literals (253), PV/PS (254/255), 0/1/1-int/0.5 inline constants
 //    (248/249/250/252).
 //  - Clause-local MOVA/MOVA_FLOOR/MOVA_INT address registers and AR-relative
-//    constant-file reads. Relative GPR/kcache/loop operands remain unsupported.
+//    GPR and constant-file reads. Relative destinations, kcache and loop
+//    addressing remain unsupported.
 //  - Groups: instructions until LAST=1 read pre-group register state; writes commit at group end;
 //    PV/PS updated per group; literal dwords follow each group.
 //

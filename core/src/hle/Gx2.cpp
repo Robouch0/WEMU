@@ -662,7 +662,8 @@ namespace {
                                                         "SetVertexSamplerBorderColor",
                                                         "SetPolygonControl",
                                                         "SetRasterizerClipControl",
-                                                        "SetPolygonOffset"};
+                                                        "SetPolygonOffset",
+                                                        "DrawImage"};
             std::size_t idx = 0;
             for (const auto &c: Core::Gfx::gx2Stream().commands()) {
                 const auto ti = static_cast<std::size_t>(c.type);

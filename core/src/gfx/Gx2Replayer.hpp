@@ -155,6 +155,7 @@ namespace Core::Gfx {
             };
             DepthBacking *depthBacking(const Surface &s, bool resolve = true) const;
             void clearDepthSurface(const Surface &s, float depth, unsigned flags);
+            void drawImage(const Gx2Command &cmd);
             void drawPrimitives(const Gx2Command &cmd, bool indexed, int selectedColor = -1);
             bool fetchAttributes(std::uint32_t vertex, std::span<std::array<float, 4>> out) const;
             void copyToScanBuffer(const Surface &s);
@@ -222,6 +223,7 @@ namespace Core::Gfx {
                     std::vector<std::uint8_t> source;
             };
             std::vector<std::shared_ptr<MipSnapshot>> m_mipSnapshots;
+            std::vector<std::weak_ptr<MipSnapshot>> m_retainedMipSnapshots;
             std::shared_ptr<MipSnapshot> mipSnapshot(const Surface &surface, bool includeMips);
             static bool sampleMipSnapshot(const MipSnapshot &snapshot, const TextureSampler &sampler, const std::array<float, 4> &coords,
                                           float cubeIndex, bool explicitLod, std::array<float, 4> &rgba);
@@ -234,11 +236,26 @@ namespace Core::Gfx {
                     std::vector<std::uint8_t> source;
                     std::vector<std::uint8_t> rgba;
                     std::vector<float> floating; // component-mapped signed normalized texels
-                    std::size_t bytes() const { return source.size() + rgba.size() + floating.size() * sizeof(float); }
+                    std::vector<std::uint8_t> blocks;
+                    std::size_t bytes() const { return source.size() + rgba.size() + floating.size() * sizeof(float) + blocks.size(); }
             };
-            std::unordered_map<SurfaceKey, std::shared_ptr<DecodedTexture>, SurfaceKeyHash> m_decodedTextures;
+            struct DecodedKey {
+                    SurfaceKey surface;
+                    std::uint32_t componentMap{}, imageSize{};
+                    bool blocksOnly{};
+                    bool operator==(const DecodedKey &) const = default;
+            };
+            struct DecodedKeyHash {
+                    std::size_t operator()(const DecodedKey &key) const
+                    {
+                        return SurfaceKeyHash{}(key.surface) ^ std::size_t(key.componentMap) ^ std::size_t(key.imageSize) ^
+                               std::size_t(key.blocksOnly);
+                    }
+            };
+            std::unordered_map<DecodedKey, std::shared_ptr<DecodedTexture>, DecodedKeyHash> m_decodedTextures;
+            std::unordered_map<DecodedKey, std::weak_ptr<DecodedTexture>, DecodedKeyHash> m_retainedDecodedTextures;
             std::uint64_t m_decodedBytes{}, m_decodedClock{};
-            std::shared_ptr<DecodedTexture> decodedTexture(const Surface &surface);
+            std::shared_ptr<DecodedTexture> decodedTexture(const Surface &surface, bool blocksOnly = false);
             std::vector<float> volumeTexels(const Surface &surface) const;
 
             float m_clear[4]{0.0f, 0.0f, 0.0f, 1.0f}; // RGBA, 0..1

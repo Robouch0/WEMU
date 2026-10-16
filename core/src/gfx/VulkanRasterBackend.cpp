@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <chrono>
 #include <cmath>
@@ -160,6 +161,27 @@ namespace Core::Gfx {
                                                            : VK_FORMAT_R8G8B8A8_UNORM;
         }
         unsigned imageElementBytes(VkFormat format) { return format == VK_FORMAT_R32G32B32A32_SFLOAT ? 16u : 4u; }
+        VkFormat blockVkFormat(TextureBlockFormat format)
+        {
+            switch (format) {
+                case TextureBlockFormat::BC1:
+                    return VK_FORMAT_BC1_RGBA_UNORM_BLOCK;
+                case TextureBlockFormat::BC4:
+                    return VK_FORMAT_BC4_UNORM_BLOCK;
+                case TextureBlockFormat::BC4Signed:
+                    return VK_FORMAT_BC4_SNORM_BLOCK;
+                case TextureBlockFormat::BC5Signed:
+                    return VK_FORMAT_BC5_SNORM_BLOCK;
+                default:
+                    return VK_FORMAT_UNDEFINED;
+            }
+        }
+        unsigned blockElementBytes(VkFormat format)
+        {
+            if (format == VK_FORMAT_BC5_SNORM_BLOCK)
+                return 16;
+            return format == VK_FORMAT_BC1_RGBA_UNORM_BLOCK || format == VK_FORMAT_BC4_UNORM_BLOCK || format == VK_FORMAT_BC4_SNORM_BLOCK ? 8 : 0;
+        }
         VkFormat depthVkFormat(DepthFormat)
         {
             // Canonical floats avoid device-dependent fixed-point comparison precision.
@@ -170,6 +192,37 @@ namespace Core::Gfx {
         {
             return {depth.test ? unsigned(depth.format) + 1 : 0, unsigned(depth.test), unsigned(depth.write), depth.compare};
         }
+        struct TextureMemoryUsage {
+                std::atomic<std::uint64_t> bytes{};
+        };
+        struct CachedTexture {
+                VkDevice device{};
+                VkImage image{};
+                VkImageView view{};
+                VkBuffer staging{};
+                VkDeviceMemory imageMemory{}, stagingMemory{};
+                std::shared_ptr<const void> owner;
+                std::vector<std::uint64_t> key;
+                std::weak_ptr<const void> producer;
+                bool ready{};
+                std::shared_ptr<TextureMemoryUsage> usage;
+                std::uint64_t bytes{};
+                ~CachedTexture()
+                {
+                    if (view)
+                        vkDestroyImageView(device, view, nullptr);
+                    if (image)
+                        vkDestroyImage(device, image, nullptr);
+                    if (staging)
+                        vkDestroyBuffer(device, staging, nullptr);
+                    if (imageMemory)
+                        vkFreeMemory(device, imageMemory, nullptr);
+                    if (stagingMemory)
+                        vkFreeMemory(device, stagingMemory, nullptr);
+                    if (usage)
+                        usage->bytes.fetch_sub(bytes, std::memory_order_relaxed);
+                }
+        };
         struct Context {
                 struct BatchFence {
                         VkDevice device{};
@@ -267,10 +320,18 @@ namespace Core::Gfx {
                 VkPipelineLayout depthQuantizeLayout{};
                 VkPipeline depthQuantizePipeline{};
                 bool computeQueue{};
-                bool cubeArrays{}, biasClamp{};
+                bool cubeArrays{}, biasClamp{}, blockTextures{};
                 unsigned timestampBits{};
                 float timestampPeriod{};
                 std::map<PipelineKey, PipelineBundle> pipelines;
+                struct TextureEntry {
+                        std::shared_ptr<CachedTexture> value;
+                        std::uint64_t bytes{}, used{};
+                };
+                std::map<std::vector<std::uint64_t>, TextureEntry> textures;
+                std::map<std::vector<std::uint64_t>, std::weak_ptr<CachedTexture>> retainedTextures;
+                std::uint64_t textureBytes{}, textureClock{}, textureUploads{}, textureHits{};
+                std::shared_ptr<TextureMemoryUsage> textureMemory = std::make_shared<TextureMemoryUsage>();
                 void drainNoThrow() noexcept
                 {
                     try {
@@ -308,6 +369,7 @@ namespace Core::Gfx {
                 {
                     drainNoThrow();
                     batches.clear();
+                    textures.clear();
                     if (device)
                         destroyPipelines();
                     if (depthQuantizePipeline)
@@ -382,9 +444,11 @@ namespace Core::Gfx {
                     vkGetPhysicalDeviceFeatures(physical, &features);
                     cubeArrays = features.imageCubeArray;
                     biasClamp = features.depthBiasClamp;
+                    blockTextures = features.textureCompressionBC;
                     VkPhysicalDeviceFeatures enabled{};
                     enabled.imageCubeArray = features.imageCubeArray;
                     enabled.depthBiasClamp = features.depthBiasClamp;
+                    enabled.textureCompressionBC = features.textureCompressionBC;
                     di.pEnabledFeatures = &enabled;
                     check(vkCreateDevice(physical, &di, nullptr, &device), "create device");
                     vkGetDeviceQueue(device, family, 0, &queue);
@@ -524,18 +588,22 @@ void main() {
                         VkSamplerMipmapMode mipFilter{VK_SAMPLER_MIPMAP_MODE_NEAREST};
                         float minLod{}, maxLod{};
                         std::shared_ptr<ColorImage> rendered;
+                        std::shared_ptr<const void> snapshotOwner;
 
                         std::size_t rowBytes() const
                         {
+                            if (const auto blockBytes = blockElementBytes(format))
+                                return std::size_t((width + 3) / 4) * blockBytes;
                             const unsigned bytes = format == VK_FORMAT_R8_UNORM              ? 1
                                                    : format == VK_FORMAT_R8G8_UNORM          ? 2
                                                    : format == VK_FORMAT_R32G32B32A32_SFLOAT ? 16
                                                                                              : 4;
                             return std::size_t(width) * bytes;
                         }
+                        unsigned rows() const { return blockElementBytes(format) ? (height + 3) / 4 : height; }
                         std::size_t bytes() const
                         {
-                            auto size = rowBytes() * height * layers;
+                            auto size = rowBytes() * rows() * layers;
                             for (const auto mip: mips)
                                 size += mip.size_bytes();
                             return size;
@@ -544,10 +612,10 @@ void main() {
                         {
                             const auto *source = snapshot.empty() ? reinterpret_cast<const std::byte *>(rgba.data()) : snapshot.data();
                             const auto pitch = snapshot.empty() ? rowBytes() : sourcePitch;
-                            for (unsigned y = 0; y < height * layers; ++y)
+                            for (unsigned y = 0; y < rows() * layers; ++y)
                                 if (std::memcmp(static_cast<const std::byte *>(previous) + y * rowBytes(), source + y * pitch, rowBytes()) != 0)
                                     return false;
-                            auto offset = rowBytes() * height * layers;
+                            auto offset = rowBytes() * rows() * layers;
                             for (const auto mip: mips) {
                                 if (std::memcmp(static_cast<const std::byte *>(previous) + offset, mip.data(), mip.size_bytes()) != 0)
                                     return false;
@@ -558,15 +626,15 @@ void main() {
                         void copyTo(void *destination) const
                         {
                             if (snapshot.empty()) {
-                                std::memcpy(destination, rgba.data(), rowBytes() * height * layers);
+                                std::memcpy(destination, rgba.data(), rowBytes() * rows() * layers);
                             } else if (sourcePitch == rowBytes()) {
-                                std::memcpy(destination, snapshot.data(), rowBytes() * height * layers);
+                                std::memcpy(destination, snapshot.data(), rowBytes() * rows() * layers);
                             } else {
-                                for (unsigned y = 0; y < height * layers; ++y)
+                                for (unsigned y = 0; y < rows() * layers; ++y)
                                     std::memcpy(static_cast<std::byte *>(destination) + y * rowBytes(), snapshot.data() + y * sourcePitch,
                                                 rowBytes());
                             }
-                            auto offset = rowBytes() * height * layers;
+                            auto offset = rowBytes() * rows() * layers;
                             for (const auto mip: mips) {
                                 std::memcpy(static_cast<std::byte *>(destination) + offset, mip.data(), mip.size_bytes());
                                 offset += mip.size_bytes();
@@ -612,10 +680,12 @@ void main() {
                         vkDestroyDescriptorPool(device, depthQuantizePool, nullptr);
                     for (auto sampler: samplers)
                         vkDestroySampler(device, sampler, nullptr);
-                    for (auto textureView: textureViews)
-                        vkDestroyImageView(device, textureView, nullptr);
-                    for (auto textureImage: textureImages)
-                        vkDestroyImage(device, textureImage, nullptr);
+                    for (std::size_t i = 0; i < textureViews.size(); ++i)
+                        if (!cachedTextures[i])
+                            vkDestroyImageView(device, textureViews[i], nullptr);
+                    for (std::size_t i = 0; i < textureImages.size(); ++i)
+                        if (!cachedTextures[i])
+                            vkDestroyImage(device, textureImages[i], nullptr);
                     for (auto buffer: buffers)
                         vkDestroyBuffer(device, buffer, nullptr);
                     for (auto memory: memories)
@@ -1105,6 +1175,9 @@ void main() {
                                              nullptr);
                     check(vkEndCommandBuffer(command), "end commands");
                     batch = context.enqueue(command);
+                    for (const auto &texture: cachedTextures)
+                        if (texture && texture->producer.lock().get() == this)
+                            texture->ready = true;
                     submitted = true;
                     readbackValid = hasColor && !lazyReadback;
                     depthReadbackValid = !lazyReadback;
@@ -1436,6 +1509,10 @@ void main() {
                         uploadDepth(draw.depth);
                     for (std::size_t i = 0; i < textures.size(); ++i) {
                         const auto &texture = textures[i];
+                        if (cachedTextures[i]) {
+                            bindCachedTexture(i, texture);
+                            continue;
+                        }
                         if (bindDirectTexture(i, texture)) {
                             textureStagingValid[i] = false;
                             continue;
@@ -1519,8 +1596,148 @@ void main() {
                     std::memcpy(mapped, data, size);
                     vkUnmapMemory(device, memory);
                 }
+                VkSampler makeSampler(const Texture &texture)
+                {
+                    VkSamplerCreateInfo si{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+                    si.magFilter = texture.filter;
+                    si.minFilter = texture.minFilter;
+                    si.mipmapMode = texture.mipFilter;
+                    si.minLod = texture.minLod;
+                    si.maxLod = texture.maxLod;
+                    si.addressModeU = texture.addressU;
+                    si.addressModeV = texture.addressV;
+                    si.addressModeW = texture.addressW;
+                    si.borderColor = texture.borderColor;
+                    VkSampler sampler{};
+                    check(vkCreateSampler(device, &si, nullptr, &sampler), "create sampler");
+                    samplers.push_back(sampler);
+                    return sampler;
+                }
+
+                std::shared_ptr<CachedTexture> cachedTexture(const Texture &texture, const std::shared_ptr<CachedTexture> &previous)
+                {
+                    std::vector<std::uint64_t> key{reinterpret_cast<std::uintptr_t>(texture.snapshotOwner.get()),
+                                                   reinterpret_cast<std::uintptr_t>(texture.snapshot.data()),
+                                                   texture.width,
+                                                   texture.height,
+                                                   texture.layers,
+                                                   unsigned(texture.format),
+                                                   texture.sourcePitch,
+                                                   unsigned(texture.components.r),
+                                                   unsigned(texture.components.g),
+                                                   unsigned(texture.components.b),
+                                                   unsigned(texture.components.a),
+                                                   unsigned(texture.array),
+                                                   unsigned(texture.volume),
+                                                   unsigned(texture.cube)};
+                    for (const auto mip: texture.mips) {
+                        key.push_back(reinterpret_cast<std::uintptr_t>(mip.data()));
+                        key.push_back(mip.size());
+                    }
+                    if (previous && previous->key == key && previous->ready) {
+                        ++context.textureHits;
+                        return previous;
+                    }
+                    if (auto found = context.textures.find(key); found != context.textures.end()) {
+                        if (found->second.value->ready || found->second.value->producer.lock().get() == this) {
+                            found->second.used = ++context.textureClock;
+                            ++context.textureHits;
+                            return found->second.value;
+                        }
+                        context.textureBytes -= found->second.bytes;
+                        context.textures.erase(found);
+                    }
+                    if (const auto retained = context.retainedTextures.find(key); retained != context.retainedTextures.end())
+                        if (auto value = retained->second.lock(); value && (value->ready || value->producer.lock().get() == this)) {
+                            ++context.textureHits;
+                            return value;
+                        }
+                    const auto bytes = texture.bytes() * 2;
+                    constexpr std::uint64_t budget = 512ull * 1024 * 1024;
+                    while (!context.textures.empty() && (context.textureBytes + bytes > budget || context.textures.size() >= 256)) {
+                        const auto oldest = std::min_element(context.textures.begin(), context.textures.end(),
+                                                             [](const auto &a, const auto &b) { return a.second.used < b.second.used; });
+                        context.textureBytes -= oldest->second.bytes;
+                        context.textures.erase(oldest); // In-flight bundles retain their own ownership.
+                    }
+                    auto result = std::make_shared<CachedTexture>();
+                    result->device = device;
+                    result->owner = texture.snapshotOwner;
+                    result->key = key;
+                    result->producer = shared_from_this();
+                    VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+                    ci.imageType = texture.volume ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D;
+                    ci.flags = texture.cube ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0;
+                    ci.format = texture.format;
+                    ci.extent = {texture.width, texture.height, texture.volume ? texture.layers : 1};
+                    ci.mipLevels = unsigned(texture.mips.size() + 1);
+                    ci.arrayLayers = texture.volume ? 1 : texture.layers;
+                    ci.samples = VK_SAMPLE_COUNT_1_BIT;
+                    ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+                    ci.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+                    check(vkCreateImage(device, &ci, nullptr, &result->image), "create shared texture");
+                    VkMemoryRequirements req{};
+                    vkGetImageMemoryRequirements(device, result->image, &req);
+                    // Immutable sampled images never need host mapping or CPU
+                    // readback. Prefer VRAM instead of the first compatible heap,
+                    // which can be system memory on a discrete GPU.
+                    result->imageMemory = allocate(req, 0, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, false);
+                    check(vkBindImageMemory(device, result->image, result->imageMemory, 0), "bind shared texture");
+                    VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+                    vi.image = result->image;
+                    vi.viewType = texture.cube     ? VK_IMAGE_VIEW_TYPE_CUBE_ARRAY
+                                  : texture.volume ? VK_IMAGE_VIEW_TYPE_3D
+                                  : texture.array  ? VK_IMAGE_VIEW_TYPE_2D_ARRAY
+                                                   : VK_IMAGE_VIEW_TYPE_2D;
+                    vi.format = ci.format;
+                    vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, ci.mipLevels, 0, ci.arrayLayers};
+                    vi.components = texture.components;
+                    check(vkCreateImageView(device, &vi, nullptr, &result->view), "create shared texture view");
+                    result->staging = buffer(texture.bytes(), VK_BUFFER_USAGE_TRANSFER_SRC_BIT, result->stagingMemory,
+                                             VK_MEMORY_PROPERTY_HOST_CACHED_BIT, false, false);
+                    uploadTextureData(result->stagingMemory, texture);
+                    recordTextureUpload(result->image, result->staging, texture.width, texture.height, true, {}, texture.layers, texture.volume,
+                                        ci.mipLevels);
+                    result->bytes = bytes;
+                    result->usage = context.textureMemory;
+                    result->usage->bytes.fetch_add(bytes, std::memory_order_relaxed);
+                    if (context.retainedTextures.size() >= 4096) {
+                        std::erase_if(context.retainedTextures, [](const auto &entry) { return entry.second.expired(); });
+                        if (context.retainedTextures.size() >= 4096)
+                            context.retainedTextures.clear();
+                    }
+                    context.retainedTextures[key] = result;
+                    context.textures.emplace(std::move(key), Context::TextureEntry{result, bytes, ++context.textureClock});
+                    context.textureBytes += bytes;
+                    ++context.textureUploads;
+                    return result;
+                }
+
+                void bindCachedTexture(std::size_t index, const Texture &texture)
+                {
+                    auto shared = cachedTexture(texture, cachedTextures[index]);
+                    textureImages[index] = shared->image;
+                    textureViews[index] = shared->view;
+                    textureStagingBuffers[index] = shared->staging;
+                    textureStagingMemories[index] = shared->stagingMemory;
+                    cachedTextures[index] = std::move(shared);
+                    bindTextureDescriptor(texture.binding, samplers[index], textureViews[index]);
+                }
+
                 void uploadTexture(const Texture &texture)
                 {
+                    cachedTextures.push_back({});
+                    if (texture.snapshotOwner && !texture.snapshot.empty() && !texture.rendered) {
+                        textureImages.push_back({});
+                        textureViews.push_back({});
+                        textureStagingBuffers.push_back({});
+                        textureStagingMemories.push_back({});
+                        textureStagingValid.push_back(false);
+                        textureImageInitialized.push_back(true);
+                        makeSampler(texture);
+                        bindCachedTexture(textureImages.size() - 1, texture);
+                        return;
+                    }
                     VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
                     ci.imageType = texture.volume ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D;
                     ci.flags = texture.cube ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0;
@@ -1549,19 +1766,7 @@ void main() {
                     VkImageView textureView{};
                     check(vkCreateImageView(device, &vi, nullptr, &textureView), "create texture view");
                     textureViews.push_back(textureView);
-                    VkSamplerCreateInfo si{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
-                    si.magFilter = texture.filter;
-                    si.minFilter = texture.minFilter;
-                    si.mipmapMode = texture.mipFilter;
-                    si.minLod = texture.minLod;
-                    si.maxLod = texture.maxLod;
-                    si.addressModeU = texture.addressU;
-                    si.addressModeV = texture.addressV;
-                    si.addressModeW = texture.addressW;
-                    si.borderColor = texture.borderColor;
-                    VkSampler sampler{};
-                    check(vkCreateSampler(device, &si, nullptr, &sampler), "create sampler");
-                    samplers.push_back(sampler);
+                    const auto sampler = makeSampler(texture);
                     VkDeviceMemory stagingMemory{};
                     const auto staging = buffer(texture.bytes(), VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, stagingMemory,
                                                 VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
@@ -1760,19 +1965,26 @@ void main() {
                     throw std::runtime_error("No suitable Vulkan memory type");
                 }
                 VkBuffer buffer(VkDeviceSize bytes, VkBufferUsageFlags usage, VkDeviceMemory &memory, VkMemoryPropertyFlags preferred = 0,
-                                bool deviceOnly = false)
+                                bool deviceOnly = false, bool track = true)
                 {
                     VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
                     bi.size = bytes;
                     bi.usage = usage;
                     VkBuffer result{};
                     check(vkCreateBuffer(device, &bi, nullptr, &result), "create buffer");
-                    buffers.push_back(result);
+                    if (track)
+                        buffers.push_back(result);
                     VkMemoryRequirements req{};
                     vkGetBufferMemoryRequirements(device, result, &req);
-                    memory = allocate(req, deviceOnly ? 0 : VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                                      deviceOnly ? VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT : preferred);
-                    check(vkBindBufferMemory(device, result, memory, 0), "bind buffer");
+                    try {
+                        memory = allocate(req, deviceOnly ? 0 : VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                          deviceOnly ? VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT : preferred, track);
+                        check(vkBindBufferMemory(device, result, memory, 0), "bind buffer");
+                    } catch (...) {
+                        if (!track)
+                            vkDestroyBuffer(device, result, nullptr);
+                        throw;
+                    }
                     return result;
                 }
 
@@ -1827,6 +2039,7 @@ void main() {
                 std::vector<VkDeviceMemory> textureStagingMemories;
                 std::vector<bool> textureStagingValid, textureImageInitialized;
                 std::vector<VkImageView> textureViews;
+                std::vector<std::shared_ptr<CachedTexture>> cachedTextures;
                 std::vector<VkSampler> samplers;
                 bool submitted{};
                 bool retainedTarget{}, fullOverwrite{};
@@ -1902,6 +2115,12 @@ void main() {
     std::uint64_t VulkanRasterBackend::queueSubmissions() const noexcept { return m_impl->context ? m_impl->context->queueSubmissions : 0; }
     std::uint64_t VulkanRasterBackend::submittedCommandBuffers() const noexcept { return m_impl->context ? m_impl->context->submittedCommands : 0; }
     std::uint64_t VulkanRasterBackend::submissionWaits() const noexcept { return m_impl->context ? m_impl->context->submissionWaits : 0; }
+    std::uint64_t VulkanRasterBackend::sharedTextureUploads() const noexcept { return m_impl->context ? m_impl->context->textureUploads : 0; }
+    std::uint64_t VulkanRasterBackend::sharedTextureHits() const noexcept { return m_impl->context ? m_impl->context->textureHits : 0; }
+    std::uint64_t VulkanRasterBackend::sharedTextureBytes() const noexcept
+    {
+        return m_impl->context ? m_impl->context->textureMemory->bytes.load(std::memory_order_relaxed) : 0;
+    }
 
     std::optional<RasterResult> VulkanRasterBackend::renderImpl(const RasterDraw &inputDraw, bool deferReadback)
     {
@@ -1982,6 +2201,15 @@ void main() {
                 return reject("Unsupported texture binding");
             const bool cube = binding.type == Latte::TextureType::Cube;
             const bool array = binding.type == Latte::TextureType::TwoDArray || binding.type == Latte::TextureType::ThreeD || cube;
+            const auto compressedFormat = blockVkFormat(texture.blockFormat);
+            const bool compressed = texture.blockFormat != TextureBlockFormat::None;
+            if ((!compressed && !texture.blocks.empty()) ||
+                (compressed && (compressedFormat == VK_FORMAT_UNDEFINED || array || !texture.mips.empty() || texture.rendered ||
+                                !texture.unorm8.empty() || !texture.rgba32.empty() || !texture.r32.empty() || !texture.r32Bytes.empty() ||
+                                !texture.rgba32Bytes.empty() || !texture.r11g11b10Bytes.empty() ||
+                                texture.blocks.size() !=
+                                        std::uint64_t((texture.width + 3) / 4) * ((texture.height + 3) / 4) * blockElementBytes(compressedFormat))))
+                return reject("Invalid compressed base texture snapshot");
             if (cube && (texture.width != texture.height || texture.layers % 6))
                 return reject("Invalid cube texture dimensions or face count");
             if (!texture.layers || texture.layers > 256 || (!array && texture.layers != 1) ||
@@ -2045,7 +2273,9 @@ void main() {
                 // Constant (ZERO/ONE) selectors are applied after border substitution, so only
                 // channels that read a component must agree with the unmapped border.
                 for (unsigned c = 0; c < 4; ++c) {
-                    const auto selector = (map >> (24 - c * 8)) & 7;
+                    auto selector = (map >> (24 - c * 8)) & 7;
+                    if (texture.blockFormat == TextureBlockFormat::BC4 && selector < 4)
+                        selector = 0; // Preserve the reference's luminance/alpha expansion.
                     if (selector < 4 && border[selector] != border[c])
                         return false;
                 }
@@ -2055,11 +2285,12 @@ void main() {
             if (!addressSupported(r & 7) || !addressSupported((r >> 3) & 7) || ((r >> 9) & 7) > 1 ||
                 (binding.type == Latte::TextureType::ThreeD && !addressSupported((r >> 6) & 7)))
                 return reject(std::format("Unsupported sampler mode {:08X}", r));
-            textureBytes += std::uint64_t(texture.width) * texture.height * texture.layers *
-                            (texture.rendered          ? colorElementBytes(texture.renderedFormat)
-                             : !texture.unorm8.empty() ? texture.unorm8Channels
-                             : !texture.r32.empty() || !texture.r32Bytes.empty() || !texture.r11g11b10Bytes.empty() ? 4
-                                                                                                                    : 16);
+            textureBytes += compressed ? texture.blocks.size()
+                                       : std::uint64_t(texture.width) * texture.height * texture.layers *
+                                                 (texture.rendered          ? colorElementBytes(texture.renderedFormat)
+                                                  : !texture.unorm8.empty() ? texture.unorm8Channels
+                                                  : !texture.r32.empty() || !texture.r32Bytes.empty() || !texture.r11g11b10Bytes.empty() ? 4
+                                                                                                                                         : 16);
             if (textureBytes > std::uint64_t{128} * 1024 * 1024)
                 return reject("Texture upload budget exceeded");
         }
@@ -2201,7 +2432,11 @@ void main() {
                     texture.r32Bytes = {};
                 texture.rgba32 = {};
             }
-            const auto textureFormat = resident ? (texture.renderedDepth ? VK_FORMAT_R32_SFLOAT : resident->format)
+            const auto compressedFormat = blockVkFormat(texture.blockFormat);
+            if (compressedFormat != VK_FORMAT_UNDEFINED && !m_impl->context->blockTextures)
+                return reject("Device lacks BC texture compression support");
+            const auto textureFormat = compressedFormat != VK_FORMAT_UNDEFINED ? compressedFormat
+                                       : resident                              ? (texture.renderedDepth ? VK_FORMAT_R32_SFLOAT : resident->format)
                                        : !texture.r32.empty() || !texture.r32Bytes.empty() ? VK_FORMAT_R32_SFLOAT
                                        : !texture.r11g11b10Bytes.empty()                   ? VK_FORMAT_B10G11R11_UFLOAT_PACK32
                                        : texture.unorm8.empty()                            ? VK_FORMAT_R32G32B32A32_SFLOAT
@@ -2222,6 +2457,7 @@ void main() {
             constexpr VkBorderColor borderColors[]{VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK, VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK,
                                                    VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE, VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK};
             DrawResources::Texture uploaded;
+            uploaded.snapshotOwner = m_impl->retainTextures ? texture.snapshotOwner : nullptr;
             uploaded.format = textureFormat;
             uploaded.binding = texture.binding.binding;
             uploaded.width = texture.width;
@@ -2247,6 +2483,21 @@ void main() {
                 }
             }
             uploaded.rendered = resident;
+            if (compressedFormat != VK_FORMAT_UNDEFINED) {
+                const auto channel = [&](unsigned c) {
+                    constexpr VkComponentSwizzle channels[]{VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G,    VK_COMPONENT_SWIZZLE_B,
+                                                            VK_COMPONENT_SWIZZLE_A, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ONE};
+                    auto selector = (texture.unorm8Map >> (24 - c * 8)) & 7;
+                    if (texture.blockFormat == TextureBlockFormat::BC4 && selector < 4)
+                        selector = 0;
+                    return channels[selector < 6 ? selector : 4];
+                };
+                uploaded.components = {channel(0), channel(1), channel(2), channel(3)};
+                uploaded.snapshot = std::as_bytes(texture.blocks);
+                uploaded.sourcePitch = std::size_t((texture.width + 3) / 4) * blockElementBytes(compressedFormat);
+                textures.push_back(std::move(uploaded));
+                continue;
+            }
             if ((resident && !texture.renderedDepth && texture.renderedFormat != ColorFormat::RGBA8) || !texture.rgba32Bytes.empty() ||
                 !texture.r11g11b10Bytes.empty()) {
                 const auto channel = [&](unsigned c) {
@@ -2345,11 +2596,17 @@ void main() {
         key.depthPitch = draw.depth.test ? draw.depth.pitch : 0;
         key.pitch = draw.pitch;
         key.vertexCapacity = std::bit_ceil(draw.vertices.size());
-        std::uint64_t depthTransferBytes{};
-        for (const auto &texture: textures)
-            if (texture.format == VK_FORMAT_R32_SFLOAT)
-                depthTransferBytes += texture.bytes();
-        const auto estimatedBytes = (depthOnly(draw) ? 0 : std::uint64_t(draw.target.size()) * 3) + textureBytes * 2 + depthTransferBytes +
+        std::uint64_t depthTransferBytes{}, privateTextureBytes{}, incomingSharedBytes{};
+        for (const auto &texture: textures) {
+            if (texture.snapshotOwner && !texture.snapshot.empty() && !texture.rendered)
+                incomingSharedBytes += texture.bytes() * 2;
+            else {
+                privateTextureBytes += texture.bytes();
+                if (texture.format == VK_FORMAT_R32_SFLOAT)
+                    depthTransferBytes += texture.bytes();
+            }
+        }
+        const auto estimatedBytes = (depthOnly(draw) ? 0 : std::uint64_t(draw.target.size()) * 3) + privateTextureBytes * 2 + depthTransferBytes +
                                     std::uint64_t(key.vertexCapacity) * sizeof(RasterDraw::Vertex) + sizeof(constants) +
                                     (draw.vertexStage.shader ? sizeof(vertexConstants) : 0) +
                                     (draw.depth.test ? draw.depth.target.size_bytes() * 3 : 0);
@@ -2375,7 +2632,8 @@ void main() {
                                                              unsigned(texture.minFilter),
                                                              unsigned(texture.mipFilter),
                                                              std::bit_cast<unsigned>(texture.minLod),
-                                                             std::bit_cast<unsigned>(texture.maxLod)});
+                                                             std::bit_cast<unsigned>(texture.maxLod),
+                                                             unsigned(texture.snapshotOwner && !texture.snapshot.empty() && !texture.rendered)});
         }
         const auto t3 = std::chrono::steady_clock::now();
         RasterResult result;
@@ -2388,48 +2646,74 @@ void main() {
             // chainSlot is last in the key so matching bundles are contiguous.
             const auto *preserveImages = std::getenv("WEMU_NATIVE_PRESERVE_IMAGES");
             const bool preserve = !preserveImages || preserveImages[0] != '0';
-            unsigned freeSlot{};
+            // Keeping every live output resident can allocate thousands of identical
+            // bundles for small lighting passes. Retain a short version chain, then
+            // materialize its oldest output and reuse the existing allocations.
+            static const std::size_t maxLiveVersions = [] {
+                const auto *value = std::getenv("WEMU_NATIVE_LIVE_VERSIONS");
+                return value ? std::max<std::size_t>(1, std::strtoull(value, nullptr, 10)) : std::size_t{8};
+            }();
+            const auto ownsInput = [&](const auto &resources) {
+                // Sampled aliases already copy before attachment writes. The
+                // attachment inputs themselves need a separate destination.
+                return (targetSource && resources.ownsImage(targetSource)) || (depthSource && resources.ownsImage(depthSource));
+            };
+            auto recyclable = m_impl->resources.end();
+            unsigned freeSlot{}, matching{};
             for (; it != m_impl->resources.end(); ++it) {
                 if (!it->first.sameDraw(key)) {
                     it = m_impl->resources.end();
                     break;
                 }
-                if ((!targetSource || !it->second.value->ownsImage(targetSource)) && (!depthSource || !it->second.value->ownsImage(depthSource)) &&
-                    (!preserve || !it->second.value->needsReadbackPreservation()))
-                    break;
+                ++matching;
+                if (!ownsInput(*it->second.value)) {
+                    if (!preserve || !it->second.value->needsReadbackPreservation())
+                        break;
+                    if (recyclable == m_impl->resources.end() || it->second.used < recyclable->second.used)
+                        recyclable = it;
+                }
                 if (it->first.chainSlot == freeSlot)
                     ++freeSlot;
             }
+            if (it == m_impl->resources.end() && matching >= maxLiveVersions && recyclable != m_impl->resources.end())
+                it = recyclable; // refresh() saves outstanding versions before overwriting.
             key.chainSlot = freeSlot;
+            static const std::size_t maxEntries = [] {
+                const auto *value = std::getenv("WEMU_NATIVE_CACHE_ENTRIES");
+                return value ? std::max<std::size_t>(16, std::strtoull(value, nullptr, 10)) : std::size_t{384};
+            }();
+            static const std::uint64_t budget = [] {
+                const auto *value = std::getenv("WEMU_NATIVE_CACHE_MB");
+                return (value ? std::max<std::uint64_t>(128, std::strtoull(value, nullptr, 10)) : 2560ull) * 1024 * 1024;
+            }();
+            if (it == m_impl->resources.end() && m_impl->context->pipelines.size() >= 512 && !m_impl->context->pipelines.contains(key.pipeline)) {
+                for (auto &[oldKey, entry]: m_impl->resources)
+                    entry.value->finishPending();
+                m_impl->resources.clear();
+                m_impl->cachedBytes = 0;
+            }
+            // Count each shared image once, including images evicted from the
+            // texture cache but still held by draw bundles. Reserve a worst-case
+            // upload for the incoming snapshots on both allocation and refresh.
+            while (!m_impl->resources.empty() && ((it == m_impl->resources.end() && m_impl->resources.size() >= maxEntries) ||
+                                                  m_impl->cachedBytes + (it == m_impl->resources.end() ? estimatedBytes : 0) + incomingSharedBytes +
+                                                                  m_impl->context->textureMemory->bytes.load(std::memory_order_relaxed) >
+                                                          budget)) {
+                auto oldest = m_impl->resources.end();
+                for (auto candidate = m_impl->resources.begin(); candidate != m_impl->resources.end(); ++candidate)
+                    if (candidate != it && (oldest == m_impl->resources.end() || candidate->second.used < oldest->second.used))
+                        oldest = candidate;
+                if (oldest == m_impl->resources.end())
+                    break;
+                if (timing)
+                    Utils::Log::error("[NATIVE_CACHE_EVICT] entries={} bytes={} incoming={} shared_bytes={} victim_bytes={}",
+                                      m_impl->resources.size(), m_impl->cachedBytes, estimatedBytes,
+                                      m_impl->context->textureMemory->bytes.load(std::memory_order_relaxed), oldest->second.bytes);
+                oldest->second.value->finishPending();
+                m_impl->cachedBytes -= oldest->second.bytes;
+                m_impl->resources.erase(oldest);
+            }
             if (it == m_impl->resources.end()) {
-                // Pipeline bundles must stay alive while their resources are
-                // executable. A pipeline-cache reset is the exceptional full drain.
-                // Menus and races replay a few hundred distinct draws per frame; a cache smaller
-                // than one frame's working set misses on every draw (LRU worst case).
-                static const std::size_t maxEntries = [] {
-                    const auto *value = std::getenv("WEMU_NATIVE_CACHE_ENTRIES");
-                    return value ? std::max<std::size_t>(16, std::strtoull(value, nullptr, 10)) : std::size_t{384};
-                }();
-                static const std::uint64_t budget = [] {
-                    const auto *value = std::getenv("WEMU_NATIVE_CACHE_MB");
-                    return (value ? std::max<std::uint64_t>(128, std::strtoull(value, nullptr, 10)) : 2560ull) * 1024 * 1024;
-                }();
-                if (m_impl->context->pipelines.size() >= 512 && !m_impl->context->pipelines.contains(key.pipeline)) {
-                    for (auto &[oldKey, entry]: m_impl->resources)
-                        entry.value->finishPending();
-                    m_impl->resources.clear();
-                    m_impl->cachedBytes = 0;
-                }
-                while (!m_impl->resources.empty() && (m_impl->resources.size() >= maxEntries || m_impl->cachedBytes + estimatedBytes > budget)) {
-                    const auto oldest = std::min_element(m_impl->resources.begin(), m_impl->resources.end(),
-                                                         [](const auto &a, const auto &b) { return a.second.used < b.second.used; });
-                    if (timing)
-                        Utils::Log::error("[NATIVE_CACHE_EVICT] entries={} bytes={} incoming={} victim_bytes={}", m_impl->resources.size(),
-                                          m_impl->cachedBytes, estimatedBytes, oldest->second.bytes);
-                    oldest->second.value->finishPending();
-                    m_impl->cachedBytes -= oldest->second.bytes;
-                    m_impl->resources.erase(oldest);
-                }
                 auto resources = std::make_shared<DrawResources>(m_impl->context);
                 resources->initialize(vertex->words, fragment->words, constants, vertexConstants, textures, draw, targetSource, depthSource,
                                       overwriteTarget);
@@ -2461,7 +2745,8 @@ void main() {
                               "shader_us={} context_us={} texture_us={} setup_us={} execute_us={} teardown_us={} readback_bytes={} "
                               "retained_textures={} retained_texture_bytes={} deferred={} resident_texture_copies={} resident_target_copies={} "
                               "readback_transfers={} direct_texture_bindings={} direct_texture_bytes={} target_upload_transfers={} "
-                              "target_copy_transfers={} full_overwrite_draws={} queue_submissions={} submitted_commands={} submission_waits={}",
+                              "target_copy_transfers={} full_overwrite_draws={} queue_submissions={} submitted_commands={} submission_waits={} "
+                              "shared_texture_uploads={} shared_texture_hits={} shared_texture_bytes={}",
                               draw.width, draw.height, textures.size(), draw.vertices.size(), reused, m_impl->resources.size(), m_impl->resourceHits,
                               m_impl->retainedTargets, micros(t0, t1), micros(t1, t2), micros(t2, t3), micros(t3, t4), micros(t4, t5),
                               micros(t5, std::chrono::steady_clock::now()),
@@ -2471,7 +2756,8 @@ void main() {
                               m_impl->retainedTextures, m_impl->retainedTextureBytes, deferReadback, residentTextureCopies(),
                               m_impl->residentTargetCopies, readbackTransfers(), directTextureBindings(), directTextureBytes(),
                               m_impl->context->targetUploadTransfers, m_impl->context->targetCopyTransfers, m_impl->context->fullOverwriteDraws,
-                              queueSubmissions(), submittedCommandBuffers(), submissionWaits());
+                              queueSubmissions(), submittedCommandBuffers(), submissionWaits(), sharedTextureUploads(), sharedTextureHits(),
+                              sharedTextureBytes());
         }
         ++m_impl->completed;
         return result;

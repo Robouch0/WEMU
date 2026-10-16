@@ -21,6 +21,7 @@
 #include "cpu/interpreter/SyscallHandler.hpp"
 #include "cpu/memory/Memory.hpp"
 #include "hle/Gx2.hpp"
+#include "hle/MvPlayer.hpp"
 #include "utils/Logger.hpp"
 
 namespace {
@@ -503,81 +504,6 @@ namespace {
         cpu.m_gpr[3] = Z_OK;
     }
 
-    // ---- mvplayer.rpl (menu background movies) ------------------------------------------------
-    // MK8 imports only Create/Destroy/Shutdown and drives the rest through the object:
-    // [obj+0] -> impl, [impl+0x184] or [obj+0x17C] -> method table, [table+slot] -> function,
-    // invoked via bctr.
-    // No video is decoded: every table entry points at a real `li r3,0; blr` in .text so each
-    // call returns 0 immediately. A bare `blr` is NOT enough: it leaves r3 = this, and the
-    // title's wait loops (e.g. 0x027404E0 "spin until progress sum >= vcall(+0x24) total")
-    // then compare against the object pointer and never terminate.
-
-    std::uint32_t g_mvPlayer = 0;
-
-    // Each vtable slot points at a distinct sentinel PC (kMvSlotBase + slot*4), hooked per-method so
-    // the movie can report a real "playing -> finished" lifecycle instead of one constant return.
-    constexpr std::uint32_t kMvSlotBase = 0x0FFD0000;
-    constexpr std::uint32_t kMvSlots = 128;
-
-    void hle_MVPlayerCreate(Core::Interpreter &cpu)
-    {
-        if (!g_mvPlayer) {
-            constexpr std::uint32_t kObjSize = 0x1000;
-            constexpr std::uint32_t kImplSize = 0x400;
-            constexpr std::uint32_t kTableSize = 0x200;
-            constexpr std::uint32_t kRetZeroAddr = 0x02009868; // `li r3,0; blr` in MK8 v4.1 .text
-            constexpr std::uint32_t kRetOneAddr = 0x02005FB4; // `li r3,1; blr` in MK8 v4.1 .text
-            (void) kRetZeroAddr;
-            (void) kRetOneAddr;
-            const std::uint32_t table = cpu.m_memory.heapAllocate(kTableSize, 8);
-            // Point each slot at its per-method sentinel (hooked in InstallMVPlayerHooks) so each
-            // MVPlayer method gets distinct, stateful behaviour instead of one constant return.
-            for (std::uint32_t off = 0; off < kTableSize; off += 4)
-                cpu.m_memory.write<std::uint32_t>(table + off, kMvSlotBase + off);
-            const std::uint32_t impl = cpu.m_memory.heapAllocate(kImplSize, 8);
-            for (std::uint32_t off = 0; off < kImplSize; off += 4)
-                cpu.m_memory.write<std::uint32_t>(impl + off, off == 0x17C || off == 0x184 ? table : 0);
-            g_mvPlayer = cpu.m_memory.heapAllocate(kObjSize, 8);
-            for (std::uint32_t off = 0; off < kObjSize; off += 4)
-                cpu.m_memory.write<std::uint32_t>(g_mvPlayer + off, 0);
-            cpu.m_memory.write<std::uint32_t>(g_mvPlayer, impl);
-            // Some dispatch thunks skip the impl hop and read the table straight off the object.
-            // The table offset differs between title builds (0x184 in v4.1, 0x17C in others).
-            cpu.m_memory.write<std::uint32_t>(g_mvPlayer + 0x17C, table);
-            cpu.m_memory.write<std::uint32_t>(g_mvPlayer + 0x184, table);
-            Utils::Log::error("[HLE] MVPlayer::Create -> stub object 0x{:08X}", g_mvPlayer);
-        }
-        cpu.m_gpr[3] = g_mvPlayer;
-    }
-
-    void hle_MVPlayerDestroy(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; } // keep the singleton
-    void hle_MVViewDraw(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; } // video plane is not decoded/rendered yet
-    void hle_MVPlayerShutdown(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
-
-    // ---- MVPlayer per-method intercepts -------------------------------------------------------
-    // Per-slot call counter (WEMU_MVP_TRACE=1 logs the call pattern to identify the methods).
-    std::array<std::uint32_t, kMvSlots> g_mvSlotCalls{};
-
-    void mvPlayerMethod(Core::Interpreter &cpu, std::uint32_t slot)
-    {
-        static const bool trace = []() {
-            const char *e = std::getenv("WEMU_MVP_TRACE");
-            return e && e[0] == '1';
-        }();
-        const std::uint32_t n = ++g_mvSlotCalls[slot];
-        if (trace && n <= 3)
-            Utils::Log::error("[MVP] slot#{:>3} call#{} r3=0x{:08X} r4=0x{:08X} r5=0x{:08X} r6=0x{:08X}", slot, n, cpu.m_gpr[3], cpu.m_gpr[4],
-                              cpu.m_gpr[5], cpu.m_gpr[6]);
-        // WEMU_MVPLAYER_RET1=1: diagnostic only. Some callers may treat these method returns as
-        // boolean success/ready state; keep the default as the original conservative return-0 stub
-        // while allowing one-run validation without patching the title binary.
-        static const bool retOne = []() {
-            const char *e = std::getenv("WEMU_MVPLAYER_RET1");
-            return e && e[0] == '1';
-        }();
-        cpu.m_gpr[3] = retOne ? 1 : 0;
-    }
-
     // ---- Title-sequence frame-pool fix -------------------------------------------------------
     //
     // MK8's global "sead"-style frame allocator (getter 0x026A866C, singleton object 0x101DD944)
@@ -646,11 +572,7 @@ std::uint32_t Core::Hle::exportFunction(Core::Interpreter &cpu, const std::strin
     return it->second;
 }
 
-void InstallMVPlayerHooks(Core::Interpreter &interp)
-{
-    for (std::uint32_t slot = 0; slot < kMvSlots; slot++)
-        interp.m_hooks[kMvSlotBase + slot * 4] = [slot](Core::Interpreter &cpu) { mvPlayerMethod(cpu, slot); };
-}
+void InstallMVPlayerHooks(Core::Interpreter &interp) { Core::MvPlayer::installHooks(interp); }
 
 namespace {
     // Scene-config method 0x0203AB18 (prologue signature). It iterates a fixed 14 container entries
@@ -752,10 +674,10 @@ void RegisterCoreinitExtraFunctions()
     auto &sh = Core::syscallHandler;
 
     // mvplayer.rpl
-    sh.registerSyscall("Create__8MVPlayerSFv", hle_MVPlayerCreate);
-    sh.registerSyscall("Destroy__8MVPlayerSFP8MVPlayer", hle_MVPlayerDestroy);
-    sh.registerSyscall("Draw__6MVViewFv", hle_MVViewDraw);
-    sh.registerSyscall("Shutdown__8MVPlayerSFv", hle_MVPlayerShutdown);
+    sh.registerSyscall("Create__8MVPlayerSFv", Core::MvPlayer::create);
+    sh.registerSyscall("Destroy__8MVPlayerSFP8MVPlayer", Core::MvPlayer::destroy);
+    sh.registerSyscall("Draw__6MVViewFv", Core::MvPlayer::draw);
+    sh.registerSyscall("Shutdown__8MVPlayerSFv", Core::MvPlayer::shutdown);
 
     // OSEvent
     sh.registerSyscall("OSInitEvent", hle_OSInitEvent);

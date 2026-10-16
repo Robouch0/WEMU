@@ -11,3 +11,6 @@ void SetFsContentRoot(const std::string &hostPath);
 
 // Registers a fallback content root (title-update layering: primary root first, then layers).
 void AddFsContentLayer(const std::string &hostPath);
+
+// Resolves a read-only content path using the same update layers as FSOpenFile.
+std::string ResolveFsContentPath(const std::string &guestPath);

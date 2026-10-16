@@ -220,7 +220,8 @@ namespace Core::Gfx {
         auto readSrc = [&](const Src &s, const AluInst &inst) -> float {
             float v = 0.0f;
             if (s.sel < 128) {
-                v = regs.gpr[s.sel][s.chan];
+                const int index = int(s.sel) + (s.rel ? address[(inst.raw0 >> 26) & 3] : 0);
+                v = index >= 0 && index < 128 ? regs.gpr[unsigned(index)][s.chan] : fromU32(0x7FFFFFFFu);
             } else if (s.sel >= 128 && s.sel < 192) {
                 const auto window = (s.sel - 128) / 32;
                 if (kc[window].mode) {
@@ -285,12 +286,12 @@ namespace Core::Gfx {
                     const bool addressWrite = std::any_of(group.begin(), group.end(), [](const auto &in) { return in.isAddressWrite(); });
                     for (const auto &in: group) {
                         // AR-relative constant reads require a previous group in
-                        // this clause. GPR and loop indexing remain unsupported.
+                        // this clause. Loop indexing and relative destinations remain unsupported.
                         if (in.raw1 & (1u << 28))
                             return false;
                         for (unsigned i = 0; i < (in.op3 ? 3u : 2u); ++i)
-                            if (in.src[i].rel &&
-                                (in.src[i].sel < 256 || ((in.raw0 >> 26) & 7) > 3 || addressWrite || !addressValid[(in.raw0 >> 26) & 3]))
+                            if (in.src[i].rel && ((in.src[i].sel >= 128 && in.src[i].sel < 256) || in.src[i].sel >= 512 ||
+                                                  ((in.raw0 >> 26) & 7) > 3 || addressWrite || !addressValid[(in.raw0 >> 26) & 3]))
                                 return false;
                     }
                 }
@@ -655,6 +656,11 @@ namespace Core::Gfx {
                     popActive(1);
                 else if (kind == 0xB) // ALU_POP2_AFTER
                     popActive(2);
+                else if (kind == 0xF) { // ALU_ELSE_AFTER retains the saved parent mask.
+                    if (!activeDepth)
+                        return {};
+                    active = activeStack[activeDepth - 1] && !active;
+                }
                 continue; // ALU CF has no EOP bit in this position; next CF follows
             }
 

@@ -6,6 +6,16 @@
 #include <cstdint>
 
 namespace Core::Gfx {
+    // Latte FMT_5_6_5 stores R in bits 0..4, G in 5..10, B in 11..15.
+    // Surface words use GPU little-endian order, independent of the PPC CPU.
+    inline std::array<std::uint8_t, 4> decodeRgb565(const std::uint8_t *p)
+    {
+        const unsigned word = unsigned(p[0]) | (unsigned(p[1]) << 8);
+        const unsigned r = word & 31, g = (word >> 5) & 63, b = (word >> 11) & 31;
+        return {std::uint8_t((r * 255 + 15) / 31), std::uint8_t((g * 255 + 31) / 63),
+                std::uint8_t((b * 255 + 15) / 31), 255};
+    }
+
     // Signed RGTC endpoints are normalized before interpolation. -128 has
     // the same -1 value as -127; selectors 6/7 in six-entry mode supply -1/+1.
     inline float decodeBc4Snorm(const std::uint8_t *block, unsigned pixel)

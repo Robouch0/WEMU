@@ -222,3 +222,20 @@ primitive count; clipped triangles can grow beyond that initial reservation.
 These changes avoid per-vertex program-cache lookups and repeated growth/copying
 of temporary vertex and triangle arrays without reusing runtime shader results
 across draws.
+
+### ALU ELSE-after control flow
+
+Reference execution and shader translation implement `ALU_ELSE_AFTER` (CF ALU
+opcode 15). The ALU clause runs under the current mask, then inverts that mask
+within the saved parent scope. The saved mask remains available for subsequent
+POP operations; an inactive parent cannot reactivate its children. Translation
+rejects stack underflow and retains conservative whole-quad provenance checks
+when execution switches to the other branch. Nested active/inactive branch
+fixtures compare reference output with Vulkan execution.
+
+`WEMU_NATIVE_VERIFY_PS_HASH` optionally restricts existing native/reference draw
+verification to a pixel shader's 32-bit word-wise FNV hash, as printed by the
+`NATIVE_VERIFY` diagnostic. Decimal and `0x` hexadecimal values are accepted.
+It combines with `WEMU_NATIVE_VERIFY_EVERY`, `WEMU_NATIVE_VERIFY_FRAME` and
+`WEMU_NATIVE_VERIFY_DRAW`; it never selects a different shader or changes guest
+instructions.

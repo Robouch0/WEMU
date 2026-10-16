@@ -99,7 +99,7 @@ namespace Core::Gfx::Latte {
                     }
                     for (const auto &src: in.src) {
                         if (src.sel < 128)
-                            result->registerCount = std::max(result->registerCount, src.sel + 1);
+                            result->registerCount = std::max(result->registerCount, src.rel ? 128u : src.sel + 1);
                         if (src.sel == SRC_LITERAL) {
                             usesLiteral = true;
                             maxLitChan = std::max(maxLitChan, src.chan);
