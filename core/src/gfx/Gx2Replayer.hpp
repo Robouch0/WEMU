@@ -5,6 +5,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <span>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -72,6 +73,11 @@ namespace Core::Gfx {
             void setNativeVerificationInterval(std::uint64_t interval) { m_nativeVerifyEvery = interval; }
             [[nodiscard]] std::uint64_t comparedNativeDraws() const noexcept { return m_comparedNativeDraws; }
             [[nodiscard]] std::uint64_t differingNativeDraws() const noexcept { return m_differingNativeDraws; }
+            [[nodiscard]] std::uint64_t earlyDepthRejectedFragments() const noexcept { return m_earlyDepthRejectedFragments; }
+            [[nodiscard]] std::uint64_t earlyDepthRejectedTriangles() const noexcept { return m_earlyDepthRejectedTriangles; }
+            [[nodiscard]] std::uint64_t vertexShaderExecutions() const noexcept { return m_vertexShaderExecutions; }
+            [[nodiscard]] std::uint64_t vertexShaderCacheHits() const noexcept { return m_vertexShaderCacheHits; }
+            void setVertexCacheEnabled(bool enabled) noexcept { m_vertexCacheEnabled = enabled; }
 
             // GPU render-target graph (the general multi-target compositor). When set, each guest
             // colour buffer becomes a persistent GPU image and draws render into their actual target
@@ -83,6 +89,10 @@ namespace Core::Gfx {
             std::optional<std::uint64_t> m_nativeVerifyEvery;
             std::uint64_t m_nativeDraws{}, m_comparedNativeDraws{}, m_differingNativeDraws{};
             unsigned m_nativeWorstError{};
+            std::uint64_t m_earlyDepthRejectedFragments{};
+            std::uint64_t m_earlyDepthRejectedTriangles{};
+            std::uint64_t m_vertexShaderExecutions{}, m_vertexShaderCacheHits{};
+            bool m_vertexCacheEnabled{true};
             Latte::VertexShaderCache m_vertexShaderCache;
             std::unique_ptr<RasterWorkers> m_rasterWorkers;
             unsigned m_rasterWorkerCount{};
@@ -101,6 +111,8 @@ namespace Core::Gfx {
                     std::uint32_t dimension{1}, depth{1}, imageSize{0}, aa{0};
                     std::uint32_t firstMip{0}, firstSlice{0}, sliceCount{1};
                     std::uint32_t mipCount{0};
+                    std::uint32_t mipImagePtr{}, mipImageSize{}, viewMipCount{};
+                    std::array<std::uint32_t, 13> mipOffsets{};
                     bool operator==(const Surface &) const = default;
             };
             struct SurfaceKey {
@@ -143,8 +155,8 @@ namespace Core::Gfx {
             };
             DepthBacking *depthBacking(const Surface &s, bool resolve = true) const;
             void clearDepthSurface(const Surface &s, float depth, unsigned flags);
-            void drawPrimitives(const Gx2Command &cmd, bool indexed);
-            bool fetchAttributes(std::uint32_t vertex, std::array<std::array<float, 4>, 4> &out) const;
+            void drawPrimitives(const Gx2Command &cmd, bool indexed, int selectedColor = -1);
+            bool fetchAttributes(std::uint32_t vertex, std::span<std::array<float, 4>> out) const;
             void copyToScanBuffer(const Surface &s);
             void maybeDumpFrame();
             [[nodiscard]] std::array<std::uint8_t, 4> blendTexel(const std::array<std::uint8_t, 4> &src, const std::uint8_t *dst,
@@ -198,13 +210,31 @@ namespace Core::Gfx {
             };
             std::vector<std::shared_ptr<ArraySnapshot>> m_arraySnapshots;
             std::optional<Surface> arraySlice(const Surface &surface, unsigned relative) const;
+            Surface attachmentSurface(const Surface &surface) const;
+            std::optional<Surface> mipSurface(const Surface &surface, unsigned level) const;
+            struct MipSnapshot {
+                    Surface surface;
+                    unsigned levelCount{}, validatedFrame{};
+                    std::uint64_t generation{};
+                    std::vector<Surface> levels;
+                    std::vector<std::vector<float>> texels;
+                    std::vector<RasterDraw::Texture::MipLevel> mips;
+                    std::vector<std::uint8_t> source;
+            };
+            std::vector<std::shared_ptr<MipSnapshot>> m_mipSnapshots;
+            std::shared_ptr<MipSnapshot> mipSnapshot(const Surface &surface, bool includeMips);
+            static bool sampleMipSnapshot(const MipSnapshot &snapshot, const TextureSampler &sampler, const std::array<float, 4> &coords,
+                                          float cubeIndex, bool explicitLod, std::array<float, 4> &rgba);
             std::shared_ptr<ArraySnapshot> arraySnapshot(const Surface &surface);
             // Base-level sample() output for guest-memory textures (tiled/compressed), keyed by
-            // view and validated by a content hash so unchanged textures decode once.
+            // view and validated against source snapshots so unchanged textures decode once.
             struct DecodedTexture {
-                    std::uint64_t hash{}, used{};
-                    std::uint32_t hashedFrame{~0u};
+                    std::uint64_t used{};
+                    std::uint32_t validatedFrame{~0u};
+                    std::vector<std::uint8_t> source;
                     std::vector<std::uint8_t> rgba;
+                    std::vector<float> floating; // component-mapped signed normalized texels
+                    std::size_t bytes() const { return source.size() + rgba.size() + floating.size() * sizeof(float); }
             };
             std::unordered_map<SurfaceKey, std::shared_ptr<DecodedTexture>, SurfaceKeyHash> m_decodedTextures;
             std::uint64_t m_decodedBytes{}, m_decodedClock{};
@@ -219,6 +249,7 @@ namespace Core::Gfx {
             Core::Memory *m_mem{nullptr};
             Surface m_color; // bound colour target
             Surface m_depth;
+            std::array<Surface, 8> m_colorBuffers{};
             bool m_depthTest{}, m_depthWrite{}, m_stencilTest{};
             unsigned m_depthCompare{7};
             mutable std::unordered_map<SurfaceKey, DepthBacking, SurfaceKeyHash> m_depthBackings;
@@ -232,6 +263,10 @@ namespace Core::Gfx {
             std::array<std::uint32_t, 8> m_channelMask{0xF, 0xF, 0xF, 0xF, 0xF, 0xF, 0xF, 0xF};
             std::uint32_t m_targetBlendEnable{0xFF};
             bool m_colorWriteEnable{true};
+            bool m_multiWriteEnable{};
+            unsigned m_polygonControl{};
+            std::array<float, 5> m_polygonOffset{};
+            bool m_rasterizerEnabled{true}, m_zClipEnabled{}, m_halfZ{};
             // Vertex-shader uniform registers (GX2SetVertexUniformReg). MK8's UI places its unit
             // quads with a matrix in c0..c3; m_regsFresh marks regs written since the last draw.
             float m_vsRegs[256]{};
@@ -251,14 +286,16 @@ namespace Core::Gfx {
             std::vector<std::uint32_t> m_psProgram;
             std::unordered_map<std::uint32_t, std::vector<std::uint32_t>> m_psCache;
             // Opt-in translation audit only; no native dispatch authorization.
-            std::map<std::vector<std::uint32_t>, Latte::FragmentShader> m_nativeAuditCache;
+            std::map<std::pair<std::vector<std::uint32_t>, bool>, Latte::FragmentShader> m_nativeAuditCache;
             Latte::FragmentShaderCache m_fragmentShaderCache;
             std::array<std::vector<std::uint32_t>, 16> m_psBlocks{};
             std::array<Attrib, 8> m_attribs{};
             std::vector<std::uint32_t> m_fetchLayout;
-            std::array<std::uint32_t, 4> m_vertexSemantics{0, 1, 2, 3};
-            std::array<std::uint32_t, 4> m_vertexOutputSemantics{0, 1, 2, 3};
-            std::array<std::uint32_t, 4> m_pixelInputSemantics{0, 1, 2, 3};
+            std::array<std::uint32_t, 32> m_vertexSemantics{0, 1, 2, 3};
+            std::uint32_t m_vertexInputCount{4};
+            std::uint32_t m_pixelInputCount{4};
+            std::array<std::uint32_t, 32> m_vertexOutputSemantics{0, 1, 2, 3};
+            std::array<std::uint32_t, 32> m_pixelInputSemantics{0, 1, 2, 3};
             float m_vp[4]{0.0f, 0.0f, static_cast<float>(kWidth), static_cast<float>(kHeight)}; // x,y,w,h
             float m_vpNear{}, m_vpFar{1.f};
             std::int32_t m_scissor[4]{0, 0, kWidth, kHeight}; // x,y,w,h
@@ -269,6 +306,7 @@ namespace Core::Gfx {
             // into the TV passes that follow.
             struct ContextState {
                     Surface color, depth;
+                    std::array<Surface, 8> colorBuffers{};
                     bool depthTest{}, depthWrite{}, stencilTest{};
                     unsigned depthCompare{7};
                     std::uint32_t colorTarget{};
@@ -279,11 +317,17 @@ namespace Core::Gfx {
                     std::array<std::uint32_t, 8> channelMask{};
                     std::uint32_t targetBlendEnable{};
                     bool colorWriteEnable{};
+                    bool multiWriteEnable{};
+                    unsigned polygonControl{};
+                    std::array<float, 5> polygonOffset{};
+                    bool rasterizerEnabled{true}, zClipEnabled{}, halfZ{};
                     std::array<float, 256> vsRegs{}, psRegs{};
                     std::vector<std::uint32_t> vsProgram, psProgram, fetchLayout;
                     std::array<std::vector<std::uint32_t>, 16> vsBlocks{}, psBlocks{};
                     std::array<Attrib, 8> attribs{};
-                    std::array<std::uint32_t, 4> vertexSemantics{}, vertexOutputSemantics{}, pixelInputSemantics{};
+                    std::array<std::uint32_t, 32> vertexSemantics{};
+                    std::uint32_t vertexInputCount{4}, pixelInputCount{4};
+                    std::array<std::uint32_t, 32> vertexOutputSemantics{}, pixelInputSemantics{};
                     std::array<float, 4> viewport{};
                     float viewportNear{}, viewportFar{};
                     std::array<std::int32_t, 4> scissor{};

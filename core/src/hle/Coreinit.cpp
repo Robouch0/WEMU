@@ -23,6 +23,7 @@
 #include "hle/AsyncCallbacks.hpp"
 #include "hle/Ax.hpp"
 #include "hle/CoreinitExtra.hpp"
+#include "hle/Gx2.hpp"
 #include "hle/MemHeap.hpp"
 #include "hle/NnOnline.hpp"
 #include "utils/Diagnostics.hpp"
@@ -441,8 +442,10 @@ static void hle_OSBlockMove(Core::Interpreter &cpu)
     std::uint8_t *dst = cpu.m_memory.hostPtr(cpu.m_gpr[3]);
     const std::uint8_t *src = cpu.m_memory.hostPtr(cpu.m_gpr[4]);
     const std::uint32_t size = cpu.m_gpr[5];
-    if (dst && src && size)
+    if (dst && src && size) {
         std::memmove(dst, src, size);
+        CopyGx2DisplayListState(cpu.m_gpr[3], cpu.m_gpr[4], size);
+    }
     cpu.m_gpr[3] = 0;
 }
 
@@ -451,8 +454,10 @@ static void hle_OSBlockSet(Core::Interpreter &cpu)
 {
     std::uint8_t *dst = cpu.m_memory.hostPtr(cpu.m_gpr[3]);
     const std::uint32_t size = cpu.m_gpr[5];
-    if (dst && size)
+    if (dst && size) {
         std::memset(dst, static_cast<int>(cpu.m_gpr[4] & 0xFF), size);
+        CopyGx2DisplayListState(cpu.m_gpr[3], 0, size);
+    }
     cpu.m_gpr[3] = 0;
 }
 

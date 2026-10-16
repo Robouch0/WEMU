@@ -14,6 +14,7 @@
 #include "cpu/interpreter/Interpreter.hpp"
 #include "cpu/interpreter/SyscallHandler.hpp"
 #include "cpu/memory/Memory.hpp"
+#include "hle/Gx2.hpp"
 #include "utils/Diagnostics.hpp"
 
 static void hle_memalign(Core::Interpreter &cpu)
@@ -56,8 +57,10 @@ static void hle_memcpy(Core::Interpreter &cpu)
     if (dst && src && n) {
         std::uint8_t *d = cpu.m_memory.hostPtr(dst);
         const std::uint8_t *s = cpu.m_memory.hostPtr(src);
-        if (d && s)
+        if (d && s) {
             std::memcpy(d, s, n);
+            CopyGx2DisplayListState(dst, src, n);
+        }
     }
     // r3 stays = dst
 }
@@ -70,8 +73,10 @@ static void hle_memset(Core::Interpreter &cpu)
 
     if (dst && n) {
         std::uint8_t *d = cpu.m_memory.hostPtr(dst);
-        if (d)
+        if (d) {
             std::memset(d, (int) val, n);
+            CopyGx2DisplayListState(dst, 0, n);
+        }
     }
     // r3 stays = dst
 }

@@ -19,3 +19,11 @@ notices and satisfy the terms of the specific system libraries they distribute.
 
 `Threads::Threads` selects the platform's threading library rather than vendoring
 a separate dependency.
+
+## Vendored components
+
+R600/R700 AddrLib (AMD / Decaf), MIT license. Source is pinned to
+`194162c47469ce620dd2470eb767ff5e42f5954a` and stored in
+[core/third_party/addrlib](core/third_party/addrlib/UPSTREAM.md), including its
+[upstream license](core/third_party/addrlib/LICENSE). It computes Latte surface
+and mip layouts; builds require no network download for this dependency.

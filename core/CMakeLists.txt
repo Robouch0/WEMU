@@ -35,6 +35,7 @@ endif()
 # ------------------------------------------------------------
 # 2. CORE LIBRARY
 # ------------------------------------------------------------
+add_subdirectory(third_party/addrlib)
 add_library(core STATIC
         src/binary/Binary.hpp
         src/utils/BeDecoder.hpp
@@ -114,6 +115,7 @@ add_library(core STATIC
         src/gfx/GpuRenderGraph.cpp
         src/gfx/LatteVsInterp.cpp
         src/gfx/LatteProgram.cpp
+        src/gfx/LatteSurfaceLayout.cpp
         src/gfx/LatteShaderLowering.cpp
         src/gfx/SpirvCompiler.cpp
         src/gfx/VulkanRasterBackend.cpp
@@ -152,6 +154,7 @@ target_include_directories(core PUBLIC
 )
 
 target_link_libraries(core PRIVATE
+        wemu_addrlib
         Threads::Threads
         PkgConfig::FFMPEG
         ${ZLIB_LIBRARIES}

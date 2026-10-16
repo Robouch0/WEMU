@@ -28,12 +28,20 @@ namespace Core::Gfx {
             if (result != VK_SUCCESS)
                 throw std::runtime_error(std::string(operation) + ": Vulkan result " + std::to_string(result));
         }
+        bool depthOnly(const RasterDraw &draw) { return draw.depth.test && !draw.channelMask; }
+        unsigned rasterWidth(const RasterDraw &draw) { return depthOnly(draw) ? draw.depth.width : draw.width; }
+        unsigned rasterHeight(const RasterDraw &draw) { return depthOnly(draw) ? draw.depth.height : draw.height; }
+        VkExtent2D attachmentExtent(const RasterDraw &draw)
+        {
+            return {draw.depth.test ? std::min(rasterWidth(draw), draw.depth.width) : draw.width,
+                    draw.depth.test ? std::min(rasterHeight(draw), draw.depth.height) : draw.height};
+        }
         VkRect2D clippedScissor(const RasterDraw &draw)
         {
-            const auto left = std::clamp<std::int64_t>(draw.scissor[0], 0, draw.width);
-            const auto top = std::clamp<std::int64_t>(draw.scissor[1], 0, draw.height);
-            const auto right = std::clamp<std::int64_t>(std::int64_t(draw.scissor[0]) + draw.scissor[2], left, draw.width);
-            const auto bottom = std::clamp<std::int64_t>(std::int64_t(draw.scissor[1]) + draw.scissor[3], top, draw.height);
+            const auto left = std::clamp<std::int64_t>(draw.scissor[0], 0, rasterWidth(draw));
+            const auto top = std::clamp<std::int64_t>(draw.scissor[1], 0, rasterHeight(draw));
+            const auto right = std::clamp<std::int64_t>(std::int64_t(draw.scissor[0]) + draw.scissor[2], left, rasterWidth(draw));
+            const auto bottom = std::clamp<std::int64_t>(std::int64_t(draw.scissor[1]) + draw.scissor[3], top, rasterHeight(draw));
             return {{int(left), int(top)}, {unsigned(right - left), unsigned(bottom - top)}};
         }
 
@@ -75,6 +83,15 @@ namespace Core::Gfx {
             const auto scissor = clippedScissor(draw);
             if (scissor.offset.x || scissor.offset.y || scissor.extent.width != draw.width || scissor.extent.height != draw.height)
                 return false;
+            // A culled face cannot prove an overwrite, even when its rectangle
+            // corners cover the target. Preserve previous pixels in that case.
+            for (unsigned first: {0u, 3u}) {
+                const auto &a = draw.vertices[first], &b = draw.vertices[first + 1], &c = draw.vertices[first + 2];
+                const double area = (double(b.x) - a.x) * (double(c.y) - a.y) - (double(c.x) - a.x) * (double(b.y) - a.y);
+                const bool front = (area > 0) == draw.frontFaceClockwise;
+                if (front ? draw.cullFront : draw.cullBack)
+                    return false;
+            }
             unsigned masks[2]{};
             for (unsigned i = 0; i < 6; ++i) {
                 const auto &v = draw.vertices[i];
@@ -138,7 +155,9 @@ namespace Core::Gfx {
         }
         VkFormat colorVkFormat(ColorFormat format)
         {
-            return format == ColorFormat::RGBA32Float ? VK_FORMAT_R32G32B32A32_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM;
+            return format == ColorFormat::RGBA32Float      ? VK_FORMAT_R32G32B32A32_SFLOAT
+                   : format == ColorFormat::R11G11B10Float ? VK_FORMAT_B10G11R11_UFLOAT_PACK32
+                                                           : VK_FORMAT_R8G8B8A8_UNORM;
         }
         unsigned imageElementBytes(VkFormat format) { return format == VK_FORMAT_R32G32B32A32_SFLOAT ? 16u : 4u; }
         VkFormat depthVkFormat(DepthFormat)
@@ -225,7 +244,8 @@ namespace Core::Gfx {
                         unsigned channelMask{};
                         std::array<unsigned, 11> blend{};
                         std::array<unsigned, 4> depth{};
-                        unsigned topology{}, colorFormat{};
+                        unsigned topology{}, colorFormat{}, cull{};
+                        bool depthBias{};
                         auto operator<=>(const PipelineKey &) const = default;
                 };
                 struct PipelineBundle {
@@ -247,6 +267,7 @@ namespace Core::Gfx {
                 VkPipelineLayout depthQuantizeLayout{};
                 VkPipeline depthQuantizePipeline{};
                 bool computeQueue{};
+                bool cubeArrays{}, biasClamp{};
                 unsigned timestampBits{};
                 float timestampPeriod{};
                 std::map<PipelineKey, PipelineBundle> pipelines;
@@ -322,6 +343,9 @@ namespace Core::Gfx {
                         vkGetPhysicalDeviceQueueFamilyProperties(candidate, &n, queues.data());
                         VkPhysicalDeviceProperties candidateProps{};
                         vkGetPhysicalDeviceProperties(candidate, &candidateProps);
+                        if (candidateProps.limits.maxVertexInputAttributes < 18 || candidateProps.limits.maxVertexOutputComponents < 72 ||
+                            candidateProps.limits.maxFragmentInputComponents < 72 || candidateProps.limits.maxPushConstantsSize < 128)
+                            continue;
                         const int score = candidateProps.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU     ? 3
                                           : candidateProps.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ? 2
                                           : candidateProps.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU            ? 0
@@ -354,6 +378,14 @@ namespace Core::Gfx {
                     VkDeviceCreateInfo di{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
                     di.queueCreateInfoCount = 1;
                     di.pQueueCreateInfos = &qi;
+                    VkPhysicalDeviceFeatures features{};
+                    vkGetPhysicalDeviceFeatures(physical, &features);
+                    cubeArrays = features.imageCubeArray;
+                    biasClamp = features.depthBiasClamp;
+                    VkPhysicalDeviceFeatures enabled{};
+                    enabled.imageCubeArray = features.imageCubeArray;
+                    enabled.depthBiasClamp = features.depthBiasClamp;
+                    di.pEnabledFeatures = &enabled;
                     check(vkCreateDevice(physical, &di, nullptr, &device), "create device");
                     vkGetDeviceQueue(device, family, 0, &queue);
 
@@ -372,18 +404,15 @@ layout(push_constant) uniform Dimensions { uint width; uint height; float maximu
 float normalizedInteger(uint value,uint maximum) {
     if(value==0u) return 0.0;
     if(value==maximum) return 1.0;
-    int exponent=0;
-    uint remainder=value;
-    while(remainder<maximum) { remainder<<=1; --exponent; }
-    remainder-=maximum;
-    uint fraction=0u;
-    for(int bit=22;bit>=0;--bit) {
-        remainder<<=1;
-        if(remainder>=maximum) { remainder-=maximum; fraction|=1u<<bit; }
-    }
-    if((remainder<<1)>maximum) ++fraction;
-    if(fraction==0x800000u) { fraction=0u; ++exponent; }
-    return uintBitsToFloat((uint(exponent+127)<<23)|fraction);
+    // For maximum=2^n-1, normalize value to a 24-bit significand t.
+    // value/maximum has significand t+t/maximum: the correction can be
+    // rounded with integer arithmetic instead of 23 serial division steps.
+    // The 24-bit correction is always one; the 16-bit divisor is constant.
+    uint leading=uint(findMSB(value));
+    uint t=value<<(23u-leading);
+    uint significand=t+(maximum==65535u ? (t+32767u)/65535u : 1u);
+    uint exponent=leading+(maximum==65535u ? 111u : 103u);
+    return uintBitsToFloat((exponent<<23)|(significand&0x7fffffu));
 }
 void main() {
     uvec2 p=gl_GlobalInvocationID.xy;
@@ -486,9 +515,14 @@ void main() {
                         unsigned width{}, height{};
                         unsigned layers{1}; // depth slices for volume textures
                         bool array{}, volume{};
+                        bool cube{};
+                        std::vector<std::span<const float>> mips;
                         VkSamplerAddressMode addressU{}, addressV{}, addressW{VK_SAMPLER_ADDRESS_MODE_REPEAT};
                         VkBorderColor borderColor{VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK};
                         VkFilter filter = VK_FILTER_NEAREST;
+                        VkFilter minFilter = VK_FILTER_NEAREST;
+                        VkSamplerMipmapMode mipFilter{VK_SAMPLER_MIPMAP_MODE_NEAREST};
+                        float minLod{}, maxLod{};
                         std::shared_ptr<ColorImage> rendered;
 
                         std::size_t rowBytes() const
@@ -499,7 +533,13 @@ void main() {
                                                                                              : 4;
                             return std::size_t(width) * bytes;
                         }
-                        std::size_t bytes() const { return rowBytes() * height * layers; }
+                        std::size_t bytes() const
+                        {
+                            auto size = rowBytes() * height * layers;
+                            for (const auto mip: mips)
+                                size += mip.size_bytes();
+                            return size;
+                        }
                         bool matches(const void *previous) const
                         {
                             const auto *source = snapshot.empty() ? reinterpret_cast<const std::byte *>(rgba.data()) : snapshot.data();
@@ -507,18 +547,29 @@ void main() {
                             for (unsigned y = 0; y < height * layers; ++y)
                                 if (std::memcmp(static_cast<const std::byte *>(previous) + y * rowBytes(), source + y * pitch, rowBytes()) != 0)
                                     return false;
+                            auto offset = rowBytes() * height * layers;
+                            for (const auto mip: mips) {
+                                if (std::memcmp(static_cast<const std::byte *>(previous) + offset, mip.data(), mip.size_bytes()) != 0)
+                                    return false;
+                                offset += mip.size_bytes();
+                            }
                             return true;
                         }
                         void copyTo(void *destination) const
                         {
                             if (snapshot.empty()) {
-                                std::memcpy(destination, rgba.data(), bytes());
+                                std::memcpy(destination, rgba.data(), rowBytes() * height * layers);
                             } else if (sourcePitch == rowBytes()) {
-                                std::memcpy(destination, snapshot.data(), bytes());
+                                std::memcpy(destination, snapshot.data(), rowBytes() * height * layers);
                             } else {
                                 for (unsigned y = 0; y < height * layers; ++y)
                                     std::memcpy(static_cast<std::byte *>(destination) + y * rowBytes(), snapshot.data() + y * sourcePitch,
                                                 rowBytes());
+                            }
+                            auto offset = rowBytes() * height * layers;
+                            for (const auto mip: mips) {
+                                std::memcpy(static_cast<std::byte *>(destination) + offset, mip.data(), mip.size_bytes());
+                                offset += mip.size_bytes();
                             }
                         }
                 };
@@ -602,30 +653,40 @@ void main() {
 
                     VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
                     ci.imageType = VK_IMAGE_TYPE_2D;
-                    ci.format = colorVkFormat(draw.colorFormat);
-                    ci.extent = {draw.width, draw.height, 1};
                     ci.mipLevels = ci.arrayLayers = 1;
                     ci.samples = VK_SAMPLE_COUNT_1_BIT;
                     ci.tiling = VK_IMAGE_TILING_OPTIMAL;
-                    ci.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-                               VK_IMAGE_USAGE_SAMPLED_BIT;
-                    colorImage = std::make_shared<ColorImage>();
-                    colorImage->context = contextOwner;
-                    colorImage->width = draw.width;
-                    colorImage->height = draw.height;
-                    colorImage->format = ci.format;
-                    check(vkCreateImage(device, &ci, nullptr, &colorImage->image), "create image");
-                    image = colorImage->image;
                     VkMemoryRequirements req{};
-                    vkGetImageMemoryRequirements(device, image, &req);
-                    colorImage->memory = allocate(req, 0, 0, false);
-                    check(vkBindImageMemory(device, image, colorImage->memory, 0), "bind image");
                     VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
-                    vi.image = image;
                     vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
-                    vi.format = ci.format;
                     vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-                    check(vkCreateImageView(device, &vi, nullptr, &view), "create view");
+                    if (!depthOnly(draw)) {
+                        ci.imageType = VK_IMAGE_TYPE_2D;
+                        ci.format = colorVkFormat(draw.colorFormat);
+                        ci.extent = {draw.width, draw.height, 1};
+                        ci.mipLevels = ci.arrayLayers = 1;
+                        ci.samples = VK_SAMPLE_COUNT_1_BIT;
+                        ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+                        ci.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                                   VK_IMAGE_USAGE_SAMPLED_BIT;
+                        colorImage = std::make_shared<ColorImage>();
+                        colorImage->context = contextOwner;
+                        colorImage->width = draw.width;
+                        colorImage->height = draw.height;
+                        colorImage->format = ci.format;
+                        check(vkCreateImage(device, &ci, nullptr, &colorImage->image), "create image");
+                        image = colorImage->image;
+
+                        vkGetImageMemoryRequirements(device, image, &req);
+                        colorImage->memory = allocate(req, 0, 0, false);
+                        check(vkBindImageMemory(device, image, colorImage->memory, 0), "bind image");
+
+                        vi.image = image;
+                        vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+                        vi.format = ci.format;
+                        vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+                        check(vkCreateImageView(device, &vi, nullptr, &view), "create view");
+                    }
                     if (draw.depth.test) {
                         depthImage = std::make_shared<ColorImage>();
                         depthImage->context = contextOwner;
@@ -653,7 +714,7 @@ void main() {
                             initializeDepthQuantization(draw.depth);
                     }
                     VkAttachmentDescription attachment{};
-                    attachment.format = colorImage->format;
+                    attachment.format = colorVkFormat(draw.colorFormat);
                     attachment.samples = VK_SAMPLE_COUNT_1_BIT;
                     attachment.loadOp = fullOverwrite ? VK_ATTACHMENT_LOAD_OP_DONT_CARE : VK_ATTACHMENT_LOAD_OP_LOAD;
                     attachment.initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
@@ -666,10 +727,10 @@ void main() {
                     depthAttachment.format = draw.depth.test ? depthImage->format : VK_FORMAT_UNDEFINED;
                     depthAttachment.initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
                     VkAttachmentDescription attachments[]{attachment, depthAttachment};
-                    VkAttachmentReference depthReference{1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+                    VkAttachmentReference depthReference{depthOnly(draw) ? 0u : 1u, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
                     VkSubpassDescription subpass{};
                     subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-                    subpass.colorAttachmentCount = 1;
+                    subpass.colorAttachmentCount = depthOnly(draw) ? 0 : 1;
                     subpass.pColorAttachments = &color;
                     subpass.pDepthStencilAttachment = draw.depth.test ? &depthReference : nullptr;
                     VkSubpassDependency dependency{};
@@ -681,8 +742,8 @@ void main() {
                     dependency.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
                     dependency.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
                     VkRenderPassCreateInfo ri{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
-                    ri.attachmentCount = draw.depth.test ? 2 : 1;
-                    ri.pAttachments = attachments;
+                    ri.attachmentCount = depthOnly(draw) ? 1 : draw.depth.test ? 2 : 1;
+                    ri.pAttachments = attachments + unsigned(depthOnly(draw));
                     ri.subpassCount = 1;
                     ri.pSubpasses = &subpass;
                     ri.dependencyCount = 1;
@@ -692,9 +753,9 @@ void main() {
                     fi.renderPass = pass;
                     const VkImageView views[]{view, depthView};
                     fi.attachmentCount = ri.attachmentCount;
-                    fi.pAttachments = views;
-                    fi.width = draw.depth.test ? std::min(draw.width, draw.depth.width) : draw.width;
-                    fi.height = draw.depth.test ? std::min(draw.height, draw.depth.height) : draw.height;
+                    fi.pAttachments = views + unsigned(depthOnly(draw));
+                    fi.width = attachmentExtent(draw).width;
+                    fi.height = attachmentExtent(draw).height;
                     fi.layers = 1;
                     check(vkCreateFramebuffer(device, &fi, nullptr, &framebuffer), "create framebuffer");
 
@@ -707,20 +768,29 @@ void main() {
                         vertexUniform = buffer(sizeof(vertexConstants), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, vertexUniformMemory);
                         upload(vertexUniformMemory, vertexConstants.data(), sizeof(vertexConstants));
                     }
-                    readback = buffer(draw.target.size(), VK_BUFFER_USAGE_TRANSFER_DST_BIT, readbackMemory, VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
-                    vertexBuffer = buffer(draw.vertices.size_bytes(), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, vertexMemory);
+                    if (!depthOnly(draw))
+                        readback = buffer(draw.target.size(), VK_BUFFER_USAGE_TRANSFER_DST_BIT, readbackMemory, VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+                    // Clipping changes the submitted count as a model rotates. Reuse
+                    // a capacity bucket instead of allocating every attachment again
+                    // for each small count change. Only live vertices are uploaded/drawn.
+                    vertexBuffer =
+                            buffer(std::bit_ceil(draw.vertices.size()) * sizeof(RasterDraw::Vertex), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, vertexMemory);
                     upload(vertexMemory, draw.vertices.data(), draw.vertices.size_bytes());
-                    targetBuffer = buffer(draw.target.size(), VK_BUFFER_USAGE_TRANSFER_SRC_BIT, targetMemory);
-                    if (!fullOverwrite && !targetSource)
-                        upload(targetMemory, draw.target.data(), draw.target.size());
+                    if (!depthOnly(draw)) {
+                        targetBuffer = buffer(draw.target.size(), VK_BUFFER_USAGE_TRANSFER_SRC_BIT, targetMemory);
+                        if (!fullOverwrite && !targetSource)
+                            upload(targetMemory, draw.target.data(), draw.target.size());
+                    }
                     // Dimensions/scissors are dynamic, and attachment load ops
                     // do not affect render-pass compatibility. Share one pipeline
                     // across these draw variants instead of compiling each size.
                     Context::PipelineKey key{vertex, fragment, {}, draw.channelMask};
                     key.blend = blendKey(draw.blend);
                     key.depth = depthKey(draw.depth);
+                    key.depthBias = draw.depthBias.enabled;
                     key.topology = unsigned(draw.topology);
                     key.colorFormat = unsigned(draw.colorFormat);
+                    key.cull = unsigned(draw.cullFront) | (unsigned(draw.cullBack) << 1) | (unsigned(draw.frontFaceClockwise) << 2);
                     for (const auto &texture: textures)
                         key.bindings.push_back(texture.binding);
                     if (const auto it = context.pipelines.find(key); it != context.pipelines.end()) {
@@ -771,7 +841,7 @@ void main() {
                         uploadTexture(texture);
 
                     if (!cachedPipeline) {
-                        VkPushConstantRange push{VK_SHADER_STAGE_VERTEX_BIT, 0, 64};
+                        VkPushConstantRange push{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 128};
                         VkPipelineLayoutCreateInfo li{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
                         li.setLayoutCount = li.pushConstantRangeCount = 1;
                         li.pSetLayouts = &setLayout;
@@ -792,33 +862,36 @@ void main() {
                             stages[i].pName = "main";
                         }
                         VkVertexInputBindingDescription vertexBinding{0, sizeof(RasterDraw::Vertex), VK_VERTEX_INPUT_RATE_VERTEX};
-                        VkVertexInputAttributeDescription attributes[6]{};
+                        VkVertexInputAttributeDescription attributes[18]{};
                         attributes[0] = {0, 0, VK_FORMAT_R32G32_SFLOAT, 0};
-                        for (unsigned i = 0; i < 4; ++i)
+                        for (unsigned i = 0; i < 16; ++i)
                             attributes[i + 1] = {i + 1, 0, VK_FORMAT_R32G32B32A32_SFLOAT,
                                                  unsigned(offsetof(RasterDraw::Vertex, inputs) + i * sizeof(float) * 4)};
-                        attributes[5] = {5, 0, VK_FORMAT_R32G32_SFLOAT, unsigned(offsetof(RasterDraw::Vertex, z))};
+                        attributes[17] = {17, 0, VK_FORMAT_R32G32_SFLOAT, unsigned(offsetof(RasterDraw::Vertex, z))};
                         VkPipelineVertexInputStateCreateInfo input{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
                         input.vertexBindingDescriptionCount = 1;
                         input.pVertexBindingDescriptions = &vertexBinding;
-                        input.vertexAttributeDescriptionCount = 6;
+                        input.vertexAttributeDescriptionCount = 18;
                         input.pVertexAttributeDescriptions = attributes;
                         VkPipelineInputAssemblyStateCreateInfo assembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
                         assembly.topology = draw.topology == RasterDraw::Topology::Points ? VK_PRIMITIVE_TOPOLOGY_POINT_LIST
                                                                                           : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-                        VkViewport viewport{0, 0, float(draw.width), float(draw.height), 0, 1};
+                        VkViewport viewport{0, 0, float(rasterWidth(draw)), float(rasterHeight(draw)), 0, 1};
                         const auto scissor = clippedScissor(draw);
                         VkPipelineViewportStateCreateInfo viewportState{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
                         viewportState.viewportCount = viewportState.scissorCount = 1;
                         viewportState.pViewports = &viewport;
                         viewportState.pScissors = &scissor;
-                        constexpr VkDynamicState dynamicStates[]{VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+                        constexpr VkDynamicState dynamicStates[]{VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_DEPTH_BIAS};
                         VkPipelineDynamicStateCreateInfo dynamic{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
                         dynamic.dynamicStateCount = std::size(dynamicStates);
                         dynamic.pDynamicStates = dynamicStates;
                         VkPipelineRasterizationStateCreateInfo raster{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
                         raster.polygonMode = VK_POLYGON_MODE_FILL;
+                        raster.cullMode = (draw.cullFront ? VK_CULL_MODE_FRONT_BIT : 0) | (draw.cullBack ? VK_CULL_MODE_BACK_BIT : 0);
+                        raster.frontFace = draw.frontFaceClockwise ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE;
                         raster.lineWidth = 1;
+                        raster.depthBiasEnable = draw.depthBias.enabled && draw.depth.format == DepthFormat::Float32;
                         VkPipelineMultisampleStateCreateInfo samples{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
                         samples.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
                         VkPipelineColorBlendAttachmentState blend{};
@@ -839,7 +912,7 @@ void main() {
                             blend.alphaBlendOp = blendOperation(draw.blend.alphaOperation);
                         }
                         VkPipelineColorBlendStateCreateInfo blending{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-                        blending.attachmentCount = 1;
+                        blending.attachmentCount = depthOnly(draw) ? 0 : 1;
                         blending.pAttachments = &blend;
                         for (unsigned i = 0; i < 4; ++i)
                             blending.blendConstants[i] = float(draw.blend.constant[i]) / 255.0f;
@@ -880,6 +953,7 @@ void main() {
                                      bool allowLazyReadback, const std::shared_ptr<const NativeImage> &targetSnapshot,
                                      const std::shared_ptr<ColorImage> &depthSource)
                 {
+                    const bool hasColor = !depthOnly(draw);
                     const bool lazyReadback = allowLazyReadback && deferReadback;
                     // Padding is not represented by VkImage. Preserve it independently
                     // of active pixels, and share it unchanged through target chains.
@@ -895,9 +969,9 @@ void main() {
                                         rowBytes);
                         padding = std::move(snapshot);
                     }
-                    const auto region = targetSource ? VkRect2D{{0, 0}, {draw.width, draw.height}} : readbackRegion(draw);
+                    const auto region = !hasColor ? VkRect2D{} : targetSource ? VkRect2D{{0, 0}, {draw.width, draw.height}} : readbackRegion(draw);
                     const bool partial = region.extent.width != draw.width || region.extent.height != draw.height;
-                    if (partial && !lazyReadback) {
+                    if (hasColor && partial && !lazyReadback) {
                         // Keep a complete CPU snapshot for result assembly and exact target
                         // retention checks. Only the bounded draw region can change on GPU.
                         upload(readbackMemory, draw.target.data(), draw.target.size());
@@ -907,48 +981,50 @@ void main() {
                         vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &hostWrites, 0, nullptr, 0,
                                              nullptr);
                     }
-                    VkImageMemoryBarrier targetBarrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-                    targetBarrier.srcQueueFamilyIndex = targetBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                    targetBarrier.image = image;
-                    targetBarrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-                    targetBarrier.oldLayout = submitted ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED;
-                    if (fullOverwrite) {
-                        targetBarrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-                        targetBarrier.srcAccessMask = submitted ? VK_ACCESS_TRANSFER_READ_BIT : 0;
-                        targetBarrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-                        vkCmdPipelineBarrier(command, submitted ? VK_PIPELINE_STAGE_TRANSFER_BIT : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                                             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr, 0, nullptr, 1, &targetBarrier);
-                        ++context.fullOverwriteDraws;
-                    } else {
-                        if (!retainedTarget) {
-                            targetBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                    if (hasColor) {
+                        VkImageMemoryBarrier targetBarrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+                        targetBarrier.srcQueueFamilyIndex = targetBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                        targetBarrier.image = image;
+                        targetBarrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+                        targetBarrier.oldLayout = submitted ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED;
+                        if (fullOverwrite) {
+                            targetBarrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
                             targetBarrier.srcAccessMask = submitted ? VK_ACCESS_TRANSFER_READ_BIT : 0;
-                            targetBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                            targetBarrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
                             vkCmdPipelineBarrier(command, submitted ? VK_PIPELINE_STAGE_TRANSFER_BIT : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                                                 VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &targetBarrier);
-                            if (targetSource) {
-                                VkImageCopy copy{};
-                                copy.srcSubresource = copy.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-                                copy.extent = {draw.width, draw.height, 1};
-                                vkCmdCopyImage(command, targetSource->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, image,
-                                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
-                                sampledImages.push_back(targetSource);
-                                ++context.targetCopyTransfers;
-                            } else {
-                                VkBufferImageCopy targetCopy{};
-                                targetCopy.bufferRowLength = draw.pitch;
-                                targetCopy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-                                targetCopy.imageExtent = {draw.width, draw.height, 1};
-                                vkCmdCopyBufferToImage(command, targetBuffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &targetCopy);
-                                ++context.targetUploadTransfers;
+                                                 VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr, 0, nullptr, 1, &targetBarrier);
+                            ++context.fullOverwriteDraws;
+                        } else {
+                            if (!retainedTarget) {
+                                targetBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                                targetBarrier.srcAccessMask = submitted ? VK_ACCESS_TRANSFER_READ_BIT : 0;
+                                targetBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                                vkCmdPipelineBarrier(command, submitted ? VK_PIPELINE_STAGE_TRANSFER_BIT : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                                     VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &targetBarrier);
+                                if (targetSource) {
+                                    VkImageCopy copy{};
+                                    copy.srcSubresource = copy.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+                                    copy.extent = {draw.width, draw.height, 1};
+                                    vkCmdCopyImage(command, targetSource->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, image,
+                                                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+                                    sampledImages.push_back(targetSource);
+                                    ++context.targetCopyTransfers;
+                                } else {
+                                    VkBufferImageCopy targetCopy{};
+                                    targetCopy.bufferRowLength = draw.pitch;
+                                    targetCopy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+                                    targetCopy.imageExtent = {draw.width, draw.height, 1};
+                                    vkCmdCopyBufferToImage(command, targetBuffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &targetCopy);
+                                    ++context.targetUploadTransfers;
+                                }
+                                targetBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
                             }
-                            targetBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                            targetBarrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                            targetBarrier.srcAccessMask = retainedTarget ? VK_ACCESS_MEMORY_WRITE_BIT : VK_ACCESS_TRANSFER_WRITE_BIT;
+                            targetBarrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+                            vkCmdPipelineBarrier(command, retainedTarget ? VK_PIPELINE_STAGE_ALL_COMMANDS_BIT : VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                                 VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr, 0, nullptr, 1, &targetBarrier);
                         }
-                        targetBarrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-                        targetBarrier.srcAccessMask = retainedTarget ? VK_ACCESS_MEMORY_WRITE_BIT : VK_ACCESS_TRANSFER_WRITE_BIT;
-                        targetBarrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-                        vkCmdPipelineBarrier(command, retainedTarget ? VK_PIPELINE_STAGE_ALL_COMMANDS_BIT : VK_PIPELINE_STAGE_TRANSFER_BIT,
-                                             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr, 0, nullptr, 1, &targetBarrier);
                     }
                     if (draw.depth.test)
                         prepareDepth(draw.depth, depthSource);
@@ -965,21 +1041,24 @@ void main() {
                     VkRenderPassBeginInfo rp{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
                     rp.renderPass = pass;
                     rp.framebuffer = framebuffer;
-                    rp.renderArea.extent = {draw.depth.test ? std::min(draw.width, draw.depth.width) : draw.width,
-                                            draw.depth.test ? std::min(draw.height, draw.depth.height) : draw.height};
+                    rp.renderArea.extent = attachmentExtent(draw);
                     transitionDirectTextures(true);
                     vkCmdBeginRenderPass(command, &rp, VK_SUBPASS_CONTENTS_INLINE);
                     vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-                    const VkViewport viewport{0, 0, float(draw.width), float(draw.height), 0, 1};
+                    const VkViewport viewport{0, 0, float(rasterWidth(draw)), float(rasterHeight(draw)), 0, 1};
                     const auto scissor = clippedScissor(draw);
                     vkCmdSetViewport(command, 0, 1, &viewport);
                     vkCmdSetScissor(command, 0, 1, &scissor);
+                    vkCmdSetDepthBias(command, draw.depthBias.enabled && draw.depth.format == DepthFormat::Float32 ? draw.depthBias.constant : 0.f,
+                                      draw.depthBias.enabled && draw.depth.format == DepthFormat::Float32 ? draw.depthBias.clamp : 0.f,
+                                      draw.depthBias.enabled && draw.depth.format == DepthFormat::Float32 ? draw.depthBias.slope : 0.f);
                     vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &descriptor, 0, nullptr);
-                    const float scale[]{2.0f / float(draw.width), 2.0f / float(draw.height), draw.depth.test ? 1.f : 0.f};
+                    const float scale[]{2.0f / float(rasterWidth(draw)), 2.0f / float(rasterHeight(draw)), draw.depth.test ? 1.f : 0.f};
                     struct VertexPush {
                             float scale[3], unused;
                             float window[4], depth[2], padding[2];
-                            std::int32_t inputs[4];
+                            std::int32_t inputs[16];
+                            float bias[4];
                     } push{};
                     std::copy(std::begin(scale), std::end(scale), push.scale);
                     push.window[0] = draw.vertexStage.viewport[0];
@@ -988,9 +1067,15 @@ void main() {
                     push.window[3] = draw.vertexStage.viewport[3] * .5f;
                     push.depth[0] = draw.vertexStage.viewport[4];
                     push.depth[1] = draw.vertexStage.viewport[5];
-                    std::copy(draw.vertexStage.inputParams.begin(), draw.vertexStage.inputParams.end(), push.inputs);
-                    static_assert(sizeof(push) == 64);
-                    vkCmdPushConstants(command, layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(push), &push);
+                    std::fill(std::begin(push.inputs), std::end(push.inputs), -1);
+                    std::copy_n(draw.vertexStage.inputParams.begin(), draw.vertexStage.inputCount, push.inputs);
+                    if (draw.depthBias.enabled && draw.depth.format != DepthFormat::Float32) {
+                        push.bias[0] = draw.depthBias.constant / (draw.depth.format == DepthFormat::UNorm16 ? 65535.f : 16777215.f);
+                        push.bias[1] = draw.depthBias.slope;
+                        push.bias[2] = draw.depthBias.clamp;
+                    }
+                    static_assert(sizeof(push) == 128);
+                    vkCmdPushConstants(command, layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
                     const VkDeviceSize offset = 0;
                     vkCmdBindVertexBuffers(command, 0, 1, &vertexBuffer, &offset);
                     vkCmdDraw(command, draw.vertices.size(), 1, 0, 0);
@@ -1021,9 +1106,10 @@ void main() {
                     check(vkEndCommandBuffer(command), "end commands");
                     batch = context.enqueue(command);
                     submitted = true;
-                    readbackValid = !lazyReadback;
+                    readbackValid = hasColor && !lazyReadback;
                     depthReadbackValid = !lazyReadback;
-                    ++colorImage->version;
+                    if (colorImage)
+                        ++colorImage->version;
                     if (depthImage)
                         ++depthImage->version;
                     RasterResult result;
@@ -1036,6 +1122,18 @@ void main() {
                                 },
                                 std::make_shared<NativeImage>(depthImage, draw.depth.pitch, padding));
                         pendingDepthReadback = result.depthReadback;
+                    }
+                    if (!hasColor) {
+                        // The guest color binding is unused. Preserve its exact version
+                        // without allocating, uploading or copying a color attachment.
+                        result.readback = draw.renderedTarget;
+                        if (!result.readback)
+                            result.rgba.assign(draw.target.begin(), draw.target.end());
+                        if (!deferReadback) {
+                            result.resolve();
+                            result.resolveDepth();
+                        }
+                        return result;
                     }
                     if (!deferReadback) {
                         pendingReadback.reset();
@@ -1331,8 +1429,8 @@ void main() {
                     if (draw.vertexStage.shader)
                         upload(vertexUniformMemory, vertexConstants.data(), sizeof(vertexConstants));
                     upload(vertexMemory, draw.vertices.data(), draw.vertices.size_bytes());
-                    retainedTarget = !fullOverwrite && (targetSource ? targetSource == colorImage : targetMatchesReadback(draw));
-                    if (!fullOverwrite && !targetSource && !retainedTarget)
+                    retainedTarget = !depthOnly(draw) && !fullOverwrite && (targetSource ? targetSource == colorImage : targetMatchesReadback(draw));
+                    if (!depthOnly(draw) && !fullOverwrite && !targetSource && !retainedTarget)
                         upload(targetMemory, draw.target.data(), draw.target.size());
                     if (draw.depth.test && !depthSource)
                         uploadDepth(draw.depth);
@@ -1364,7 +1462,7 @@ void main() {
                         uploadTextureData(textureStagingMemories[i], texture);
                         textureStagingValid[i] = true;
                         recordTextureUpload(textureImages[i], textureStagingBuffers[i], texture.width, texture.height, !textureImageInitialized[i],
-                                            {}, texture.layers, texture.volume);
+                                            {}, texture.layers, texture.volume, unsigned(texture.mips.size() + 1));
                         textureImageInitialized[i] = true;
                     }
                     return retainedTarget;
@@ -1425,9 +1523,10 @@ void main() {
                 {
                     VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
                     ci.imageType = texture.volume ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D;
+                    ci.flags = texture.cube ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0;
                     ci.format = texture.format;
                     ci.extent = {texture.width, texture.height, texture.volume ? texture.layers : 1};
-                    ci.mipLevels = 1;
+                    ci.mipLevels = unsigned(texture.mips.size() + 1);
                     ci.arrayLayers = texture.volume ? 1 : texture.layers;
                     ci.samples = VK_SAMPLE_COUNT_1_BIT;
                     ci.tiling = VK_IMAGE_TILING_OPTIMAL;
@@ -1440,15 +1539,22 @@ void main() {
                     check(vkBindImageMemory(device, textureImage, allocate(req, 0), 0), "bind texture");
                     VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
                     vi.image = textureImage;
-                    vi.viewType = texture.volume ? VK_IMAGE_VIEW_TYPE_3D : texture.array ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
+                    vi.viewType = texture.cube     ? VK_IMAGE_VIEW_TYPE_CUBE_ARRAY
+                                  : texture.volume ? VK_IMAGE_VIEW_TYPE_3D
+                                  : texture.array  ? VK_IMAGE_VIEW_TYPE_2D_ARRAY
+                                                   : VK_IMAGE_VIEW_TYPE_2D;
                     vi.format = ci.format;
-                    vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, ci.arrayLayers};
+                    vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, ci.mipLevels, 0, ci.arrayLayers};
                     vi.components = texture.components;
                     VkImageView textureView{};
                     check(vkCreateImageView(device, &vi, nullptr, &textureView), "create texture view");
                     textureViews.push_back(textureView);
                     VkSamplerCreateInfo si{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
-                    si.magFilter = si.minFilter = texture.filter;
+                    si.magFilter = texture.filter;
+                    si.minFilter = texture.minFilter;
+                    si.mipmapMode = texture.mipFilter;
+                    si.minLod = texture.minLod;
+                    si.maxLod = texture.maxLod;
                     si.addressModeU = texture.addressU;
                     si.addressModeV = texture.addressV;
                     si.addressModeW = texture.addressW;
@@ -1470,7 +1576,8 @@ void main() {
                         uploadTextureData(stagingMemory, texture);
                         textureStagingValid[index] = true;
                     }
-                    recordTextureUpload(textureImage, staging, texture.width, texture.height, true, texture.rendered, texture.layers, texture.volume);
+                    recordTextureUpload(textureImage, staging, texture.width, texture.height, true, texture.rendered, texture.layers, texture.volume,
+                                        ci.mipLevels);
                     textureImageInitialized[index] = true;
                     bindTextureDescriptor(texture.binding, sampler, textureView);
                 }
@@ -1494,7 +1601,8 @@ void main() {
                     const auto &source = texture.rendered;
                     // Self-feedback must snapshot before the attachment is modified.
                     // Depth keeps the established D32-to-R32 conversion path.
-                    if (!enabled || !source || texture.array || source == colorImage || source == depthImage || source->format != texture.format)
+                    if (!enabled || !source || texture.array || texture.cube || !texture.mips.empty() || source == colorImage ||
+                        source == depthImage || source->format != texture.format)
                         return false;
                     bindTextureDescriptor(texture.binding, samplers[index], source->samplingView(texture.components));
                     if (std::find(directImages.begin(), directImages.end(), source) == directImages.end()) {
@@ -1528,7 +1636,8 @@ void main() {
                     }
                 }
                 void recordTextureUpload(VkImage textureImage, VkBuffer staging, unsigned width, unsigned height, bool initial,
-                                         const std::shared_ptr<ColorImage> &source = {}, unsigned layers = 1, bool volume = false)
+                                         const std::shared_ptr<ColorImage> &source = {}, unsigned layers = 1, bool volume = false,
+                                         unsigned levels = 1)
                 {
                     const unsigned depth = volume ? layers : 1;
                     if (volume)
@@ -1536,7 +1645,7 @@ void main() {
                     VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
                     barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
                     barrier.image = textureImage;
-                    barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, layers};
+                    barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, levels, 0, layers};
                     barrier.oldLayout = initial ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
                     barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
                     barrier.srcAccessMask = initial ? 0 : VK_ACCESS_SHADER_READ_BIT;
@@ -1587,10 +1696,20 @@ void main() {
                                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
                         sampledImages.push_back(source);
                     } else {
-                        VkBufferImageCopy copy{};
-                        copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, layers};
-                        copy.imageExtent = {width, height, depth};
-                        vkCmdCopyBufferToImage(command, staging, textureImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+                        std::vector<VkBufferImageCopy> copies;
+                        VkDeviceSize offset = 0;
+                        for (unsigned level = 0; level < levels; ++level) {
+                            VkBufferImageCopy copy{};
+                            copy.bufferOffset = offset;
+                            copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, 0, layers};
+                            copy.imageExtent = {std::max(1u, width >> level), std::max(1u, height >> level), depth};
+                            copies.push_back(copy);
+                            // Multilevel snapshots are RGBA32F; existing single-level
+                            // formats do not need a following staging offset.
+                            offset += VkDeviceSize(copy.imageExtent.width) * copy.imageExtent.height * depth * layers * 16;
+                        }
+                        vkCmdCopyBufferToImage(command, staging, textureImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, unsigned(copies.size()),
+                                               copies.data());
                     }
                     barrier.oldLayout = barrier.newLayout;
                     barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -1722,7 +1841,7 @@ void main() {
     struct VulkanRasterBackend::Impl {
             struct ResourceKey {
                     Context::PipelineKey pipeline;
-                    unsigned width{}, height{}, pitch{}, vertexCount{};
+                    unsigned width{}, height{}, pitch{}, vertexCapacity{};
                     bool overwriteTarget{};
                     unsigned depthWidth{}, depthHeight{}, depthPitch{};
                     std::vector<std::uint32_t> textureShape;
@@ -1730,7 +1849,7 @@ void main() {
                     bool sameDraw(const ResourceKey &other) const
                     {
                         return pipeline == other.pipeline && width == other.width && height == other.height && pitch == other.pitch &&
-                               vertexCount == other.vertexCount && overwriteTarget == other.overwriteTarget && depthWidth == other.depthWidth &&
+                               vertexCapacity == other.vertexCapacity && overwriteTarget == other.overwriteTarget && depthWidth == other.depthWidth &&
                                depthHeight == other.depthHeight && depthPitch == other.depthPitch && textureShape == other.textureShape;
                     }
                     auto operator<=>(const ResourceKey &) const = default;
@@ -1795,6 +1914,8 @@ void main() {
         };
         if (!draw.shader || draw.channelMask > 15)
             return reject("Unsupported shader or blend state");
+        if (draw.shader.requiresOnlyColorZero && draw.enabledColorTargets != 1)
+            return reject("Specialized color exports require only writable target zero");
         if (!draw.shader.exportsColor)
             draw.channelMask = 0;
         if (draw.depth.compare > 7)
@@ -1825,7 +1946,8 @@ void main() {
                                         draw.vertexStage.uniforms.size() != draw.vertexStage.shader->uniforms.size() * 4))
             return reject("Invalid translated vertex stage or uniform snapshot");
         if (draw.vertexStage.shader &&
-            std::any_of(draw.vertexStage.inputParams.begin(), draw.vertexStage.inputParams.end(), [](int p) { return p < -1 || p > 3; }))
+            (draw.vertexStage.inputCount > 16 ||
+             std::any_of(draw.vertexStage.inputParams.begin(), draw.vertexStage.inputParams.end(), [](int p) { return p < -1 || p > 31; })))
             return reject("Invalid vertex parameter mapping");
         for (const auto &vertex: draw.vertices)
             if (!std::isfinite(vertex.x) || !std::isfinite(vertex.y) || !std::isfinite(vertex.reciprocalW) || vertex.reciprocalW <= 0.f ||
@@ -1858,10 +1980,13 @@ void main() {
                 !bindings.insert(binding.binding).second || found == expectedTextures.end() || !texture.texel || !texture.width || !texture.height ||
                 texture.width > 4096 || texture.height > 4096)
                 return reject("Unsupported texture binding");
-            const bool array = binding.type == Latte::TextureType::TwoDArray || binding.type == Latte::TextureType::ThreeD;
+            const bool cube = binding.type == Latte::TextureType::Cube;
+            const bool array = binding.type == Latte::TextureType::TwoDArray || binding.type == Latte::TextureType::ThreeD || cube;
+            if (cube && (texture.width != texture.height || texture.layers % 6))
+                return reject("Invalid cube texture dimensions or face count");
             if (!texture.layers || texture.layers > 256 || (!array && texture.layers != 1) ||
-                (array &&
-                 (texture.rendered || (texture.unorm8.empty() && texture.rgba32.empty() && texture.r32.empty() && texture.r32Bytes.empty()))))
+                (array && (texture.rendered || (texture.unorm8.empty() && texture.rgba32.empty() && texture.r32.empty() && texture.r32Bytes.empty() &&
+                                                texture.r11g11b10Bytes.empty()))))
                 return reject("Unsupported array texture snapshot");
             if (texture.rendered &&
                 (texture.unorm8Pitch < texture.width ||
@@ -1882,11 +2007,29 @@ void main() {
                 (!texture.unorm8.empty() || !texture.rgba32.empty() || !texture.r32.empty() || !texture.r32Bytes.empty() ||
                  texture.rgba32Pitch < texture.width || std::uint64_t(texture.rgba32Pitch) * texture.height * 16 > texture.rgba32Bytes.size()))
                 return reject("Invalid RGBA32 float texture snapshot");
+            if (!texture.r11g11b10Bytes.empty() &&
+                (std::endian::native != std::endian::little || !texture.unorm8.empty() || !texture.rgba32.empty() || !texture.r32.empty() ||
+                 !texture.r32Bytes.empty() || !texture.rgba32Bytes.empty() || texture.r11g11b10Pitch < texture.width ||
+                 std::uint64_t(texture.r11g11b10Pitch) * texture.height * texture.layers * 4 > texture.r11g11b10Bytes.size()))
+                return reject("Invalid little-endian R11G11B10 texture snapshot");
             if (!texture.r32Bytes.empty() &&
                 (std::endian::native != std::endian::little || !texture.unorm8.empty() || !texture.rgba32.empty() || !texture.r32.empty() ||
                  texture.r32Pitch < texture.width || std::uint64_t(texture.r32Pitch) * texture.height * texture.layers * 4 > texture.r32Bytes.size()))
                 return reject("Invalid little-endian R32 texture snapshot");
             const auto r = texture.sampler.regs[0];
+            if (!texture.mips.empty() && (texture.rgba32.empty() || texture.rendered || binding.type == Latte::TextureType::ThreeD ||
+                                          texture.mips.size() >= std::bit_width(std::max(texture.width, texture.height)) || texture.mips.size() > 13))
+                return reject("Unsupported mip chain snapshot");
+            for (unsigned level = 0; level < texture.mips.size(); ++level) {
+                const auto &mip = texture.mips[level];
+                if (mip.width != std::max(1u, texture.width >> (level + 1)) || mip.height != std::max(1u, texture.height >> (level + 1)) ||
+                    mip.rgba32.size() != std::uint64_t(mip.width) * mip.height * texture.layers * 4)
+                    return reject("Incomplete mip chain snapshot");
+                textureBytes += mip.rgba32.size_bytes();
+            }
+            if (found->explicitLod && (((r >> 12) & 7) > 1 || ((r >> 17) & 3) > 2 ||
+                                       (((r >> 17) & 3) && (!texture.sourceMipCount || texture.mips.size() + 1 < texture.sourceMipCount))))
+                return reject("Explicit LOD requires the complete texture view and supported filters");
             if (binding.binding <= 16 && draw.shader.requiresDerivativeFreeSampling && found->implicitLod &&
                 (texture.sourceMipCount != 1 || texture.sourceFirstMip || ((r >> 9) & 7) != ((r >> 12) & 7) || ((r >> 19) & 7)))
                 return reject("Whole-quad implicit sampling requires one mip, equal filters and no anisotropy");
@@ -1913,25 +2056,26 @@ void main() {
                 (binding.type == Latte::TextureType::ThreeD && !addressSupported((r >> 6) & 7)))
                 return reject(std::format("Unsupported sampler mode {:08X}", r));
             textureBytes += std::uint64_t(texture.width) * texture.height * texture.layers *
-                            (texture.rendered                                    ? colorElementBytes(texture.renderedFormat)
-                             : !texture.unorm8.empty()                           ? texture.unorm8Channels
-                             : !texture.r32.empty() || !texture.r32Bytes.empty() ? 4
-                                                                                 : 16);
+                            (texture.rendered          ? colorElementBytes(texture.renderedFormat)
+                             : !texture.unorm8.empty() ? texture.unorm8Channels
+                             : !texture.r32.empty() || !texture.r32Bytes.empty() || !texture.r11g11b10Bytes.empty() ? 4
+                                                                                                                    : 16);
             if (textureBytes > std::uint64_t{128} * 1024 * 1024)
                 return reject("Texture upload budget exceeded");
         }
         constexpr auto vertexSource = R"(#version 450
 layout(location=0) in vec2 position;
-layout(location=1) in vec4 attributes[4];
-layout(location=5) in vec2 depthAndW;
-layout(location=0) out vec4 inputs[4];
-layout(location=4) noperspective out float windowDepth;
+layout(location=1) in vec4 attributes[16];
+layout(location=17) in vec2 depthAndW;
+layout(location=0) out vec4 inputs[16];
+layout(location=16) noperspective out float windowDepth;
+invariant gl_Position; precise gl_Position;
 layout(push_constant) uniform Viewport { vec2 scale; float depthEnabled; } viewport;
 void main() {
     gl_PointSize=1.0;
     float w=1.0/depthAndW.y;
     gl_Position=vec4((position*viewport.scale-vec2(1.0))*w,viewport.depthEnabled!=0.0?depthAndW.x*w:0.0,w);
-    for(int i=0;i<4;++i) inputs[i]=attributes[i];
+    for(int i=0;i<16;++i) inputs[i]=attributes[i];
     windowDepth=depthAndW.x;
 }
 )";
@@ -1952,17 +2096,18 @@ void main() {
             }
         const auto vertex = m_impl->compiler.compile(ShaderStage::Vertex, nativeVertexSource);
         auto fragmentSource = draw.shader.source;
-        if (draw.depth.test) {
-            fragmentSource.insert(fragmentSource.find('\n') + 1, "layout(location=4) noperspective in float windowDepth;\n");
-            const auto main = fragmentSource.find("void main() {");
-            if (main == std::string::npos)
-                return reject("Depth specialization requires the shared fragment ABI");
-            if (draw.shader.writesDepth) {
-                const auto initial = fragmentSource.find("gl_FragDepth=gl_FragCoord.z;");
-                if (initial != std::string::npos)
-                    fragmentSource.replace(initial, std::string("gl_FragDepth=gl_FragCoord.z;").size(), "gl_FragDepth=windowDepth;");
-            } else
-                fragmentSource.insert(main + std::string("void main() {").size(), "\ngl_FragDepth=windowDepth;\n");
+        if (draw.depthBias.enabled && draw.depth.format != DepthFormat::Float32) {
+            fragmentSource.insert(fragmentSource.find('\n') + 1,
+                                  "layout(push_constant) uniform Bias { layout(offset=112) vec4 value; } bias;\n"
+                                  "float biasedDepth() { float slope=max(abs(dFdx(gl_FragCoord.z)),abs(dFdy(gl_FragCoord.z))); "
+                                  "float b=bias.value.x+bias.value.y*slope; "
+                                  "if(bias.value.z>0.0) b=min(b,bias.value.z); else if(bias.value.z<0.0) b=max(b,bias.value.z); "
+                                  "return clamp(gl_FragCoord.z+b,0.0,1.0); }\n");
+            const auto initial = fragmentSource.find("gl_FragDepth=gl_FragCoord.z;");
+            if (initial != std::string::npos)
+                fragmentSource.replace(initial, std::string("gl_FragDepth=gl_FragCoord.z;").size(), "gl_FragDepth=biasedDepth();");
+            else
+                fragmentSource.insert(fragmentSource.find("void main() {") + std::string("void main() {").size(), "\ngl_FragDepth=biasedDepth();\n");
         }
         const auto fragment = m_impl->compiler.compile(ShaderStage::Fragment, fragmentSource);
         if (!*vertex || !*fragment) {
@@ -1976,6 +2121,13 @@ void main() {
             m_impl->context = std::move(context);
         }
         const auto t2 = std::chrono::steady_clock::now();
+        if (draw.depthBias.enabled &&
+            (!std::isfinite(draw.depthBias.constant) || !std::isfinite(draw.depthBias.slope) || !std::isfinite(draw.depthBias.clamp) ||
+             (draw.depth.format == DepthFormat::Float32 && draw.depthBias.clamp != 0 && !m_impl->context->biasClamp)))
+            return reject("Unsupported polygon depth bias");
+        if (!m_impl->context->cubeArrays && std::any_of(draw.textures.begin(), draw.textures.end(),
+                                                        [](const auto &texture) { return texture.binding.type == Latte::TextureType::Cube; }))
+            return reject("Device lacks cube array sampling support");
         {
             VkFormatProperties properties{};
             vkGetPhysicalDeviceFormatProperties(m_impl->context->physical, colorVkFormat(draw.colorFormat), &properties);
@@ -2037,6 +2189,10 @@ void main() {
                     texture.rgba32Bytes = resident ? std::span<const std::uint8_t>{} : texture.rendered->resolve();
                     texture.rgba32Pitch = texture.unorm8Pitch;
                     texture.unorm8 = {};
+                } else if (texture.renderedFormat == ColorFormat::R11G11B10Float) {
+                    texture.r11g11b10Bytes = resident ? std::span<const std::uint8_t>{} : texture.rendered->resolve();
+                    texture.r11g11b10Pitch = texture.unorm8Pitch;
+                    texture.unorm8 = {};
                 } else
                     texture.unorm8 = resident ? std::span<const std::uint8_t>{} : texture.rendered->resolve();
                 texture.unorm8Channels = 4;
@@ -2047,6 +2203,7 @@ void main() {
             }
             const auto textureFormat = resident ? (texture.renderedDepth ? VK_FORMAT_R32_SFLOAT : resident->format)
                                        : !texture.r32.empty() || !texture.r32Bytes.empty() ? VK_FORMAT_R32_SFLOAT
+                                       : !texture.r11g11b10Bytes.empty()                   ? VK_FORMAT_B10G11R11_UFLOAT_PACK32
                                        : texture.unorm8.empty()                            ? VK_FORMAT_R32G32B32A32_SFLOAT
                                        : texture.unorm8Channels == 1                       ? VK_FORMAT_R8_UNORM
                                        : texture.unorm8Channels == 2                       ? VK_FORMAT_R8G8_UNORM
@@ -2054,7 +2211,7 @@ void main() {
             VkFormatProperties format{};
             vkGetPhysicalDeviceFormatProperties(m_impl->context->physical, textureFormat, &format);
             const auto r = texture.sampler.regs[0];
-            const bool linear = ((r >> 9) & 7) == 1;
+            const bool linear = ((r >> 9) & 7) == 1 || (texture.binding.explicitLod && ((r >> 12) & 7) == 1);
             if (!(format.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) ||
                 (linear && !(format.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT)))
                 return reject("Host cannot sample float texture with requested filter");
@@ -2072,13 +2229,26 @@ void main() {
             uploaded.layers = texture.layers;
             uploaded.array = texture.binding.type == Latte::TextureType::TwoDArray;
             uploaded.volume = texture.binding.type == Latte::TextureType::ThreeD;
+            uploaded.cube = texture.binding.type == Latte::TextureType::Cube;
             uploaded.addressW = address[(r >> 6) & 7];
             uploaded.addressU = address[r & 7];
             uploaded.addressV = address[(r >> 3) & 7];
             uploaded.borderColor = borderColors[(r >> 22) & 3];
             uploaded.filter = linear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
+            uploaded.minFilter = uploaded.filter;
+            for (const auto &mip: texture.mips)
+                uploaded.mips.push_back(mip.rgba32);
+            if (texture.binding.explicitLod) {
+                uploaded.minFilter = ((r >> 12) & 7) ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
+                uploaded.mipFilter = ((r >> 17) & 3) == 2 ? VK_SAMPLER_MIPMAP_MODE_LINEAR : VK_SAMPLER_MIPMAP_MODE_NEAREST;
+                if ((r >> 17) & 3) {
+                    uploaded.minLod = std::min(float(texture.mips.size()), float(texture.sampler.regs[1] & 1023) / 64.f);
+                    uploaded.maxLod = std::clamp(float((texture.sampler.regs[1] >> 10) & 1023) / 64.f, uploaded.minLod, float(texture.mips.size()));
+                }
+            }
             uploaded.rendered = resident;
-            if ((resident && texture.renderedFormat == ColorFormat::RGBA32Float) || !texture.rgba32Bytes.empty()) {
+            if ((resident && !texture.renderedDepth && texture.renderedFormat != ColorFormat::RGBA8) || !texture.rgba32Bytes.empty() ||
+                !texture.r11g11b10Bytes.empty()) {
                 const auto channel = [&](unsigned c) {
                     constexpr VkComponentSwizzle channels[]{VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G,    VK_COMPONENT_SWIZZLE_B,
                                                             VK_COMPONENT_SWIZZLE_A, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ONE};
@@ -2086,8 +2256,9 @@ void main() {
                     return channels[selected < 6 ? selected : 4];
                 };
                 uploaded.components = {channel(0), channel(1), channel(2), channel(3)};
-                uploaded.snapshot = std::as_bytes(texture.rgba32Bytes);
-                uploaded.sourcePitch = std::size_t(texture.rgba32Pitch) * 16;
+                const bool packed = textureFormat == VK_FORMAT_B10G11R11_UFLOAT_PACK32;
+                uploaded.snapshot = packed ? std::as_bytes(texture.r11g11b10Bytes) : std::as_bytes(texture.rgba32Bytes);
+                uploaded.sourcePitch = packed ? std::size_t(texture.r11g11b10Pitch) * 4 : std::size_t(texture.rgba32Pitch) * 16;
                 textures.push_back(std::move(uploaded));
                 continue;
             }
@@ -2162,8 +2333,10 @@ void main() {
         key.pipeline = {vertex->words, fragment->words, {}, draw.channelMask};
         key.pipeline.blend = blendKey(draw.blend);
         key.pipeline.depth = depthKey(draw.depth);
+        key.pipeline.depthBias = draw.depthBias.enabled;
         key.pipeline.topology = unsigned(draw.topology);
         key.pipeline.colorFormat = unsigned(draw.colorFormat);
+        key.pipeline.cull = unsigned(draw.cullFront) | (unsigned(draw.cullBack) << 1) | (unsigned(draw.frontFaceClockwise) << 2);
         key.width = draw.width;
         key.height = draw.height;
         key.overwriteTarget = overwriteTarget;
@@ -2171,22 +2344,38 @@ void main() {
         key.depthHeight = draw.depth.test ? draw.depth.height : 0;
         key.depthPitch = draw.depth.test ? draw.depth.pitch : 0;
         key.pitch = draw.pitch;
-        key.vertexCount = draw.vertices.size();
+        key.vertexCapacity = std::bit_ceil(draw.vertices.size());
         std::uint64_t depthTransferBytes{};
         for (const auto &texture: textures)
             if (texture.format == VK_FORMAT_R32_SFLOAT)
                 depthTransferBytes += texture.bytes();
-        const auto estimatedBytes = std::uint64_t(draw.target.size()) * 3 + textureBytes * 2 + depthTransferBytes + draw.vertices.size_bytes() +
-                                    sizeof(constants) + (draw.vertexStage.shader ? sizeof(vertexConstants) : 0) +
+        const auto estimatedBytes = (depthOnly(draw) ? 0 : std::uint64_t(draw.target.size()) * 3) + textureBytes * 2 + depthTransferBytes +
+                                    std::uint64_t(key.vertexCapacity) * sizeof(RasterDraw::Vertex) + sizeof(constants) +
+                                    (draw.vertexStage.shader ? sizeof(vertexConstants) : 0) +
                                     (draw.depth.test ? draw.depth.target.size_bytes() * 3 : 0);
         for (const auto &texture: textures) {
             key.pipeline.bindings.push_back(texture.binding);
-            key.textureShape.insert(key.textureShape.end(), {texture.width, texture.height, texture.layers, unsigned(texture.array),
-                                                             unsigned(texture.format), unsigned(texture.components.r), unsigned(texture.components.g),
-                                                             unsigned(texture.components.b), unsigned(texture.components.a),
-                                                             unsigned(texture.addressU), unsigned(texture.addressV), unsigned(texture.filter), unsigned(texture.volume),
+            key.textureShape.insert(key.textureShape.end(), {texture.width,
+                                                             texture.height,
+                                                             texture.layers,
+                                                             unsigned(texture.array),
+                                                             unsigned(texture.format),
+                                                             unsigned(texture.components.r),
+                                                             unsigned(texture.components.g),
+                                                             unsigned(texture.components.b),
+                                                             unsigned(texture.components.a),
+                                                             unsigned(texture.addressU),
+                                                             unsigned(texture.addressV),
+                                                             unsigned(texture.filter),
+                                                             unsigned(texture.volume),
                                                              unsigned(texture.addressW),
-                                                             unsigned(texture.borderColor)});
+                                                             unsigned(texture.borderColor),
+                                                             unsigned(texture.cube),
+                                                             unsigned(texture.mips.size()),
+                                                             unsigned(texture.minFilter),
+                                                             unsigned(texture.mipFilter),
+                                                             std::bit_cast<unsigned>(texture.minLod),
+                                                             std::bit_cast<unsigned>(texture.maxLod)});
         }
         const auto t3 = std::chrono::steady_clock::now();
         RasterResult result;

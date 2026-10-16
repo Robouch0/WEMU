@@ -5,6 +5,26 @@
 
 namespace Core::Gfx::Latte {
 
+    bool isCanonicalCubeGroup(std::span<const AluInst> group)
+    {
+        if (group.size() < 4 || group.size() > 5)
+            return false;
+        const Src axes[]{group[1].src[1], group[0].src[1], group[0].src[0]};
+        constexpr unsigned swizzles[2][4]{{2, 2, 0, 1}, {1, 0, 2, 2}};
+        for (unsigned lane = 0; lane < 4; ++lane) {
+            const auto &in = group[lane];
+            if (in.op3 || in.op != OP2_CUBE || in.scalarSlot || in.dstChan != lane || in.predSel != group[0].predSel || (in.raw1 & 12u))
+                return false;
+            for (unsigned operand = 0; operand < 2; ++operand) {
+                const auto &source = in.src[operand];
+                const auto &axis = axes[swizzles[operand][lane]];
+                if (source.sel != axis.sel || source.rel || source.neg != axis.neg || source.abs != axis.abs || source.chan != axis.chan)
+                    return false;
+            }
+        }
+        return group.size() == 4 || (group[4].scalarSlot && (group[4].op3 || group[4].op != OP2_CUBE));
+    }
+
     std::shared_ptr<const Program> decodeProgram(const std::vector<std::uint32_t> &words)
     {
         auto result = std::make_shared<Program>();
@@ -13,9 +33,16 @@ namespace Core::Gfx::Latte {
             const auto cf0 = words[cf], cf1 = words[cf + 1];
             if (!isAluClause(cf1)) {
                 const auto op = cfInst(cf1);
-                if (op == CF_EXP || op == CF_EXP_DONE)
-                    result->registerCount = std::max(result->registerCount, ((cf0 >> 15) & 127) + 1);
-                if (op == CF_TEX) {
+                if (op == CF_EXP || op == CF_EXP_DONE) {
+                    const auto burst = ((cf1 >> 17) & 15) + 1;
+                    result->registerCount = std::max(result->registerCount, std::min(128u, ((cf0 >> 15) & 127) + burst));
+                    constexpr unsigned directMask = 0x1FFFu | (3u << 13) | (127u << 15);
+                    const auto base = cf0 & 0x1FFF;
+                    if (!(cf0 & ~directMask) && ((cf0 >> 13) & 3) == 0 && base < 8 && (cf1 & 0xFFF) != 0xFFF)
+                        for (unsigned target = base; target < std::min(8u, base + burst); ++target)
+                            result->colorExportMask |= 1u << target;
+                }
+                if (op == CF_TEX || op == CF_VTX || op == CF_VTX_TC) {
                     const auto count = (((cf1 >> 10) & 7) | ((cf1 >> 16) & 8)) + 1;
                     for (unsigned i = 0; i < count; i++) {
                         const auto off = std::uint64_t(cf0) * 2 + std::uint64_t(i) * 4;
@@ -80,7 +107,8 @@ namespace Core::Gfx::Latte {
                     }
                     result->usesAddressing |=
                             in.isAddressWrite() || bool(in.raw1 & (1u << 28)) || in.src[0].rel || in.src[1].rel || (in.op3 && in.src[2].rel);
-                    const bool transOnly = !in.op3 && ((in.op >= 0x60 && in.op <= 0x6F) || in.op == OP2_FLT_TO_UINT);
+                    const bool transOnly = !in.op3 && ((in.op >= 0x60 && in.op <= 0x6F) || in.op == OP2_FLT_TO_UINT || in.op == OP2_MULLO_INT ||
+                                                       in.op == OP2_MULLO_UINT);
                     in.scalarSlot = transOnly || (vectorSlots & (1u << in.dstChan));
                     if (!in.scalarSlot)
                         vectorSlots |= 1u << in.dstChan;

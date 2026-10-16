@@ -29,6 +29,35 @@ class SchedulerTest : public InstructionTest {
 
 static constexpr std::uint32_t APP = Core::Memory::MemoryMap::ApplicationCode;
 
+TEST_F(SchedulerTest, NewThreadsStartWithCafeQuantizationDefaultsAndPreserveChanges)
+{
+    constexpr unsigned worker = 0x28001000;
+    const std::array<unsigned, 8> defaults{0, 0, 0x00040004, 0x00050005, 0x00060006, 0x00070007, 0, 0};
+    cpu->m_scheduler.bootstrap(*cpu);
+    EXPECT_TRUE(std::equal(defaults.begin(), defaults.end(), cpu->m_gqr));
+    cpu->m_gqr[3] = 0x05050505;
+    auto *thread = cpu->m_scheduler.create(*cpu, worker, APP + 0x200, 0, 0, 0x28010000, 16);
+    ASSERT_NE(thread, nullptr);
+    EXPECT_TRUE(std::equal(defaults.begin(), defaults.end(), thread->gqr));
+    cpu->m_scheduler.resume(worker);
+    ASSERT_TRUE(cpu->m_scheduler.yield(*cpu));
+    EXPECT_TRUE(std::equal(defaults.begin(), defaults.end(), cpu->m_gqr));
+    // psq_st f1,0(r3),1,3 stores an unsigned halfword, rather than float bytes.
+    cpu->m_gpr[3] = 0x28020000;
+    cpu->m_fpr[1] = 41949.f;
+    cpu->executeInstruction(EncodedInstruction{(60u << 26) | (1u << 21) | (3u << 16) | (1u << 15) | (3u << 12)});
+    EXPECT_EQ(cpu->m_memory.read<unsigned short>(0x28020000), 41949u);
+    cpu->m_memory.write<unsigned short>(0x28020000, 9181);
+    // psq_l f2,0(r3),1,5 reads a signed halfword used by quantized animation curves.
+    cpu->executeInstruction(EncodedInstruction{(56u << 26) | (2u << 21) | (3u << 16) | (1u << 15) | (5u << 12)});
+    EXPECT_EQ(cpu->m_fpr[2], 9181.);
+    cpu->m_gqr[5] = 0x02070207;
+    ASSERT_TRUE(cpu->m_scheduler.yield(*cpu));
+    EXPECT_EQ(cpu->m_gqr[3], 0x05050505u);
+    ASSERT_TRUE(cpu->m_scheduler.yield(*cpu));
+    EXPECT_EQ(cpu->m_gqr[5], 0x02070207u);
+}
+
 TEST_F(SchedulerTest, VpadReadInitializesOneCompleteSampleAndTracksEdges)
 {
     RegisterCoreinitFunctions();

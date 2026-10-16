@@ -20,6 +20,7 @@
 #include "cpu/interpreter/Interpreter.hpp"
 #include "cpu/interpreter/SyscallHandler.hpp"
 #include "cpu/memory/Memory.hpp"
+#include "hle/Gx2.hpp"
 #include "utils/Logger.hpp"
 
 namespace {
@@ -208,8 +209,10 @@ namespace {
         const std::uint32_t dst = cpu.m_gpr[3];
         std::uint8_t *d = cpu.m_memory.hostPtr(dst);
         const std::uint8_t *s = cpu.m_memory.hostPtr(cpu.m_gpr[4]);
-        if (d && s && cpu.m_gpr[5])
+        if (d && s && cpu.m_gpr[5]) {
             std::memmove(d, s, cpu.m_gpr[5]);
+            CopyGx2DisplayListState(dst, cpu.m_gpr[4], cpu.m_gpr[5]);
+        }
         cpu.m_gpr[3] = dst;
     }
 

@@ -28,7 +28,8 @@ namespace Core {
             std::uint32_t gpr[32]{};
             double fpr[32]{};
             double ps1[32]{};
-            std::uint32_t gqr[8]{};
+            // Cafe thread entry defaults: paired u8/u16/s8/s16 loads and stores.
+            std::uint32_t gqr[8]{0, 0, 0x00040004, 0x00050005, 0x00060006, 0x00070007, 0, 0};
             Core::ConditionRegister cr{};
             Core::FixedPointExceptionRegister xer{};
             Core::FloatingPointStatusAndControlRegister fpscr{};

@@ -102,6 +102,7 @@ namespace Core {
                 m_h264.reset();
                 m_lockedCache = {};
                 m_blockCache.clear();
+                m_observedPcs.clear();
                 m_failed = false;
                 m_pc = 0;
                 m_nextPc = 0;
@@ -246,6 +247,7 @@ namespace Core {
 #endif
             };
             std::unordered_map<std::uint32_t, Block> m_blockCache; // keyed by memory-relative PC
+            std::vector<std::uint32_t> m_observedPcs; // absolute guest PCs that must reach the diagnostic dispatch
             bool m_jitEnabled{false};
             std::uint64_t m_retired{0}; // total instructions retired (WEMU_IPS throughput reporting)
 

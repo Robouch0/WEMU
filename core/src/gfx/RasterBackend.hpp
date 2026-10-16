@@ -28,12 +28,12 @@ namespace Core::Gfx {
     // outside this ABI's validated native subset.
     // Texture views expose only reference base-level texels. Shader output is
     // rounded to RGBA8 before integer blending on UNORM targets. RGBA32 float
-    // targets preserve shader floats and use float blending. A GPU
+    // and packed R11G11B10 targets preserve HDR values and use float blending. A GPU
     // implementation must validate its conversion/blend tolerances separately.
     struct RasterDraw {
             struct Vertex {
                     float x{}, y{};
-                    std::array<std::array<float, 4>, 4> inputs{};
+                    std::array<std::array<float, 4>, 16> inputs{};
                     float z{}, reciprocalW{1.f}; // window depth and perspective divisor
             };
             struct Texture {
@@ -71,6 +71,16 @@ namespace Core::Gfx {
                     // Original guest resource, independent of the base-only upload.
                     // Zero mip count means unknown, so it cannot prove LOD invariance.
                     unsigned sourceMipCount{}, sourceFirstMip{};
+                    // Little-endian packed unsigned HDR texels, before component mapping.
+                    std::span<const std::uint8_t> r11g11b10Bytes;
+                    unsigned r11g11b10Pitch{};
+                    struct MipLevel {
+                            unsigned width{}, height{};
+                            std::span<const float> rgba32; // tightly packed, layer-major, component-mapped
+                    };
+                    // Additional levels after the base snapshot. Multilevel uploads
+                    // currently use component-mapped RGBA32F for every level.
+                    std::span<const MipLevel> mips;
             };
             struct Blend {
                     bool enabled{};
@@ -106,12 +116,24 @@ namespace Core::Gfx {
                     std::shared_ptr<const Latte::VertexShader> shader;
                     std::span<const float> constants;
                     std::span<const float> uniforms;
-                    std::array<int, 4> inputParams{-1, -1, -1, -1};
+                    std::array<int, 16> inputParams = [] {
+                        std::array<int, 16> inputs;
+                        inputs.fill(-1);
+                        return inputs;
+                    }();
                     std::array<float, 6> viewport{};
+                    unsigned inputCount{4};
             } vertexStage;
             // Static kcache references in shader.uniforms, four floats each;
             // replayer snapshots the actual fragment uniform-block values.
             std::span<const float> uniforms;
+            // Effective writable exports from current guest buffer bindings/masks.
+            unsigned enabledColorTargets{1};
+            bool cullFront{}, cullBack{}, frontFaceClockwise{};
+            struct DepthBias {
+                    bool enabled{};
+                    float constant{}, slope{}, clamp{};
+            } depthBias;
     };
 
     // Owns all data/resources needed after renderDeferred returns. Materialization

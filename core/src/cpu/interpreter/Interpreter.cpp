@@ -107,6 +107,10 @@ void Core::Interpreter::run()
     // checks out of the per-instruction loop — each was a function call (with a thread-safe static
     // guard) run billions of times during boot.
     const bool haveWatchPcs = !Diag::watchPcs().empty();
+    if (m_observedPcs != Diag::watchPcs()) {
+        m_observedPcs = Diag::watchPcs();
+        m_blockCache.clear();
+    }
     const bool haveWatchWords = !Diag::watchWords().empty();
     const bool haveWatchCstrs = Diag::hasWatchCstrs();
     const bool haveWatchRegs = Diag::hasWatchRegs();
@@ -124,16 +128,16 @@ void Core::Interpreter::run()
     const bool haveDriveMenuExperiment = std::getenv("WEMU_DRIVE_MENU") != nullptr;
     // Light-JIT block cache. Verified byte-identical to the pure interpreter and ~15% faster, so
     // it is ON by default; set WEMU_JIT=0 to fall back to the plain per-instruction interpreter
-    // (the correctness reference). Only engaged when no per-instruction diagnostic is active — the
-    // block executor deliberately skips those checks for its interior instructions.
+    // (the correctness reference). Per-instruction diagnostics use the slow path. PC observers
+    // instead bound decoded/native blocks so unrelated execution can stay accelerated.
     m_jitEnabled = []() {
         const char *e = std::getenv("WEMU_JIT");
         return !e || e[0] != '0';
     }();
-    const bool jitFastPath = m_jitEnabled && !haveWatchPcs && !haveWatchWords && !haveWatchCstrs && !haveWatchRegs && !haveHeartbeat &&
-                             !haveCountPcs && !haveOrderFix && !haveResourceLookupTrace && !haveReadinessTrace && !haveItemResourceTrace &&
-                             !haveFlvcNullTrace && !haveMk8UiArrayZeroFill && !haveMk8WorkQueueTrace && !haveSeadHeapTrace &&
-                             !haveSeadHeapContextTrace && !haveDriveMenuExperiment;
+    const bool jitFastPath = m_jitEnabled && !haveWatchWords && !haveWatchCstrs && !haveWatchRegs && !haveHeartbeat && !haveCountPcs &&
+                             !haveOrderFix && !haveResourceLookupTrace && !haveReadinessTrace && !haveItemResourceTrace && !haveFlvcNullTrace &&
+                             !haveMk8UiArrayZeroFill && !haveMk8WorkQueueTrace && !haveSeadHeapTrace && !haveSeadHeapContextTrace &&
+                             !haveDriveMenuExperiment;
 #ifdef WEMU_HAS_LLVM
     const bool profileNative = [] {
         const auto *value = std::getenv("WEMU_NATIVE_PROFILE");
@@ -249,13 +253,14 @@ void Core::Interpreter::run()
             ~HotDump()
             {
                 std::vector<std::pair<std::uint64_t, std::uint32_t>> v;
+                v.reserve(counts.size());
                 for (auto [pc, n]: counts) v.push_back({n, pc});
                 std::sort(v.rbegin(), v.rend());
                 std::uint64_t total = 0;
                 for (auto &e: v) total += e.first;
                 for (std::size_t i = 0; i < std::min<std::size_t>(40, v.size()); ++i)
                     std::fprintf(stderr, "[HOTBLOCK] pc=0x%08X instrs=%llu share=%.2f%%\n", v[i].second + Core::Memory::MemoryMap::ApplicationCode,
-                                 (unsigned long long) v[i].first, 100.0 * v[i].first / double(total ? total : 1));
+                                 (unsigned long long) v[i].first, 100.0 * double(v[i].first) / double(total ? total : 1));
             }
     } hotDump{hotBlockCounts}; // TEMP-HOTBLOCKS
     std::uint64_t schedulerClockRetired = m_retired;
@@ -596,6 +601,10 @@ InstructionID Core::Interpreter::findInstructionID(const EncodedInstruction &ins
 
 const Core::Interpreter::Block &Core::Interpreter::getBlock(Utils::BeDecoder &decoder, const std::uint32_t startPc, bool nativeLookahead)
 {
+    const auto observed = [&](std::uint32_t pc) { return !m_observedPcs.empty() && std::ranges::find(m_observedPcs, pc) != m_observedPcs.end(); };
+    const bool observedStart = observed(startPc + Memory::ApplicationCode);
+    if (observedStart)
+        nativeLookahead = false;
     if (const auto it = m_blockCache.find(startPc); it != m_blockCache.end()) {
         decoder.seek(startPc);
         bool unchanged = !it->second.instrs.empty();
@@ -689,7 +698,7 @@ const Core::Interpreter::Block &Core::Interpreter::getBlock(Utils::BeDecoder &de
             break;
         // Stop just before a hooked address so run()'s HLE hook dispatch still fires for it.
         const std::uint32_t ppc = pc + Core::Memory::MemoryMap::ApplicationCode;
-        if (ppc >= m_hooks_min && ppc <= m_hooks_max && m_hooks.contains(ppc))
+        if (observed(ppc) || (ppc >= m_hooks_min && ppc <= m_hooks_max && m_hooks.contains(ppc)))
             break;
     }
 #ifdef WEMU_HAS_LLVM
@@ -701,7 +710,7 @@ const Core::Interpreter::Block &Core::Interpreter::getBlock(Utils::BeDecoder &de
         ++b.nativePrefixLength;
     }
     b.nativeLookahead = nativeLookahead;
-    if (b.nativePrefixLength >= 2 || nativeLookahead)
+    if (!observedStart && (b.nativePrefixLength >= 2 || nativeLookahead))
         for (unsigned i = 0; i < b.nativePrefixLength; ++i)
             b.nativeWords.push_back(b.instrs[i].instr.raw);
     // The reference block still stops at stores. Native code can continue only
@@ -710,7 +719,8 @@ const Core::Interpreter::Block &Core::Interpreter::getBlock(Utils::BeDecoder &de
         while (b.nativeWords.size() < 64) {
             const auto next = startPc + static_cast<std::uint32_t>(b.nativeWords.size() * 4);
             const auto ppc = next + Memory::ApplicationCode;
-            if ((ppc >= m_hooks_min && ppc <= m_hooks_max && m_hooks.contains(ppc)) || std::uint64_t(next) + 4 > m_memory.getMemory().size())
+            if (observed(ppc) || (ppc >= m_hooks_min && ppc <= m_hooks_max && m_hooks.contains(ppc)) ||
+                std::uint64_t(next) + 4 > m_memory.getMemory().size())
                 break;
             decoder.seek(next);
             const auto word = decoder.extractSwap<std::uint32_t>();

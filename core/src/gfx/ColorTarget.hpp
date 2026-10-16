@@ -2,21 +2,74 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 
 namespace Core::Gfx {
-    enum class ColorFormat { RGBA8, RGBA32Float };
+    enum class ColorFormat { RGBA8, RGBA32Float, R11G11B10Float };
     constexpr unsigned colorElementBytes(ColorFormat format) { return format == ColorFormat::RGBA32Float ? 16u : 4u; }
-    constexpr ColorFormat colorFormat(unsigned gx2Format) { return gx2Format == 0x823 ? ColorFormat::RGBA32Float : ColorFormat::RGBA8; }
-    inline std::array<float, 4> readFloatColor(const std::uint8_t *bytes)
+    constexpr ColorFormat colorFormat(unsigned gx2Format)
     {
+        return gx2Format == 0x823 ? ColorFormat::RGBA32Float : gx2Format == 0x816 ? ColorFormat::R11G11B10Float : ColorFormat::RGBA8;
+    }
+    // Unsigned five-bit exponent, bias 15; R/G have six fraction bits, B has five.
+    inline float decodeUnsignedFloat(unsigned bits, unsigned fractionBits)
+    {
+        const auto exponent = bits >> fractionBits;
+        const auto fraction = bits & ((1u << fractionBits) - 1);
+        if (exponent == 31)
+            return std::bit_cast<float>(0x7F800000u | (fraction << (23 - fractionBits)));
+        if (!exponent)
+            return std::ldexp(float(fraction), -14 - int(fractionBits));
+        return std::ldexp(1.f + float(fraction) / float(1u << fractionBits), int(exponent) - 15);
+    }
+    inline unsigned encodeUnsignedFloat(float value, unsigned fractionBits)
+    {
+        const auto bits = std::bit_cast<std::uint32_t>(value);
+        if (std::isnan(value))
+            return (31u << fractionBits) | (1u << (fractionBits - 1));
+        if (value <= 0.f)
+            return 0;
+        const int exponent = int((bits >> 23) & 255) - 127 + 15;
+        if (exponent >= 31)
+            return 31u << fractionBits;
+        if (exponent <= 0) {
+            const double scaled = std::ldexp(double(value), 14 + int(fractionBits));
+            const auto floor = unsigned(scaled);
+            const auto remainder = scaled - floor;
+            return floor + unsigned(remainder > .5 || (remainder == .5 && (floor & 1)));
+        }
+        const unsigned shift = 23 - fractionBits;
+        const auto fraction = bits & 0x7FFFFFu;
+        const auto rounded = (fraction + (1u << (shift - 1)) - 1 + ((fraction >> shift) & 1)) >> shift;
+        // A fraction carry also carries into the exponent (including infinity).
+        return (unsigned(exponent) << fractionBits) + rounded;
+    }
+    inline std::array<float, 4> readFloatColor(const std::uint8_t *bytes, ColorFormat format = ColorFormat::RGBA32Float)
+    {
+        if (format == ColorFormat::R11G11B10Float) {
+            const auto bits =
+                    std::uint32_t(bytes[0]) | (std::uint32_t(bytes[1]) << 8) | (std::uint32_t(bytes[2]) << 16) | (std::uint32_t(bytes[3]) << 24);
+            return {decodeUnsignedFloat(bits & 0x7FF, 6), decodeUnsignedFloat((bits >> 11) & 0x7FF, 6), decodeUnsignedFloat(bits >> 22, 5), 1.f};
+        }
         std::array<float, 4> value;
         std::memcpy(value.data(), bytes, sizeof(value));
         return value;
     }
-    inline void writeFloatColor(std::uint8_t *bytes, const std::array<float, 4> &value, unsigned mask)
+    inline void writeFloatColor(std::uint8_t *bytes, const std::array<float, 4> &value, unsigned mask, ColorFormat format = ColorFormat::RGBA32Float)
     {
+        if (format == ColorFormat::R11G11B10Float) {
+            auto bits = std::uint32_t(bytes[0]) | (std::uint32_t(bytes[1]) << 8) | (std::uint32_t(bytes[2]) << 16) | (std::uint32_t(bytes[3]) << 24);
+            constexpr unsigned shifts[]{0, 11, 22}, masks[]{0x7FF, 0x7FF, 0x3FF};
+            for (unsigned c = 0; c < 3; ++c)
+                if (mask & (1u << c))
+                    bits = (bits & ~(masks[c] << shifts[c])) | (encodeUnsignedFloat(value[c], c == 2 ? 5 : 6) << shifts[c]);
+            for (unsigned b = 0; b < 4; ++b)
+                bytes[b] = bits >> (b * 8);
+            return;
+        }
         for (unsigned c = 0; c < 4; ++c)
             if (mask & (1u << c))
                 std::memcpy(bytes + c * sizeof(float), &value[c], sizeof(float));

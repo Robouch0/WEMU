@@ -15,12 +15,275 @@
 
 using namespace Core::Gfx::Latte;
 
+TEST(ColorTargetTest, PackedHdrRoundTripsFiniteValuesAndRoundsTiesToEven)
+{
+    using namespace Core::Gfx;
+    EXPECT_EQ(colorFormat(0x816), ColorFormat::R11G11B10Float);
+    EXPECT_EQ(colorElementBytes(ColorFormat::R11G11B10Float), 4u);
+    for (unsigned fractionBits: {5u, 6u}) {
+        SCOPED_TRACE(fractionBits);
+        for (unsigned bits = 0; bits < (31u << fractionBits); ++bits)
+            ASSERT_EQ(encodeUnsignedFloat(decodeUnsignedFloat(bits, fractionBits), fractionBits), bits);
+        const auto quantum = std::ldexp(1.f, -14 - int(fractionBits));
+        EXPECT_EQ(encodeUnsignedFloat(quantum * .5f, fractionBits), 0u);
+        EXPECT_EQ(encodeUnsignedFloat(quantum * 1.5f, fractionBits), 2u);
+        EXPECT_EQ(encodeUnsignedFloat(1.f + std::ldexp(1.f, -int(fractionBits) - 1), fractionBits), 15u << fractionBits);
+        EXPECT_EQ(encodeUnsignedFloat(-1.f, fractionBits), 0u);
+        EXPECT_EQ(encodeUnsignedFloat(-std::numeric_limits<float>::infinity(), fractionBits), 0u);
+        EXPECT_EQ(encodeUnsignedFloat(std::numeric_limits<float>::infinity(), fractionBits), 31u << fractionBits);
+        EXPECT_TRUE(std::isnan(decodeUnsignedFloat(encodeUnsignedFloat(std::numeric_limits<float>::quiet_NaN(), fractionBits), fractionBits)));
+    }
+    std::array<std::uint8_t, 4> bytes{};
+    writeFloatColor(bytes.data(), {2.f, 4.f, .5f, 0.f}, 15, ColorFormat::R11G11B10Float);
+    EXPECT_EQ(readFloatColor(bytes.data(), ColorFormat::R11G11B10Float), (std::array{2.f, 4.f, .5f, 1.f}));
+    writeFloatColor(bytes.data(), {8.f, -1.f, 16.f, .25f}, 10, ColorFormat::R11G11B10Float);
+    EXPECT_EQ(readFloatColor(bytes.data(), ColorFormat::R11G11B10Float), (std::array{2.f, 0.f, .5f, 1.f}));
+    writeFloatColor(bytes.data(), {8.f, 9.f, 16.f, .25f}, 8, ColorFormat::R11G11B10Float);
+    EXPECT_EQ(readFloatColor(bytes.data(), ColorFormat::R11G11B10Float), (std::array{2.f, 0.f, .5f, 1.f}));
+}
+
+TEST(VulkanPointsTest, PackedHdrBlendsPreservesPaddingAndSamplesResidentAndForeignImages)
+{
+    using namespace Core::Gfx;
+    if (!std::getenv("WEMU_TEST_VULKAN"))
+        GTEST_SKIP();
+    const auto shader = lowerFragmentShader(*decodeProgram({0, (CF_EXP_DONE << 23) | (1u << 21) | 0x688u}));
+    ASSERT_TRUE(shader) << shader.error;
+    std::array<RasterDraw::Vertex, 2> points{{{1.5f, .5f, {}}, {1.5f, .5f, {}}}};
+    for (auto &v: points)
+        v.inputs[0] = {2.f, .5f, .25f, .125f};
+    std::vector<std::uint8_t> target(6 * 2 * 4);
+    for (unsigned i = 0; i < 12; ++i)
+        writeFloatColor(target.data() + i * 4, {.5f, .25f, .75f, 0.f}, 15, ColorFormat::R11G11B10Float);
+    RasterDraw draw{shader, points, {}, {}, target, 4, 2, 6, {1, 0, 2, 2}, 5, {true, 6, 1, 0, 1, 1, 0, {}}};
+    draw.topology = RasterDraw::Topology::Points;
+    draw.colorFormat = ColorFormat::R11G11B10Float;
+    VulkanRasterBackend backend(true, true);
+    auto first = backend.renderDeferred(draw);
+    ASSERT_TRUE(first) << backend.lastError();
+    ASSERT_TRUE(first->readback);
+    draw.renderedTarget = first->readback;
+    auto second = backend.renderDeferred(draw);
+    ASSERT_TRUE(second) << backend.lastError();
+    second->resolve();
+    for (unsigned i = 0; i < 12; ++i)
+        EXPECT_EQ(readFloatColor(second->rgba.data() + i * 4, draw.colorFormat),
+                  (i == 1 ? std::array{8.5f, .25f, 1.75f, 1.f} : std::array{.5f, .25f, .75f, 1.f}));
+    const auto sampled = lowerFragmentShader(*decodeProgram(
+            {2, 1u << 23, 0, (CF_EXP_DONE << 23) | (1u << 21) | 0x688u, 0x13, 0x30000000u | (1u << 12) | (2u << 15) | (3u << 18), 1u << 23, 0}));
+    ASSERT_TRUE(sampled) << sampled.error;
+    RasterDraw::Texture texture{sampled.textures[0], 4, 2, {}, [](unsigned, unsigned) { return std::array<float, 4>{}; }};
+    texture.rendered = first->readback;
+    texture.renderedFormat = draw.colorFormat;
+    texture.unorm8Pitch = 6;
+    texture.unorm8Map = 0x02010005;
+    std::array<RasterDraw::Vertex, 1> one{{{.5f, .5f, {}}}};
+    one[0].inputs[0] = {.375f, .25f, 0, 1};
+    std::vector<std::uint8_t> output(16);
+    RasterDraw sampleDraw{sampled, one, {}, std::span{&texture, 1}, output, 1, 1, 1, {0, 0, 1, 1}, 15, {}};
+    sampleDraw.topology = RasterDraw::Topology::Points;
+    sampleDraw.colorFormat = ColorFormat::RGBA32Float;
+    auto result = backend.render(sampleDraw);
+    ASSERT_TRUE(result) << backend.lastError();
+    EXPECT_EQ(readFloatColor(result->rgba.data()), (std::array{1.25f, .25f, 4.5f, 1.f}));
+    VulkanRasterBackend foreign(true, true);
+    result = foreign.render(sampleDraw);
+    ASSERT_TRUE(result) << foreign.lastError();
+    EXPECT_EQ(readFloatColor(result->rgba.data()), (std::array{1.25f, .25f, 4.5f, 1.f}));
+    // Explicit CPU snapshots and malformed pitches exercise the upload fallback.
+    texture.r11g11b10Bytes = first->readback->resolve();
+    texture.r11g11b10Pitch = 6;
+    texture.rendered.reset();
+    result = backend.render(sampleDraw);
+    ASSERT_TRUE(result) << backend.lastError();
+    EXPECT_EQ(readFloatColor(result->rgba.data()), (std::array{1.25f, .25f, 4.5f, 1.f}));
+    texture.r11g11b10Pitch = 3;
+    EXPECT_FALSE(backend.render(sampleDraw));
+}
+
 TEST(LatteLoweringTest, UnsupportedExportsIdentifyTheirEncoding)
 {
     const auto shader = lowerFragmentShader(*decodeProgram({61, (0x28u << 23) | (1u << 21) | 0x688u}));
     EXPECT_FALSE(shader);
     EXPECT_NE(shader.error.find("cf=0 type=0 base=61 repeated=false"), std::string::npos);
     EXPECT_NE(shader.error.find("words=0000003D,14200688"), std::string::npos);
+}
+
+TEST(LatteReferenceTest, FullParameterAndPixelRegisterRangeIsPreserved)
+{
+    std::array<std::array<float, 4>, 32> attributes{};
+    attributes[31] = {2.f, .25f, .5f, 1.f};
+    const auto vertex = Core::Gfx::LatteVsInterp::run(
+            {60u | (1u << 13) | (1u << 15), (CF_EXP << 23) | 0x688u, 31u | (2u << 13) | (32u << 15), (CF_EXP_DONE << 23) | (1u << 21) | 0x688u},
+            attributes, nullptr, 0);
+    ASSERT_TRUE(vertex.valid);
+    ASSERT_TRUE(vertex.paramValid[31]);
+    EXPECT_EQ(vertex.params[31], attributes[31]);
+    const auto pixel = decodeProgram({31u << 15, (CF_EXP_DONE << 23) | (1u << 21) | 0x688u});
+    EXPECT_EQ(Core::Gfx::LatteVsInterp::runPixel(*pixel, attributes, nullptr, 0, {}).color, attributes[31]);
+    std::array<std::array<float, 4>, 33> tooMany{};
+    EXPECT_FALSE(Core::Gfx::LatteVsInterp::runPixel(*pixel, tooMany, nullptr, 0, {}).colorValid);
+}
+
+TEST(LatteReferenceTest, DirectExportMetadataIncludesBurstsAndBoundsRegisterInitialization)
+{
+    const auto exportWord = (CF_EXP_DONE << 23) | (1u << 21) | 0x688u;
+    for (const auto [base, burst, expected]: {std::array{0u, 0u, 1u}, std::array{0u, 7u, 255u}, std::array{5u, 7u, 224u}, std::array{61u, 0u, 0u}}) {
+        const auto program = decodeProgram({base | (127u << 15), exportWord | (burst << 17)});
+        EXPECT_EQ(program->colorExportMask, expected);
+        EXPECT_EQ(program->registerCount, 128u);
+    }
+    EXPECT_EQ(decodeProgram({1u << 22, exportWord})->colorExportMask, 0u);
+    EXPECT_EQ(decodeProgram({0, (exportWord & ~0xFFFu) | 0xFFFu})->colorExportMask, 0u);
+    EXPECT_EQ(decodeProgram({2u << 13, exportWord})->colorExportMask, 0u);
+}
+
+TEST(VulkanRasterTest, InactiveBurstExportsRequireCurrentTargetProofAndSeparateCacheEntries)
+{
+    using namespace Core::Gfx;
+    const unsigned exportWord = (CF_EXP_DONE << 23) | (1u << 21) | (1u << 17) | 0x688u;
+    const std::vector<unsigned> words{0, exportWord};
+    FragmentShaderCache cache;
+    const auto allTargets = cache.get(words);
+    ASSERT_FALSE(*allTargets);
+    const auto shader = cache.get(words, {}, true);
+    ASSERT_TRUE(*shader) << shader->error;
+    EXPECT_TRUE(shader->requiresOnlyColorZero);
+    EXPECT_NE(shader, allTargets);
+    EXPECT_EQ(cache.get(words), allTargets);
+    const auto conditional = lowerFragmentShader(*decodeProgram({1, 0x0Au << 23, 0, exportWord}), {}, true);
+    EXPECT_FALSE(conditional);
+    EXPECT_NE(conditional.error.find("unconditional"), std::string::npos);
+    if (!std::getenv("WEMU_TEST_VULKAN"))
+        GTEST_SKIP();
+    std::array<RasterDraw::Vertex, 1> points{{{.5f, .5f, {}}}};
+    points[0].inputs[0] = {.25f, .4f, 1.f, 1.f};
+    points[0].inputs[1] = {1.f, 0.f, 0.f, 1.f};
+    std::vector<std::uint8_t> target(4);
+    RasterDraw draw{*shader, points, {}, {}, target, 1, 1, 1, {0, 0, 1, 1}, 15, {}};
+    draw.topology = RasterDraw::Topology::Points;
+    VulkanRasterBackend backend(true, true);
+    const auto result = backend.render(draw);
+    ASSERT_TRUE(result) << backend.lastError();
+    EXPECT_EQ(result->rgba, (std::vector<std::uint8_t>{64, 102, 255, 255}));
+    const auto submissions = backend.queueSubmissions();
+    draw.enabledColorTargets = 3;
+    EXPECT_FALSE(backend.render(draw));
+    EXPECT_EQ(backend.queueSubmissions(), submissions);
+    draw.enabledColorTargets = 1;
+    const auto restored = backend.render(draw);
+    ASSERT_TRUE(restored) << backend.lastError();
+    EXPECT_EQ(restored->rgba, result->rgba);
+}
+
+TEST(LatteLoweringTest, ColorOnlyEffectAnalysisIgnoresUnusedReadsButRejectsObservableEffects)
+{
+    const std::vector<unsigned> words{2,          (CF_TEX << 23) | (1u << 10),
+                                      0,          (CF_EXP_DONE << 23) | (1u << 21) | (7u << 17) | 0x688u,
+                                      0x0E,       0x001FFE00,
+                                      0x6DB00000, 0,
+                                      0x11,       0xF01D1004,
+                                      0x68868000, 0};
+    FragmentShaderCache cache;
+    ASSERT_TRUE(*cache.get(words, {}, true)); // Cube-index and explicit-LOD instructions now lower.
+    EXPECT_TRUE(cache.hasUnconditionalColorOnlyEffects(words));
+    EXPECT_TRUE(cache.hasUnconditionalColorOnlyEffects(words));
+    const auto rejected = decodeProgram(words);
+    EXPECT_FALSE(Core::Gfx::LatteVsInterp::rejectsEveryPixel(*rejected));
+    for (float value: {0.f, .5f, 1.f}) {
+        VulkanFragmentProbe::Inputs inputs{};
+        inputs[0].fill(value);
+        const auto result = Core::Gfx::LatteVsInterp::runPixel(*rejected, inputs, nullptr, 0, {});
+        EXPECT_FALSE(result.colorValid || result.depthValid || result.discarded);
+    }
+    auto effect = words;
+    effect[4] = 0x02; // Unknown/memory texture operations cannot be eliminated.
+    EXPECT_FALSE(cache.hasUnconditionalColorOnlyEffects(effect));
+    effect = words;
+    effect[2] = 61;
+    effect[3] = (CF_EXP_DONE << 23) | (1u << 21) | 0xFF8u;
+    EXPECT_FALSE(cache.hasUnconditionalColorOnlyEffects(effect));
+    effect = words;
+    effect.resize(8);
+    EXPECT_FALSE(cache.hasUnconditionalColorOnlyEffects(effect));
+    EXPECT_FALSE(cache.hasUnconditionalColorOnlyEffects(
+            {2, 8u << 26, 0, (CF_EXP_DONE << 23) | (1u << 21) | 0x688u, 1u << 31, (0x2Cu << 7) | 16u})); // Kill/unknown ALU.
+    EXPECT_FALSE(cache.hasUnconditionalColorOnlyEffects({0, (0x3Au << 23) | (1u << 21)})); // Memory export.
+    std::vector<unsigned> balanced{4,
+                                   9u << 26,
+                                   5,
+                                   CF_TEX << 23,
+                                   7,
+                                   10u << 26,
+                                   0,
+                                   (CF_EXP_DONE << 23) | (1u << 21) | 0x688u,
+                                   0x80000000u | SRC_0 | (SRC_1 << 13),
+                                   (OP2_PRED_SETGT << 7) | 12u,
+                                   0x0E,
+                                   0x001FFE00,
+                                   0x6DB00000,
+                                   0,
+                                   0x80000000u,
+                                   OP2_NOP << 7};
+    EXPECT_TRUE(cache.hasUnconditionalColorOnlyEffects(balanced));
+    const auto conditionalRead = decodeProgram(balanced);
+    EXPECT_FALSE(Core::Gfx::LatteVsInterp::rejectsEveryPixel(*conditionalRead));
+    VulkanFragmentProbe::Inputs inputs{};
+    inputs[0] = {.25f, .5f, .75f, 1.f};
+    const auto result = Core::Gfx::LatteVsInterp::runPixel(*conditionalRead, inputs, nullptr, 0, {});
+    ASSERT_TRUE(result.colorValid);
+    EXPECT_EQ(result.color, inputs[0]); // The inactive unsupported read must remain bypassable.
+    balanced[1] = balanced[5] = 8u << 26; // A root execute-mask update is not restored.
+    EXPECT_FALSE(cache.hasUnconditionalColorOnlyEffects(balanced));
+}
+
+TEST(VulkanVertexTest, SixteenAttributesAndPixelInputsMapHighParameterExports)
+{
+    using namespace Core::Gfx;
+    const auto vs = lowerVertexShader(*decodeProgram(
+            {60u | (1u << 13) | (9u << 15), (CF_EXP << 23) | 0x688u, 31u | (2u << 13) | (16u << 15), (CF_EXP_DONE << 23) | (1u << 21) | 0x688u}));
+    const auto ps = lowerFragmentShader(*decodeProgram({15u << 15, (CF_EXP_DONE << 23) | (1u << 21) | 0x688u}));
+    ASSERT_TRUE(vs) << vs.error;
+    ASSERT_TRUE(ps) << ps.error;
+    if (!std::getenv("WEMU_TEST_VULKAN"))
+        GTEST_SKIP();
+    std::array<RasterDraw::Vertex, 1> points{};
+    points[0].inputs[8] = {0, 0, 0, 1};
+    points[0].inputs[15] = {2.f, .25f, .5f, 1.f};
+    std::vector<std::uint8_t> bytes(16);
+    RasterDraw draw{ps, points, {}, {}, bytes, 1, 1, 1, {0, 0, 1, 1}, 15, {}};
+    draw.topology = RasterDraw::Topology::Points;
+    draw.colorFormat = ColorFormat::RGBA32Float;
+    draw.vertexStage.shader = std::make_shared<VertexShader>(vs);
+    draw.vertexStage.viewport = {0, 0, 1, 1, 0, 1};
+    draw.vertexStage.inputParams[15] = 31;
+    draw.vertexStage.inputCount = 16;
+    VulkanRasterBackend backend(true, true);
+    const auto result = backend.render(draw);
+    ASSERT_TRUE(result) << backend.lastError();
+    EXPECT_EQ(readFloatColor(result->rgba.data()), points[0].inputs[15]);
+    // The screen-space adapter carries the same high pixel input independently
+    // of the optional translated vertex stage.
+    draw.vertexStage = {};
+    points[0].x = points[0].y = .5f;
+    const auto adapter = backend.render(draw);
+    ASSERT_TRUE(adapter) << backend.lastError();
+    EXPECT_EQ(readFloatColor(adapter->rgba.data()), points[0].inputs[15]);
+}
+
+TEST(LatteReferenceTest, VertexInputsReachAllThirtyTwoSemanticRegisters)
+{
+    std::array<std::array<float, 4>, 32> attributes{};
+    for (unsigned i = 0; i < attributes.size(); ++i)
+        attributes[i] = {float(i) + .25f, float(i) + .5f, float(i) + .75f, 1.f};
+    for (unsigned reg: {1u, 5u, 9u, 32u}) {
+        const std::vector<std::uint32_t> words{60u | (1u << 13) | (reg << 15), (CF_EXP_DONE << 23) | (1u << 21) | 0x688u};
+        const auto result = Core::Gfx::LatteVsInterp::run(words, attributes, nullptr, 0);
+        ASSERT_TRUE(result.valid);
+        EXPECT_EQ(result.pos, attributes[reg - 1]);
+    }
+    std::array<std::array<float, 4>, 33> tooMany{};
+    EXPECT_FALSE(Core::Gfx::LatteVsInterp::run({60u | (1u << 13), (CF_EXP_DONE << 23) | (1u << 21) | 0x688u}, tooMany, nullptr, 0).valid);
 }
 
 TEST(LatteLoweringCacheTest, ReusesExactProgramsAndNormalizesDefaultTypes)
@@ -63,11 +326,11 @@ TEST(LatteLoweringCacheTest, CachesFailuresAndKeepsResultsAliveAfterEviction)
 namespace {
     constexpr auto probeVertexSource = R"(#version 450
 layout(push_constant) uniform Parameters { vec4 value[4]; } p;
-layout(location=0) out vec4 inputs[4];
+layout(location=0) out vec4 inputs[16];
 void main() {
     vec2 positions[3]=vec2[3](vec2(-1,-1),vec2(3,-1),vec2(-1,3));
     gl_Position=vec4(positions[gl_VertexIndex],0,1);
-    for(int i=0;i<4;++i) inputs[i]=p.value[i];
+    for(int i=0;i<16;++i) inputs[i]=i<4 ? p.value[i] : vec4(0.0);
 }
 )";
 
@@ -157,11 +420,11 @@ TEST(LatteLoweringTest, IsolatedWholeQuadAluMatchesReferenceAndVulkan)
         return;
     FragmentShader vertex;
     vertex.source = R"(#version 450
-layout(location=0) out vec4 inputs[4];
+layout(location=0) out vec4 inputs[16];
 void main() {
     vec2 positions[3]=vec2[3](vec2(-1,-1),vec2(3,-1),vec2(-1,3));
     gl_Position=vec4(positions[gl_VertexIndex],0,1);
-    for(int i=0;i<4;++i) inputs[i]=vec4(0.0);
+    for(int i=0;i<16;++i) inputs[i]=vec4(0.0);
     inputs[0].x=gl_Position.x;
 }
 )";
@@ -936,6 +1199,20 @@ TEST(VulkanRasterBackendTest, PreservesTargetMasksScissorPaddingAndFeedback)
     EXPECT_FALSE(backend.lastError().empty());
     draw.blend = {};
     texture.sampler.regs[0] = 6;
+    output = backend.render(draw);
+    ASSERT_TRUE(output) << backend.lastError();
+    EXPECT_EQ(output->rgba, expected); // In-range coordinates also work with clamp-to-border.
+    for (auto &vertex: vertices)
+        vertex.inputs[0][0] += 2.f;
+    output = backend.render(draw);
+    ASSERT_TRUE(output) << backend.lastError();
+    for (unsigned y = 0; y < 4; ++y)
+        for (unsigned x = 0; x < 4; ++x)
+            for (unsigned c = 0; c < 4; ++c)
+                EXPECT_EQ(output->rgba[(y * 6 + x) * 4 + c], 0u);
+    for (auto &vertex: vertices)
+        vertex.inputs[0][0] -= 2.f;
+    texture.sampler.regs[0] = 7; // Mirror-once-to-border remains unsupported.
     EXPECT_FALSE(backend.render(draw));
     texture.sampler.regs[0] = 0;
     texture.unorm8 = snapshot;
@@ -2018,11 +2295,11 @@ TEST(LatteLoweringTest, ForwardJumpElseAndAluPopMatchVulkan)
     if (std::getenv("WEMU_TEST_VULKAN")) {
         FragmentShader vertex;
         vertex.source = R"(#version 450
-layout(location=0) out vec4 inputs[4];
+layout(location=0) out vec4 inputs[16];
 void main() {
     vec2 positions[3]=vec2[3](vec2(-1,-1),vec2(3,-1),vec2(-1,3));
     gl_Position=vec4(positions[gl_VertexIndex],0,1);
-    for(int i=0;i<4;++i) inputs[i]=vec4(0.0);
+    for(int i=0;i<16;++i) inputs[i]=vec4(0.0);
     inputs[0].x=gl_Position.x;
 }
 )";
@@ -2385,6 +2662,38 @@ TEST(VulkanDepthTest, FixedPointQuantizationMatchesCanonicalFloatBitsAcrossBound
     }
 }
 
+TEST(VulkanDepthTest, FixedPointNormalizationPreservesEveryRepresentableInteger)
+{
+    using namespace Core::Gfx;
+    if (!std::getenv("WEMU_TEST_VULKAN") || !SpirvCompiler::available())
+        GTEST_SKIP();
+    const auto shader = lowerFragmentShader(*decodeProgram({0, (CF_EXP_DONE << 23) | (1u << 21) | 0x688u}));
+    std::array<RasterDraw::Vertex, 1> point{{{.5f, .5f, {}}}};
+    std::vector<std::uint8_t> color(4, 19);
+    // A NEVER depth test leaves every uploaded sample untouched by rasterization,
+    // while depth writes still execute the real GPU canonicalization pass.
+    for (const auto format: {DepthFormat::UNorm16, DepthFormat::UNorm24}) {
+        const unsigned width = format == DepthFormat::UNorm16 ? 256 : 4096;
+        const unsigned maximum = format == DepthFormat::UNorm16 ? 65535 : 16777215;
+        std::vector<float> depth(std::size_t(width) * width);
+        for (unsigned value = 0; value <= maximum; ++value)
+            depth[value] = float(double(value) / maximum);
+        RasterDraw draw{shader, point, {}, {}, color, 1, 1, 1, {0, 0, 1, 1}, 0, {}};
+        draw.topology = RasterDraw::Topology::Points;
+        draw.depth = {true, true, 0, format, depth, width, width, width, {}};
+        VulkanRasterBackend backend;
+        const auto result = backend.render(draw);
+        ASSERT_TRUE(result) << backend.lastError();
+        ASSERT_EQ(result->depth.size(), depth.size());
+        EXPECT_EQ(result->rgba, color);
+        for (unsigned value = 0; value <= maximum; ++value)
+            if (std::bit_cast<unsigned>(result->depth[value]) != std::bit_cast<unsigned>(depth[value])) {
+                ADD_FAILURE() << "Depth format " << unsigned(format) << " changed integer " << value << '/' << maximum;
+                break;
+            }
+    }
+}
+
 TEST(VulkanDepthTest, SmallerDepthAttachmentClipsToCommonFramebufferExtent)
 {
     using namespace Core::Gfx;
@@ -2687,6 +2996,76 @@ TEST(LatteLoweringTest, DotReductionPreservesOrderedProductsPredicationAndScale)
                 incomplete[8] |= 0x80000000u;
                 EXPECT_FALSE(lowerFragmentShader(*decodeProgram(incomplete)));
             }
+}
+
+TEST(LatteLoweringTest, CubeReductionMatchesFacesTiesPredicationAndScale)
+{
+    struct Case {
+            std::array<float, 4> direction, expected;
+    };
+    constexpr Case cases[]{{{4, 2, 1, 0}, {-2, -1, 8, 0}},  {{-4, 2, 1, 0}, {-2, 1, -8, 1}}, {{1, 4, 2, 0}, {2, 1, 8, 2}},
+                           {{1, -4, 2, 0}, {-2, 1, -8, 3}}, {{1, 2, 4, 0}, {-2, 1, 8, 4}},   {{1, 2, -4, 0}, {-2, -1, -8, 5}},
+                           {{2, 2, 2, 0}, {-2, 2, 4, 4}},   {{2, 2, 1, 0}, {1, 2, 4, 2}}};
+    constexpr unsigned swizzles[2][4]{{2, 2, 0, 1}, {1, 0, 2, 2}};
+    for (const auto &test: cases)
+        for (unsigned predicate: {0u, 2u, 3u}) {
+            const unsigned scale = predicate == 3 ? 3 : 0;
+            std::vector<unsigned> words{2, (8u << 26) | (3u << 18), 0, (CF_EXP_DONE << 23) | (1u << 21) | 0x688u};
+            // Overwrite the source register, checking simultaneous group reads.
+            for (unsigned lane = 0; lane < 4; ++lane) {
+                words.push_back((swizzles[0][lane] << 10) | (swizzles[1][lane] << 23) | (predicate << 29) | (lane == 3 ? 1u << 31 : 0));
+                words.push_back((OP2_CUBE << 7) | 16u | (scale << 5) | (lane << 29));
+            }
+            const auto program = decodeProgram(words);
+            VulkanFragmentProbe::Inputs inputs{};
+            inputs[0] = test.direction;
+            const auto reference = Core::Gfx::LatteVsInterp::runPixel(*program, inputs, nullptr, 0, {});
+            auto expected = predicate == 2 ? test.direction : test.expected;
+            if (predicate == 3)
+                for (auto &value: expected)
+                    value *= .5f;
+            ASSERT_TRUE(reference.colorValid);
+            EXPECT_EQ(reference.color, expected);
+            ASSERT_NO_FATAL_FAILURE(compareNativeControlFlow(*program, inputs, expected));
+            auto invalid = words;
+            invalid[4] ^= 1u << 10; // Unsupported source swizzle must retain fallback.
+            EXPECT_FALSE(lowerFragmentShader(*decodeProgram(invalid)));
+            EXPECT_FALSE(Core::Gfx::LatteVsInterp::runPixel(*decodeProgram(invalid), inputs, nullptr, 0, {}).colorValid);
+        }
+}
+
+TEST(LatteLoweringTest, CubeReductionPreservesPreviousVectorAndIndependentScalarResults)
+{
+    std::vector<unsigned> words{2,
+                                (8u << 26) | (10u << 18),
+                                2u << 15,
+                                (CF_EXP_DONE << 23) | (1u << 21) | 0x688u,
+                                1u | (2u << 10) | (1u << 31),
+                                (OP2_MOV << 7) | (2u << 29)};
+    constexpr unsigned swizzles[2][4]{{2, 2, 0, 1}, {1, 0, 2, 2}};
+    constexpr unsigned registers[]{0, 2, SRC_PV}, channels[]{3, 1, 2};
+    for (unsigned lane = 0; lane < 4; ++lane) {
+        const auto a = swizzles[0][lane], b = swizzles[1][lane];
+        words.push_back(registers[a] | (channels[a] << 10) | (registers[b] << 13) | (channels[b] << 23));
+        words.push_back((OP2_CUBE << 7) | (lane << 29)); // GPR write disabled; PV still receives every component.
+    }
+    words.push_back(SRC_1 | (1u << 31));
+    words.push_back((OP2_MOV << 7) | 16u | (3u << 21));
+    for (unsigned lane = 0; lane < 4; ++lane) {
+        words.push_back(SRC_PV | (lane << 10));
+        words.push_back((OP2_MOV << 7) | 16u | (2u << 21) | (lane << 29));
+    }
+    words.push_back(SRC_PS | (1u << 31));
+    words.push_back((OP2_MOV << 7) | 16u | (2u << 21));
+    const auto program = decodeProgram(words);
+    VulkanFragmentProbe::Inputs inputs{};
+    inputs[0] = {0, 0, 0, 4};
+    inputs[1] = {0, 0, 1, 0};
+    inputs[2] = {0, 2, 0, 0};
+    const auto reference = Core::Gfx::LatteVsInterp::runPixel(*program, inputs, nullptr, 0, {});
+    ASSERT_TRUE(reference.colorValid);
+    EXPECT_EQ(reference.color, (std::array{1.f, -1.f, 8.f, 0.f}));
+    ASSERT_NO_FATAL_FAILURE(compareNativeControlFlow(*program, inputs, reference.color));
 }
 
 TEST(LatteLoweringTest, Dx10ComparisonMasksMatchInterpreterForOrderedAndNanInputs)
@@ -3075,17 +3454,17 @@ TEST(VulkanRasterBackendTest, LiveVersionRotationRemainsBoundedAndDiscardedTicke
     RasterDraw draw{shader, vertices, {}, {}, target, 4, 4, 4, {0, 0, 4, 4}, 15, {}};
     VulkanRasterBackend backend(true, true);
     std::vector<RasterResult> snapshots;
-    for (unsigned i = 0; i < 70; ++i) {
+    for (unsigned i = 0; i < 390; ++i) {
         for (auto &vertex: vertices)
-            vertex.inputs[0] = {float(i) / 255, 0, 0, 1};
+            vertex.inputs[0] = {float(i) / 512, 0, 0, 1};
         auto result = backend.renderDeferred(draw);
         ASSERT_TRUE(result) << backend.lastError();
         snapshots.push_back(std::move(*result));
     }
-    EXPECT_EQ(backend.readbackTransfers(), 6u); // The existing 64-entry cache bound still applies.
+    EXPECT_EQ(backend.readbackTransfers(), 6u); // The 384-entry resource cache preserves live versions during eviction.
     for (unsigned i = 0; i < snapshots.size(); ++i) {
         snapshots[i].resolve();
-        EXPECT_EQ(snapshots[i].rgba[0], i);
+        EXPECT_NEAR(snapshots[i].rgba[0], std::round(float(i) * 255 / 512), 1);
     }
     snapshots.clear();
     const auto transfers = backend.readbackTransfers();
@@ -3613,4 +3992,206 @@ TEST(LatteLoweringTest, PredicatedWritesUsePreGroupUniformityFacts)
     const auto shader = lowerFragmentShader(*program);
     EXPECT_FALSE(shader);
     EXPECT_TRUE(shader.error.starts_with("whole-quad value escapes masked region:"));
+}
+
+TEST(LatteLoweringTest, SquareRootMatchesReferenceIncludingExceptionalInputs)
+{
+    std::vector<std::uint32_t> words{2, (8u << 26) | (3u << 18), 0, (CF_EXP_DONE << 23) | (1u << 21) | 0x688u};
+    for (unsigned channel = 0; channel < 4; ++channel) {
+        words.push_back(0x80000000u | 256u | (channel << 10));
+        words.push_back((OP2_SQRT_IEEE << 7) | 16u | (channel << 29));
+    }
+    const auto program = decodeProgram(words);
+    const auto shader = lowerFragmentShader(*program);
+    ASSERT_TRUE(shader) << shader.error;
+    FragmentShader vertex;
+    vertex.source = probeVertexSource;
+    std::vector<std::uint32_t> vs, ps;
+    ASSERT_NO_FATAL_FAILURE(validateSpirv(vertex, &vs, "vert"));
+    ASSERT_NO_FATAL_FAILURE(validateSpirv(shader, &ps));
+    const std::array<std::array<float, 4>, 3> cases{{{0.f, .25f, 1.f, 4.f},
+                                                     {-0.f, -1.f, std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN()},
+                                                     {.0625f, .5625f, 9.f, -std::numeric_limits<float>::infinity()}}};
+    for (const auto &values: cases) {
+        std::array<float, 1024> constants{};
+        std::copy(values.begin(), values.end(), constants.begin());
+        const auto reference = Core::Gfx::LatteVsInterp::runPixel(*program, {}, constants.data(), 256, {});
+        ASSERT_TRUE(reference.colorValid);
+        for (unsigned channel = 0; channel < 4; ++channel) {
+            const float expected = std::sqrt(values[channel]);
+            if (std::isnan(expected))
+                EXPECT_TRUE(std::isnan(reference.color[channel]));
+            else
+                EXPECT_EQ(std::bit_cast<unsigned>(reference.color[channel]), std::bit_cast<unsigned>(expected));
+        }
+        if (!std::getenv("WEMU_TEST_VULKAN"))
+            continue;
+        VulkanFragmentProbe probe;
+        probe.initialize(vs, ps, constants);
+        for (const auto &pixel: probe.draw({}))
+            for (unsigned channel = 0; channel < 4; ++channel)
+                if (std::isnan(reference.color[channel]))
+                    EXPECT_TRUE(std::isnan(pixel[channel]));
+                else
+                    EXPECT_EQ(std::bit_cast<unsigned>(pixel[channel]), std::bit_cast<unsigned>(reference.color[channel]));
+    }
+}
+
+TEST(VulkanDepthTest, DepthOnlyUsesItsOwnExtentAndPreservesUnusedColorVersions)
+{
+    using namespace Core::Gfx;
+    if (!std::getenv("WEMU_TEST_VULKAN") || !SpirvCompiler::available())
+        GTEST_SKIP();
+    const auto shader = lowerFragmentShader(*decodeProgram({0, (CF_EXP_DONE << 23) | (1u << 21) | 0x688u}));
+    std::array<RasterDraw::Vertex, 6> vertices{{{0, 0, {}}, {6, 0, {}}, {0, 4, {}}, {6, 0, {}}, {6, 4, {}}, {0, 4, {}}}};
+    for (auto &vertex: vertices) {
+        vertex.z = .25f;
+        vertex.inputs[0] = {1, 0, 0, 1};
+    }
+    std::vector<std::uint8_t> color(3 * 2 * 4, 29);
+    std::vector<float> depth(8 * 4, .875f);
+    RasterDraw draw{shader, vertices, {}, {}, color, 2, 2, 3, {1, 1, 4, 2}, 0, {}};
+    auto backend = std::make_unique<VulkanRasterBackend>(true, true);
+    std::vector<RasterResult> snapshots;
+    for (const auto format: {DepthFormat::Float32, DepthFormat::UNorm16, DepthFormat::UNorm24}) {
+        const auto stored = quantizeDepth(.875f, format);
+        std::fill(depth.begin(), depth.end(), stored);
+        draw.depth = {true, true, 1, format, depth, 6, 4, 8, {}};
+        auto result = backend->renderDeferred(draw);
+        ASSERT_TRUE(result) << backend->lastError();
+        ASSERT_TRUE(result->depthReadback);
+        EXPECT_EQ(result->rgba, color);
+        EXPECT_EQ(backend->targetUploadTransfers(), 0u);
+        EXPECT_EQ(backend->targetCopyTransfers(), 0u);
+        EXPECT_EQ(backend->readbackTransfers(), 0u);
+        snapshots.push_back(std::move(*result));
+    }
+    // A live unused color version must stay lazy and retain its identity.
+    draw.depth = {};
+    draw.channelMask = 15;
+    draw.scissor = {0, 0, 2, 2};
+    auto colored = backend->renderDeferred(draw);
+    ASSERT_TRUE(colored) << backend->lastError();
+    ASSERT_TRUE(colored->readback);
+    draw.renderedTarget = colored->readback;
+    draw.channelMask = 0;
+    draw.scissor = {0, 0, 6, 4};
+    draw.depth = {true, true, 1, DepthFormat::Float32, depth, 6, 4, 8, {}};
+    const auto reads = backend->readbackTransfers();
+    auto depthOnly = backend->renderDeferred(draw);
+    ASSERT_TRUE(depthOnly) << backend->lastError();
+    EXPECT_EQ(depthOnly->readback, colored->readback);
+    EXPECT_EQ(backend->readbackTransfers(), reads);
+    backend.reset(); // Deferred depth/color tickets own independent lifetimes.
+    for (unsigned index = 0; index < snapshots.size(); ++index) {
+        auto &result = snapshots[index];
+        result.resolveDepth();
+        const auto format = DepthFormat(index);
+        for (unsigned y = 0; y < 4; ++y)
+            for (unsigned x = 0; x < 8; ++x)
+                EXPECT_FLOAT_EQ(result.depth[y * 8 + x], quantizeDepth(x >= 1 && x < 5 && y >= 1 && y < 3 ? .25f : .875f, format));
+    }
+    depthOnly->resolve();
+    EXPECT_EQ(depthOnly->rgba[0], 255);
+    EXPECT_EQ(depthOnly->rgba[1], 0);
+    EXPECT_EQ(depthOnly->rgba[2 * 4], 29) << "Color row padding survives";
+}
+
+TEST(VulkanDepthTest, PolygonBiasUsesSlopeUnitsClampAndDynamicPipelineState)
+{
+    using namespace Core::Gfx;
+    if (!std::getenv("WEMU_TEST_VULKAN") || !SpirvCompiler::available())
+        GTEST_SKIP();
+    auto shader = lowerFragmentShader(*decodeProgram({0, (CF_EXP_DONE << 23) | (1u << 21) | 0x688u}));
+    std::array<RasterDraw::Vertex, 3> vertices{{{0, 0, {}}, {4, 0, {}}, {0, 4, {}}}};
+    vertices[0].z = .25f;
+    vertices[1].z = .5f;
+    vertices[2].z = .75f;
+    for (auto &v: vertices)
+        v.inputs[0] = {.125f, 0, 0, 1};
+    std::vector<std::uint8_t> color(64, 19);
+    std::vector<float> depths(16, 1);
+    RasterDraw draw{shader, vertices, {}, {}, color, 4, 4, 4, {0, 0, 4, 4}, 15, {}};
+    draw.depth = {true, true, 7, DepthFormat::Float32, depths, 4, 4, 4, {}};
+    VulkanRasterBackend backend;
+    const std::array<RasterDraw::DepthBias, 7> cases{{{false, 0, 0, 0},
+                                                      {true, 4, 0, 0},
+                                                      {true, -4, 0, 0},
+                                                      {true, 0, .1f, 0},
+                                                      {true, 0, .1f, .005f},
+                                                      {true, 0, -.1f, -.005f},
+                                                      {true, 0, 0, 0}}};
+    for (const auto bias: cases) {
+        draw.depthBias = bias;
+        const auto result = backend.render(draw);
+        ASSERT_TRUE(result) << backend.lastError();
+        const float offset =
+                bias.enabled ? polygonDepthBias({0, 4, 0}, {0, 0, 4}, {.25f, .5f, .75f}, DepthFormat::Float32, bias.constant, bias.slope, bias.clamp)
+                             : 0.f;
+        EXPECT_NEAR(result->depth[0], .34375f + offset, 5.e-8f);
+    }
+    EXPECT_EQ(backend.pipelineCreations(), 2u) << "Bias values are dynamic; enabling bias separates pipelines";
+    shader = lowerFragmentShader(*decodeProgram({61, (CF_EXP_DONE << 23) | (1u << 21) | 0xFF8u}));
+    draw.depthBias = {true, 4, .1f, 0};
+    const auto exported = backend.render(draw);
+    ASSERT_TRUE(exported) << backend.lastError();
+    EXPECT_FLOAT_EQ(exported->depth[0], .125f) << "Explicit shader Z replaces biased geometric depth";
+    shader = lowerFragmentShader(*decodeProgram({0, (CF_EXP_DONE << 23) | (1u << 21) | 0x688u}));
+    for (const auto format: {DepthFormat::UNorm16, DepthFormat::UNorm24}) {
+        draw.depth.format = format;
+        for (const auto bias: cases) {
+            draw.depthBias = bias;
+            const auto result = backend.render(draw);
+            ASSERT_TRUE(result) << backend.lastError();
+            const float offset =
+                    bias.enabled ? polygonDepthBias({0, 4, 0}, {0, 0, 4}, {.25f, .5f, .75f}, format, bias.constant, bias.slope, bias.clamp) : 0.f;
+            EXPECT_FLOAT_EQ(result->depth[0], quantizeDepth(.34375f + offset, format));
+        }
+    }
+    EXPECT_FLOAT_EQ(polygonDepthBias({0, 4, 0}, {0, 0, 4}, {.25f, .25f, .25f}, DepthFormat::UNorm16, 65535, 0, 0), 1.f);
+    EXPECT_FLOAT_EQ(polygonDepthBias({0, 4, 0}, {0, 0, 4}, {.25f, .25f, .25f}, DepthFormat::UNorm24, 16777215, 0, 0), 1.f);
+}
+
+TEST(VulkanDepthTest, SeparateVertexProgramsKeepSlopedPrepassEqualCoverage)
+{
+    using namespace Core::Gfx;
+    if (!std::getenv("WEMU_TEST_VULKAN") || !SpirvCompiler::available())
+        GTEST_SKIP();
+    const auto shader = lowerFragmentShader(*decodeProgram({0, (CF_EXP_DONE << 23) | (1u << 21) | 0x688u}));
+    const auto position = 60u | (1u << 13) | (1u << 15);
+    const auto prepass =
+            std::make_shared<const VertexShader>(lowerVertexShader(*decodeProgram({position, (CF_EXP_DONE << 23) | (1u << 21) | 0x688u})));
+    const auto material = std::make_shared<const VertexShader>(lowerVertexShader(
+            *decodeProgram({position, (CF_EXP << 23) | 0x688u, (2u << 13) | (2u << 15), (CF_EXP_DONE << 23) | (1u << 21) | 0x688u})));
+    ASSERT_TRUE(*prepass) << prepass->error;
+    ASSERT_TRUE(*material) << material->error;
+    std::array<RasterDraw::Vertex, 3> vertices{};
+    vertices[0].inputs[0] = {-.9f, .9f, -.6f, 1};
+    vertices[1].inputs[0] = {1.2f, 1.2f, .5f, 1.5f};
+    vertices[2].inputs[0] = {-1.8f, -1.8f, .8f, 2};
+    for (auto &v: vertices)
+        v.inputs[1] = {1, .5f, .25f, 1};
+    std::vector<std::uint8_t> color(8 * 8 * 4, 17);
+    std::vector<float> depth(8 * 8, 1);
+    RasterDraw draw{shader, vertices, {}, {}, color, 8, 8, 8, {0, 0, 8, 8}, 0, {}};
+    draw.vertexStage.shader = prepass;
+    draw.vertexStage.viewport = {0, 0, 8, 8, 0, 1};
+    draw.vertexStage.inputParams[0] = 0;
+    draw.vertexStage.inputCount = 1;
+    draw.depth = {true, true, 7, DepthFormat::Float32, depth, 8, 8, 8, {}};
+    VulkanRasterBackend backend(true, true);
+    auto first = backend.renderDeferred(draw);
+    ASSERT_TRUE(first) << backend.lastError();
+    draw.depth.rendered = first->depthReadback;
+    draw.depth.write = false;
+    draw.depth.compare = 2;
+    draw.channelMask = 15;
+    draw.vertexStage.shader = material;
+    auto equal = backend.render(draw);
+    ASSERT_TRUE(equal) << backend.lastError();
+    draw.depth.compare = 7;
+    auto always = backend.render(draw);
+    ASSERT_TRUE(always) << backend.lastError();
+    EXPECT_EQ(equal->rgba, always->rgba) << "EQUAL must preserve all pixels covered by the matching geometric prepass";
+    EXPECT_NE(equal->rgba, color);
 }

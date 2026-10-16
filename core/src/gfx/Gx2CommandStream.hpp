@@ -48,6 +48,9 @@ namespace Core::Gfx {
         SetVertexSampler,
         SetPixelSamplerBorderColor,
         SetVertexSamplerBorderColor,
+        SetPolygonControl,
+        SetRasterizerClipControl,
+        SetPolygonOffset,
     };
 
     // One captured GX2 call: its type plus a raw snapshot of the integer (r3..r10) and float

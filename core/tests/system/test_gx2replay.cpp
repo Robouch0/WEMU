@@ -296,6 +296,37 @@ TEST(LatteVsTest, ScalarSlotDoesNotOverwriteVectorForwarding)
     EXPECT_EQ(out.pos, (std::array<float, 4>{2, 9, 9, 1}));
 }
 
+TEST(LatteVsTest, PreparedProgramSnapshotsBytecodeAndReadsFreshRuntimeInputs)
+{
+    using namespace Latte;
+    std::vector<unsigned> words{3, (8u << 26) | (3u << 18),
+                                60u | (1u << 13) | (2u << 15), (CF_EXP << 23) | 0x688u,
+                                (2u << 13) | (1u << 15), (CF_EXP_DONE << 23) | (1u << 21) | 0x688u};
+    for (unsigned channel = 0; channel < 4; ++channel) {
+        words.push_back(1u | (channel << 10) | (256u << 13) | (channel << 23) | (channel == 3 ? 0x80000000u : 0u));
+        words.push_back((OP2_ADD << 7) | 16u | (2u << 21) | (channel << 29));
+    }
+    const auto program = LatteVsInterp::compile(words);
+    ASSERT_TRUE(program->valid);
+    std::array<std::array<float, 4>, 1> attributes{{{-1, .25f, .5f, 1}}};
+    std::array<float, 4> constants{.125f, .25f, .5f, 0};
+    const auto first = LatteVsInterp::runVertex(*program, attributes, constants.data(), 1);
+    ASSERT_TRUE(first.valid);
+    EXPECT_EQ(first.pos, (std::array{-.875f, .5f, 1.f, 1.f}));
+    ASSERT_TRUE(first.paramValid[0]);
+    EXPECT_EQ(first.params[0], attributes[0]);
+    // A prepared shader owns immutable bytecode; uniforms and attributes must
+    // still refresh on each execution, even after the source vector is reused.
+    words[7] = (words[7] & ~(0x7FFu << 7)) | (OP2_MUL << 7);
+    attributes[0] = {.25f, -.5f, 1, 1};
+    constants = {.5f, .125f, -.5f, 1};
+    const auto second = LatteVsInterp::runVertex(*program, attributes, constants.data(), 1);
+    ASSERT_TRUE(second.valid);
+    EXPECT_EQ(second.pos, (std::array{.75f, -.375f, .5f, 2.f}));
+    EXPECT_EQ(second.params[0], attributes[0]);
+    EXPECT_EQ(LatteVsInterp::run(words, attributes, constants.data(), 1).pos[0], .125f);
+}
+
 TEST(LattePsTest, SelectsTextureThroughAluAndModulatesInterpolatedColor)
 {
     std::vector<std::uint32_t> words(8);

@@ -128,6 +128,7 @@ namespace Core {
         t->state = ThreadContext::State::Running;
         t->osThreadPtr = m_mainHandle;
         t->name = "main";
+        std::memcpy(cpu.m_gqr, t->gqr, sizeof(t->gqr));
         m_current = t.get();
         m_threads.push_back(std::move(t));
     }
