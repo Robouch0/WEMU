@@ -48,6 +48,13 @@ namespace Core::Gfx {
         SetVertexSampler,
         SetPixelSamplerBorderColor,
         SetVertexSamplerBorderColor,
+        SetPolygonControl,
+        SetRasterizerClipControl,
+        SetPolygonOffset,
+        // Library video rendering, ordered with guest GX2 commands. Payload:
+        // 16 clip-transform floats, 16 UV-transform floats, then RGBA8 words.
+        DrawImage,
+
     };
 
     // One captured GX2 call: its type plus a raw snapshot of the integer (r3..r10) and float
@@ -78,8 +85,8 @@ namespace Core::Gfx {
             // call-time/refreshed payloads). Two frames with equal hashes produce an identical
             // rasterised image, so the replayer can skip rebuilding the framebuffer and just
             // re-present the previous one. Covers everything snapshotted into the stream; the only
-            // uncovered inputs are vertex/index/texture-image bytes read live at replay, which are
-            // static for the menu (the video background is a black stub).
+            // uncovered inputs are vertex/index/texture-image bytes read live at replay, which can
+            // change independently. DrawImage owns its pixel bytes in the payload.
             [[nodiscard]] std::uint64_t contentHash() const noexcept
             {
                 std::uint64_t h = 1469598103934665603ull; // FNV-1a offset basis
@@ -105,7 +112,7 @@ namespace Core::Gfx {
             {
                 std::size_t n = 0;
                 for (const auto &c: m_commands)
-                    if (c.type == Gx2Cmd::DrawEx || c.type == Gx2Cmd::DrawIndexedEx)
+                    if (c.type == Gx2Cmd::DrawEx || c.type == Gx2Cmd::DrawIndexedEx || c.type == Gx2Cmd::DrawImage)
                         n++;
                 return n;
             }

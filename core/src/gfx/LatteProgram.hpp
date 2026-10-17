@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <unordered_map>
 #include <vector>
 
@@ -88,11 +89,13 @@ namespace Core::Gfx::Latte {
         OP2_PRED_SETNE_INT = 0x45,
         OP2_DOT4 = 0x50,
         OP2_DOT4_IEEE = 0x51,
+        OP2_CUBE = 0x52,
         OP2_EXP_IEEE = 0x61,
         OP2_LOG_CLAMPED = 0x62,
         OP2_LOG_IEEE = 0x63,
         OP2_RECIP_IEEE = 0x66,
         OP2_RECIPSQRT_IEEE = 0x69,
+        OP2_SQRT_IEEE = 0x6A,
         OP2_FLT_TO_INT = 0x6B,
         OP2_INT_TO_FLT = 0x6C,
         OP2_UINT_TO_FLT = 0x6D,
@@ -101,6 +104,8 @@ namespace Core::Gfx::Latte {
         OP2_ASHR = 0x70,
         OP2_LSHR = 0x71,
         OP2_LSHL = 0x72,
+        OP2_MULLO_INT = 0x73,
+        OP2_MULLO_UINT = 0x75,
         OP2_FLT_TO_UINT = 0x79,
     };
 
@@ -146,7 +151,13 @@ namespace Core::Gfx::Latte {
             bool valid{true};
             bool usesAddressing{};
             unsigned registerCount{5};
+            // Possible direct color exports, including consecutive burst targets.
+            unsigned colorExportMask{};
     };
+
+    // The canonical CUBE operand pairs are (z,y), (z,x), (x,z), (y,z).
+    // Axes may come from different registers/PV/PS. Other layouts need validation.
+    bool isCanonicalCubeGroup(std::span<const AluInst> group);
 
     // Structural validity is not a guarantee of backend opcode or control-flow support.
     // No cache or execution state: callers own caching and capability validation.

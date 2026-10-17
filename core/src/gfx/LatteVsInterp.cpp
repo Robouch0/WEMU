@@ -10,6 +10,7 @@
 #include <unordered_map>
 
 #include "gfx/LatteProgram.hpp"
+#include "gfx/UniformBufferFetch.hpp"
 
 // WEMU_VS_DEBUG=1: print every ALU group and export (offline harness diagnostics).
 // setDebugOnce() additionally arms the trace for a single run() so one draw can be isolated.
@@ -29,6 +30,8 @@ namespace Core::Gfx {
     namespace {
 
         using namespace Latte;
+
+        bool supportsPixelTextureOperation(unsigned op) { return op == 0x0E || op == 0x0F || op == 0x10 || op == 0x11 || op == 0x13; }
 
         std::uint32_t asU32(float f)
         {
@@ -120,27 +123,74 @@ namespace Core::Gfx {
 
     void LatteVsInterp::setDebugOnce(bool on) { g_vsDebugOnce = on; }
 
-    LatteVsInterp::Output LatteVsInterp::run(const std::vector<std::uint32_t> &program, const std::array<std::array<float, 4>, 4> &attribs,
+    bool LatteVsInterp::rejectsEveryPixel(const Program &program)
+    {
+        if (!program.valid)
+            return false;
+        const auto &words = program.words;
+        for (std::size_t cf = 0; cf + 1 < words.size(); cf += 2) {
+            const auto w0 = words[cf], w1 = words[cf + 1];
+            if (isAluClause(w1)) {
+                if (cfAluInst(w1) != 8)
+                    return false;
+                const auto clause = program.clauses.find((std::uint64_t(w0 & 0x3FFFFF) << 32) | (((w1 >> 18) & 127) + 1));
+                if (clause == program.clauses.end())
+                    return false;
+                for (const auto &group: clause->second)
+                    for (const auto &in: group)
+                        if (!in.op3 && (in.raw1 & 4u))
+                            return false;
+                continue;
+            }
+            const auto op = cfInst(w1);
+            if (op == CF_TEX) {
+                constexpr auto cfMask = (7u << 10) | (1u << 19) | (1u << 21) | (1u << 22) | (127u << 23) | (1u << 31);
+                if (w1 & ~cfMask)
+                    return false;
+                const auto count = (((w1 >> 10) & 7) | ((w1 >> 16) & 8)) + 1;
+                for (unsigned i = 0; i < count; ++i) {
+                    const auto offset = std::uint64_t(w0) * 2 + std::uint64_t(i) * 4;
+                    if (offset + 3 >= words.size())
+                        return false;
+                    if (!supportsPixelTextureOperation(words[offset] & 31))
+                        return true;
+                }
+            } else if (op != CF_EXP && op != CF_EXP_DONE && op != CF_NOP && op != CF_RETURN)
+                return false;
+            if (cfEop(w1) || op == CF_RETURN)
+                break;
+        }
+        return false;
+    }
+
+    LatteVsInterp::Output LatteVsInterp::run(const std::vector<std::uint32_t> &program, std::span<const std::array<float, 4>> attribs,
                                              const float *consts, const std::uint32_t constCount, const KcacheFetch &kcache,
                                              const TextureSample &textureSample)
     {
-        return execute(*compile(program), attribs, consts, constCount, kcache, textureSample, false);
+        return runVertex(*compile(program), attribs, consts, constCount, kcache, textureSample);
     }
 
-    LatteVsInterp::Output LatteVsInterp::runPixel(const Program &program, const std::array<std::array<float, 4>, 4> &inputs, const float *consts,
-                                                  std::uint32_t constCount, const TextureSample &textureSample, const KcacheFetch &kcache,
-                                                  const TextureGather &textureGather)
+    LatteVsInterp::Output LatteVsInterp::runVertex(const Program &program, std::span<const std::array<float, 4>> attribs, const float *consts,
+                                                   std::uint32_t constCount, const KcacheFetch &kcache, const TextureSample &textureSample)
     {
-        return execute(program, inputs, consts, constCount, kcache, textureSample, true, textureGather);
+        return execute(program, attribs, consts, constCount, kcache, textureSample, false);
     }
 
-    LatteVsInterp::Output LatteVsInterp::execute(const Program &compiled, const std::array<std::array<float, 4>, 4> &attribs, const float *consts,
+    LatteVsInterp::Output LatteVsInterp::runPixel(const Program &program, std::span<const std::array<float, 4>> inputs, const float *consts,
+                                                  std::uint32_t constCount, const TextureSample &textureSample, const KcacheFetch &kcache,
+                                                  const TextureGather &textureGather, const TextureFetch &textureFetch, unsigned colorExport)
+    {
+        return execute(program, inputs, consts, constCount, kcache, textureSample, true, textureGather, textureFetch, colorExport);
+    }
+
+    LatteVsInterp::Output LatteVsInterp::execute(const Program &compiled, std::span<const std::array<float, 4>> attribs, const float *consts,
                                                  std::uint32_t constCount, const KcacheFetch &kcache, const TextureSample &textureSample,
-                                                 bool pixelStage, const TextureGather &textureGather)
+                                                 bool pixelStage, const TextureGather &textureGather, const TextureFetch &textureFetch,
+                                                 unsigned colorExport)
     {
         const auto &program = compiled.words;
         Output out;
-        if (program.size() < 2 || !compiled.valid)
+        if (program.size() < 2 || !compiled.valid || attribs.size() > 32 || colorExport >= 8)
             return out;
 
         Regs regs;
@@ -152,13 +202,14 @@ namespace Core::Gfx {
         bool skippedPixelExport = false;
         std::array<bool, 32> activeStack{};
         unsigned activeDepth = 0;
+        std::array<float, 256> cubeIndices{};
         auto popActive = [&](std::uint32_t n) {
             while (n--) {
                 active = activeDepth ? activeStack[--activeDepth] : true;
             }
         };
         // Attribute convention after CALL_FS: R0 = index/system, R1.. = fetched attributes.
-        for (int a = 0; a < 4; a++)
+        for (std::size_t a = 0; a < attribs.size(); a++)
             std::memcpy(regs.gpr[a + (pixelStage ? 0 : 1)], attribs[a].data(), 16);
 
         // Active kcache windows for the CURRENT ALU clause (set from CF_ALU_WORD0/1 fields).
@@ -169,7 +220,8 @@ namespace Core::Gfx {
         auto readSrc = [&](const Src &s, const AluInst &inst) -> float {
             float v = 0.0f;
             if (s.sel < 128) {
-                v = regs.gpr[s.sel][s.chan];
+                const int index = int(s.sel) + (s.rel ? address[(inst.raw0 >> 26) & 3] : 0);
+                v = index >= 0 && index < 128 ? regs.gpr[unsigned(index)][s.chan] : fromU32(0x7FFFFFFFu);
             } else if (s.sel >= 128 && s.sel < 192) {
                 const auto window = (s.sel - 128) / 32;
                 if (kc[window].mode) {
@@ -234,12 +286,12 @@ namespace Core::Gfx {
                     const bool addressWrite = std::any_of(group.begin(), group.end(), [](const auto &in) { return in.isAddressWrite(); });
                     for (const auto &in: group) {
                         // AR-relative constant reads require a previous group in
-                        // this clause. GPR and loop indexing remain unsupported.
+                        // this clause. Loop indexing and relative destinations remain unsupported.
                         if (in.raw1 & (1u << 28))
                             return false;
                         for (unsigned i = 0; i < (in.op3 ? 3u : 2u); ++i)
-                            if (in.src[i].rel &&
-                                (in.src[i].sel < 256 || ((in.raw0 >> 26) & 7) > 3 || addressWrite || !addressValid[(in.raw0 >> 26) & 3]))
+                            if (in.src[i].rel && ((in.src[i].sel >= 128 && in.src[i].sel < 256) || in.src[i].sel >= 512 ||
+                                                  ((in.raw0 >> 26) & 7) > 3 || addressWrite || !addressValid[(in.raw0 >> 26) & 3]))
                                 return false;
                     }
                 }
@@ -253,6 +305,9 @@ namespace Core::Gfx {
                 };
                 // DOT4: the group's four vector slots supply the four component products.
                 const bool isDot = !group.empty() && !group[0].op3 && (group[0].op == OP2_DOT4 || group[0].op == OP2_DOT4_IEEE);
+                const bool isCube = std::any_of(group.begin(), group.end(), [](const auto &in) { return !in.op3 && in.op == OP2_CUBE; });
+                if (isCube && !isCanonicalCubeGroup(group))
+                    return false;
                 struct Write {
                         std::uint32_t gpr, chan;
                         float val;
@@ -262,6 +317,22 @@ namespace Core::Gfx {
                 unsigned writeCount = 0;
                 float newPv[4] = {regs.pv[0], regs.pv[1], regs.pv[2], regs.pv[3]};
                 float newPs = regs.ps;
+                if (isCube && !((group[0].predSel == 2 && pred) || (group[0].predSel == 3 && !pred))) {
+                    const float x = readSrc(group[1].src[1], group[1]);
+                    const float y = readSrc(group[0].src[1], group[0]);
+                    const float z = readSrc(group[0].src[0], group[0]);
+                    const float ax = std::fabs(x), ay = std::fabs(y), az = std::fabs(z);
+                    const std::array<float, 4> cube = az >= ax && az >= ay ? std::array{-y, z < 0.f ? -x : x, z * 2.f, z < 0.f ? 5.f : 4.f}
+                                                      : ay >= ax           ? std::array{y < 0.f ? -z : z, x, y * 2.f, y < 0.f ? 3.f : 2.f}
+                                                                           : std::array{-y, x < 0.f ? z : -z, x * 2.f, x < 0.f ? 1.f : 0.f};
+                    for (unsigned lane = 0; lane < 4; ++lane) {
+                        const auto &in = group[lane];
+                        const float value = applyOmodClamp(cube[lane], in.omod, in.clamp);
+                        if (in.writeMask)
+                            writes[writeCount++] = {in.dstGpr, in.dstChan, value, true};
+                        newPv[in.dstChan] = value;
+                    }
+                }
                 if (isDot) {
                     const std::uint32_t gps = group[0].predSel;
                     if (!((gps == 2 && pred) || (gps == 3 && !pred))) {
@@ -280,7 +351,7 @@ namespace Core::Gfx {
                 }
                 {
                     for (auto &in: group) {
-                        if (isDot && !in.scalarSlot)
+                        if ((isDot || isCube) && !in.scalarSlot)
                             continue;
                         // Per-instruction predication via PRED_SEL (0 = always run).
                         if ((in.predSel == 2 && pred) || (in.predSel == 3 && !pred))
@@ -411,6 +482,9 @@ namespace Core::Gfx {
                                 case OP2_EXP_IEEE:
                                     v = std::exp2(a);
                                     break;
+                                case OP2_SQRT_IEEE:
+                                    v = std::sqrt(a);
+                                    break;
                                 case OP2_LOG_IEEE:
                                     v = std::log2(a);
                                     break;
@@ -448,6 +522,10 @@ namespace Core::Gfx {
                                     break;
                                 case OP2_ADD_INT:
                                     v = fromU32(asU32(a) + asU32(b));
+                                    break;
+                                case OP2_MULLO_INT:
+                                case OP2_MULLO_UINT:
+                                    v = fromU32(asU32(a) * asU32(b));
                                     break;
                                 case OP2_SUB_INT:
                                     v = fromU32(asU32(a) - asU32(b));
@@ -578,6 +656,11 @@ namespace Core::Gfx {
                     popActive(1);
                 else if (kind == 0xB) // ALU_POP2_AFTER
                     popActive(2);
+                else if (kind == 0xF) { // ALU_ELSE_AFTER retains the saved parent mask.
+                    if (!activeDepth)
+                        return {};
+                    active = activeStack[activeDepth - 1] && !active;
+                }
                 continue; // ALU CF has no EOP bit in this position; next CF follows
             }
 
@@ -586,7 +669,8 @@ namespace Core::Gfx {
                 std::fprintf(stderr, "CF%u: inst=0x%02X w0=%08X pred=%d\n", cf, inst, w0, pred);
             if (inst == CF_EXP || inst == CF_EXP_DONE) {
                 if (!active) {
-                    if (pixelStage && ((w0 >> 13) & 3) == 0 && ((w0 & 0x1FFF) == 0 || (w0 & 0x1FFF) == 61))
+                    if (pixelStage && ((w0 >> 13) & 3) == 0 &&
+                        (((w0 & 0x1FFF) <= colorExport && colorExport < (w0 & 0x1FFF) + ((w1 >> 17) & 15) + 1) || (w0 & 0x1FFF) == 61))
                         skippedPixelExport = true;
                     if (cfEop(w1))
                         break;
@@ -594,7 +678,9 @@ namespace Core::Gfx {
                 }
                 const std::uint32_t arrayBase = w0 & 0x1FFF;
                 const std::uint32_t type = (w0 >> 13) & 3;
-                const std::uint32_t rwGpr = (w0 >> 15) & 0x7F;
+                const auto burst = ((w1 >> 17) & 15) + 1;
+                const bool selected = type == 0 && arrayBase <= colorExport && colorExport < arrayBase + burst;
+                const std::uint32_t rwGpr = ((w0 >> 15) & 0x7F) + (pixelStage && selected ? colorExport - arrayBase : 0);
                 const std::uint32_t sel[4] = {w1 & 7, (w1 >> 3) & 7, (w1 >> 6) & 7, (w1 >> 9) & 7};
                 float v[4];
                 for (int i = 0; i < 4; i++) {
@@ -614,13 +700,13 @@ namespace Core::Gfx {
                             out.pos[channel] = v[channel];
                             out.valid = true;
                         }
-                } else if (type == 2 && arrayBase < 4) { // PARAM export
+                } else if (type == 2 && arrayBase < out.params.size()) { // PARAM export
                     for (unsigned channel = 0; channel < 4; ++channel)
                         if (sel[channel] != 7) {
                             out.params[arrayBase][channel] = v[channel];
                             out.paramValid[arrayBase] = true;
                         }
-                } else if (pixelStage && type == 0 && arrayBase == 0) {
+                } else if (pixelStage && selected) {
                     std::memcpy(out.color.data(), v, 16);
                     out.colorValid = true;
                 } else if (pixelStage && type == 0 && arrayBase == 61 && sel[0] != 7) {
@@ -631,7 +717,7 @@ namespace Core::Gfx {
                     break;
                 continue;
             }
-            if (inst == CF_TEX) {
+            if (inst == CF_TEX || (!pixelStage && (inst == CF_VTX || inst == CF_VTX_TC))) {
                 if (!active) {
                     if (cfEop(w1))
                         break;
@@ -646,10 +732,31 @@ namespace Core::Gfx {
                     // Sampling and gather use separate callbacks; unsupported operations
                     // must not silently become ordinary filtered texture samples.
                     const auto op = t0 & 31;
+                    if (pixelStage && op == 0x0E) {
+                        const auto selector = (t2 >> 20) & 7;
+                        if ((t0 & ~(31u | (255u << 8) | (127u << 16))) || t1 != 0x001FFE00u || (t2 & 0xFFFFFu) || selector > 5)
+                            return {};
+                        cubeIndices[(t0 >> 8) & 255] = selector < 4 ? regs.gpr[(t0 >> 16) & 127][selector] : selector == 5 ? 1.f : 0.f;
+                        continue;
+                    }
+                    if (!pixelStage && op == 0) {
+                        const auto instruction = decodeUniformBufferFetch(t0, t1, t2);
+                        if (!instruction || !kcache)
+                            return {};
+                        const auto &f = *instruction;
+                        const auto index = std::uint64_t(asU32(regs.gpr[f.source][f.channel])) + f.offset;
+                        std::array<float, 4> values{};
+                        for (unsigned c = 0; c < 4; ++c)
+                            values[c] = index <= UINT32_MAX ? kcache(f.bank, unsigned(index), c) : 0.f;
+                        for (unsigned c = 0; c < 4; ++c)
+                            if (f.selectors[c] != 7)
+                                regs.gpr[f.destination][c] = f.selectors[c] < 4 ? values[f.selectors[c]] : f.selectors[c] == 5 ? 1.f : 0.f;
+                        continue;
+                    }
                     const bool gather = pixelStage && op == 0x0F;
                     const auto &fetch = gather ? textureGather : textureSample;
-                    if (!fetch || (op != 0x13 && !(pixelStage && op == 0x10) && !gather) || (t0 & (1u << 23)) || (t1 & (1u << 7)) ||
-                        (t1 & 0x30000000) != 0x30000000 || (t2 & 0x7FFF))
+                    if ((!fetch && !(pixelStage && !gather && textureFetch)) || (pixelStage ? !supportsPixelTextureOperation(op) : op != 0x13) ||
+                        (op == 0x11 && !textureFetch) || (t0 & (1u << 23)) || (t1 & (1u << 7)) || (t1 & 0x30000000) != 0x30000000 || (t2 & 0x7FFF))
                         return {};
                     // Gather currently accepts only direct, normalized, zero-offset TEX.
                     if (gather && ((t0 & ~(31u | (255u << 8) | (127u << 16))) || (t1 & ~(127u | (0xFFFu << 9) | (15u << 28)))))
@@ -662,7 +769,10 @@ namespace Core::Gfx {
                             return {};
                         coords[c] = select < 4 ? regs.gpr[src][select] : select == 5 ? 1.0f : 0.0f;
                     }
-                    if (!fetch((t0 >> 8) & 255, (t2 >> 15) & 31, coords, rgba))
+                    const auto resource = (t0 >> 8) & 255;
+                    const auto sampler = (t2 >> 15) & 31;
+                    if (pixelStage && !gather && textureFetch ? !textureFetch({resource, sampler, coords, cubeIndices[resource], op == 0x11}, rgba)
+                                                              : !fetch(resource, sampler, coords, rgba))
                         return {};
                     for (unsigned c = 0; c < 4; c++) {
                         const auto select = (t1 >> (9 + c * 3)) & 7;

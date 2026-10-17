@@ -10,8 +10,9 @@
 #include "cpu/interpreter/SyscallHandler.hpp"
 #include "cpu/memory/Memory.hpp"
 #include "gfx/Gx2CommandStream.hpp"
-#include "gfx/LatteProgram.hpp"
 #include "gfx/Gx2Replayer.hpp"
+#include "gfx/LatteProgram.hpp"
+#include "gfx/LatteSurfaceLayout.hpp"
 #include "gfx/Renderer.hpp"
 #include "gfx/SurfaceLayout.hpp"
 #include "gfx/VulkanRasterBackend.hpp"
@@ -139,11 +140,13 @@ namespace {
     constexpr std::uint32_t kDlBytesPerCmd = 32; // nominal PM4 bytes per captured call
     struct OpenDisplayList {
             std::uint32_t buffer{0};
+            std::uint32_t capacity{0};
             std::vector<Core::Gfx::Gx2Command> commands;
     };
     std::unordered_map<std::uint32_t, std::vector<OpenDisplayList>> g_openLists; // by OSThread
     std::vector<OpenDisplayList> &openLists(const Core::Interpreter &cpu) { return g_openLists[cpu.m_scheduler.currentHandle()]; }
-    std::unordered_map<std::uint32_t, std::vector<Core::Gfx::Gx2Command>> g_displayLists;
+    using CapturedList = std::vector<Core::Gfx::Gx2Command>;
+    std::unordered_map<std::uint32_t, std::shared_ptr<const CapturedList>> g_displayLists;
     std::unordered_map<std::uint32_t, std::vector<std::uint32_t>> g_fetchLayouts;
 
     // Fetch shaders loaded from a title's shader archives never pass through GX2InitFetchShaderEx,
@@ -163,26 +166,46 @@ namespace {
             // VTX DATA_FORMAT -> GX2AttribFormat component/type code (low byte).
             const auto attribType = [](std::uint32_t dataFormat) -> int {
                 switch (dataFormat) {
-                    case 0x01: return 0x00; // 8
-                    case 0x02: return 0x01; // 4_4
-                    case 0x05: return 0x02; // 16
-                    case 0x06: return 0x03; // 16 float
-                    case 0x07: return 0x04; // 8_8
-                    case 0x0D: return 0x05; // 32
-                    case 0x0E: return 0x06; // 32 float
-                    case 0x0F: return 0x07; // 16_16
-                    case 0x10: return 0x08; // 16_16 float
-                    case 0x19: return 0x0B; // 2_10_10_10 (X in the low bits)
-                    case 0x1A: return 0x0A; // 8_8_8_8
-                    case 0x1D: return 0x0C; // 32_32
-                    case 0x1E: return 0x0D; // 32_32 float
-                    case 0x1F: return 0x0E; // 16_16_16_16
-                    case 0x20: return 0x0F; // 16_16_16_16 float
-                    case 0x2F: return 0x10; // 32_32_32
-                    case 0x30: return 0x11; // 32_32_32 float
-                    case 0x22: return 0x12; // 32_32_32_32
-                    case 0x23: return 0x13; // 32_32_32_32 float
-                    default: return -1;
+                    case 0x01:
+                        return 0x00; // 8
+                    case 0x02:
+                        return 0x01; // 4_4
+                    case 0x05:
+                        return 0x02; // 16
+                    case 0x06:
+                        return 0x03; // 16 float
+                    case 0x07:
+                        return 0x04; // 8_8
+                    case 0x0D:
+                        return 0x05; // 32
+                    case 0x0E:
+                        return 0x06; // 32 float
+                    case 0x0F:
+                        return 0x07; // 16_16
+                    case 0x10:
+                        return 0x08; // 16_16 float
+                    case 0x19:
+                        return 0x0B; // 2_10_10_10 (X in the low bits)
+                    case 0x1A:
+                        return 0x0A; // 8_8_8_8
+                    case 0x1D:
+                        return 0x0C; // 32_32
+                    case 0x1E:
+                        return 0x0D; // 32_32 float
+                    case 0x1F:
+                        return 0x0E; // 16_16_16_16
+                    case 0x20:
+                        return 0x0F; // 16_16_16_16 float
+                    case 0x2F:
+                        return 0x10; // 32_32_32
+                    case 0x30:
+                        return 0x11; // 32_32_32 float
+                    case 0x22:
+                        return 0x12; // 32_32_32_32
+                    case 0x23:
+                        return 0x13; // 32_32_32_32 float
+                    default:
+                        return -1;
                 }
             };
             for (std::uint32_t cf = 0; cf + 1 < size / 4 && cf < 64; cf += 2) {
@@ -199,8 +222,8 @@ namespace {
                         if (type < 0)
                             return {};
                         const auto numFormat = (v1 >> 28) & 3;
-                        const bool isFloat = type == 0x03 || type == 0x06 || type == 0x08 || type == 0x0D || type == 0x0F || type == 0x11 ||
-                                             type == 0x13;
+                        const bool isFloat =
+                                type == 0x03 || type == 0x06 || type == 0x08 || type == 0x0D || type == 0x0F || type == 0x11 || type == 0x13;
                         std::uint32_t format = std::uint32_t(type);
                         if (numFormat == 1)
                             format |= 0x100; // integer
@@ -292,8 +315,8 @@ namespace {
                 if (trace)
                     for (std::size_t i = 0; i + 7 < it->second.size(); i += 8)
                         Utils::Log::error("[FETCHDECODE] program={:08X} loc={} buf={} off={} fmt={:X} type={} mask={:08X} endian={}", program,
-                                          it->second[i], it->second[i + 1], it->second[i + 2], it->second[i + 3], it->second[i + 4], it->second[i + 6],
-                                          it->second[i + 7]);
+                                          it->second[i], it->second[i + 1], it->second[i + 2], it->second[i + 3], it->second[i + 4],
+                                          it->second[i + 6], it->second[i + 7]);
             }
             c.payload = it->second;
         }
@@ -316,9 +339,10 @@ namespace {
             // the replay stage parses. The title often builds these structs on its STACK, so the
             // pointer is stale by frame-end replay — snapshot the struct now, at call time.
             ptr = c.gpr[0];
-            words = 16; // covers every field up to pitch (+0x3C)
             if (type == Core::Gfx::Gx2Cmd::SetPixelTexture || type == Core::Gfx::Gx2Cmd::SetVertexTexture)
                 words = 0x9C / 4; // retain the texture view, component map, and resource registers
+            else
+                words = 0x80 / 4; // color/depth viewMip, viewFirstSlice and viewNumSlices
         }
         if (ptr && words) {
             c.payload.reserve(words);
@@ -331,12 +355,12 @@ namespace {
         }
         if (type == Core::Gfx::Gx2Cmd::ClearBuffersEx && c.gpr[1]) {
             // Both buffers may be stack allocated. Keep their snapshots together.
-            c.payload.resize(16);
+            c.payload.resize(32);
             try {
-                for (unsigned i = 0; i < 16; ++i)
+                for (unsigned i = 0; i < 32; ++i)
                     c.payload.push_back(cpu.m_memory.read<std::uint32_t>(c.gpr[1] + i * 4));
             } catch (const Core::MemoryException &) {
-                c.payload.resize(16);
+                c.payload.resize(32);
             }
         }
         static const bool depthTrace = [] {
@@ -655,7 +679,11 @@ namespace {
                                                         "SetVertexTexture",
                                                         "SetVertexSampler",
                                                         "SetPixelSamplerBorderColor",
-                                                        "SetVertexSamplerBorderColor"};
+                                                        "SetVertexSamplerBorderColor",
+                                                        "SetPolygonControl",
+                                                        "SetRasterizerClipControl",
+                                                        "SetPolygonOffset",
+                                                        "DrawImage"};
             std::size_t idx = 0;
             for (const auto &c: Core::Gfx::gx2Stream().commands()) {
                 const auto ti = static_cast<std::size_t>(c.type);
@@ -763,6 +791,14 @@ namespace {
     }
 
     void gx2_noop(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
+
+    template<bool Stack>
+    void gx2_ShaderResources(Core::Interpreter &cpu)
+    {
+        // All three GX2 shader headers begin with their SQ_PGM_RESOURCES word.
+        const auto resources = cpu.m_memory.read<std::uint32_t>(cpu.m_gpr[3]);
+        cpu.m_gpr[3] = (resources >> (Stack ? 8 : 0)) & 0xFF;
+    }
 
     void gx2_CopySurface(Core::Interpreter &cpu)
     {
@@ -877,7 +913,7 @@ namespace {
             std::uint32_t surfaceAlign = tileMode == 16 ? 1 : 0x100;
             std::uint32_t pitch = tileMode == 16 ? std::max(width, 1u) : alignUp(width ? width : 1, 64);
             std::uint32_t imageSize = alignUp(pitch * (height ? height : 1) * depth * bytesPerElement(format), surfaceAlign);
-            // Base layout is independent of the requested mip count. Mip storage is still unimplemented.
+            // Base 2D layouts remain independent of the requested mip count.
             // Other dimensions, depth/scan usage and AA still use the legacy calculation.
             if ((dim == 1 || dim == 5) && !aa && !(use & (4u | 8u))) {
                 if (const auto layout = Core::Gfx::baseSurfaceLayout(width, height, dim == 1 ? 1 : depth, bytesPerElement(format), tileMode, rawWidth,
@@ -897,11 +933,69 @@ namespace {
             cpu.m_memory.write<std::uint32_t>(s + SURF_IMAGE_SIZE, imageSize);
             cpu.m_memory.write<std::uint32_t>(s + SURF_MIPMAP_SIZE, 0);
             cpu.m_memory.write<std::uint32_t>(s + SURF_ALIGNMENT, surfaceAlign);
+            if (!aa && (dim == 1 || dim == 3 || dim == 5) && !(use & (4u | 8u))) {
+                // Keep established base layouts for 2D/array resources. Cube
+                // layouts and every smaller mip use the shared Latte calculator.
+                const auto levels = std::min(std::max(1u, mipLevels), unsigned(std::bit_width(std::max(rawWidth, rawHeight))));
+                bool valid = levels != 0;
+                auto actualTile = tileMode;
+                if (dim == 3) {
+                    const auto base = Core::Gfx::latteSurfaceLayout(rawWidth, rawHeight, depth, format, dim, tileMode, 0, use);
+                    if (!base)
+                        valid = false;
+                    else {
+                        pitch = base->pitch;
+                        imageSize = base->imageSize;
+                        surfaceAlign = base->alignment;
+                        actualTile = base->tileMode;
+                    }
+                }
+                std::array<std::uint32_t, 13> offsets{};
+                std::uint64_t mipBytes = 0;
+                unsigned transition = actualTile == 4 ? 13 : 0;
+                for (unsigned level = 1; valid && level < levels; ++level) {
+                    const auto mip = Core::Gfx::latteSurfaceLayout(rawWidth, rawHeight, depth, format, dim, actualTile, level, use);
+                    if (!mip) {
+                        valid = false;
+                        break;
+                    }
+                    if (actualTile == 4 && mip->tileMode < 4 && transition == 13)
+                        transition = level;
+                    if (level == 1) {
+                        const auto offset = (std::uint64_t(imageSize) + mip->alignment - 1) / mip->alignment * mip->alignment;
+                        if (offset > UINT32_MAX) {
+                            valid = false;
+                            break;
+                        }
+                        offsets[0] = unsigned(offset);
+                    } else {
+                        mipBytes = (mipBytes + mip->alignment - 1) / mip->alignment * mip->alignment;
+                        if (mipBytes > UINT32_MAX) {
+                            valid = false;
+                            break;
+                        }
+                        offsets[level - 1] = std::uint32_t(mipBytes);
+                    }
+                    mipBytes += mip->imageSize;
+                    valid = mipBytes <= UINT32_MAX;
+                }
+                if (valid) {
+                    cpu.m_memory.write<unsigned>(s + 0x10, levels);
+                    cpu.m_memory.write<unsigned>(s + SURF_IMAGE_SIZE, imageSize);
+                    cpu.m_memory.write<unsigned>(s + SURF_PITCH, pitch);
+                    cpu.m_memory.write<unsigned>(s + SURF_ALIGNMENT, surfaceAlign);
+                    cpu.m_memory.write<unsigned>(s + SURF_MIPMAP_SIZE, unsigned(mipBytes));
+                    cpu.m_memory.write<unsigned>(s + 0x30, actualTile);
+                    cpu.m_memory.write<unsigned>(s + 0x34, (cpu.m_memory.read<unsigned>(s + 0x34) & 0xFF00FFFFu) | (transition << 16));
+                    for (unsigned index = 0; index < offsets.size(); ++index)
+                        cpu.m_memory.write<unsigned>(s + 0x40 + index * 4, offsets[index]);
+                }
+            }
             if (gx2SizeTrace() && imageSize >= gx2SizeTraceMin() && gx2SizeTraceTake())
                 Utils::Log::error("[GX2SIZE] Surface @0x{:08X} dim={} raw={}x{} depth={} mip={} fmt=0x{:X} aa={} use=0x{:X} tile={} -> calc={}x{} "
-                                  "pitch={} elem={} image=0x{:X} mip=0 align=0x{:X} LR={}",
+                                  "pitch={} elem={} image=0x{:X} mip=0x{:X} align=0x{:X} LR={}",
                                   s, dim, rawWidth, rawHeight, depth, mipLevels, format, aa, use, tileMode, width, height, pitch,
-                                  bytesPerElement(format), imageSize, surfaceAlign,
+                                  bytesPerElement(format), imageSize, cpu.m_memory.read<unsigned>(s + SURF_MIPMAP_SIZE), surfaceAlign,
                                   Core::Diag::symbolize(cpu, cpu.m_lr + Core::Memory::MemoryMap::ApplicationCode));
         }
         cpu.m_gpr[3] = 0;
@@ -921,12 +1015,15 @@ namespace {
     {
         const std::uint32_t outBuf = cpu.m_gpr[3], outSize = cpu.m_gpr[4];
         const auto &lists = openLists(cpu);
+        if (lists.empty()) {
+            cpu.m_gpr[3] = 0;
+            return;
+        }
         if (outBuf)
-            cpu.m_memory.write<std::uint32_t>(outBuf, lists.empty() ? 0 : lists.back().buffer);
+            cpu.m_memory.write<std::uint32_t>(outBuf, lists.back().buffer);
         if (outSize)
-            cpu.m_memory.write<std::uint32_t>(outSize,
-                                              lists.empty() ? 0 : kDlBytesPerCmd * static_cast<std::uint32_t>(lists.back().commands.size()));
-        cpu.m_gpr[3] = lists.empty() ? 0u : 1u;
+            cpu.m_memory.write<std::uint32_t>(outSize, lists.back().capacity);
+        cpu.m_gpr[3] = 1;
     }
 
     // GX2BeginDisplayListEx(void *buffer, u32 size, BOOL profiling)
@@ -936,7 +1033,7 @@ namespace {
         auto &lists = openLists(cpu);
         if (!lists.empty())
             g_dlStats.nested++;
-        lists.push_back({cpu.m_gpr[3], {}});
+        lists.push_back({cpu.m_gpr[3], cpu.m_gpr[4], {}});
         cpu.m_gpr[3] = 0;
     }
 
@@ -952,19 +1049,18 @@ namespace {
         auto open = std::move(lists.back());
         lists.pop_back();
         const std::uint32_t buf = cpu.m_gpr[3] ? cpu.m_gpr[3] : open.buffer;
-        // Bound the cache: buffers are normally reused (so this stays small), but never let a
-        // title that cycles through fresh buffers grow it without limit.
-        if (g_displayLists.size() > 8192)
-            g_displayLists.clear();
-        auto &list = g_displayLists[buf];
-        list = std::move(open.commands);
+        // Recorded lists are guest-owned GPU state, not disposable cache entries.
+        // Keep live lists callable when more buffers are recorded; recording into
+        // the same address replaces its previous contents. Session reset clears them.
+        const auto list = std::make_shared<const CapturedList>(std::move(open.commands));
+        g_displayLists[buf] = list;
         g_dlStats.ends++;
-        g_dlStats.recorded += list.size();
-        if (list.empty())
+        g_dlStats.recorded += list->size();
+        if (list->empty())
             g_dlStats.emptyLists++;
         if ((g_dlStats.ends % 2000) == 0)
             dlReport();
-        cpu.m_gpr[3] = kDlBytesPerCmd * (static_cast<std::uint32_t>(list.size()) + 1);
+        cpu.m_gpr[3] = kDlBytesPerCmd * (static_cast<std::uint32_t>(list->size()) + 1);
     }
 
     // GX2CallDisplayList(void *buffer, u32 size) / GX2DirectCallDisplayList: splice the recorded
@@ -973,8 +1069,9 @@ namespace {
     {
         g_dlStats.calls++;
         if (const auto it = g_displayLists.find(cpu.m_gpr[3]); it != g_displayLists.end()) {
-            // Copy first: a nested self-call would otherwise invalidate the iterator mid-splice.
-            const std::vector<Core::Gfx::Gx2Command> cmds = it->second;
+            // Splicing only appends to the stream or a distinct open recording.
+            // It cannot modify this completed list, so avoid a second payload copy.
+            const auto &cmds = *it->second;
             g_dlStats.hits++;
             g_dlStats.spliced += cmds.size();
             for (const auto &c: cmds) {
@@ -984,6 +1081,27 @@ namespace {
             }
         } else {
             g_dlStats.misses++;
+            // Native/prebuilt or copied lists do not necessarily have an HLE
+            // recording at this address. Keep their missing commands inspectable.
+            static const std::uint32_t traceFrom = [] {
+                const char *value = std::getenv("WEMU_GX2_DL_MISS_TRACE");
+                return value ? static_cast<std::uint32_t>(std::strtoul(value, nullptr, 10)) : 0xFFFFFFFFu;
+            }();
+            static std::unordered_map<std::uint32_t, unsigned> sites;
+            static unsigned reports{};
+            const auto lr = cpu.m_lr + Core::Memory::MemoryMap::ApplicationCode;
+            if (g_swapCount >= traceFrom && reports < 64 && sites[lr]++ < 16) {
+                ++reports;
+                std::string words;
+                try {
+                    for (unsigned offset = 0; offset < std::min(cpu.m_gpr[4], 64u); offset += 4)
+                        words += std::format(" {:08X}", cpu.m_memory.read<std::uint32_t>(cpu.m_gpr[3] + offset));
+                } catch (const Core::MemoryException &) {
+                    words += " unreadable";
+                }
+                Utils::Log::error("[GX2DL_MISS] frame={} buffer={:08X} bytes={} lr={:08X} words:{}", g_swapCount, cpu.m_gpr[3], cpu.m_gpr[4], lr,
+                                  words);
+            }
         }
         cpu.m_gpr[3] = 0;
     }
@@ -1024,6 +1142,24 @@ namespace {
     }
     void gx2_TempGpuVersion(Core::Interpreter &cpu) { cpu.m_gpr[3] = 2u; }
 
+    unsigned integerArgument(Core::Interpreter &cpu, unsigned index)
+    {
+        return index < 8 ? cpu.m_gpr[index + 3] : cpu.m_memory.read<unsigned>(cpu.m_gpr[1] + 8 + index * 4);
+    }
+    unsigned polygonControlWord(Core::Interpreter &cpu, unsigned first)
+    {
+        const auto arg = [&](unsigned index) { return integerArgument(cpu, first + index); };
+        return unsigned(arg(1) != 0) | (unsigned(arg(2) != 0) << 1) | (unsigned(arg(0) != 0) << 2) | ((arg(3) & 3) << 3) | ((arg(4) & 7) << 5) |
+               ((arg(5) & 7) << 8) | (unsigned(arg(6) != 0) << 11) | (unsigned(arg(7) != 0) << 12) | (unsigned(arg(8) != 0) << 13);
+    }
+    void capturePolygonControl(Core::Interpreter &cpu, unsigned word)
+    {
+        Core::Gfx::Gx2Command cmd{Core::Gfx::Gx2Cmd::SetPolygonControl};
+        cmd.gpr[0] = word;
+        cmd.callerLr = cpu.m_lr + Core::Memory::MemoryMap::ApplicationCode;
+        pushCmd(cpu, cmd);
+        cpu.m_gpr[3] = 0;
+    }
     void samplerField(Core::Interpreter &cpu, unsigned word, unsigned shift, unsigned bits, std::uint32_t value)
     {
         const auto address = cpu.m_gpr[3] + word * 4;
@@ -1174,6 +1310,27 @@ void ReleaseGx2HostResources() noexcept
     auto &host = hostReplayState();
     host.replayer.reset();
     host.nativeInitialized = false;
+    g_openLists.clear();
+    g_displayLists.clear();
+    g_fetchLayouts.clear();
+    Core::Gfx::gx2Stream().clear();
+}
+
+void CopyGx2DisplayListState(std::uint32_t destination, std::uint32_t source, std::uint32_t bytes)
+{
+    if (!bytes || destination == source)
+        return;
+    const auto found = g_displayLists.find(source);
+    const auto commands = found == g_displayLists.end() ? nullptr : found->second;
+    g_displayLists.erase(destination);
+    if (!commands || bytes < std::uint64_t(kDlBytesPerCmd) * (commands->size() + 1))
+        return;
+    g_displayLists[destination] = commands;
+    static const bool trace = std::getenv("WEMU_GX2_DL_COPY_TRACE") != nullptr;
+    static unsigned reports{};
+    if (trace && reports++ < 64)
+        Utils::Log::error("[GX2DL_COPY] frame={} source={:08X} destination={:08X} bytes={} commands={}", g_swapCount, source, destination, bytes,
+                          commands->size());
 }
 
 void RegisterGx2Functions()
@@ -1185,6 +1342,10 @@ void RegisterGx2Functions()
         Core::syscallHandler.registerSyscall(name, gx2_RetSize);
 
     Core::syscallHandler.registerSyscall("GX2Init", gx2_Init);
+    for (const auto *name: {"GX2GetPixelShaderGPRs", "GX2GetVertexShaderGPRs", "GX2GetGeometryShaderGPRs"})
+        Core::syscallHandler.registerSyscall(name, gx2_ShaderResources<false>);
+    for (const auto *name: {"GX2GetPixelShaderStackEntries", "GX2GetVertexShaderStackEntries", "GX2GetGeometryShaderStackEntries"})
+        Core::syscallHandler.registerSyscall(name, gx2_ShaderResources<true>);
     Core::syscallHandler.registerSyscall("GX2CalcTVSize", gx2_CalcTVSize);
     Core::syscallHandler.registerSyscall("GX2CalcDRCSize", gx2_CalcDRCSize);
     Core::syscallHandler.registerSyscall("GX2CalcSurfaceSizeAndAlignment", gx2_CalcSurfaceSizeAndAlignment);
@@ -1236,6 +1397,70 @@ void RegisterGx2Functions()
     Core::syscallHandler.registerSyscall("GX2SetBlendConstantColor", gx2_rec<C::SetBlendConstantColor>);
     Core::syscallHandler.registerSyscall("GX2SetBlendControl", gx2_rec<C::SetBlendControl>);
     Core::syscallHandler.registerSyscall("GX2SetColorControl", gx2_rec<C::SetColorControl>);
+    Core::syscallHandler.registerSyscall("GX2SetColorControlReg", [](Core::Interpreter &cpu) {
+        const auto word = cpu.m_memory.read<std::uint32_t>(cpu.m_gpr[3]);
+        Core::Gfx::Gx2Command command{Core::Gfx::Gx2Cmd::SetColorControl};
+        command.gpr = {(word >> 16) & 0xFF, (word >> 8) & 0xFF, (word >> 1) & 1, ((word >> 4) & 7) != 1};
+        command.callerLr = cpu.m_lr + Core::Memory::MemoryMap::ApplicationCode;
+        pushCmd(cpu, command);
+        cpu.m_gpr[3] = 0;
+    });
+    Core::syscallHandler.registerSyscall("GX2SetCullOnlyControl", [](Core::Interpreter &cpu) {
+        capturePolygonControl(cpu, unsigned(cpu.m_gpr[4] != 0) | (unsigned(cpu.m_gpr[5] != 0) << 1) | (unsigned(cpu.m_gpr[3] != 0) << 2));
+    });
+    Core::syscallHandler.registerSyscall("GX2SetPolygonControl",
+                                         [](Core::Interpreter &cpu) { capturePolygonControl(cpu, polygonControlWord(cpu, 0)); });
+    Core::syscallHandler.registerSyscall("GX2InitPolygonControlReg", [](Core::Interpreter &cpu) {
+        const auto word = polygonControlWord(cpu, 1);
+        cpu.m_memory.write<unsigned>(cpu.m_gpr[3], word);
+        cpu.m_gpr[3] = 0;
+    });
+    Core::syscallHandler.registerSyscall("GX2GetPolygonControlReg", [](Core::Interpreter &cpu) {
+        const auto word = cpu.m_memory.read<unsigned>(cpu.m_gpr[3]);
+        constexpr unsigned shifts[]{2, 0, 1, 3, 5, 8, 11, 12, 13};
+        constexpr unsigned masks[]{1, 1, 1, 3, 7, 7, 1, 1, 1};
+        for (unsigned index = 0; index < 9; ++index)
+            if (const auto output = integerArgument(cpu, index + 1))
+                cpu.m_memory.write<unsigned>(output, (word >> shifts[index]) & masks[index]);
+        cpu.m_gpr[3] = 0;
+    });
+    Core::syscallHandler.registerSyscall("GX2SetPolygonControlReg",
+                                         [](Core::Interpreter &cpu) { capturePolygonControl(cpu, cpu.m_memory.read<unsigned>(cpu.m_gpr[3])); });
+    Core::syscallHandler.registerSyscall("GX2SetRasterizerClipControl", [](Core::Interpreter &cpu) {
+        Core::Gfx::Gx2Command cmd{Core::Gfx::Gx2Cmd::SetRasterizerClipControl};
+        cmd.gpr = {unsigned(cpu.m_gpr[3] != 0), unsigned(cpu.m_gpr[4] != 0), 0};
+        pushCmd(cpu, cmd);
+        cpu.m_gpr[3] = 0;
+    });
+    for (const auto *name: {"GX2SetRasterizerClipControlEx", "GX2SetRasterizerClipControlHalfZ"})
+        Core::syscallHandler.registerSyscall(name, gx2_rec<C::SetRasterizerClipControl>);
+    Core::syscallHandler.registerSyscall("GX2SetPolygonOffset", gx2_rec<C::SetPolygonOffset>);
+    Core::syscallHandler.registerSyscall("GX2InitPolygonOffsetReg", [](Core::Interpreter &cpu) {
+        const auto pointer = cpu.m_gpr[3];
+        for (unsigned i = 0; i < 5; ++i) {
+            const float value = float(cpu.m_fpr[i + 1]) * ((i == 1 || i == 3) ? 16.f : 1.f);
+            cpu.m_memory.write<unsigned>(pointer + (i < 4 ? (i ^ 1u) : i) * 4, std::bit_cast<unsigned>(value));
+        }
+        cpu.m_gpr[3] = 0;
+    });
+    Core::syscallHandler.registerSyscall("GX2GetPolygonOffsetReg", [](Core::Interpreter &cpu) {
+        const auto pointer = cpu.m_gpr[3];
+        std::array<float, 5> values{};
+        for (unsigned i = 0; i < values.size(); ++i)
+            values[i] = std::bit_cast<float>(cpu.m_memory.read<unsigned>(pointer + (i < 4 ? (i ^ 1u) : i) * 4)) / ((i == 1 || i == 3) ? 16.f : 1.f);
+        for (unsigned i = 0; i < values.size(); ++i)
+            if (const auto output = cpu.m_gpr[i + 4])
+                cpu.m_memory.write<unsigned>(output, std::bit_cast<unsigned>(values[i]));
+        cpu.m_gpr[3] = 0;
+    });
+    Core::syscallHandler.registerSyscall("GX2SetPolygonOffsetReg", [](Core::Interpreter &cpu) {
+        Core::Gfx::Gx2Command cmd{C::SetPolygonOffset};
+        for (unsigned i = 0; i < 5; ++i)
+            cmd.fpr[i] =
+                    std::bit_cast<float>(cpu.m_memory.read<unsigned>(cpu.m_gpr[3] + (i < 4 ? (i ^ 1u) : i) * 4)) / ((i == 1 || i == 3) ? 16.f : 1.f);
+        pushCmd(cpu, cmd);
+        cpu.m_gpr[3] = 0;
+    });
     Core::syscallHandler.registerSyscall("GX2SetDepthStencilControl", gx2_rec<C::SetDepthStencilControl>);
     Core::syscallHandler.registerSyscall("GX2SetDepthOnlyControl", [](Core::Interpreter &cpu) {
         const auto saved = cpu.m_gpr[6];
@@ -1255,6 +1480,15 @@ void RegisterGx2Functions()
         cpu.m_gpr[3] = 0;
     });
     Core::syscallHandler.registerSyscall("GX2SetTargetChannelMasks", gx2_rec<C::SetTargetChannelMasks>);
+    Core::syscallHandler.registerSyscall("GX2SetTargetChannelMasksReg", [](Core::Interpreter &cpu) {
+        const auto word = cpu.m_memory.read<std::uint32_t>(cpu.m_gpr[3]);
+        Core::Gfx::Gx2Command command{Core::Gfx::Gx2Cmd::SetTargetChannelMasks};
+        for (unsigned slot = 0; slot < command.gpr.size(); ++slot)
+            command.gpr[slot] = (word >> (slot * 4)) & 15;
+        command.callerLr = cpu.m_lr + Core::Memory::MemoryMap::ApplicationCode;
+        pushCmd(cpu, command);
+        cpu.m_gpr[3] = 0;
+    });
     Core::syscallHandler.registerSyscall("GX2DrawEx", gx2_rec<C::DrawEx>);
     Core::syscallHandler.registerSyscall("GX2DrawIndexedEx", gx2_rec<C::DrawIndexedEx>);
     Core::syscallHandler.registerSyscall("GX2CopyColorBufferToScanBuffer", gx2_rec<C::CopyColorBufferToScanBuffer>);

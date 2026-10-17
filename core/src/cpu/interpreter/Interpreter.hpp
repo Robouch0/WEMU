@@ -23,8 +23,9 @@
 #include "gfx/Renderer.hpp"
 #include "hle/H264.hpp"
 #include "hle/LockedCache.hpp"
-#include "hle/SystemConfig.hpp"
+#include "hle/MvPlayer.hpp"
 #include "hle/Scheduler.hpp"
+#include "hle/SystemConfig.hpp"
 #include "utils/BeDecoder.hpp"
 #include "utils/Logger.hpp"
 
@@ -100,8 +101,10 @@ namespace Core {
             void reset()
             {
                 m_h264.reset();
+                m_mvPlayer.reset();
                 m_lockedCache = {};
                 m_blockCache.clear();
+                m_observedPcs.clear();
                 m_failed = false;
                 m_pc = 0;
                 m_nextPc = 0;
@@ -156,6 +159,7 @@ namespace Core {
             std::atomic<bool> m_running{true};
             bool m_failed{false};
             std::shared_ptr<H264::State> m_h264;
+            std::shared_ptr<MvPlayer::State> m_mvPlayer;
             std::atomic<std::uint32_t> m_controllerMask{0};
             std::uint32_t m_vpadPreviousHold{0};
             std::uint64_t m_vpadReadCount{0};
@@ -246,6 +250,7 @@ namespace Core {
 #endif
             };
             std::unordered_map<std::uint32_t, Block> m_blockCache; // keyed by memory-relative PC
+            std::vector<std::uint32_t> m_observedPcs; // absolute guest PCs that must reach the diagnostic dispatch
             bool m_jitEnabled{false};
             std::uint64_t m_retired{0}; // total instructions retired (WEMU_IPS throughput reporting)
 

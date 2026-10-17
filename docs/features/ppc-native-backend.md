@@ -106,3 +106,13 @@ Locked-cache memory is mapped by the shared memory service. It is currently
 outside the native ABI's three region descriptors, so a native load/store exits
 precisely before that access and the interpreter completes it. Existing cached
 objects keep their ABI and remain usable.
+
+## PC observation during native execution
+
+`WEMU_WATCH_PC` can observe absolute guest PCs while retaining native execution
+and persistent caching elsewhere. Decoded blocks and native lookahead stop before
+an observed address. A block starting at that address executes through the
+reference handlers, so native loop repetition cannot hide repeated observations.
+Changing the observer list clears decoded bindings, including on interpreter
+reset. Word/register/string watches still require instruction-by-instruction
+execution.

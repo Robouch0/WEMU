@@ -81,14 +81,63 @@ pipeline and texture shape. It searches existing slots, including across holes
 left by eviction, before allocating another bundle. Discarded or materialized
 tickets allow normal reuse.
 
-This keeps offscreen surfaces available to later GPU consumers instead of
-forcing them through GPU readback and CPU reupload merely to recycle a bundle.
-It can trade additional cached GPU storage and image copies for fewer CPU/GPU
-round trips. The existing 64-entry/768 MiB estimated cache limits remain;
-eviction materializes live tickets before releasing their resources. Older
-color/depth versions, row padding, software fallback and foreign-context inputs
-retain their snapshot behavior. `WEMU_NATIVE_PRESERVE_IMAGES=0` disables this
-selection policy for controlled comparisons.
+Each matching draw shape retains up to eight live versions before recycling its
+oldest eligible bundle. Recycling materializes outstanding color/depth tickets
+before any overwrite, preserving older pixels and row padding. Current target
+and depth inputs require separate destination images; sampled aliases retain
+their existing copy-before-write path. The limit is soft when every matching
+bundle supplies an attachment input. Discarded or already materialized outputs
+remain immediately reusable.
+
+This bounds repeated allocation during passes that produce many small images,
+while retaining a short chain of GPU-resident versions for later consumers.
+The global cache remains bounded to 384 entries and an estimated 2560 MiB;
+eviction materializes live tickets before releasing their resources.
+`WEMU_NATIVE_LIVE_VERSIONS` changes the per-shape limit for diagnostics.
+`WEMU_NATIVE_PRESERVE_IMAGES=0` disables live-version preservation for controlled
+comparisons. Software fallback and foreign-context inputs keep their saved
+snapshot behavior.
+
+## Share immutable texture uploads across draws
+
+Decoded guest textures and float mip/array snapshots carry an immutable owner
+identity into the raster backend. Draws using the same snapshot share its Vulkan
+sampling image, image view and staging allocation across pipelines and vertex
+capacity variants. Different sampler states still use their own sampler objects.
+Cache keys include the byte region, row pitch, dimensions, numeric format,
+component mapping, image kind and complete mip layout. Changed source bytes or
+rendered layers produce a new owner and upload; mutable callback inputs retain
+the existing per-bundle upload path.
+
+Shared immutable sampling images prefer device-local memory. Their uploads keep
+host-visible staging buffers, and CPU consumers retain the source snapshot.
+The allocator falls back to another compatible heap when the preferred memory
+type is unavailable. Existing render-target placement follows its prior policy.
+
+The cache retains at most 256 entries and an estimated 512 MiB of image/staging
+storage. In-flight bundles own their sampled images independently of cache
+eviction. Ordered submissions make an upload visible before subsequent draws;
+duplicate bindings in its producing draw share the same recorded upload.
+Deferred frame tickets retain their device until their final release. Shared
+image/staging storage is counted once for its entire lifetime, including after
+cache eviction while draws still retain it. The resource budget combines those
+live bytes with private bundle storage and reserves a worst-case upload for the
+incoming snapshots on both new allocations and bundle refreshes. This avoids
+charging every shared texture again for every draw bundle.
+
+Bounded weak lookup registries let CPU decoding and GPU upload caches recover
+snapshots/images still owned by another live draw after strong-cache eviction.
+These registries retain metadata without retaining pixels or GPU allocations.
+This prevents alternating large textures from acquiring a new decode/upload
+identity despite an existing live version. Signed decoded snapshots distinguish
+view component mappings and source allocation sizes.
+
+`shared_texture_uploads`, `shared_texture_hits` and `shared_texture_bytes` in
+native timing logs expose upload/reuse counts and live storage. Regressions cover
+duplicate bindings, sharing across
+pipeline states, changed HDR layers and BC source bytes, cache eviction, older
+frame pixels, weak recovery after CPU/GPU eviction, and device lifetime after
+backend destruction.
 
 ## Reduce scanout and desktop frame copies
 

@@ -22,7 +22,7 @@ namespace Core {
 void RegisterCoreinitExtraFunctions();
 
 // Installs per-method intercepts for the MVPlayer (menu movie) vtable. Must run before
-// Interpreter::run() so the hook PC range is known. See CoreinitExtra.cpp for the state machine.
+// Interpreter::run() so the hook PC range is known. See MvPlayer.cpp for the library implementation.
 void InstallMVPlayerHooks(Core::Interpreter &interp);
 
 // Seeds MK8's title-sequence frame pool so the title advances to the menu. The pool is normally

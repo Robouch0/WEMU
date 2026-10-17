@@ -1,5 +1,6 @@
 #include <atomic>
 #include <bit>
+#include <cmath>
 #include <gtest/gtest.h>
 #include <stdexcept>
 
@@ -296,6 +297,40 @@ TEST(LatteVsTest, ScalarSlotDoesNotOverwriteVectorForwarding)
     EXPECT_EQ(out.pos, (std::array<float, 4>{2, 9, 9, 1}));
 }
 
+TEST(LatteVsTest, PreparedProgramSnapshotsBytecodeAndReadsFreshRuntimeInputs)
+{
+    using namespace Latte;
+    std::vector<unsigned> words{3,
+                                (8u << 26) | (3u << 18),
+                                60u | (1u << 13) | (2u << 15),
+                                (CF_EXP << 23) | 0x688u,
+                                (2u << 13) | (1u << 15),
+                                (CF_EXP_DONE << 23) | (1u << 21) | 0x688u};
+    for (unsigned channel = 0; channel < 4; ++channel) {
+        words.push_back(1u | (channel << 10) | (256u << 13) | (channel << 23) | (channel == 3 ? 0x80000000u : 0u));
+        words.push_back((OP2_ADD << 7) | 16u | (2u << 21) | (channel << 29));
+    }
+    const auto program = LatteVsInterp::compile(words);
+    ASSERT_TRUE(program->valid);
+    std::array<std::array<float, 4>, 1> attributes{{{-1, .25f, .5f, 1}}};
+    std::array<float, 4> constants{.125f, .25f, .5f, 0};
+    const auto first = LatteVsInterp::runVertex(*program, attributes, constants.data(), 1);
+    ASSERT_TRUE(first.valid);
+    EXPECT_EQ(first.pos, (std::array{-.875f, .5f, 1.f, 1.f}));
+    ASSERT_TRUE(first.paramValid[0]);
+    EXPECT_EQ(first.params[0], attributes[0]);
+    // A prepared shader owns immutable bytecode; uniforms and attributes must
+    // still refresh on each execution, even after the source vector is reused.
+    words[7] = (words[7] & ~(0x7FFu << 7)) | (OP2_MUL << 7);
+    attributes[0] = {.25f, -.5f, 1, 1};
+    constants = {.5f, .125f, -.5f, 1};
+    const auto second = LatteVsInterp::runVertex(*program, attributes, constants.data(), 1);
+    ASSERT_TRUE(second.valid);
+    EXPECT_EQ(second.pos, (std::array{.75f, -.375f, .5f, 2.f}));
+    EXPECT_EQ(second.params[0], attributes[0]);
+    EXPECT_EQ(LatteVsInterp::run(words, attributes, constants.data(), 1).pos[0], .125f);
+}
+
 TEST(LattePsTest, SelectsTextureThroughAluAndModulatesInterpolatedColor)
 {
     std::vector<std::uint32_t> words(8);
@@ -508,4 +543,16 @@ TEST(LatteVsTest, VertexTextureSampleUsesSelectorsAndPreservesMaskedChannels)
     EXPECT_FALSE(LatteVsInterp::run(program, attributes, nullptr, 0).valid);
     program[4] = (program[4] & ~31u) | 0x10u; // implicit-LOD SAMPLE is not implemented
     EXPECT_FALSE(LatteVsInterp::run(program, attributes, nullptr, 0, {}, sampler).valid);
+}
+
+TEST(TextureFormatTest, Rgb565UsesGpuByteOrderAndIndependentNormalizedChannels)
+{
+    for (const unsigned word: {0u, 0x1Fu, 0x7E0u, 0xF800u, 0xFFFFu, 0xAE91u}) {
+        const std::array<std::uint8_t, 2> bytes{std::uint8_t(word), std::uint8_t(word >> 8)};
+        const auto rgba = decodeRgb565(bytes.data());
+        EXPECT_EQ(rgba[0], std::lround(float(word & 31) * 255.f / 31.f));
+        EXPECT_EQ(rgba[1], std::lround(float((word >> 5) & 63) * 255.f / 63.f));
+        EXPECT_EQ(rgba[2], std::lround(float((word >> 11) & 31) * 255.f / 31.f));
+        EXPECT_EQ(rgba[3], 255);
+    }
 }

@@ -23,7 +23,43 @@ TEST(PpcFetchTest, BorrowedDecoderObservesWritesAndRejectsTruncatedWords)
 
 class PpcFetchInterpreterTest : public InstructionTest {};
 
+TEST_F(PpcFetchInterpreterTest, ObservedPcsBoundReferenceBlocks)
+{
+    constexpr unsigned app = Core::Memory::MemoryMap::ApplicationCode;
+    Utils::BeDecoder reader{std::span<const char>(cpu->m_memory.getMemory())};
+    const std::array<std::uint32_t, 4> words{0x38600001, 0x38800002, 0x38A00003, 0x48000004};
+    for (unsigned i = 0; i < words.size(); ++i)
+        cpu->m_memory.write<std::uint32_t>(app + i * 4, words[i]);
+    cpu->m_observedPcs = {app + 8};
+    const auto &before = cpu->getBlock(reader, 0);
+    ASSERT_EQ(before.instrs.size(), 2u);
+    cpu->m_pc = 0;
+    cpu->runBlock(before);
+    EXPECT_EQ(cpu->m_pc, 8u);
+    EXPECT_EQ(cpu->m_gpr[3], 1u);
+    EXPECT_EQ(cpu->m_gpr[4], 2u);
+    EXPECT_EQ(cpu->m_gpr[5], 0u);
+}
+
 #ifdef WEMU_HAS_LLVM
+TEST_F(PpcFetchInterpreterTest, ObservedPcsBoundNativeLookaheadAndPreventCollapsedLoopHits)
+{
+    constexpr unsigned app = Core::Memory::MemoryMap::ApplicationCode;
+    Utils::BeDecoder reader{std::span<const char>(cpu->m_memory.getMemory())};
+    const std::array<std::uint32_t, 6> words{0x38600001, 0x90640000, 0x38630001, 0x38630001, 0x38630001, 0x4BFFFFEC};
+    for (unsigned i = 0; i < words.size(); ++i)
+        cpu->m_memory.write<std::uint32_t>(app + i * 4, words[i]);
+    cpu->m_observedPcs = {app + 12};
+    const auto &before = cpu->getBlock(reader, 0, true);
+    EXPECT_EQ(before.nativeWords.size(), 3u);
+    EXPECT_EQ(cpu->getBlock(reader, 12, true).nativeWords.size(), 0u);
+    cpu->m_blockCache.clear();
+    cpu->m_observedPcs = {app};
+    const auto &start = cpu->getBlock(reader, 0, true);
+    EXPECT_TRUE(start.nativeWords.empty());
+    EXPECT_EQ(start.instrs.size(), 2u);
+}
+
 TEST_F(PpcFetchInterpreterTest, RecordsUnsupportedPrefixBoundaryWithoutNativeExecution)
 {
     constexpr unsigned app = Core::Memory::MemoryMap::ApplicationCode;

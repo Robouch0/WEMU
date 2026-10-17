@@ -20,6 +20,7 @@ namespace Core::Gfx {
             bool supportsPoints() const override { return true; }
             bool supportsFloatTargets() const override { return true; }
             bool supportsVertexStage() const override { return true; }
+            bool supportsBlockTextures() const override { return true; }
             const std::string &lastError() const noexcept;
             std::uint64_t completedDraws() const noexcept;
             std::uint64_t reusedDraws() const noexcept;
@@ -37,6 +38,9 @@ namespace Core::Gfx {
             std::uint64_t queueSubmissions() const noexcept;
             std::uint64_t submittedCommandBuffers() const noexcept;
             std::uint64_t submissionWaits() const noexcept;
+            std::uint64_t sharedTextureUploads() const noexcept;
+            std::uint64_t sharedTextureHits() const noexcept;
+            std::uint64_t sharedTextureBytes() const noexcept;
 
         private:
             std::optional<RasterResult> renderImpl(const RasterDraw &draw, bool deferReadback);
