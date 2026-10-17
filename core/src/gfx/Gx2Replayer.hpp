@@ -101,6 +101,7 @@ namespace Core::Gfx {
             bool m_vertexCacheEnabled{true};
             Latte::VertexShaderCache m_vertexShaderCache;
             std::unique_ptr<RasterWorkers> m_rasterWorkers;
+            std::unique_ptr<RasterWorkers> m_vertexWorkers; // parallel CPU vertex shading (pre-shading pass)
             unsigned m_rasterWorkerCount{};
             std::uint64_t m_parallelMinPixels{32768};
             std::optional<std::uint64_t> m_rasterVerifyEvery;

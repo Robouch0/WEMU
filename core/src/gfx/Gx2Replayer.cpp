@@ -2104,8 +2104,9 @@ namespace Core::Gfx {
         };
         std::vector<CachedVertex> vertexCache;
         const auto vertexDeclaration = LatteVsInterp::compile(m_vsProgram);
-        if (indexed && count >= 6 && m_vertexCacheEnabled && vertexDeclaration->valid) {
-            bool readsTextures = false;
+        bool vertexShaderReadsTextures = false;
+        {
+            bool &readsTextures = vertexShaderReadsTextures;
             for (std::size_t cf = 0; cf + 1 < m_vsProgram.size(); cf += 2) {
                 const auto word = m_vsProgram[cf + 1];
                 if (!Latte::isAluClause(word) &&
@@ -2121,9 +2122,14 @@ namespace Core::Gfx {
                 if (!Latte::isAluClause(word) && (word & (1u << 21)))
                     break;
             }
-            if (!readsTextures)
-                vertexCache.resize(128);
         }
+        if (indexed && count >= 6 && m_vertexCacheEnabled && vertexDeclaration->valid && !vertexShaderReadsTextures)
+            vertexCache.resize(128);
+        // Outputs of the pre-shading pass (filled below, once the draw's vertex path is known),
+        // indexed by vertex index - preshadedBase. preshadedReady marks computed entries.
+        std::vector<LatteVsInterp::Output> preshaded;
+        std::vector<std::uint8_t> preshadedReady;
+        std::uint32_t preshadedBase = 0;
         // Execute the real vertex shader for one vertex; returns false if unavailable so the
         // caller falls back to the [0,1]/matrix heuristics. PARAM exports are optionally returned
         // because the pixel shader consumes them as interpolated inputs.
@@ -2141,8 +2147,12 @@ namespace Core::Gfx {
             }();
             if (!enabled || m_vsProgram.empty())
                 return false;
+            const LatteVsInterp::Output *preshadedOutput =
+                    vi - preshadedBase < preshaded.size() && preshadedReady[vi - preshadedBase] ? &preshaded[vi - preshadedBase] : nullptr;
             std::array<std::array<float, 4>, 32> attribs{};
-            if (!m_fetchLayout.empty()) {
+            if (preshadedOutput) {
+                // Attributes were consumed by the pre-shading pass.
+            } else if (!m_fetchLayout.empty()) {
                 if (!fetchAttributes(vi, std::span(attribs).first(m_vertexInputCount)))
                     return false;
             } else {
@@ -2230,7 +2240,9 @@ namespace Core::Gfx {
             };
             auto *cached = vertexCache.empty() ? nullptr : &vertexCache[vi % vertexCache.size()];
             LatteVsInterp::Output o;
-            if (cached && cached->valid && cached->index == vi) {
+            if (preshadedOutput) {
+                o = *preshadedOutput;
+            } else if (cached && cached->valid && cached->index == vi) {
                 o = cached->output;
                 ++m_vertexShaderCacheHits;
             } else {
@@ -3291,6 +3303,60 @@ namespace Core::Gfx {
             else
                 clipTriangle(rv, emit);
         };
+        // Pre-shading: CPU vertex shading dominates replay time, and vertices are independent, so
+        // shade every distinct index of the draw once, in parallel, before assembling primitives.
+        // Only pure shaders qualify (no texture reads, no diagnostics that trace a single run);
+        // results are identical to running them lazily in runShader.
+        static const bool preshadeEnabled = [] {
+            const auto set = [](const char *name) { return std::getenv(name) != nullptr; };
+            const auto *value = std::getenv("WEMU_VS_PRESHADE");
+            return (!value || value[0] != '0') && !set("WEMU_VS_DEBUG") && !set("WEMU_VS_DEBUG_DRAW") && !set("WEMU_VS_DEBUG_TEX") &&
+                   !set("WEMU_VS_SUMMARY") && !set("WEMU_VS_DEGEN_MODEL_FALLBACK") && !set("WEMU_KCACHE_BIAS");
+        }();
+        if (preshadeEnabled && !nativeVertexExecution && !m_trace && vertexDeclaration->valid && !vertexShaderReadsTextures && !m_vsProgram.empty() &&
+            !m_fetchLayout.empty() && idx.size() >= 64) {
+            const auto [low, high] = std::minmax_element(idx.begin(), idx.end());
+            const std::uint64_t span = std::uint64_t(*high) - *low + 1;
+            if (span <= idx.size() * 4 + 256) {
+                preshadedBase = *low;
+                preshaded.resize(span);
+                preshadedReady.assign(span, 0);
+                std::vector<std::uint32_t> unique;
+                unique.reserve(idx.size());
+                for (const auto vi: idx)
+                    if (!preshadedReady[vi - preshadedBase]) {
+                        preshadedReady[vi - preshadedBase] = 2; // queued
+                        unique.push_back(vi);
+                    }
+                const auto shade = [&](unsigned first, unsigned end) {
+                    const LatteVsInterp::KcacheFetch kcache = [&](std::uint32_t bank, std::uint32_t vec4Idx, std::uint32_t chan) -> float {
+                        if (bank >= m_vsBlocks.size())
+                            return 0.0f;
+                        const auto &blk = m_vsBlocks[bank];
+                        const std::uint64_t offset = std::uint64_t(vec4Idx) * 4 + chan;
+                        return offset < blk.size() ? asFloat(blk[offset]) : 0.0f;
+                    };
+                    std::array<std::array<float, 4>, 32> attribs{};
+                    for (unsigned k = first; k < end; ++k) {
+                        const auto slot = unique[k] - preshadedBase;
+                        if (!fetchAttributes(unique[k], std::span(attribs).first(m_vertexInputCount))) {
+                            preshadedReady[slot] = 0; // runShader reports the failure as before
+                            continue;
+                        }
+                        preshaded[slot] =
+                                LatteVsInterp::runVertex(*vertexDeclaration, std::span(attribs).first(m_vertexInputCount), m_vsRegs, 64, kcache);
+                        preshadedReady[slot] = 1;
+                    }
+                };
+                if (unique.size() >= 256) {
+                    if (!m_vertexWorkers)
+                        m_vertexWorkers = std::make_unique<RasterWorkers>(std::clamp(std::thread::hardware_concurrency() / 2, 1u, 8u));
+                    m_vertexWorkers->run(unsigned(unique.size()), shade);
+                } else
+                    shade(0, unsigned(unique.size()));
+                m_vertexShaderExecutions += unique.size();
+            }
+        }
         if (mode == 1) {
             for (const auto vi: idx) {
                 RasterVertex rv;
