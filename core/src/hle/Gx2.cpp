@@ -166,26 +166,46 @@ namespace {
             // VTX DATA_FORMAT -> GX2AttribFormat component/type code (low byte).
             const auto attribType = [](std::uint32_t dataFormat) -> int {
                 switch (dataFormat) {
-                    case 0x01: return 0x00; // 8
-                    case 0x02: return 0x01; // 4_4
-                    case 0x05: return 0x02; // 16
-                    case 0x06: return 0x03; // 16 float
-                    case 0x07: return 0x04; // 8_8
-                    case 0x0D: return 0x05; // 32
-                    case 0x0E: return 0x06; // 32 float
-                    case 0x0F: return 0x07; // 16_16
-                    case 0x10: return 0x08; // 16_16 float
-                    case 0x19: return 0x0B; // 2_10_10_10 (X in the low bits)
-                    case 0x1A: return 0x0A; // 8_8_8_8
-                    case 0x1D: return 0x0C; // 32_32
-                    case 0x1E: return 0x0D; // 32_32 float
-                    case 0x1F: return 0x0E; // 16_16_16_16
-                    case 0x20: return 0x0F; // 16_16_16_16 float
-                    case 0x2F: return 0x10; // 32_32_32
-                    case 0x30: return 0x11; // 32_32_32 float
-                    case 0x22: return 0x12; // 32_32_32_32
-                    case 0x23: return 0x13; // 32_32_32_32 float
-                    default: return -1;
+                    case 0x01:
+                        return 0x00; // 8
+                    case 0x02:
+                        return 0x01; // 4_4
+                    case 0x05:
+                        return 0x02; // 16
+                    case 0x06:
+                        return 0x03; // 16 float
+                    case 0x07:
+                        return 0x04; // 8_8
+                    case 0x0D:
+                        return 0x05; // 32
+                    case 0x0E:
+                        return 0x06; // 32 float
+                    case 0x0F:
+                        return 0x07; // 16_16
+                    case 0x10:
+                        return 0x08; // 16_16 float
+                    case 0x19:
+                        return 0x0B; // 2_10_10_10 (X in the low bits)
+                    case 0x1A:
+                        return 0x0A; // 8_8_8_8
+                    case 0x1D:
+                        return 0x0C; // 32_32
+                    case 0x1E:
+                        return 0x0D; // 32_32 float
+                    case 0x1F:
+                        return 0x0E; // 16_16_16_16
+                    case 0x20:
+                        return 0x0F; // 16_16_16_16 float
+                    case 0x2F:
+                        return 0x10; // 32_32_32
+                    case 0x30:
+                        return 0x11; // 32_32_32 float
+                    case 0x22:
+                        return 0x12; // 32_32_32_32
+                    case 0x23:
+                        return 0x13; // 32_32_32_32 float
+                    default:
+                        return -1;
                 }
             };
             for (std::uint32_t cf = 0; cf + 1 < size / 4 && cf < 64; cf += 2) {
@@ -202,8 +222,8 @@ namespace {
                         if (type < 0)
                             return {};
                         const auto numFormat = (v1 >> 28) & 3;
-                        const bool isFloat = type == 0x03 || type == 0x06 || type == 0x08 || type == 0x0D || type == 0x0F || type == 0x11 ||
-                                             type == 0x13;
+                        const bool isFloat =
+                                type == 0x03 || type == 0x06 || type == 0x08 || type == 0x0D || type == 0x0F || type == 0x11 || type == 0x13;
                         std::uint32_t format = std::uint32_t(type);
                         if (numFormat == 1)
                             format |= 0x100; // integer
@@ -295,8 +315,8 @@ namespace {
                 if (trace)
                     for (std::size_t i = 0; i + 7 < it->second.size(); i += 8)
                         Utils::Log::error("[FETCHDECODE] program={:08X} loc={} buf={} off={} fmt={:X} type={} mask={:08X} endian={}", program,
-                                          it->second[i], it->second[i + 1], it->second[i + 2], it->second[i + 3], it->second[i + 4], it->second[i + 6],
-                                          it->second[i + 7]);
+                                          it->second[i], it->second[i + 1], it->second[i + 2], it->second[i + 3], it->second[i + 4],
+                                          it->second[i + 6], it->second[i + 7]);
             }
             c.payload = it->second;
         }

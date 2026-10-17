@@ -45,7 +45,7 @@ namespace Core::Gfx {
             return {};
         const auto hwFormat = format & 63u;
         const auto bytes = hwFormat == 1                                                                 ? 1u
-                           : hwFormat == 5 || hwFormat == 7 || hwFormat == 6 || hwFormat == 8                             ? 2u
+                           : hwFormat == 5 || hwFormat == 7 || hwFormat == 6 || hwFormat == 8            ? 2u
                            : hwFormat == 0x31 || hwFormat == 0x34                                        ? 8u
                            : hwFormat >= 0x32 && hwFormat <= 0x35                                        ? 16u
                            : hwFormat == 0x22 || hwFormat == 0x23                                        ? 16u

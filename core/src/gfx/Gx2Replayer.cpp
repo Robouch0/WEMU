@@ -1013,8 +1013,8 @@ namespace Core::Gfx {
                     const unsigned blockBytes = format == 0x31 || format == 0x34 ? 8 : 16;
                     for (unsigned y = 0; y < surface.height; y += 4)
                         for (unsigned x = 0; x < surface.width; x += 4) {
-                            const auto blockOffset = tiledElementOffset(x / 4, y / 4, surface.pitch, blockBytes * 8,
-                                                                       surface.tileMode, surface.swizzle);
+                            const auto blockOffset =
+                                    tiledElementOffset(x / 4, y / 4, surface.pitch, blockBytes * 8, surface.tileMode, surface.swizzle);
                             const auto *block = std::uint64_t(blockOffset) + blockBytes <= surface.imageSize ? base + blockOffset : nullptr;
                             std::uint8_t rgba[16][4]{};
                             if (block && !signedBc && format <= 0x33)
@@ -1104,7 +1104,9 @@ namespace Core::Gfx {
             (!linear && surface.tileMode != 2 && surface.tileMode != 4) || (format != 0x16 && format != 0x1A && format != 0x06))
             return {};
         const auto *base = m_mem->hostPtr(surface.imagePtr);
-        const auto *last = std::uint64_t(surface.imagePtr) + surface.imageSize <= 0x100000000ull ? m_mem->hostPtr(surface.imagePtr + surface.imageSize - 1) : nullptr;
+        const auto *last = std::uint64_t(surface.imagePtr) + surface.imageSize <= 0x100000000ull
+                                   ? m_mem->hostPtr(surface.imagePtr + surface.imageSize - 1)
+                                   : nullptr;
         if (!base || !last || std::uintptr_t(last) - std::uintptr_t(base) != surface.imageSize - 1)
             return {};
         const auto smallFloat = [](std::uint32_t bits, unsigned mantissaBits) {
@@ -1133,11 +1135,13 @@ namespace Core::Gfx {
             const auto *rendered = findViewBacking(slice);
             for (unsigned y = 0; y < surface.height; ++y)
                 for (unsigned x = 0; x < surface.width; ++x) {
-                    const std::uint64_t offset = std::uint64_t(z) * stride + (linear ? (std::uint64_t(y) * surface.pitch + x) * 4
-                                                                                     : tiledElementOffset(x, y, surface.pitch, 32, surface.tileMode, swizzle));
+                    const std::uint64_t offset =
+                            std::uint64_t(z) * stride + (linear ? (std::uint64_t(y) * surface.pitch + x) * 4
+                                                                : tiledElementOffset(x, y, surface.pitch, 32, surface.tileMode, swizzle));
                     if (offset + 4 > std::uint64_t(z + 1) * stride)
                         return {};
-                    const std::uint32_t word = base[offset] | (base[offset + 1] << 8) | (base[offset + 2] << 16) | (std::uint32_t(base[offset + 3]) << 24);
+                    const std::uint32_t word =
+                            base[offset] | (base[offset + 1] << 8) | (base[offset + 2] << 16) | (std::uint32_t(base[offset + 3]) << 24);
                     std::array<float, 4> raw{0, 0, 0, 1};
                     if (rendered) {
                         const auto local = (std::size_t(y) * surface.pitch + x) * 4;
@@ -1635,18 +1639,48 @@ namespace Core::Gfx {
             unsigned components = 0, bytes = 0;
             bool packed1010102 = false;
             switch (type) {
-                case 0x00: components = 1, bytes = 1; break; // 8
-                case 0x04: components = 2, bytes = 1; break; // 8_8
-                case 0x0A: components = 4, bytes = 1; break; // 8_8_8_8
-                case 0x02: case 0x03: components = 1, bytes = 2; break; // 16 / 16 float
-                case 0x07: case 0x08: components = 2, bytes = 2; break; // 16_16 / float
-                case 0x0E: case 0x0F: components = 4, bytes = 2; break; // 16_16_16_16 / float
-                case 0x05: case 0x06: components = 1, bytes = 4; break; // 32 / 32 float
-                case 0x0C: case 0x0D: components = 2, bytes = 4; break; // 32_32 / float
-                case 0x10: case 0x11: components = 3, bytes = 4; break; // 32_32_32 / float
-                case 0x12: case 0x13: components = 4, bytes = 4; break; // 32_32_32_32 / float
-                case 0x0B: components = 1, bytes = 4, packed1010102 = true; break; // 2_10_10_10
-                default: return false;
+                case 0x00:
+                    components = 1, bytes = 1;
+                    break; // 8
+                case 0x04:
+                    components = 2, bytes = 1;
+                    break; // 8_8
+                case 0x0A:
+                    components = 4, bytes = 1;
+                    break; // 8_8_8_8
+                case 0x02:
+                case 0x03:
+                    components = 1, bytes = 2;
+                    break; // 16 / 16 float
+                case 0x07:
+                case 0x08:
+                    components = 2, bytes = 2;
+                    break; // 16_16 / float
+                case 0x0E:
+                case 0x0F:
+                    components = 4, bytes = 2;
+                    break; // 16_16_16_16 / float
+                case 0x05:
+                case 0x06:
+                    components = 1, bytes = 4;
+                    break; // 32 / 32 float
+                case 0x0C:
+                case 0x0D:
+                    components = 2, bytes = 4;
+                    break; // 32_32 / float
+                case 0x10:
+                case 0x11:
+                    components = 3, bytes = 4;
+                    break; // 32_32_32 / float
+                case 0x12:
+                case 0x13:
+                    components = 4, bytes = 4;
+                    break; // 32_32_32_32 / float
+                case 0x0B:
+                    components = 1, bytes = 4, packed1010102 = true;
+                    break; // 2_10_10_10
+                default:
+                    return false;
             }
             const bool floating = type == 0x03 || type == 0x06 || type == 0x08 || type == 0x0D || type == 0x0F || type == 0x11 || type == 0x13;
             const bool integer = format & 0x100, isSigned = format & 0x200, scaled = (format & 0x800) && !floating;
@@ -2860,7 +2894,8 @@ namespace Core::Gfx {
         const auto vertexSamples = [&](const Surface &surface) {
             const auto resource = static_cast<unsigned>(&surface - m_vertexTextures.data());
             return !vertexProgram || !*vertexProgram ||
-                   std::any_of(vertexProgram->textures.begin(), vertexProgram->textures.end(), [&](const auto &binding) { return binding.resource == resource; });
+                   std::any_of(vertexProgram->textures.begin(), vertexProgram->textures.end(),
+                               [&](const auto &binding) { return binding.resource == resource; });
         };
         const bool frontBias = (m_polygonControl & (1u << 11)) && (m_polygonOffset[0] != 0 || m_polygonOffset[1] != 0);
         const bool backBias = (m_polygonControl & (1u << 12)) && (m_polygonOffset[2] != 0 || m_polygonOffset[3] != 0);
@@ -2869,16 +2904,17 @@ namespace Core::Gfx {
                 (frontBias != backBias || (frontBias && (m_polygonOffset[0] != m_polygonOffset[2] || m_polygonOffset[1] != m_polygonOffset[3])));
         const bool useBackBias = (m_polygonControl & 1) != 0;
         const bool nativeBias = useBackBias ? backBias : frontBias;
-        const bool collectBackend =
-                m_rasterBackend && !m_gpuRenderer && !m_stencilTest && !m_multiWriteEnable && (!drawDepth || !splitBias) &&
-                (!m_depthTest || !m_depth.imagePtr || drawDepth) && (!drawDepth || (nativeDepthEnabled && m_rasterBackend->supportsDepth())) &&
-                pixelProgram && useViewBacking() && m_pixelInputCount <= 16 && m_color.pitch >= m_color.width && !m_color.aa &&
-                m_color.dimension == 1 && !m_color.firstMip && !m_color.firstSlice && (mode != 1 || m_rasterBackend->supportsPoints()) &&
-                (targetFormat == ColorFormat::RGBA8 || m_rasterBackend->supportsFloatTargets()) &&
-                std::none_of(m_vertexTextures.begin(), m_vertexTextures.end(), [&](const auto &surface) {
-                    return surface.imagePtr && vertexSamples(surface) && (surface.dimension == 5 || makeSurfaceKey(surface) == makeSurfaceKey(m_color) ||
+        const bool collectBackend = m_rasterBackend && !m_gpuRenderer && !m_stencilTest && !m_multiWriteEnable && (!drawDepth || !splitBias) &&
+                                    (!m_depthTest || !m_depth.imagePtr || drawDepth) &&
+                                    (!drawDepth || (nativeDepthEnabled && m_rasterBackend->supportsDepth())) && pixelProgram && useViewBacking() &&
+                                    m_pixelInputCount <= 16 && m_color.pitch >= m_color.width && !m_color.aa && m_color.dimension == 1 &&
+                                    !m_color.firstMip && !m_color.firstSlice && (mode != 1 || m_rasterBackend->supportsPoints()) &&
+                                    (targetFormat == ColorFormat::RGBA8 || m_rasterBackend->supportsFloatTargets()) &&
+                                    std::none_of(m_vertexTextures.begin(), m_vertexTextures.end(), [&](const auto &surface) {
+                                        return surface.imagePtr && vertexSamples(surface) &&
+                                               (surface.dimension == 5 || makeSurfaceKey(surface) == makeSurfaceKey(m_color) ||
                                                 (drawDepth && m_depthWrite && makeSurfaceKey(surface) == makeSurfaceKey(m_depth)));
-                });
+                                    });
         if (nativeAudit && m_rasterBackend && !collectBackend)
             Utils::Log::error("[NATIVE_GATE] split_bias={} stencil={} multi={} inputs={} dim={} mip={} slice={} pitch={} vertex_feedback={}",
                               splitBias, m_stencilTest, m_multiWriteEnable, m_pixelInputCount, m_color.dimension, m_color.firstMip,
@@ -3382,13 +3418,14 @@ namespace Core::Gfx {
                     auto snapshot = arraySnapshot(surface);
                     if (!snapshot) {
                         supported = false;
-                        unsupportedReason = std::format("replayer#4 ptr={:08X} {}x{} pitch={} depth={} slices={}+{} fmt={:X} tile={} size={:X}", // TEMP-ARRAYDIAG
-                                                        surface.imagePtr, surface.width, surface.height, surface.pitch, surface.depth,
-                                                        surface.firstSlice, surface.sliceCount, surface.format, surface.tileMode, surface.imageSize);
+                        unsupportedReason =
+                                std::format("replayer#4 ptr={:08X} {}x{} pitch={} depth={} slices={}+{} fmt={:X} tile={} size={:X}", // TEMP-ARRAYDIAG
+                                            surface.imagePtr, surface.width, surface.height, surface.pitch, surface.depth, surface.firstSlice,
+                                            surface.sliceCount, surface.format, surface.tileMode, surface.imageSize);
                         for (const auto &[key, backing]: m_depthBackings) // TEMP-ARRAYDIAG
                             if (key.imagePtr >= surface.imagePtr && key.imagePtr < surface.imagePtr + surface.imageSize)
-                                unsupportedReason += std::format(" depth@{:08X}:{}x{}:fmt{:X}:pending={}", key.imagePtr, key.width, key.height, key.format,
-                                                                 bool(backing.pending));
+                                unsupportedReason += std::format(" depth@{:08X}:{}x{}:fmt{:X}:pending={}", key.imagePtr, key.width, key.height,
+                                                                 key.format, bool(backing.pending));
                         break;
                     }
                     textures.push_back({binding, surface.width, surface.height, boundSamplers[binding.sampler], [&, surface](unsigned x, unsigned y) {
@@ -3421,9 +3458,8 @@ namespace Core::Gfx {
                 if (!surface.imagePtr && !surface.width && !surface.height) {
                     // Unbound slot: sampleTexture() returns zero texels through the
                     // component selectors, so a 1x1 zero texture matches the reference.
-                    textures.push_back({binding, 1, 1, boundSamplers[binding.sampler], [&, surface](unsigned, unsigned) {
-                                            return sampleTexture(surface, TextureSampler{}, .5f, .5f);
-                                        }});
+                    textures.push_back({binding, 1, 1, boundSamplers[binding.sampler],
+                                        [&, surface](unsigned, unsigned) { return sampleTexture(surface, TextureSampler{}, .5f, .5f); }});
                     textures.back().unorm8 = ownedTextures.emplace_back(4, std::uint8_t{0});
                     textures.back().unorm8Pitch = 1;
                     textures.back().unorm8Map = surface.compMap;
@@ -3432,9 +3468,9 @@ namespace Core::Gfx {
                 if (!surface.imagePtr || !surface.width || !surface.height || surface.dimension != 1 || surface.aa || surface.firstMip ||
                     surface.firstSlice || surface.sliceCount != 1) {
                     supported = false;
-                    unsupportedReason = std::format("texture view ptr={:08X} {}x{} dim={} aa={} mip={}/{} slice={}/{} fmt={:X} tile={}", surface.imagePtr,
-                                                    surface.width, surface.height, surface.dimension, surface.aa, surface.firstMip, surface.mipCount,
-                                                    surface.firstSlice, surface.sliceCount, surface.format, surface.tileMode);
+                    unsupportedReason = std::format("texture view ptr={:08X} {}x{} dim={} aa={} mip={}/{} slice={}/{} fmt={:X} tile={}",
+                                                    surface.imagePtr, surface.width, surface.height, surface.dimension, surface.aa, surface.firstMip,
+                                                    surface.mipCount, surface.firstSlice, surface.sliceCount, surface.format, surface.tileMode);
                     break;
                 }
                 const auto *backing = vertexBinding ? textureBacking(surface) : pixelBackings[binding.resource];
@@ -3661,9 +3697,10 @@ namespace Core::Gfx {
                     const auto py = std::clamp<long>(long(vertices[0].y), 0, long(m_depth.height) - 1);
                     stored = resolvedDepth->pixels[std::size_t(py) * m_depth.pitch + std::size_t(px)];
                 }
-                Utils::Log::error("[DEPTHEQ] frame={} draw={} cmp={} write={} z0={:.9f} z1={:.9f} stored={:.9f} depthFmt={} native_vs={}", m_presentCount,
-                                  m_stats.draws, m_depthCompare, m_depthWrite, vertices[0].z, vertices.size() > 1 ? vertices[1].z : 0.f, stored,
-                                  int(drawDepth ? drawDepth->format : DepthFormat::Float32), bool(nativeVertexShader));
+                Utils::Log::error("[DEPTHEQ] frame={} draw={} cmp={} write={} z0={:.9f} z1={:.9f} stored={:.9f} depthFmt={} native_vs={}",
+                                  m_presentCount, m_stats.draws, m_depthCompare, m_depthWrite, vertices[0].z,
+                                  vertices.size() > 1 ? vertices[1].z : 0.f, stored, int(drawDepth ? drawDepth->format : DepthFormat::Float32),
+                                  bool(nativeVertexShader));
             }
             bool committed = false;
             if (profile || nativeAudit)
@@ -3943,13 +3980,15 @@ namespace Core::Gfx {
             }
             nativeCommitted = committed;
             if (profile || nativeAudit)
-                Utils::Log::error("[NATIVERASTER] frame={} draw={} committed={} supported={} vertices={} reason={}", m_presentCount, m_stats.draws,
-                                  committed, supported, vertices.size(), committed ? std::string{}
-                                  : !unsupportedReason.empty() ? unsupportedReason
-                                  : [&] {
-                                        const auto *vulkan = dynamic_cast<const VulkanRasterBackend *>(m_rasterBackend.get());
-                                        return vulkan ? vulkan->lastError() : std::string{};
-                                    }());
+                Utils::Log::error(
+                        "[NATIVERASTER] frame={} draw={} committed={} supported={} vertices={} reason={}", m_presentCount, m_stats.draws, committed,
+                        supported, vertices.size(),
+                        committed                    ? std::string{}
+                        : !unsupportedReason.empty() ? unsupportedReason
+                                                     : [&] {
+                                                           const auto *vulkan = dynamic_cast<const VulkanRasterBackend *>(m_rasterBackend.get());
+                                                           return vulkan ? vulkan->lastError() : std::string{};
+                                                       }());
         }
         // GPU path: flush this draw's collected triangles with its texture (one draw call, one
         // texture upload — cached by address+content, so a static texture uploads once).
@@ -4005,19 +4044,23 @@ namespace Core::Gfx {
                                       m_depthCompare, m_depth.imagePtr, m_depth.width, m_depth.height, m_stencilTest, m_vpNear, m_vpFar);
                     for (std::size_t i = 0; i + 7 < m_fetchLayout.size(); i += 8)
                         Utils::Log::error("[LUMA]   fetch loc={} buf={} off={} fmt={:X} type={} mask={:08X} endian={} stride={}", m_fetchLayout[i],
-                                          m_fetchLayout[i + 1], m_fetchLayout[i + 2], m_fetchLayout[i + 3], m_fetchLayout[i + 4], m_fetchLayout[i + 6],
-                                          m_fetchLayout[i + 7], m_fetchLayout[i + 1] < m_attribs.size() ? m_attribs[m_fetchLayout[i + 1]].stride : 0);
+                                          m_fetchLayout[i + 1], m_fetchLayout[i + 2], m_fetchLayout[i + 3], m_fetchLayout[i + 4],
+                                          m_fetchLayout[i + 6], m_fetchLayout[i + 7],
+                                          m_fetchLayout[i + 1] < m_attribs.size() ? m_attribs[m_fetchLayout[i + 1]].stride : 0);
                     for (std::uint32_t v = 0; v < 2; ++v) {
                         std::array<std::array<float, 4>, 4> a{};
                         if (fetchAttributes(v, a))
-                            Utils::Log::error("[LUMA]   v{} a0=({:.3f},{:.3f},{:.3f},{:.3f}) a1=({:.3f},{:.3f},{:.3f},{:.3f}) a2=({:.3f},{:.3f},{:.3f},{:.3f})", v,
-                                              a[0][0], a[0][1], a[0][2], a[0][3], a[1][0], a[1][1], a[1][2], a[1][3], a[2][0], a[2][1], a[2][2], a[2][3]);
+                            Utils::Log::error(
+                                    "[LUMA]   v{} a0=({:.3f},{:.3f},{:.3f},{:.3f}) a1=({:.3f},{:.3f},{:.3f},{:.3f}) a2=({:.3f},{:.3f},{:.3f},{:.3f})",
+                                    v, a[0][0], a[0][1], a[0][2], a[0][3], a[1][0], a[1][1], a[1][2], a[1][3], a[2][0], a[2][1], a[2][2], a[2][3]);
                     }
                     std::string ps;
                     for (std::size_t c = 0; c < 8; ++c)
-                        ps += std::format(" c{}=({:.3f},{:.3f},{:.3f},{:.3f})", c, m_psRegs[c * 4], m_psRegs[c * 4 + 1], m_psRegs[c * 4 + 2], m_psRegs[c * 4 + 3]);
+                        ps += std::format(" c{}=({:.3f},{:.3f},{:.3f},{:.3f})", c, m_psRegs[c * 4], m_psRegs[c * 4 + 1], m_psRegs[c * 4 + 2],
+                                          m_psRegs[c * 4 + 3]);
                     Utils::Log::error("[LUMA]   psregs{} psblocks={}", ps, m_psBlocks.size());
-                    if (const char *dir = std::getenv("WEMU_FB_DUMP_DIR"); dir && m_color.pitch && colorElementBytes(colorFormat(m_color.format)) == 4) {
+                    if (const char *dir = std::getenv("WEMU_FB_DUMP_DIR");
+                        dir && m_color.pitch && colorElementBytes(colorFormat(m_color.format)) == 4) {
                         const auto path = std::format("{}/draw_{:05}_{:03}_{:08X}.ppm", dir, m_presentCount, m_stats.draws, m_color.imagePtr);
                         if (FILE *f = std::fopen(path.c_str(), "wb")) {
                             std::fprintf(f, "P6\n%u %u\n255\n", m_color.width, m_color.height);
@@ -4046,7 +4089,8 @@ namespace Core::Gfx {
                     hash *= 1099511628211ull;
                 }
             }
-            Utils::Log::error("[RASTER] frame={} draw={} us={} pixels={} ps={:016X} words={} target={}x{} image={:08X} native={} stencil={} depth={}:{:08X} aa={} fmt={:X}",
+            Utils::Log::error("[RASTER] frame={} draw={} us={} pixels={} ps={:016X} words={} target={}x{} image={:08X} native={} stencil={} "
+                              "depth={}:{:08X} aa={} fmt={:X}",
                               m_presentCount, m_stats.draws, elapsed, m_stats.pixels - pixelsBefore, hash, m_psProgram.size(), m_color.width,
                               m_color.height, m_color.imagePtr, nativeCommitted, m_stencilTest, m_depthTest, m_depth.imagePtr, m_color.aa,
                               m_color.format);
@@ -4306,8 +4350,8 @@ namespace Core::Gfx {
             const char *env = std::getenv("WEMU_FB_DUMP_TO");
             return env ? static_cast<std::uint32_t>(std::strtoul(env, nullptr, 10)) : 0xFFFFFFFFu;
         }();
-        const bool periodic = dumpAt == 0 && m_presentCount > 0 && (m_presentCount % dumpEvery) == 0 && m_presentCount >= dumpFrom &&
-                              m_presentCount <= dumpTo;
+        const bool periodic =
+                dumpAt == 0 && m_presentCount > 0 && (m_presentCount % dumpEvery) == 0 && m_presentCount >= dumpFrom && m_presentCount <= dumpTo;
         if ((!periodic && m_presentCount != dumpAt) || m_fb.empty())
             return;
         const char *dir = std::getenv("WEMU_FB_DUMP_DIR");
@@ -4416,8 +4460,8 @@ namespace Core::Gfx {
                     break;
                 case Gx2Cmd::SetDepthStencilControl:
                     if (std::getenv("WEMU_SCAN_TRACE")) // TEMP-SCANTRACE
-                        Utils::Log::error("[DEPTHCTL] frame={} after_draw={} test={} write={} cmp={} lr={:08X}", m_presentCount, m_stats.draws, cmd.gpr[0],
-                                          cmd.gpr[1], cmd.gpr[2], cmd.callerLr);
+                        Utils::Log::error("[DEPTHCTL] frame={} after_draw={} test={} write={} cmp={} lr={:08X}", m_presentCount, m_stats.draws,
+                                          cmd.gpr[0], cmd.gpr[1], cmd.gpr[2], cmd.callerLr);
                     m_depthTest = cmd.gpr[0] != 0;
                     m_depthWrite = cmd.gpr[1] != 0;
                     m_depthCompare = cmd.gpr[2];
@@ -4436,8 +4480,8 @@ namespace Core::Gfx {
                         m_clear[i] = static_cast<float>(cmd.fpr[i]);
                     const Surface cs = attachmentSurface(parseSurface(cmd));
                     if (std::getenv("WEMU_SCAN_TRACE")) // TEMP-SCANTRACE
-                        Utils::Log::error("[SCAN] frame={} clear surface={:08X} after_draw={} rgba=({},{},{},{})", m_presentCount, cs.imagePtr, m_stats.draws,
-                                          m_clear[0], m_clear[1], m_clear[2], m_clear[3]);
+                        Utils::Log::error("[SCAN] frame={} clear surface={:08X} after_draw={} rgba=({},{},{},{})", m_presentCount, cs.imagePtr,
+                                          m_stats.draws, m_clear[0], m_clear[1], m_clear[2], m_clear[3]);
                     if (m_gpuGraph && m_gpuRenderer)
                         m_gpuRenderer->gpuClearTarget(cs.imagePtr, cs.width, cs.height, m_clear);
                     else
@@ -4858,9 +4902,9 @@ namespace Core::Gfx {
                             buildClearFrame();
                     }
                     if (std::getenv("WEMU_SCAN_TRACE")) // TEMP-SCANTRACE
-                        Utils::Log::error("[SCAN] frame={} presented={} lastScan={:08X} {}x{} fmt={:X} color={:08X} lastDraw={:08X} pending={}", m_presentCount,
-                                          presented, m_lastScan.imagePtr, m_lastScan.width, m_lastScan.height, m_lastScan.format, m_color.imagePtr,
-                                          m_lastDrawColor.imagePtr, m_pendingReadbacks.contains(makeSurfaceKey(m_lastScan)));
+                        Utils::Log::error("[SCAN] frame={} presented={} lastScan={:08X} {}x{} fmt={:X} color={:08X} lastDraw={:08X} pending={}",
+                                          m_presentCount, presented, m_lastScan.imagePtr, m_lastScan.width, m_lastScan.height, m_lastScan.format,
+                                          m_color.imagePtr, m_lastDrawColor.imagePtr, m_pendingReadbacks.contains(makeSurfaceKey(m_lastScan)));
                     m_presentCount++;
                     if ((m_presentCount % 100) == 0)
                         Utils::Log::error("[GX2] replay #{}: draws={} tris={} points={} px={} avgA={} skip(t/a/p)={}/{}/{} scan=0x{:08X} nz={}",

@@ -12,8 +12,7 @@ namespace Core::Gfx {
     {
         const unsigned word = unsigned(p[0]) | (unsigned(p[1]) << 8);
         const unsigned r = word & 31, g = (word >> 5) & 63, b = (word >> 11) & 31;
-        return {std::uint8_t((r * 255 + 15) / 31), std::uint8_t((g * 255 + 31) / 63),
-                std::uint8_t((b * 255 + 15) / 31), 255};
+        return {std::uint8_t((r * 255 + 15) / 31), std::uint8_t((g * 255 + 31) / 63), std::uint8_t((b * 255 + 15) / 31), 255};
     }
 
     // Signed RGTC endpoints are normalized before interpolation. -128 has

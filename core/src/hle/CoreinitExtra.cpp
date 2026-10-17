@@ -364,11 +364,11 @@ namespace {
             std::vector<std::string> candidates;
             if (const char *path = std::getenv("WEMU_SHARED_FONT"))
                 candidates.emplace_back(path);
-            for (const char *path: {"/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-                                    "/usr/share/fonts/TTF/DejaVuSans.ttf", "/usr/share/fonts/google-noto/NotoSans-Regular.ttf",
-                                    "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf", "/usr/share/fonts/noto/NotoSans-Regular.ttf",
-                                    "/usr/share/fonts/liberation-sans/LiberationSans-Regular.ttf",
-                                    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"})
+            for (const char *path:
+                 {"/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                  "/usr/share/fonts/TTF/DejaVuSans.ttf", "/usr/share/fonts/google-noto/NotoSans-Regular.ttf",
+                  "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf", "/usr/share/fonts/noto/NotoSans-Regular.ttf",
+                  "/usr/share/fonts/liberation-sans/LiberationSans-Regular.ttf", "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"})
                 candidates.emplace_back(path);
             for (const auto &path: candidates) {
                 std::FILE *f = std::fopen(path.c_str(), "rb");

@@ -254,10 +254,12 @@ void Core::Interpreter::run()
             {
                 std::vector<std::pair<std::uint64_t, std::uint32_t>> v;
                 v.reserve(counts.size());
-                for (auto [pc, n]: counts) v.push_back({n, pc});
+                for (auto [pc, n]: counts)
+                    v.push_back({n, pc});
                 std::sort(v.rbegin(), v.rend());
                 std::uint64_t total = 0;
-                for (auto &e: v) total += e.first;
+                for (auto &e: v)
+                    total += e.first;
                 for (std::size_t i = 0; i < std::min<std::size_t>(40, v.size()); ++i)
                     std::fprintf(stderr, "[HOTBLOCK] pc=0x%08X instrs=%llu share=%.2f%%\n", v[i].second + Core::Memory::MemoryMap::ApplicationCode,
                                  (unsigned long long) v[i].first, 100.0 * double(v[i].first) / double(total ? total : 1));

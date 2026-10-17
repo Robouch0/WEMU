@@ -300,9 +300,12 @@ TEST(LatteVsTest, ScalarSlotDoesNotOverwriteVectorForwarding)
 TEST(LatteVsTest, PreparedProgramSnapshotsBytecodeAndReadsFreshRuntimeInputs)
 {
     using namespace Latte;
-    std::vector<unsigned> words{3, (8u << 26) | (3u << 18),
-                                60u | (1u << 13) | (2u << 15), (CF_EXP << 23) | 0x688u,
-                                (2u << 13) | (1u << 15), (CF_EXP_DONE << 23) | (1u << 21) | 0x688u};
+    std::vector<unsigned> words{3,
+                                (8u << 26) | (3u << 18),
+                                60u | (1u << 13) | (2u << 15),
+                                (CF_EXP << 23) | 0x688u,
+                                (2u << 13) | (1u << 15),
+                                (CF_EXP_DONE << 23) | (1u << 21) | 0x688u};
     for (unsigned channel = 0; channel < 4; ++channel) {
         words.push_back(1u | (channel << 10) | (256u << 13) | (channel << 23) | (channel == 3 ? 0x80000000u : 0u));
         words.push_back((OP2_ADD << 7) | 16u | (2u << 21) | (channel << 29));

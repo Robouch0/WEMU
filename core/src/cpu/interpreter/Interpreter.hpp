@@ -22,10 +22,10 @@
 #include "cpu/types/Instruction.hpp"
 #include "gfx/Renderer.hpp"
 #include "hle/H264.hpp"
-#include "hle/MvPlayer.hpp"
 #include "hle/LockedCache.hpp"
-#include "hle/SystemConfig.hpp"
+#include "hle/MvPlayer.hpp"
 #include "hle/Scheduler.hpp"
+#include "hle/SystemConfig.hpp"
 #include "utils/BeDecoder.hpp"
 #include "utils/Logger.hpp"
 

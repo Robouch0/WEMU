@@ -239,7 +239,7 @@ TEST(VulkanCubeTest, ChangingLiveVertexCountReusesCapacityWithoutDrawingStaleVer
 
 TEST(TextureFormatTest, SignedBc4PreservesNegativeEndpointsAndBothInterpolationModes)
 {
-    for (const auto endpoints : {std::pair{127, -127}, std::pair{-127, 127}, std::pair{-128, 64}}) {
+    for (const auto endpoints: {std::pair{127, -127}, std::pair{-127, 127}, std::pair{-128, 64}}) {
         std::array<std::uint8_t, 8> block{};
         block[0] = std::uint8_t(endpoints.first);
         block[1] = std::uint8_t(endpoints.second);
@@ -252,8 +252,12 @@ TEST(TextureFormatTest, SignedBc4PreservesNegativeEndpointsAndBothInterpolationM
         const float b = float(std::max(endpoints.second, -127)) / 127.f;
         for (unsigned i = 0; i < 16; ++i) {
             const unsigned select = i % 8;
-            const float expected = select == 0 ? a : select == 1 ? b : a > b ? ((8 - select) * a + (select - 1) * b) / 7.f
-                                 : select < 6 ? ((6 - select) * a + (select - 1) * b) / 5.f : select == 6 ? -1.f : 1.f;
+            const float expected = select == 0   ? a
+                                   : select == 1 ? b
+                                   : a > b       ? ((8 - select) * a + (select - 1) * b) / 7.f
+                                   : select < 6  ? ((6 - select) * a + (select - 1) * b) / 5.f
+                                   : select == 6 ? -1.f
+                                                 : 1.f;
             EXPECT_NEAR(decodeBc4Snorm(block.data(), i), expected, 1.e-7f);
         }
     }
