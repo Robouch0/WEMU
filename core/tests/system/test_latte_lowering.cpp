@@ -3228,7 +3228,10 @@ TEST(VulkanRasterBackendTest, ColdScissorVariantsKeepHotResourcesAndOlderSnapsho
         draw.scissor = {0, 0, 4, 4};
         ASSERT_TRUE(backend.renderDeferred(draw)) << backend.lastError();
     }
-    EXPECT_EQ(backend.reusedDraws(), 139u); // One extra bundle preserves the first live snapshot.
+    // One extra bundle preserves the first live snapshot. Bundles still executing on the GPU may
+    // add up to the live-version limit (8) instead of stalling, depending on GPU timing.
+    EXPECT_GE(backend.reusedDraws(), 131u);
+    EXPECT_LE(backend.reusedDraws(), 139u);
     EXPECT_EQ(backend.pipelineCreations(), 1u); // Scissor variants share dynamic pipeline state.
     first->resolve();
     for (unsigned y = 0; y < 4; ++y)

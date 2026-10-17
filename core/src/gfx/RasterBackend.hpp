@@ -107,6 +107,10 @@ namespace Core::Gfx {
             // Optional complete pre-draw target. Backends advertising this
             // capability may preserve active pixels on GPU; CPU fallback resolves it.
             std::shared_ptr<RasterReadback> renderedTarget;
+            // The caller replaces its only reference to renderedTarget with this draw's result,
+            // so that version is never resolved afterwards: a backend may render into its image
+            // in place instead of preserving it.
+            bool supersedesTarget{};
             struct Depth {
                     using Format = DepthFormat;
                     bool test{}, write{};

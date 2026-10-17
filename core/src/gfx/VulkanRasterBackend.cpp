@@ -15,6 +15,7 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 #include <vulkan/vulkan.h>
 
@@ -528,6 +529,8 @@ void main() {
                 std::shared_ptr<Context> context;
                 VkImage image{};
                 VkDeviceMemory memory{};
+                VkImageView attachmentView{}; // color attachment view shared by every bundle rendering into this image
+                bool initialized{}; // rendered at least once: TRANSFER_SRC_OPTIMAL between draws, else UNDEFINED
                 unsigned width{}, height{};
                 std::uint64_t version{};
                 VkFormat format{VK_FORMAT_R8G8B8A8_UNORM};
@@ -551,6 +554,8 @@ void main() {
                 }
                 ~ColorImage()
                 {
+                    if (attachmentView)
+                        vkDestroyImageView(context->device, attachmentView, nullptr);
                     for (const auto &[key, view]: samplingViews)
                         vkDestroyImageView(context->device, view, nullptr);
                     if (image)
@@ -671,12 +676,12 @@ void main() {
                         vkDestroyDescriptorPool(device, descriptorPool, nullptr);
                     if (setLayout && !cachedPipeline)
                         vkDestroyDescriptorSetLayout(device, setLayout, nullptr);
-                    if (framebuffer)
+                    if (framebuffer && !colorImage)
                         vkDestroyFramebuffer(device, framebuffer, nullptr);
+                    for (const auto &entry: framebuffers)
+                        vkDestroyFramebuffer(device, entry.second, nullptr);
                     if (pass)
                         vkDestroyRenderPass(device, pass, nullptr);
-                    if (view)
-                        vkDestroyImageView(device, view, nullptr);
                     if (depthView)
                         vkDestroyImageView(device, depthView, nullptr);
                     if (depthQuantizePool)
@@ -758,6 +763,7 @@ void main() {
                         vi.format = ci.format;
                         vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
                         check(vkCreateImageView(device, &vi, nullptr, &view), "create view");
+                        colorImage->attachmentView = view;
                     }
                     if (draw.depth.test) {
                         depthImage = std::make_shared<ColorImage>();
@@ -830,6 +836,9 @@ void main() {
                     fi.height = attachmentExtent(draw).height;
                     fi.layers = 1;
                     check(vkCreateFramebuffer(device, &fi, nullptr, &framebuffer), "create framebuffer");
+                    framebufferExtent = {fi.width, fi.height};
+                    if (colorImage)
+                        framebuffers.emplace_back(colorImage, framebuffer);
 
                     uniform = buffer(sizeof(constants), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, uniformMemory);
                     void *mapped = nullptr;
@@ -1015,6 +1024,59 @@ void main() {
                 }
 
                 bool ownsImage(const std::shared_ptr<ColorImage> &candidate) const { return colorImage == candidate || depthImage == candidate; }
+                const std::shared_ptr<ColorImage> &color() const { return colorImage; }
+
+                // Render the next draw directly into `target`, the current version of its color
+                // surface, instead of copying it into this bundle's own image. The images are
+                // exchanged with `owner` (the bundle that produced `target`, if still cached), so
+                // every image keeps exactly one owner. The caller guarantees the draw supersedes
+                // the readback ticket of `target`'s current version (the replayer replaces it
+                // with this draw's result), so nothing reads that version afterwards.
+                void adopt(const std::shared_ptr<ColorImage> &target, DrawResources *owner)
+                {
+                    auto previous = std::exchange(colorImage, target);
+                    image = target->image;
+                    retainedTarget = true;
+                    if (owner) {
+                        owner->colorImage = std::move(previous);
+                        owner->image = owner->colorImage->image;
+                    }
+                }
+
+                VkFramebuffer framebufferFor(const std::shared_ptr<ColorImage> &target)
+                {
+                    // Called after this bundle's previous submission completed, so framebuffers of
+                    // released images are no longer in use.
+                    std::erase_if(framebuffers, [&](const auto &entry) {
+                        if (!entry.first.expired())
+                            return false;
+                        vkDestroyFramebuffer(device, entry.second, nullptr);
+                        return true;
+                    });
+                    for (const auto &[owner, cached]: framebuffers)
+                        if (owner.lock() == target)
+                            return cached;
+                    if (!target->attachmentView) {
+                        VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+                        vi.image = target->image;
+                        vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+                        vi.format = target->format;
+                        vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+                        check(vkCreateImageView(device, &vi, nullptr, &target->attachmentView), "create adopted view");
+                    }
+                    const VkImageView views[]{target->attachmentView, depthView};
+                    VkFramebufferCreateInfo fi{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+                    fi.renderPass = pass;
+                    fi.attachmentCount = depthView ? 2 : 1;
+                    fi.pAttachments = views;
+                    fi.width = framebufferExtent.width;
+                    fi.height = framebufferExtent.height;
+                    fi.layers = 1;
+                    VkFramebuffer created{};
+                    check(vkCreateFramebuffer(device, &fi, nullptr, &created), "create adopted framebuffer");
+                    framebuffers.emplace_back(target, created);
+                    return created;
+                }
                 // True when refreshing this bundle cannot block on the GPU (non-blocking fence query).
                 bool idle() const
                 {
@@ -1070,20 +1132,22 @@ void main() {
                         targetBarrier.srcQueueFamilyIndex = targetBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
                         targetBarrier.image = image;
                         targetBarrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-                        targetBarrier.oldLayout = submitted ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED;
+                        // Layout state belongs to the image: bundles can exchange images (adopt()).
+                        const bool initialized = colorImage->initialized;
+                        targetBarrier.oldLayout = initialized ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED;
                         if (fullOverwrite) {
                             targetBarrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-                            targetBarrier.srcAccessMask = submitted ? VK_ACCESS_TRANSFER_READ_BIT : 0;
+                            targetBarrier.srcAccessMask = initialized ? VK_ACCESS_TRANSFER_READ_BIT : 0;
                             targetBarrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-                            vkCmdPipelineBarrier(command, submitted ? VK_PIPELINE_STAGE_TRANSFER_BIT : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                            vkCmdPipelineBarrier(command, initialized ? VK_PIPELINE_STAGE_TRANSFER_BIT : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                                                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr, 0, nullptr, 1, &targetBarrier);
                             ++context.fullOverwriteDraws;
                         } else {
                             if (!retainedTarget) {
                                 targetBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-                                targetBarrier.srcAccessMask = submitted ? VK_ACCESS_TRANSFER_READ_BIT : 0;
+                                targetBarrier.srcAccessMask = initialized ? VK_ACCESS_TRANSFER_READ_BIT : 0;
                                 targetBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-                                vkCmdPipelineBarrier(command, submitted ? VK_PIPELINE_STAGE_TRANSFER_BIT : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                vkCmdPipelineBarrier(command, initialized ? VK_PIPELINE_STAGE_TRANSFER_BIT : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                                                      VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &targetBarrier);
                                 if (targetSource) {
                                     VkImageCopy copy{};
@@ -1124,7 +1188,7 @@ void main() {
                     }
                     VkRenderPassBeginInfo rp{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
                     rp.renderPass = pass;
-                    rp.framebuffer = framebuffer;
+                    rp.framebuffer = colorImage ? framebufferFor(colorImage) : framebuffer;
                     rp.renderArea.extent = attachmentExtent(draw);
                     transitionDirectTextures(true);
                     vkCmdBeginRenderPass(command, &rp, VK_SUBPASS_CONTENTS_INLINE);
@@ -1193,6 +1257,8 @@ void main() {
                         if (texture && texture->producer.lock().get() == this)
                             texture->ready = true;
                     submitted = true;
+                    if (colorImage)
+                        colorImage->initialized = true;
                     readbackValid = hasColor && !lazyReadback;
                     depthReadbackValid = !lazyReadback;
                     if (colorImage)
@@ -1224,14 +1290,14 @@ void main() {
                     }
                     if (!deferReadback) {
                         pendingReadback.reset();
-                        result.rgba = readPixels(draw.width, draw.height, draw.pitch, padding);
+                        result.rgba = readPixels(colorImage, draw.width, draw.height, draw.pitch, padding);
                         result.resolveDepth();
                         return result;
                     }
                     auto ticket = std::make_shared<RasterReadback>(
                             draw.target.size(),
-                            [self = shared_from_this(), padding, width = draw.width, height = draw.height, pitch = draw.pitch] {
-                                return self->readPixels(width, height, pitch, padding);
+                            [self = shared_from_this(), target = colorImage, padding, width = draw.width, height = draw.height, pitch = draw.pitch] {
+                                return self->readPixels(target, width, height, pitch, padding);
                             },
                             std::make_shared<NativeImage>(colorImage, draw.pitch, padding));
                     pendingReadback = ticket;
@@ -1462,7 +1528,7 @@ void main() {
                     return result;
                 }
 
-                std::vector<std::uint8_t> readPixels(unsigned width, unsigned height, unsigned pitch,
+                std::vector<std::uint8_t> readPixels(const std::shared_ptr<ColorImage> &target, unsigned width, unsigned height, unsigned pitch,
                                                      const std::shared_ptr<const std::vector<std::uint8_t>> &padding)
                 {
                     Profile::Scope reading(Profile::Stage::Readback);
@@ -1474,7 +1540,7 @@ void main() {
                         copy.bufferRowLength = pitch;
                         copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
                         copy.imageExtent = {width, height, 1};
-                        vkCmdCopyImageToBuffer(copyCommand, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback, 1, &copy);
+                        vkCmdCopyImageToBuffer(copyCommand, target->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback, 1, &copy);
                         ++context.readbackTransfers;
                         VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
                         barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -1486,18 +1552,18 @@ void main() {
                     } else {
                         wait();
                     }
-                    std::vector<std::uint8_t> result(std::size_t(pitch) * height * imageElementBytes(colorImage->format));
+                    std::vector<std::uint8_t> result(std::size_t(pitch) * height * imageElementBytes(target->format));
                     void *mapped = nullptr;
                     check(vkMapMemory(device, readbackMemory, 0, result.size(), 0, &mapped), "map readback");
                     for (unsigned y = 0; y < height; ++y)
-                        std::memcpy(result.data() + std::size_t(y) * pitch * imageElementBytes(colorImage->format),
-                                    static_cast<const std::uint8_t *>(mapped) + std::size_t(y) * pitch * imageElementBytes(colorImage->format),
-                                    std::size_t(width) * imageElementBytes(colorImage->format));
+                        std::memcpy(result.data() + std::size_t(y) * pitch * imageElementBytes(target->format),
+                                    static_cast<const std::uint8_t *>(mapped) + std::size_t(y) * pitch * imageElementBytes(target->format),
+                                    std::size_t(width) * imageElementBytes(target->format));
                     vkUnmapMemory(device, readbackMemory);
                     if (padding) {
-                        const auto rowBytes = std::size_t(pitch - width) * imageElementBytes(colorImage->format);
+                        const auto rowBytes = std::size_t(pitch - width) * imageElementBytes(target->format);
                         for (unsigned y = 0; y < height; ++y)
-                            std::memcpy(result.data() + (std::size_t(y) * pitch + width) * imageElementBytes(colorImage->format),
+                            std::memcpy(result.data() + (std::size_t(y) * pitch + width) * imageElementBytes(target->format),
                                         padding->data() + y * rowBytes, rowBytes);
                     }
                     return result;
@@ -2028,6 +2094,9 @@ void main() {
                 VkImageView depthView{};
                 VkRenderPass pass{};
                 VkFramebuffer framebuffer{};
+                // Framebuffers for every color image this bundle has rendered into (see adopt()).
+                std::vector<std::pair<std::weak_ptr<ColorImage>, VkFramebuffer>> framebuffers;
+                VkExtent2D framebufferExtent{};
                 VkDescriptorSetLayout setLayout{};
                 VkDescriptorPool descriptorPool{};
                 VkDescriptorSet descriptor{};
@@ -2092,6 +2161,7 @@ void main() {
             std::uint64_t resourceHits{};
             std::uint64_t residentTargetCopies{};
             std::uint64_t retainedTargets{};
+            std::uint64_t adoptedTargets{};
             std::uint64_t retainedTextures{};
             std::uint64_t retainedTextureBytes{};
             std::uint64_t cachedBytes{};
@@ -2760,6 +2830,26 @@ void main() {
                     ++m_impl->retainedTargets;
                 m_impl->retainedTextures += it->second.value->retainedTextures - oldTextures;
                 m_impl->retainedTextureBytes += it->second.value->retainedTextureBytes - oldBytes;
+            }
+            // Render into the surface's current image instead of copying it into this bundle's
+            // image first (a full-target copy per draw otherwise). Excluded when the draw also
+            // samples that image, which would turn the attachment into a feedback loop.
+            static const bool adoptTargets = [] {
+                const auto *value = std::getenv("WEMU_NATIVE_ADOPT_TARGETS");
+                return !value || value[0] != '0';
+            }();
+            auto &bundle = *it->second.value;
+            if (adoptTargets && draw.supersedesTarget && targetSource && targetSnapshot && !overwriteTarget && !depthOnly(draw) && bundle.color() &&
+                bundle.color() != targetSource &&
+                std::none_of(textures.begin(), textures.end(), [&](const auto &texture) { return texture.rendered == targetSource; })) {
+                DrawResources *owner = nullptr;
+                for (auto &[ownerKey, entry]: m_impl->resources)
+                    if (entry.value->color() == targetSource) {
+                        owner = entry.value.get();
+                        break;
+                    }
+                bundle.adopt(targetSource, owner);
+                ++m_impl->adoptedTargets;
             }
             t4 = std::chrono::steady_clock::now();
             // Fragment/alpha counters are not measured by this backend yet.

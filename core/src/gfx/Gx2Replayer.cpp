@@ -1822,6 +1822,7 @@ namespace Core::Gfx {
                             {}};
             draw.colorFormat = colorFormat(m_color.format);
             draw.renderedTarget = rendered;
+            draw.supersedesTarget = true; // the result replaces m_pendingReadbacks[key] below
             if (auto result = m_rasterBackend->renderDeferred(draw)) {
                 if (result->size() != target.size())
                     throw std::runtime_error("Image draw returned an incomplete target");
@@ -3832,6 +3833,8 @@ namespace Core::Gfx {
                 draw.colorFormat = targetFormat;
                 draw.topology = mode == 1 ? RasterDraw::Topology::Points : RasterDraw::Topology::Triangles;
                 draw.renderedTarget = renderedTarget;
+                // The result replaces m_pendingReadbacks for m_color; verification re-reads the old version.
+                draw.supersedesTarget = !m_nativeVerifyEvery;
                 if (drawDepth)
                     draw.depth = {true,          m_depthWrite,   m_depthCompare, drawDepth->format, drawDepth->pixels,
                                   m_depth.width, m_depth.height, m_depth.pitch,  drawDepth->pending};
