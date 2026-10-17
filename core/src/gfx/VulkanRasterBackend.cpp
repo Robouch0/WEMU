@@ -293,7 +293,10 @@ namespace Core::Gfx {
                     batch->completed = true;
                 }
                 struct PipelineKey {
-                        std::vector<std::uint32_t> vertex, fragment, bindings;
+                        // SpirvModule ids: equal sources share one cached module, so comparing ids
+                        // replaces copying and comparing whole SPIR-V word vectors on every draw.
+                        std::uint64_t vertex{}, fragment{};
+                        std::vector<std::uint32_t> bindings;
                         unsigned channelMask{};
                         std::array<unsigned, 11> blend{};
                         std::array<unsigned, 4> depth{};
@@ -696,10 +699,9 @@ void main() {
                         vkDestroyCommandPool(device, readbackPool, nullptr);
                 }
 
-                void initialize(const std::vector<std::uint32_t> &vertex, const std::vector<std::uint32_t> &fragment,
-                                const std::array<float, 3200> &constants, const std::array<float, 3200> &vertexConstants,
-                                const std::vector<Texture> &textures, const RasterDraw &draw, const std::shared_ptr<ColorImage> &targetSource,
-                                const std::shared_ptr<ColorImage> &depthSource, bool overwriteTarget)
+                void initialize(const SpirvModule &vertex, const SpirvModule &fragment, const std::array<float, 3200> &constants,
+                                const std::array<float, 3200> &vertexConstants, const std::vector<Texture> &textures, const RasterDraw &draw,
+                                const std::shared_ptr<ColorImage> &targetSource, const std::shared_ptr<ColorImage> &depthSource, bool overwriteTarget)
                 {
                     fullOverwrite = overwriteTarget;
                     const auto *profile = std::getenv("WEMU_NATIVE_GPU_TIMING");
@@ -854,7 +856,7 @@ void main() {
                     // Dimensions/scissors are dynamic, and attachment load ops
                     // do not affect render-pass compatibility. Share one pipeline
                     // across these draw variants instead of compiling each size.
-                    Context::PipelineKey key{vertex, fragment, {}, draw.channelMask};
+                    Context::PipelineKey key{vertex.id, fragment.id, {}, draw.channelMask};
                     key.blend = blendKey(draw.blend);
                     key.depth = depthKey(draw.depth);
                     key.depthBias = draw.depthBias.enabled;
@@ -919,7 +921,7 @@ void main() {
                         check(vkCreatePipelineLayout(device, &li, nullptr, &layout), "create pipeline layout");
                         VkPipelineShaderStageCreateInfo stages[2]{};
                         for (unsigned i = 0; i < 2; ++i) {
-                            const auto &code = i ? fragment : vertex;
+                            const auto &code = (i ? fragment : vertex).words;
                             VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
                             mi.codeSize = code.size() * sizeof(std::uint32_t);
                             mi.pCode = code.data();
@@ -2067,7 +2069,7 @@ void main() {
                     }
                     auto operator<=>(const ResourceKey &) const = default;
             };
-            SpirvCompiler compiler;
+            SpirvCompiler compiler{SpirvCompiler::defaultCacheDirectory()};
             std::shared_ptr<Context> context;
             struct ResourceEntry {
                     std::shared_ptr<DrawResources> value;
@@ -2316,18 +2318,25 @@ void main() {
         }();
         const auto t0 = std::chrono::steady_clock::now();
         const bool overwriteTarget = overwritesTarget(draw);
-        auto nativeVertexSource = draw.vertexStage.shader ? draw.vertexStage.shader->source : std::string(vertexSource);
-        if (draw.vertexStage.shader)
+        // Sources are only copied when they must be patched; the compiler looks them up by view.
+        std::string_view nativeVertexSource = draw.vertexStage.shader ? std::string_view(draw.vertexStage.shader->source) : vertexSource;
+        std::string patchedVertexSource;
+        if (draw.vertexStage.shader && !draw.vertexStage.shader->textures.empty()) {
+            patchedVertexSource = draw.vertexStage.shader->source;
             for (const auto &binding: draw.vertexStage.shader->textures) {
                 const auto old = "binding=" + std::to_string(binding.binding) + ")";
-                const auto pos = nativeVertexSource.find(old);
+                const auto pos = patchedVertexSource.find(old);
                 if (pos == std::string::npos)
                     return reject("Invalid vertex sampler interface");
-                nativeVertexSource.replace(pos, old.size(), "binding=" + std::to_string(binding.binding + 17) + ")");
+                patchedVertexSource.replace(pos, old.size(), "binding=" + std::to_string(binding.binding + 17) + ")");
             }
+            nativeVertexSource = patchedVertexSource;
+        }
         const auto vertex = m_impl->compiler.compile(ShaderStage::Vertex, nativeVertexSource);
-        auto fragmentSource = draw.shader.source;
+        std::string_view fragmentView = draw.shader.source;
+        std::string fragmentSource;
         if (draw.depthBias.enabled && draw.depth.format != DepthFormat::Float32) {
+            fragmentSource = draw.shader.source;
             fragmentSource.insert(fragmentSource.find('\n') + 1,
                                   "layout(push_constant) uniform Bias { layout(offset=112) vec4 value; } bias;\n"
                                   "float biasedDepth() { float slope=max(abs(dFdx(gl_FragCoord.z)),abs(dFdy(gl_FragCoord.z))); "
@@ -2339,8 +2348,9 @@ void main() {
                 fragmentSource.replace(initial, std::string("gl_FragDepth=gl_FragCoord.z;").size(), "gl_FragDepth=biasedDepth();");
             else
                 fragmentSource.insert(fragmentSource.find("void main() {") + std::string("void main() {").size(), "\ngl_FragDepth=biasedDepth();\n");
+            fragmentView = fragmentSource;
         }
-        const auto fragment = m_impl->compiler.compile(ShaderStage::Fragment, fragmentSource);
+        const auto fragment = m_impl->compiler.compile(ShaderStage::Fragment, fragmentView);
         if (!*vertex || !*fragment) {
             m_impl->error = !*vertex ? vertex->error : fragment->error;
             return std::nullopt;
@@ -2581,7 +2591,7 @@ void main() {
             stageConstants[offset + 3] = float((sampler >> 26) & 7); // DEPTH_COMPARE_FUNCTION
         }
         Impl::ResourceKey key;
-        key.pipeline = {vertex->words, fragment->words, {}, draw.channelMask};
+        key.pipeline = {vertex->id, fragment->id, {}, draw.channelMask};
         key.pipeline.blend = blendKey(draw.blend);
         key.pipeline.depth = depthKey(draw.depth);
         key.pipeline.depthBias = draw.depthBias.enabled;
@@ -2644,8 +2654,10 @@ void main() {
             // Reuse any free matching bundle before forcing a live surface onto
             // the CPU. Search past holes left by eviction before allocating.
             // chainSlot is last in the key so matching bundles are contiguous.
-            const auto *preserveImages = std::getenv("WEMU_NATIVE_PRESERVE_IMAGES");
-            const bool preserve = !preserveImages || preserveImages[0] != '0';
+            static const bool preserve = [] {
+                const auto *preserveImages = std::getenv("WEMU_NATIVE_PRESERVE_IMAGES");
+                return !preserveImages || preserveImages[0] != '0';
+            }();
             // Keeping every live output resident can allocate thousands of identical
             // bundles for small lighting passes. Retain a short version chain, then
             // materialize its oldest output and reuse the existing allocations.
@@ -2715,8 +2727,7 @@ void main() {
             }
             if (it == m_impl->resources.end()) {
                 auto resources = std::make_shared<DrawResources>(m_impl->context);
-                resources->initialize(vertex->words, fragment->words, constants, vertexConstants, textures, draw, targetSource, depthSource,
-                                      overwriteTarget);
+                resources->initialize(*vertex, *fragment, constants, vertexConstants, textures, draw, targetSource, depthSource, overwriteTarget);
                 it = m_impl->resources.emplace(std::move(key), Impl::ResourceEntry{std::move(resources), estimatedBytes, ++m_impl->resourceClock})
                              .first;
                 m_impl->cachedBytes += estimatedBytes;

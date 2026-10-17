@@ -55,6 +55,7 @@ namespace Core {
                 m_stack.resize(STACK_SIZE);
                 m_dimport.resize(DIMPORT_SIZE);
                 m_lockedCache.resize(LOCKED_CACHE_SIZE * LOCKED_CACHE_BASES.size());
+                m_codePages.resize((size >> kCodePageShift) / 64 + 1, 0);
             }
 
             // Guest RAM has one owner. Transfer its buffers without copying or reallocating them.
@@ -115,12 +116,41 @@ namespace Core {
             template<typename T>
             void write(const std::uint32_t address, const T value)
             {
+                const auto swapped = std::byteswap(value);
+                // Main RAM fast path, with a page check so the interpreter can leave a decoded block
+                // as soon as a store touches a page holding decoded code (see markCodePage).
+                const std::size_t offset = static_cast<std::size_t>(address) - m_virtAddress;
+                if (address >= m_virtAddress && offset < m_memory.size() && sizeof(T) <= m_memory.size() - offset) {
+                    if (isCodePage(offset) || isCodePage(offset + sizeof(T) - 1)) [[unlikely]]
+                        m_codeWritten = true;
+                    std::memcpy(m_memory.data() + offset, &swapped, sizeof(T));
+                    return;
+                }
                 auto *ptr = hostPtr(address, sizeof(T));
                 if (ptr == nullptr)
                     throw MemoryException(std::format("Unmapped write<{}> @ 0x{:08X}", sizeof(T), address));
-                const auto swapped = std::byteswap(value);
                 std::memcpy(ptr, &swapped, sizeof(T));
             }
+
+            // Pages of main RAM that hold decoded (cached) guest code, by memory-relative offset.
+            // Memory::write raises codeWritten() when it stores into one of them; other write paths
+            // (HLE memcpy, loaders) are caught by the interpreter's block revalidation instead.
+            static constexpr unsigned kCodePageShift = 12;
+            void markCodePage(const std::size_t offset)
+            {
+                const std::size_t page = offset >> kCodePageShift;
+                if (page / 64 < m_codePages.size())
+                    m_codePages[page / 64] |= std::uint64_t{1} << (page % 64);
+            }
+            [[nodiscard]] bool isCodePage(const std::size_t offset) const noexcept
+            {
+                // Callers pass offsets inside main RAM, which the bitmap covers completely.
+                const std::size_t page = offset >> kCodePageShift;
+                return m_codePages[page / 64] >> (page % 64) & 1;
+            }
+            void clearCodePages() noexcept { std::fill(m_codePages.begin(), m_codePages.end(), 0); }
+            [[nodiscard]] bool codeWritten() const noexcept { return m_codeWritten; }
+            void clearCodeWritten() noexcept { m_codeWritten = false; }
 
             [[nodiscard]] std::uint32_t heapAllocate(const std::uint32_t size, std::uint32_t align)
             {
@@ -155,6 +185,8 @@ namespace Core {
             std::vector<char> m_stack;
             std::vector<char> m_dimport;
             std::vector<char> m_lockedCache;
+            std::vector<std::uint64_t> m_codePages;
+            bool m_codeWritten{false};
             std::size_t m_heapPtr = HEAP_BASE;
             std::size_t m_virtAddress;
             std::size_t m_memSize;

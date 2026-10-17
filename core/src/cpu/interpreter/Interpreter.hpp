@@ -103,7 +103,7 @@ namespace Core {
                 m_h264.reset();
                 m_mvPlayer.reset();
                 m_lockedCache = {};
-                m_blockCache.clear();
+                clearBlockCache();
                 m_observedPcs.clear();
                 m_failed = false;
                 m_pc = 0;
@@ -238,9 +238,13 @@ namespace Core {
             struct DecodedInstr {
                     RawHandler fn;
                     EncodedInstruction instr;
+                    bool store{false}; // may write guest memory: leave the block if it hit decoded code
             };
             struct Block {
                     std::vector<DecodedInstr> instrs; // straight-line run, terminator (branch) last
+                    // Guest-order words of every validated instruction (instrs plus native lookahead),
+                    // compared against live memory with one memcmp on each dispatch.
+                    std::vector<std::uint32_t> guestWords;
 #ifdef WEMU_HAS_LLVM
                     std::vector<std::uint32_t> nativeWords; // supported prefix, empty when not eligible
                     mutable Ppc::NativeBinding nativeCode; // Cache invalidation expires this binding.
@@ -250,6 +254,21 @@ namespace Core {
 #endif
             };
             std::unordered_map<std::uint32_t, Block> m_blockCache; // keyed by memory-relative PC
+            // Direct-mapped front of m_blockCache (map nodes are stable). Every erase/clear of the
+            // map goes through getBlock()'s replacement or clearBlockCache() so no slot outlives its block.
+            struct BlockLookup {
+                    std::uint32_t pc{~0u};
+                    Block *block{nullptr};
+            };
+            static constexpr std::uint32_t kBlockLookupSize = 1u << 16;
+            std::vector<BlockLookup> m_blockLookup{kBlockLookupSize};
+            static constexpr std::uint32_t blockLookupSlot(std::uint32_t pc) noexcept { return (pc >> 2) & (kBlockLookupSize - 1); }
+            void clearBlockCache()
+            {
+                m_blockCache.clear();
+                std::fill(m_blockLookup.begin(), m_blockLookup.end(), BlockLookup{});
+                m_memory.clearCodePages();
+            }
             std::vector<std::uint32_t> m_observedPcs; // absolute guest PCs that must reach the diagnostic dispatch
             bool m_jitEnabled{false};
             std::uint64_t m_retired{0}; // total instructions retired (WEMU_IPS throughput reporting)

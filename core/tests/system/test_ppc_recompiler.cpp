@@ -53,7 +53,7 @@ TEST_F(PpcFetchInterpreterTest, ObservedPcsBoundNativeLookaheadAndPreventCollaps
     const auto &before = cpu->getBlock(reader, 0, true);
     EXPECT_EQ(before.nativeWords.size(), 3u);
     EXPECT_EQ(cpu->getBlock(reader, 12, true).nativeWords.size(), 0u);
-    cpu->m_blockCache.clear();
+    cpu->clearBlockCache();
     cpu->m_observedPcs = {app};
     const auto &start = cpu->getBlock(reader, 0, true);
     EXPECT_TRUE(start.nativeWords.empty());
@@ -82,7 +82,7 @@ TEST_F(PpcFetchInterpreterTest, RecordsUnsupportedPrefixBoundaryWithoutNativeExe
 }
 #endif
 
-TEST_F(PpcFetchInterpreterTest, RevalidatesCachedCodeAndStopsAtStores)
+TEST_F(PpcFetchInterpreterTest, RevalidatesCachedCodeAndLeavesBlocksAfterCodeStores)
 {
     constexpr unsigned app = Core::Memory::MemoryMap::ApplicationCode;
     Utils::BeDecoder reader{std::span<const char>(cpu->m_memory.getMemory())};
@@ -102,13 +102,33 @@ TEST_F(PpcFetchInterpreterTest, RevalidatesCachedCodeAndStopsAtStores)
     cpu->m_memory.write<std::uint32_t>(app + 4, 0x38A00001);
     cpu->m_memory.write<std::uint32_t>(app + 8, 0x48000004);
     const auto &store = cpu->getBlock(reader, 0);
-    ASSERT_EQ(store.instrs.size(), 1u);
-    cpu->runBlock(store);
+    ASSERT_EQ(store.instrs.size(), 3u); // blocks continue past stores...
+    EXPECT_EQ(cpu->runBlock(store), 1u); // ...but leave right after one that hits decoded code
     EXPECT_EQ(cpu->m_pc, 4u);
     const auto &following = cpu->getBlock(reader, 4);
     ASSERT_EQ(following.instrs[0].instr.raw, 0x38A00007u);
     cpu->runBlock(following);
     EXPECT_EQ(cpu->m_gpr[5], 7u);
+}
+
+TEST_F(PpcFetchInterpreterTest, DataStoresDoNotEndDecodedBlocks)
+{
+    constexpr unsigned app = Core::Memory::MemoryMap::ApplicationCode;
+    Utils::BeDecoder reader{std::span<const char>(cpu->m_memory.getMemory())};
+    cpu->m_memory.write<std::uint32_t>(app, 0x90640000); // stw r3,0(r4)
+    cpu->m_memory.write<std::uint32_t>(app + 4, 0x38A00001); // li r5,1
+    cpu->m_memory.write<std::uint32_t>(app + 8, 0x48000004); // b +4
+    cpu->m_pc = 0;
+    cpu->m_gpr[3] = 0x12345678;
+    cpu->m_gpr[4] = app + 0x10000; // a different page than the decoded code
+    const auto &block = cpu->getBlock(reader, 0);
+    ASSERT_EQ(block.instrs.size(), 3u);
+    cpu->m_memory.clearCodeWritten(); // the setup writes above touched the code page
+    EXPECT_EQ(cpu->runBlock(block), 3u);
+    EXPECT_EQ(cpu->m_memory.read<std::uint32_t>(app + 0x10000), 0x12345678u);
+    EXPECT_EQ(cpu->m_gpr[5], 1u);
+    EXPECT_EQ(cpu->m_pc, 12u);
+    EXPECT_EQ(&cpu->getBlock(reader, 0), &block); // unchanged words reuse the cached version
 }
 
 TEST(PpcBlockTest, RejectsUnsupportedAndInvalidBlocks)
@@ -164,7 +184,7 @@ TEST_F(PpcFetchInterpreterTest, NativePrefixFollowsLiveCodeAndHookBoundaries)
     cpu->m_memory.write<std::uint32_t>(app + 4, 0x38630003);
     EXPECT_EQ(cpu->getBlock(reader, 0).nativeWords, (std::vector<std::uint32_t>{0x38600001, 0x38630003, 0x48000004}));
 
-    cpu->m_blockCache.clear();
+    cpu->clearBlockCache();
     cpu->m_hooks_min = cpu->m_hooks_max = app + 4;
     cpu->m_hooks[app + 4] = [](Core::Interpreter &) {};
     const auto &hookBounded = cpu->getBlock(reader, 0);
@@ -427,10 +447,10 @@ TEST_F(PpcFetchInterpreterTest, NativePrefixSuffixKeepsBranchStoreAndFaultBounda
     EXPECT_EQ(cpu->m_gpr[5], 0xCAFEBABEu);
     EXPECT_EQ(cpu->m_pc, 20u);
     EXPECT_EQ(cpu->runBlock(block, block.instrs.size()), 0u);
-    cpu->m_memory.write<std::uint32_t>(app + 8, 0x90660000); // Store must still end the decoded block.
+    cpu->m_memory.write<std::uint32_t>(app + 8, 0x90660000); // A store into a decoded code page still ends execution.
     cpu->m_pc = 8;
     const auto &store = cpu->getBlock(reader, 0);
-    ASSERT_EQ(store.instrs.size(), 3u);
+    ASSERT_EQ(store.instrs.size(), 4u);
     EXPECT_EQ(cpu->runBlock(store, 2), 1u);
     EXPECT_EQ(cpu->m_memory.read<std::uint32_t>(app + 0x100), 9u);
     EXPECT_EQ(cpu->m_pc, 12u);
@@ -849,7 +869,7 @@ TEST_F(PpcFetchInterpreterTest, NativeLookaheadRetainsReferenceStoreBoundariesAn
     EXPECT_EQ(cpu->getBlock(reader, 0, true).nativeVisits, 0u); // A replacement version must become hot independently.
     cpu->m_hooks_min = cpu->m_hooks_max = app + 8;
     cpu->m_hooks[app + 8] = [](Core::Interpreter &) {};
-    cpu->m_blockCache.clear();
+    cpu->clearBlockCache();
     EXPECT_EQ(cpu->getBlock(reader, 0, true).nativeWords.size(), 2u);
     cpu->m_hooks.erase(app + 8);
     cpu->m_hooks_min = 0xFFFFFFFFu;
