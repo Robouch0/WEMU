@@ -129,6 +129,10 @@ Rectangle {
             }
         }
 
+        RemoteGamepadPanel {
+            Layout.fillWidth: true
+        }
+
         RowLayout {
             id: mainRow
             Layout.fillHeight: true

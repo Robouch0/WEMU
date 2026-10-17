@@ -24,6 +24,7 @@ qt_add_executable(appgui
     src/library/TitleScanner.cpp
     src/emulator/EmulatorLauncher.cpp
     src/emulator/GameView.cpp
+    src/remote/RemoteGamepadServer.cpp
 )
 
 
@@ -35,6 +36,8 @@ target_sources(appgui PRIVATE
         src/input/InputProfile.hpp
         src/input/InputProfileManager.hpp
         src/library/TitleScanner.hpp
+        src/remote/RemoteProtocol.hpp
+        src/remote/RemoteGamepadServer.hpp
 )
 
 qt_add_qml_module(appgui
@@ -53,6 +56,8 @@ qt_add_qml_module(appgui
         qml/components/ControllerStick.qml
         qml/components/GamepadPreview.qml
         qml/components/BindingRow.qml
+        qml/components/RemoteGamepadBadge.qml
+        qml/components/RemoteGamepadPanel.qml
 )
 
 qt_add_resources(APPGUI_QRC resources.qrc)
@@ -69,6 +74,7 @@ target_include_directories(appgui
         ${CMAKE_CURRENT_SOURCE_DIR}/src/library
         ${CMAKE_CURRENT_SOURCE_DIR}/src/emulator
         ${CMAKE_CURRENT_SOURCE_DIR}/src/gfx
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/remote
         ${Qt6Core_INCLUDE_DIRS}
 )
 
@@ -104,6 +110,11 @@ add_executable(wemu_session_protocol_tests tests/SessionProtocolTest.cpp)
 target_include_directories(wemu_session_protocol_tests PRIVATE ../core/src src/emulator)
 target_link_libraries(wemu_session_protocol_tests PRIVATE Qt6::Core Qt6::Gui gtest_main)
 add_test(NAME wemu_session_protocol_tests COMMAND wemu_session_protocol_tests)
+
+add_executable(wemu_remote_protocol_tests tests/RemoteProtocolTest.cpp)
+target_include_directories(wemu_remote_protocol_tests PRIVATE ../core/src src/remote)
+target_link_libraries(wemu_remote_protocol_tests PRIVATE Qt6::Core gtest_main)
+add_test(NAME wemu_remote_protocol_tests COMMAND wemu_remote_protocol_tests)
 
 add_executable(wemu_session_lifecycle_tests tests/SessionLifecycleTest.cpp src/emulator/EmulatorLauncher.cpp)
 target_include_directories(wemu_session_lifecycle_tests PRIVATE src/emulator ../core/src)
