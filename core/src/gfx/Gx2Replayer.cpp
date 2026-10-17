@@ -919,12 +919,17 @@ namespace Core::Gfx {
         const auto *end = m_mem->hostPtr(surface.imagePtr + surface.imageSize - 1);
         if (!begin || !end || std::uintptr_t(end) - std::uintptr_t(begin) != surface.imageSize - 1)
             return {};
+        // Guest memory does not change while one frame replays, and the checks above exclude
+        // surfaces this replay renders into, so each snapshot is compared at most once per present.
         for (const auto &entry: m_arraySnapshots)
             if (entry->surface == surface && entry->source.size() == surface.imageSize &&
-                std::memcmp(entry->source.data(), begin, surface.imageSize) == 0)
+                (entry->validatedFrame == m_presentCount || std::memcmp(entry->source.data(), begin, surface.imageSize) == 0)) {
+                entry->validatedFrame = m_presentCount;
                 return entry;
+            }
         auto result = std::make_shared<ArraySnapshot>();
         result->surface = surface;
+        result->validatedFrame = m_presentCount;
         result->source.assign(begin, begin + surface.imageSize);
         result->rgba.resize(decodedBytes);
         for (unsigned layer = 0; layer < slices.size(); ++layer)
@@ -3436,6 +3441,9 @@ namespace Core::Gfx {
                     textures.back().unorm8Pitch = surface.width;
                     textures.back().unorm8Map = surface.compMap;
                     textures.back().layers = surface.sliceCount;
+                    // Snapshots are immutable (changed sources get a new one), so backends may
+                    // share one upload across draws instead of comparing the texels every draw.
+                    textures.back().snapshotOwner = snapshot;
                     arrays.push_back(std::move(snapshot));
                     continue;
                 }

@@ -215,6 +215,7 @@ namespace Core::Gfx {
             struct ArraySnapshot {
                     Surface surface;
                     std::vector<std::uint8_t> source, rgba;
+                    std::uint32_t validatedFrame{~0u}; // source compared against guest memory during this present
             };
             std::vector<std::shared_ptr<ArraySnapshot>> m_arraySnapshots;
             std::optional<Surface> arraySlice(const Surface &surface, unsigned relative) const;
