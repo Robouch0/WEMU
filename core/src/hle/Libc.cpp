@@ -13,6 +13,9 @@
 
 #include "cpu/interpreter/Interpreter.hpp"
 #include "cpu/interpreter/SyscallHandler.hpp"
+#include "cpu/memory/Memory.hpp"
+#include "hle/Gx2.hpp"
+#include "utils/Diagnostics.hpp"
 
 static void hle_memalign(Core::Interpreter &cpu)
 {
@@ -54,8 +57,10 @@ static void hle_memcpy(Core::Interpreter &cpu)
     if (dst && src && n) {
         std::uint8_t *d = cpu.m_memory.hostPtr(dst);
         const std::uint8_t *s = cpu.m_memory.hostPtr(src);
-        if (d && s)
+        if (d && s) {
             std::memcpy(d, s, n);
+            CopyGx2DisplayListState(dst, src, n);
+        }
     }
     // r3 stays = dst
 }
@@ -68,8 +73,10 @@ static void hle_memset(Core::Interpreter &cpu)
 
     if (dst && n) {
         std::uint8_t *d = cpu.m_memory.hostPtr(dst);
-        if (d)
+        if (d) {
             std::memset(d, (int) val, n);
+            CopyGx2DisplayListState(dst, 0, n);
+        }
     }
     // r3 stays = dst
 }
@@ -83,7 +90,11 @@ static void hle_srand(Core::Interpreter &cpu)
 
 static void hle_exit(Core::Interpreter &cpu)
 {
-    fprintf(stderr, "[HLE] exit(%d) called\n", static_cast<int>(cpu.m_gpr[3]));
+    // LR identifies WHO exits (game error path vs ProcUI shutdown vs libc atexit).
+    const std::uint32_t lr = cpu.m_lr + Core::Memory::MemoryMap::ApplicationCode;
+    const std::uint32_t pc = cpu.m_pc + Core::Memory::MemoryMap::ApplicationCode;
+    fprintf(stderr, "[HLE] exit(%d) called (LR=%s PC=%s)\n", static_cast<int>(cpu.m_gpr[3]), Core::Diag::symbolize(cpu, lr).c_str(),
+            Core::Diag::symbolize(cpu, pc).c_str());
     cpu.m_running = false;
     cpu.m_gpr[3] = 0;
 }
@@ -93,6 +104,11 @@ static void hle_abort(Core::Interpreter &cpu)
     fprintf(stderr, "[HLE] abort() called\n");
     cpu.m_running = false;
 }
+
+// Green Hills runtime thread locks. On our cooperative single-host-thread model there is no real
+// contention, so these are no-ops that simply return.
+static void hle_ghsLock(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
+static void hle_ghsUnlock(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
 
 void RegisterLibcFunctions()
 {
@@ -108,4 +124,6 @@ void RegisterLibcFunctions()
     Core::syscallHandler.registerSyscall("exit", hle_exit);
     Core::syscallHandler.registerSyscall("_Exit", hle_exit);
     Core::syscallHandler.registerSyscall("abort", hle_abort);
+    Core::syscallHandler.registerSyscall("__ghsLock", hle_ghsLock);
+    Core::syscallHandler.registerSyscall("__ghsUnlock", hle_ghsUnlock);
 }

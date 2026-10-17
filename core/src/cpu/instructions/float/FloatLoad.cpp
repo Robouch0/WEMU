@@ -27,6 +27,7 @@ namespace Core::Instruction {
         const auto raw = cpu.m_memory.read<std::uint32_t>(ea);
         std::memcpy(&f, &raw, sizeof(f));
         cpu.m_fpr[instr.frt] = static_cast<double>(f);
+        cpu.m_ps1[instr.frt] = cpu.m_fpr[instr.frt];
     }
 
     /**

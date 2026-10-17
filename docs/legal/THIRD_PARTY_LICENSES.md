@@ -48,3 +48,11 @@ All third-party libraries remain the property of their respective copyright hold
 Their inclusion or use by WEMU does not place those libraries under the WEMU MIT License.
 
 This document is intended as an inventory of third-party licensing obligations. The authoritative license terms are the license files distributed by each upstream project.
+
+
+## Vendored R600/R700 AddrLib
+
+The shared Latte surface-layout module links the MIT-licensed AMD/Decaf AddrLib.
+Its pinned upstream revision and unmodified source are recorded in
+[UPSTREAM.md](../../core/third_party/addrlib/UPSTREAM.md); the required notice is
+retained in [LICENSE](../../core/third_party/addrlib/LICENSE).
