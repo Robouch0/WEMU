@@ -1015,6 +1015,18 @@ void main() {
                 }
 
                 bool ownsImage(const std::shared_ptr<ColorImage> &candidate) const { return colorImage == candidate || depthImage == candidate; }
+                // True when refreshing this bundle cannot block on the GPU (non-blocking fence query).
+                bool idle() const
+                {
+                    if (!batch || batch->completed)
+                        return true;
+                    if (!batch->submitted)
+                        return false;
+                    if (vkGetFenceStatus(device, batch->fence) != VK_SUCCESS)
+                        return false;
+                    batch->completed = true;
+                    return true;
+                }
                 bool needsReadbackPreservation() const
                 {
                     return (!readbackValid && !pendingReadback.expired()) || (!depthReadbackValid && !pendingDepthReadback.expired());
@@ -2670,7 +2682,7 @@ void main() {
                 // attachment inputs themselves need a separate destination.
                 return (targetSource && resources.ownsImage(targetSource)) || (depthSource && resources.ownsImage(depthSource));
             };
-            auto recyclable = m_impl->resources.end();
+            auto recyclable = m_impl->resources.end(), busy = m_impl->resources.end();
             unsigned freeSlot{}, matching{};
             for (; it != m_impl->resources.end(); ++it) {
                 if (!it->first.sameDraw(key)) {
@@ -2679,14 +2691,21 @@ void main() {
                 }
                 ++matching;
                 if (!ownsInput(*it->second.value)) {
-                    if (!preserve || !it->second.value->needsReadbackPreservation())
-                        break;
-                    if (recyclable == m_impl->resources.end() || it->second.used < recyclable->second.used)
+                    if (!preserve || !it->second.value->needsReadbackPreservation()) {
+                        // Refreshing a bundle the GPU still executes would stall the CPU on its
+                        // fence; keep looking for an idle one and grow the chain instead.
+                        if (it->second.value->idle())
+                            break;
+                        if (busy == m_impl->resources.end())
+                            busy = it;
+                    } else if (recyclable == m_impl->resources.end() || it->second.used < recyclable->second.used)
                         recyclable = it;
                 }
                 if (it->first.chainSlot == freeSlot)
                     ++freeSlot;
             }
+            if (it == m_impl->resources.end() && busy != m_impl->resources.end() && matching >= maxLiveVersions)
+                it = busy;
             if (it == m_impl->resources.end() && matching >= maxLiveVersions && recyclable != m_impl->resources.end())
                 it = recyclable; // refresh() saves outstanding versions before overwriting.
             key.chainSlot = freeSlot;
