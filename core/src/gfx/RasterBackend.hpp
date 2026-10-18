@@ -59,8 +59,11 @@ namespace Core::Gfx {
                     // unorm8Pitch/Map describe its layout and component mapping.
                     std::shared_ptr<RasterReadback> rendered;
                     // Array snapshots are layer-major, with identical row pitches.
-                    // Arrays require explicit CPU snapshots; rendered aliases remain 2D.
+                    // Arrays require explicit CPU snapshots or renderedLayers.
                     unsigned layers{1};
+                    // Optional rendered layers of a 2D array view, one current version per layer,
+                    // laid out like `rendered` (unorm8Pitch, unorm8Map, renderedFormat/Depth).
+                    std::vector<std::shared_ptr<RasterReadback>> renderedLayers;
                     // Optional little-endian R32 texels, with pitch in texels. Avoids
                     // expanding guest GPU words into a temporary host float array.
                     std::span<const std::uint8_t> r32Bytes;

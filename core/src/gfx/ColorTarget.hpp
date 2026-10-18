@@ -8,11 +8,46 @@
 #include <cstring>
 
 namespace Core::Gfx {
-    enum class ColorFormat { RGBA8, RGBA32Float, R11G11B10Float };
-    constexpr unsigned colorElementBytes(ColorFormat format) { return format == ColorFormat::RGBA32Float ? 16u : 4u; }
+    enum class ColorFormat { RGBA8, RGBA32Float, R11G11B10Float, RGBA16Float };
+    constexpr unsigned colorElementBytes(ColorFormat format)
+    {
+        return format == ColorFormat::RGBA32Float ? 16u : format == ColorFormat::RGBA16Float ? 8u : 4u;
+    }
     constexpr ColorFormat colorFormat(unsigned gx2Format)
     {
-        return gx2Format == 0x823 ? ColorFormat::RGBA32Float : gx2Format == 0x816 ? ColorFormat::R11G11B10Float : ColorFormat::RGBA8;
+        return gx2Format == 0x823   ? ColorFormat::RGBA32Float
+               : gx2Format == 0x816 ? ColorFormat::R11G11B10Float
+               : gx2Format == 0x820 ? ColorFormat::RGBA16Float
+                                    : ColorFormat::RGBA8;
+    }
+    // IEEE binary16, as stored by 0x820 (R16G16B16A16_FLOAT) surfaces.
+    inline float decodeHalf(std::uint16_t bits)
+    {
+        const std::uint32_t sign = (bits & 0x8000u) << 16, exponent = (bits >> 10) & 0x1F, mantissa = bits & 0x3FF;
+        if (!exponent)
+            return std::bit_cast<float>(sign) + (sign ? -1.f : 1.f) * std::ldexp(float(mantissa), -24);
+        if (exponent == 31)
+            return std::bit_cast<float>(sign | 0x7F800000u | (mantissa << 13));
+        return std::bit_cast<float>(sign | ((exponent + 112) << 23) | (mantissa << 13));
+    }
+    // Round to nearest even; overflow becomes infinity and NaN stays NaN.
+    inline std::uint16_t encodeHalf(float value)
+    {
+        const auto bits = std::bit_cast<std::uint32_t>(value);
+        const std::uint32_t sign = (bits >> 16) & 0x8000u;
+        const std::uint32_t magnitude = bits & 0x7FFFFFFFu;
+        if (magnitude > 0x7F800000u)
+            return std::uint16_t(sign | 0x7E00u);
+        if (magnitude >= 0x477FF000u) // rounds to at least 65520: infinity
+            return std::uint16_t(sign | 0x7C00u);
+        if (magnitude < 0x38800000u) { // subnormal or zero
+            const auto scaled = double(std::bit_cast<float>(magnitude)) * 16777216.0; // 2^24
+            const auto floor = std::uint32_t(scaled);
+            const auto remainder = scaled - floor;
+            return std::uint16_t(sign | (floor + std::uint32_t(remainder > .5 || (remainder == .5 && (floor & 1)))));
+        }
+        const auto rounded = magnitude - 0x38000000u + 0xFFFu + ((magnitude >> 13) & 1u);
+        return std::uint16_t(sign | (rounded >> 13));
     }
     // Unsigned five-bit exponent, bias 15; R/G have six fraction bits, B has five.
     inline float decodeUnsignedFloat(unsigned bits, unsigned fractionBits)
@@ -54,6 +89,12 @@ namespace Core::Gfx {
                     std::uint32_t(bytes[0]) | (std::uint32_t(bytes[1]) << 8) | (std::uint32_t(bytes[2]) << 16) | (std::uint32_t(bytes[3]) << 24);
             return {decodeUnsignedFloat(bits & 0x7FF, 6), decodeUnsignedFloat((bits >> 11) & 0x7FF, 6), decodeUnsignedFloat(bits >> 22, 5), 1.f};
         }
+        if (format == ColorFormat::RGBA16Float) {
+            std::array<float, 4> value;
+            for (unsigned c = 0; c < 4; ++c)
+                value[c] = decodeHalf(std::uint16_t(bytes[c * 2] | (bytes[c * 2 + 1] << 8)));
+            return value;
+        }
         std::array<float, 4> value;
         std::memcpy(value.data(), bytes, sizeof(value));
         return value;
@@ -68,6 +109,15 @@ namespace Core::Gfx {
                     bits = (bits & ~(masks[c] << shifts[c])) | (encodeUnsignedFloat(value[c], c == 2 ? 5 : 6) << shifts[c]);
             for (unsigned b = 0; b < 4; ++b)
                 bytes[b] = bits >> (b * 8);
+            return;
+        }
+        if (format == ColorFormat::RGBA16Float) {
+            for (unsigned c = 0; c < 4; ++c)
+                if (mask & (1u << c)) {
+                    const auto half = encodeHalf(value[c]);
+                    bytes[c * 2] = std::uint8_t(half);
+                    bytes[c * 2 + 1] = std::uint8_t(half >> 8);
+                }
             return;
         }
         for (unsigned c = 0; c < 4; ++c)

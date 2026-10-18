@@ -159,9 +159,13 @@ namespace Core::Gfx {
         {
             return format == ColorFormat::RGBA32Float      ? VK_FORMAT_R32G32B32A32_SFLOAT
                    : format == ColorFormat::R11G11B10Float ? VK_FORMAT_B10G11R11_UFLOAT_PACK32
+                   : format == ColorFormat::RGBA16Float    ? VK_FORMAT_R16G16B16A16_SFLOAT
                                                            : VK_FORMAT_R8G8B8A8_UNORM;
         }
-        unsigned imageElementBytes(VkFormat format) { return format == VK_FORMAT_R32G32B32A32_SFLOAT ? 16u : 4u; }
+        unsigned imageElementBytes(VkFormat format)
+        {
+            return format == VK_FORMAT_R32G32B32A32_SFLOAT ? 16u : format == VK_FORMAT_R16G16B16A16_SFLOAT ? 8u : 4u;
+        }
         VkFormat blockVkFormat(TextureBlockFormat format)
         {
             switch (format) {
@@ -745,6 +749,7 @@ void main() {
                         VkSamplerMipmapMode mipFilter{VK_SAMPLER_MIPMAP_MODE_NEAREST};
                         float minLod{}, maxLod{};
                         std::shared_ptr<ColorImage> rendered;
+                        std::vector<std::shared_ptr<ColorImage>> renderedLayers; // resident array layers (direct draws only)
                         std::shared_ptr<const void> snapshotOwner;
 
                         std::size_t rowBytes() const
@@ -2286,6 +2291,10 @@ void main() {
                     }();
                     for (std::size_t i = 0; i < in.textures.size(); ++i) {
                         const auto &texture = in.textures[i];
+                        if (!texture.renderedLayers.empty()) {
+                            sources[i] = Source::Copy;
+                            continue;
+                        }
                         if (texture.rendered) {
                             // Sampling an attachment of this draw would be a feedback loop: copy it first.
                             const bool attached = (hasColor && texture.rendered == in.targetSource) || texture.rendered == in.depthSource;
@@ -2357,7 +2366,10 @@ void main() {
                                 imageInfos[i].imageView = scratch->view;
                                 segment.retained.push_back(std::move(scratch));
                                 if (sources[i] == Source::Copy) {
-                                    segment.retained.push_back(texture.rendered);
+                                    if (texture.rendered)
+                                        segment.retained.push_back(texture.rendered);
+                                    for (const auto &layer: texture.renderedLayers)
+                                        segment.retained.push_back(layer);
                                     ++context.residentTextureCopies;
                                 }
                                 break;
@@ -2825,40 +2837,47 @@ void main() {
                     imageBarrier(command, image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                                  levels, layers);
                 }
-                // Copies a resident image into a sampled scratch texture; D32 depth goes through a
-                // device buffer to become R32 float texels.
+                // Copies a resident image, or each resident layer of an array, into a sampled scratch
+                // texture; D32 depth goes through a device buffer to become R32 float texels.
                 void copyRendered(VkCommandBuffer command, const DrawResources::Texture &texture, const ScratchTexture &scratch)
                 {
-                    const auto &source = *texture.rendered;
-                    imageBarrier(command, scratch.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-                    if (source.format == VK_FORMAT_D32_SFLOAT) {
-                        const VkDeviceSize bytes = VkDeviceSize(texture.width) * texture.height * sizeof(float);
-                        if (scratchCapacity < bytes) {
-                            destroyBuffer(scratchBuffer, scratchMemory);
-                            scratchCapacity = std::max(bytes, VkDeviceSize{16} << 20);
-                            scratchBuffer = createBuffer(scratchCapacity, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, scratchMemory, 0,
-                                                         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+                    const unsigned layers = texture.renderedLayers.empty() ? 1u : unsigned(texture.renderedLayers.size());
+                    imageBarrier(command, scratch.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                                 layers);
+                    for (unsigned layer = 0; layer < layers; ++layer) {
+                        const auto &source = texture.renderedLayers.empty() ? *texture.rendered : *texture.renderedLayers[layer];
+                        if (source.format == VK_FORMAT_D32_SFLOAT) {
+                            const VkDeviceSize bytes = VkDeviceSize(texture.width) * texture.height * sizeof(float);
+                            if (scratchCapacity < bytes) {
+                                destroyBuffer(scratchBuffer, scratchMemory);
+                                scratchCapacity = std::max(bytes, VkDeviceSize{16} << 20);
+                                scratchBuffer = createBuffer(scratchCapacity, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                                             scratchMemory, 0, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+                            }
+                            VkMemoryBarrier reuse{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+                            reuse.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+                            reuse.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT;
+                            vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &reuse, 0, nullptr, 0,
+                                                 nullptr);
+                            VkBufferImageCopy copy{};
+                            copy.imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1};
+                            copy.imageExtent = {texture.width, texture.height, 1};
+                            vkCmdCopyImageToBuffer(command, source.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, scratchBuffer, 1, &copy);
+                            vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &reuse, 0, nullptr, 0,
+                                                 nullptr);
+                            copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, layer, 1};
+                            vkCmdCopyBufferToImage(command, scratchBuffer, scratch.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+                        } else {
+                            VkImageCopy copy{};
+                            copy.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+                            copy.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, layer, 1};
+                            copy.extent = {texture.width, texture.height, 1};
+                            vkCmdCopyImage(command, source.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, scratch.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                           1, &copy);
                         }
-                        VkMemoryBarrier reuse{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
-                        reuse.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
-                        reuse.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT;
-                        vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &reuse, 0, nullptr, 0, nullptr);
-                        VkBufferImageCopy copy{};
-                        copy.imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1};
-                        copy.imageExtent = {texture.width, texture.height, 1};
-                        vkCmdCopyImageToBuffer(command, source.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, scratchBuffer, 1, &copy);
-                        vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &reuse, 0, nullptr, 0, nullptr);
-                        copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-                        vkCmdCopyBufferToImage(command, scratchBuffer, scratch.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
-                    } else {
-                        VkImageCopy copy{};
-                        copy.srcSubresource = copy.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-                        copy.extent = {texture.width, texture.height, 1};
-                        vkCmdCopyImage(command, source.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, scratch.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
-                                       &copy);
                     }
                     imageBarrier(command, scratch.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, layers);
                 }
 
                 std::vector<std::uint64_t> sharedKey(const DrawResources::Texture &texture) const
@@ -3387,8 +3406,17 @@ void main() {
                 return reject("Invalid cube texture dimensions or face count");
             if (!texture.layers || texture.layers > 256 || (!array && texture.layers != 1) ||
                 (array && (texture.rendered || (texture.unorm8.empty() && texture.rgba32.empty() && texture.r32.empty() && texture.r32Bytes.empty() &&
-                                                texture.r11g11b10Bytes.empty()))))
+                                                texture.r11g11b10Bytes.empty() && texture.renderedLayers.empty()))))
                 return reject("Unsupported array texture snapshot");
+            if (!texture.renderedLayers.empty() &&
+                (binding.type != Latte::TextureType::TwoDArray || texture.rendered || !texture.mips.empty() ||
+                 texture.renderedLayers.size() != texture.layers || texture.unorm8Pitch < texture.width ||
+                 std::any_of(texture.renderedLayers.begin(), texture.renderedLayers.end(), [&](const auto &layer) {
+                     return !layer || std::uint64_t(texture.unorm8Pitch) * texture.height *
+                                              (texture.renderedDepth ? 4u : colorElementBytes(texture.renderedFormat)) !=
+                                              layer->size();
+                 })))
+                return reject("Invalid rendered array layers");
             if (texture.rendered &&
                 (texture.unorm8Pitch < texture.width ||
                  std::uint64_t(texture.unorm8Pitch) * texture.height * (texture.renderedDepth ? 4u : colorElementBytes(texture.renderedFormat)) !=
@@ -3620,6 +3648,16 @@ void main() {
                 draw.target = draw.renderedTarget->resolve();
         }
         std::vector<DrawResources::Texture> textures;
+        std::vector<std::vector<std::uint8_t>> packedLayers; // CPU snapshots of non-resident array layers
+        // Half-float CPU snapshots are widened to the RGBA32 float upload path.
+        const auto widenHalves = [&](std::span<const std::uint8_t> halves) -> std::span<const std::uint8_t> {
+            auto &floats = packedLayers.emplace_back(halves.size() * 2);
+            for (std::size_t i = 0; i + 1 < halves.size(); i += 2) {
+                const auto value = decodeHalf(std::uint16_t(halves[i] | (halves[i + 1] << 8)));
+                std::memcpy(floats.data() + i * 2, &value, sizeof(value));
+            }
+            return floats;
+        };
         for (const auto &input: draw.textures) {
             auto texture = input;
             std::shared_ptr<ColorImage> resident;
@@ -3638,6 +3676,10 @@ void main() {
                     texture.rgba32Bytes = resident ? std::span<const std::uint8_t>{} : texture.rendered->resolve();
                     texture.rgba32Pitch = texture.unorm8Pitch;
                     texture.unorm8 = {};
+                } else if (texture.renderedFormat == ColorFormat::RGBA16Float) {
+                    texture.rgba32Bytes = resident ? std::span<const std::uint8_t>{} : widenHalves(texture.rendered->resolve());
+                    texture.rgba32Pitch = texture.unorm8Pitch;
+                    texture.unorm8 = {};
                 } else if (texture.renderedFormat == ColorFormat::R11G11B10Float) {
                     texture.r11g11b10Bytes = resident ? std::span<const std::uint8_t>{} : texture.rendered->resolve();
                     texture.r11g11b10Pitch = texture.unorm8Pitch;
@@ -3650,11 +3692,63 @@ void main() {
                     texture.r32Bytes = {};
                 texture.rgba32 = {};
             }
+            std::vector<std::shared_ptr<ColorImage>> residentLayers;
+            if (!texture.renderedLayers.empty()) {
+                // Direct draws copy resident layers into the array on the GPU. Otherwise
+                // pack the layers' CPU versions into one tight snapshot.
+                const auto layerFormat = texture.renderedDepth ? VK_FORMAT_D32_SFLOAT : colorVkFormat(texture.renderedFormat);
+                if (direct)
+                    for (const auto &layer: texture.renderedLayers) {
+                        const auto native = std::dynamic_pointer_cast<const NativeImage>(layer->image());
+                        if (!native || native->storage->context != m_impl->context || native->storage->version != native->version ||
+                            native->storage->width != texture.width || native->storage->height != texture.height ||
+                            native->storage->format != layerFormat) {
+                            residentLayers.clear();
+                            break;
+                        }
+                        residentLayers.push_back(native->storage);
+                    }
+                std::span<const std::uint8_t> packed;
+                if (residentLayers.empty()) {
+                    const auto elementBytes = texture.renderedDepth ? 4u : colorElementBytes(texture.renderedFormat);
+                    const auto rowBytes = std::size_t(texture.width) * elementBytes;
+                    auto &bytes = packedLayers.emplace_back();
+                    bytes.reserve(rowBytes * texture.height * texture.renderedLayers.size());
+                    for (const auto &layer: texture.renderedLayers) {
+                        const auto &source = layer->resolve();
+                        for (unsigned y = 0; y < texture.height; ++y) {
+                            const auto *row = source.data() + std::size_t(y) * texture.unorm8Pitch * elementBytes;
+                            bytes.insert(bytes.end(), row, row + rowBytes);
+                        }
+                    }
+                    packed = bytes;
+                }
+                if (texture.renderedDepth) {
+                    texture.r32Bytes = packed;
+                    texture.r32Pitch = texture.width;
+                    texture.r32Map = texture.unorm8Map;
+                    texture.unorm8 = {};
+                } else if (texture.renderedFormat == ColorFormat::RGBA32Float || texture.renderedFormat == ColorFormat::RGBA16Float) {
+                    texture.rgba32Bytes = texture.renderedFormat == ColorFormat::RGBA16Float && !packed.empty() ? widenHalves(packed) : packed;
+                    texture.rgba32Pitch = texture.width;
+                    texture.unorm8 = {};
+                } else if (texture.renderedFormat == ColorFormat::R11G11B10Float) {
+                    texture.r11g11b10Bytes = packed;
+                    texture.r11g11b10Pitch = texture.width;
+                    texture.unorm8 = {};
+                } else {
+                    texture.unorm8 = packed;
+                    texture.unorm8Pitch = texture.width;
+                }
+                texture.unorm8Channels = 4;
+            }
+            const bool residentArray = !residentLayers.empty();
             const auto compressedFormat = blockVkFormat(texture.blockFormat);
             if (compressedFormat != VK_FORMAT_UNDEFINED && !m_impl->context->blockTextures)
                 return reject("Device lacks BC texture compression support");
             const auto textureFormat = compressedFormat != VK_FORMAT_UNDEFINED ? compressedFormat
                                        : resident                              ? (texture.renderedDepth ? VK_FORMAT_R32_SFLOAT : resident->format)
+                                       : residentArray ? (texture.renderedDepth ? VK_FORMAT_R32_SFLOAT : residentLayers.front()->format)
                                        : !texture.r32.empty() || !texture.r32Bytes.empty() ? VK_FORMAT_R32_SFLOAT
                                        : !texture.r11g11b10Bytes.empty()                   ? VK_FORMAT_B10G11R11_UFLOAT_PACK32
                                        : texture.unorm8.empty()                            ? VK_FORMAT_R32G32B32A32_SFLOAT
@@ -3701,6 +3795,7 @@ void main() {
                 }
             }
             uploaded.rendered = resident;
+            uploaded.renderedLayers = std::move(residentLayers);
             if (compressedFormat != VK_FORMAT_UNDEFINED) {
                 const auto channel = [&](unsigned c) {
                     constexpr VkComponentSwizzle channels[]{VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G,    VK_COMPONENT_SWIZZLE_B,
@@ -3716,7 +3811,7 @@ void main() {
                 textures.push_back(std::move(uploaded));
                 continue;
             }
-            if ((resident && !texture.renderedDepth && texture.renderedFormat != ColorFormat::RGBA8) || !texture.rgba32Bytes.empty() ||
+            if (((resident || residentArray) && !texture.renderedDepth && texture.renderedFormat != ColorFormat::RGBA8) || !texture.rgba32Bytes.empty() ||
                 !texture.r11g11b10Bytes.empty()) {
                 const auto channel = [&](unsigned c) {
                     constexpr VkComponentSwizzle channels[]{VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G,    VK_COMPONENT_SWIZZLE_B,
@@ -3744,7 +3839,7 @@ void main() {
                 textures.push_back(std::move(uploaded));
                 continue;
             }
-            if (!texture.unorm8.empty() || resident) {
+            if (!texture.unorm8.empty() || resident || residentArray) {
                 const auto channel = [&](unsigned c) {
                     constexpr VkComponentSwizzle channels[]{VK_COMPONENT_SWIZZLE_R,    VK_COMPONENT_SWIZZLE_G,    VK_COMPONENT_SWIZZLE_B,
                                                             VK_COMPONENT_SWIZZLE_A,    VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ONE,
