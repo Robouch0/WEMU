@@ -889,7 +889,7 @@ TEST(VulkanRasterBackendTest, RenderedTexturesUseGpuVersionsAndMaterializeStaleO
     std::vector<std::uint8_t> target(6 * 4 * 4, 123);
     RasterDraw::Texture producer{shader.textures[0], 1, 1, {}, [](unsigned, unsigned) { return std::array{1.f, 0.f, 0.f, 1.f}; }};
     RasterDraw draw{shader, vertices, {}, {&producer, 1}, target, 4, 4, 6, {0, 0, 4, 4}, 15, {}};
-    VulkanRasterBackend backend(true, true);
+    VulkanRasterBackend backend(true, true, false);
     auto reference = backend.render(draw);
     ASSERT_TRUE(reference);
     auto first = backend.renderDeferred(draw);
@@ -968,7 +968,7 @@ TEST(VulkanRasterBackendTest, RenderedTexturesUseGpuVersionsAndMaterializeStaleO
 
     // A resolved source can reuse its own bundle. Preserve self-feedback with
     // a GPU snapshot copy even though a CPU snapshot is also available.
-    VulkanRasterBackend feedbackBackend(true, true);
+    VulkanRasterBackend feedbackBackend(true, true, false);
     consumer.rendered.reset();
     consumer.unorm8 = original->resolve();
     chained = feedbackBackend.renderDeferred(draw);
@@ -1002,7 +1002,7 @@ TEST(VulkanRasterBackendTest, ResidentTargetsPreserveUntouchedPixelsAndFallbackS
     std::vector<std::uint8_t> target(4 * 4 * 4, 17);
     RasterDraw::Texture texture{shader.textures[0], 1, 1, {}, [](unsigned, unsigned) { return std::array{1.f, 0.f, 0.f, 1.f}; }};
     RasterDraw draw{shader, vertices, {}, {&texture, 1}, target, 4, 4, 4, {0, 0, 4, 4}, 15, {}};
-    VulkanRasterBackend backend(true, true), referenceBackend;
+    VulkanRasterBackend backend(true, true, false), referenceBackend;
     const auto firstReference = referenceBackend.render(draw);
     ASSERT_TRUE(firstReference);
     auto first = backend.renderDeferred(draw);
@@ -3219,7 +3219,7 @@ TEST(VulkanRasterBackendTest, ColdScissorVariantsKeepHotResourcesAndOlderSnapsho
         v.inputs[0] = {1, 0, 0, 1};
     std::vector<std::uint8_t> target(6 * 4 * 4, 19);
     RasterDraw draw{shader, vertices, {}, {}, target, 4, 4, 6, {0, 0, 4, 4}, 15, {}};
-    VulkanRasterBackend backend(true, true);
+    VulkanRasterBackend backend(true, true, false);
     auto first = backend.renderDeferred(draw);
     ASSERT_TRUE(first) << backend.lastError();
     for (int variant = 1; variant <= 70; ++variant) {
@@ -3257,7 +3257,7 @@ TEST(VulkanRasterBackendTest, DirectAliasesPreserveTargetCopiesSwizzlesAndDeferr
         writeFloatColor(target.data() + (y * 3 + 2) * 16, {-7.f, -8.f, -9.f, -10.f}, 15);
     RasterDraw make{producer, vertices, {}, {}, target, 2, 2, 3, {0, 0, 2, 2}, 15, {}};
     make.colorFormat = ColorFormat::RGBA32Float;
-    VulkanRasterBackend backend(true, true);
+    VulkanRasterBackend backend(true, true, false);
     auto source = backend.renderDeferred(make);
     ASSERT_TRUE(source && source->readback) << backend.lastError();
     unsigned materializations{};
@@ -3357,7 +3357,7 @@ TEST(VulkanRasterBackendTest, FullOverwriteAvoidsInitialTransfersOnlyWithComplet
     for (unsigned y = 0; y < 3; ++y)
         std::fill(target.begin() + (y * 6 + 4) * 4, target.begin() + (y + 1) * 6 * 4, 251);
     RasterDraw draw{shader, vertices, {}, {}, target, 4, 3, 6, {0, 0, 4, 3}, 15, {}};
-    VulkanRasterBackend backend(true, true);
+    VulkanRasterBackend backend(true, true, false);
     shader.alwaysWritesColor = false;
     auto reference = backend.render(draw);
     ASSERT_TRUE(reference) << backend.lastError();
@@ -3502,7 +3502,7 @@ TEST(VulkanRasterBackendTest, LiveVersionRotationRemainsBoundedAndDiscardedTicke
     std::array<RasterDraw::Vertex, 3> vertices{{{0, 0, {}}, {8, 0, {}}, {0, 8, {}}}};
     std::vector<std::uint8_t> target(64, 19);
     RasterDraw draw{shader, vertices, {}, {}, target, 4, 4, 4, {0, 0, 4, 4}, 15, {}};
-    VulkanRasterBackend backend(true, true);
+    VulkanRasterBackend backend(true, true, false);
     std::vector<RasterResult> snapshots;
     for (unsigned i = 0; i < 390; ++i) {
         for (auto &vertex: vertices)
@@ -3537,7 +3537,7 @@ TEST(VulkanRasterBackendTest, QueuedDrawsShareFenceAndReadbacksPreserveTheirVers
     std::array<RasterDraw::Vertex, 3> vertices{{{0, 0, {}}, {8, 0, {}}, {0, 8, {}}}};
     std::vector<std::uint8_t> target(64, 19);
     RasterDraw draw{shader, vertices, {}, {}, target, 4, 4, 4, {0, 0, 4, 4}, 15, {}};
-    VulkanRasterBackend backend(true, true);
+    VulkanRasterBackend backend(true, true, false);
     std::vector<RasterResult> snapshots;
     for (unsigned i = 1; i <= 3; ++i) {
         for (auto &vertex: vertices)

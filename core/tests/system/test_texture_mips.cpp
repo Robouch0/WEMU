@@ -295,10 +295,12 @@ TEST(VulkanCubeTest, SharedSnapshotsKeepDuplicateBindingsVersionsAndDeviceLifeti
     std::array<std::uint8_t, 4> target{};
     RasterDraw draw{shader, vertices, {}, textures, target, 1, 1, 1, {0, 0, 1, 1}, 15, {}};
     draw.topology = RasterDraw::Topology::Points;
-    auto backend = std::make_unique<VulkanRasterBackend>(true, true);
+    // Bundles keep their uploads alive after the strong cache evicts them.
+    auto backend = std::make_unique<VulkanRasterBackend>(true, true, false);
+    constexpr unsigned snapshots = 2052; // four more than the strong cache entry limit
     std::vector<RasterResult> results;
     std::weak_ptr<const std::vector<std::uint8_t>> firstOwner, lastOwner;
-    for (unsigned i = 0; i < 260; ++i) {
+    for (unsigned i = 0; i < snapshots; ++i) {
         auto owner = std::make_shared<const std::vector<std::uint8_t>>(std::vector<std::uint8_t>{std::uint8_t(i % 240 + 1), 10, 20, 255});
         if (!i)
             firstOwner = owner;
@@ -324,15 +326,15 @@ TEST(VulkanCubeTest, SharedSnapshotsKeepDuplicateBindingsVersionsAndDeviceLifeti
     ASSERT_TRUE(recovered) << backend->lastError();
     results.push_back(std::move(*recovered));
     first.reset();
-    EXPECT_EQ(backend->sharedTextureUploads(), 260u); // Duplicate bindings and surviving uploads are shared.
-    EXPECT_GE(backend->sharedTextureHits(), 262u);
-    EXPECT_LE(backend->sharedTextureBytes(), 257u * 8u); // Strong entries plus the separately retained first image.
+    EXPECT_EQ(backend->sharedTextureUploads(), snapshots); // Duplicate bindings and surviving uploads are shared.
+    EXPECT_GE(backend->sharedTextureHits(), snapshots + 2);
+    EXPECT_LE(backend->sharedTextureBytes(), (snapshots - 3) * 8u); // Strong entries plus the separately retained first image.
     backend.reset();
     textures = {};
     EXPECT_FALSE(lastOwner.expired()); // Deferred images retain the device and its shared cache.
     for (unsigned i = 0; i < results.size(); ++i) {
         results[i].resolve();
-        EXPECT_EQ(results[i].rgba, (std::vector<std::uint8_t>{std::uint8_t(i == 260 ? 1 : i % 240 + 1), 10, 20, 255}));
+        EXPECT_EQ(results[i].rgba, (std::vector<std::uint8_t>{std::uint8_t(i == snapshots ? 1 : i % 240 + 1), 10, 20, 255}));
     }
     EXPECT_TRUE(firstOwner.expired());
     results.clear();

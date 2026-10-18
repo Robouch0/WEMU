@@ -114,8 +114,9 @@ host-visible staging buffers, and CPU consumers retain the source snapshot.
 The allocator falls back to another compatible heap when the preferred memory
 type is unavailable. Existing render-target placement follows its prior policy.
 
-The cache retains at most 256 entries and an estimated 512 MiB of image/staging
-storage. In-flight bundles own their sampled images independently of cache
+The cache retains at most 2048 entries and an estimated 1.5 GiB of image/staging
+storage: a race frame in MK8 samples hundreds of distinct textures, and a 256-entry
+bound re-uploaded most of them every frame. In-flight bundles own their sampled images independently of cache
 eviction. Ordered submissions make an upload visible before subsequent draws;
 duplicate bindings in its producing draw share the same recorded upload.
 Deferred frame tickets retain their device until their final release. Shared
@@ -196,7 +197,37 @@ format and topology, but no longer includes target dimensions, scissor rectangle
 or attachment load operations. Resource identity still includes dimensions and
 load policy so backing images, framebuffers and uploads stay correct. Compatible
 pipelines are shared across these variants; clipping and output pixels stay the
-same. A pipeline-limit drain is needed only for a new pipeline at the limit.
+same. Pipelines are created through one context-level cache shared by both draw
+paths and stay alive with the device, so no pipeline-limit drain is needed.
+
+## Direct draws
+
+Deferred draws with lazy readback (the GUI configuration) are recorded by a direct
+renderer instead of a cached bundle per draw shape. A bundle owns target-sized
+color/depth images and buffers (about 22 MiB for a 1280x720 HDR target with
+depth), so MK8's race, with 2000-4500 draws per frame, overflowed the bundle
+budget after about 120 entries; half of its draws built a new bundle (~20 ms each)
+and frames took about 16 s. With direct draws they take about 0.5 s of native
+work (RTX 3060 Laptop GPU).
+
+Images the direct renderer creates are rendered in place: the replayer replaces
+the previous version's ticket with the draw's result, as it does for adopted
+bundle targets. Resident images from bundles, and targets kept for verification,
+are first copied into a new direct image, which then becomes the surface's
+version; a bundle that later adopts a direct image takes ownership of it. Depth
+is handled the same way, except that fixed-point depth writes keep the bundle
+quantization pass.
+
+Draws are recorded into segment command buffers of 48 draws
+(`WEMU_NATIVE_SEGMENT_DRAWS=N`). Constants, vertices, indices, CPU target/depth
+snapshots and private texels are suballocated from the segment's persistently
+mapped upload buffer, and descriptor sets from its pools; both are reset when the
+segment's fence completes. Immutable snapshots use the shared texture cache;
+resident images are sampled directly, or through a scratch copy when the draw
+also renders into them or when depth is sampled as R32. A segment is submitted
+before any bundle work and before readbacks, so the queue order matches replay
+order. `WEMU_NATIVE_DIRECT_DRAWS=0` restores the bundle path; GPU timing queries
+also use it.
 
 Tests verify different target sizes and padded/clipped output, repeated scissor
 changes with a single pipeline, live older snapshots and depth comparisons under

@@ -10,7 +10,9 @@ namespace Core::Gfx {
     // Owns a headless Vulkan device; no presentation or game-specific behavior.
     class VulkanRasterBackend final : public RasterBackend {
         public:
-            explicit VulkanRasterBackend(bool retainTextures = true, bool lazyReadback = false);
+            // directDraws records lazily read deferred draws into shared command buffers (see
+            // DirectRenderer); false keeps every draw on the per-shape bundle path.
+            explicit VulkanRasterBackend(bool retainTextures = true, bool lazyReadback = false, bool directDraws = true);
             ~VulkanRasterBackend() override;
             std::optional<RasterResult> render(const RasterDraw &draw) override;
             std::optional<RasterResult> renderDeferred(const RasterDraw &draw) override;

@@ -340,6 +340,31 @@ namespace Core::Gfx {
                 std::map<std::vector<std::uint64_t>, std::weak_ptr<CachedTexture>> retainedTextures;
                 std::uint64_t textureBytes{}, textureClock{}, textureUploads{}, textureHits{};
                 std::shared_ptr<TextureMemoryUsage> textureMemory = std::make_shared<TextureMemoryUsage>();
+                // Shared texture LRU. A race frame samples hundreds of distinct textures; evicting them
+                // every frame re-uploads each one. In-flight users retain their own references.
+                static constexpr std::uint64_t textureBudget = 1536ull * 1024 * 1024;
+                static constexpr std::size_t textureEntryLimit = 2048;
+                void evictTextures(std::uint64_t incoming)
+                {
+                    while (!textures.empty() && (textureBytes + incoming > textureBudget || textures.size() >= textureEntryLimit)) {
+                        const auto oldest =
+                                std::min_element(textures.begin(), textures.end(), [](const auto &a, const auto &b) { return a.second.used < b.second.used; });
+                        textureBytes -= oldest->second.bytes;
+                        textures.erase(oldest);
+                    }
+                }
+                void admitTexture(std::vector<std::uint64_t> key, const std::shared_ptr<CachedTexture> &texture)
+                {
+                    if (retainedTextures.size() >= 4096) {
+                        std::erase_if(retainedTextures, [](const auto &entry) { return entry.second.expired(); });
+                        if (retainedTextures.size() >= 4096)
+                            retainedTextures.clear();
+                    }
+                    retainedTextures[key] = texture;
+                    textures.emplace(std::move(key), TextureEntry{texture, texture->bytes, ++textureClock});
+                    textureBytes += texture->bytes;
+                    ++textureUploads;
+                }
                 void drainNoThrow() noexcept
                 {
                     try {
@@ -356,6 +381,124 @@ namespace Core::Gfx {
                         batch->completed = true;
                     pendingCommands.clear();
                     pendingBatch.reset();
+                }
+                // Pipelines depend on attachment formats only through render-pass compatibility, so any
+                // pass with the draw's color/depth formats can create one. Modules are only needed
+                // while compiling. Owners never destroy cached handles; clearPipelines() does.
+                const PipelineBundle &pipelineFor(const PipelineKey &key, const SpirvModule &vertex, const SpirvModule &fragment, const RasterDraw &draw,
+                                                  const std::vector<unsigned> &textureBindings, VkRenderPass pass)
+                {
+                    if (const auto it = pipelines.find(key); it != pipelines.end())
+                        return it->second;
+                    PipelineBundle created;
+                    std::vector<VkDescriptorSetLayoutBinding> bindings{{0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}};
+                    if (draw.vertexStage.shader)
+                        bindings.push_back({17, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr});
+                    for (const auto binding: textureBindings)
+                        bindings.push_back({binding, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+                                            binding > 17 ? VK_SHADER_STAGE_VERTEX_BIT : VK_SHADER_STAGE_FRAGMENT_BIT, nullptr});
+                    VkDescriptorSetLayoutCreateInfo si{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+                    si.bindingCount = bindings.size();
+                    si.pBindings = bindings.data();
+                    check(vkCreateDescriptorSetLayout(device, &si, nullptr, &created.setLayout), "create descriptor layout");
+                    std::vector<VkShaderModule> modules;
+                    VkPushConstantRange push{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 128};
+                    VkPipelineLayoutCreateInfo li{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+                    li.setLayoutCount = li.pushConstantRangeCount = 1;
+                    li.pSetLayouts = &created.setLayout;
+                    li.pPushConstantRanges = &push;
+                    check(vkCreatePipelineLayout(device, &li, nullptr, &created.layout), "create pipeline layout");
+                    VkPipelineShaderStageCreateInfo stages[2]{};
+                    for (unsigned i = 0; i < 2; ++i) {
+                        const auto &code = (i ? fragment : vertex).words;
+                        VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+                        mi.codeSize = code.size() * sizeof(std::uint32_t);
+                        mi.pCode = code.data();
+                        VkShaderModule module{};
+                        check(vkCreateShaderModule(device, &mi, nullptr, &module), "create shader");
+                        modules.push_back(module);
+                        stages[i].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+                        stages[i].stage = i ? VK_SHADER_STAGE_FRAGMENT_BIT : VK_SHADER_STAGE_VERTEX_BIT;
+                        stages[i].module = module;
+                        stages[i].pName = "main";
+                    }
+                    VkVertexInputBindingDescription vertexBinding{0, sizeof(RasterDraw::Vertex), VK_VERTEX_INPUT_RATE_VERTEX};
+                    VkVertexInputAttributeDescription attributes[18]{};
+                    attributes[0] = {0, 0, VK_FORMAT_R32G32_SFLOAT, 0};
+                    for (unsigned i = 0; i < 16; ++i)
+                        attributes[i + 1] = {i + 1, 0, VK_FORMAT_R32G32B32A32_SFLOAT,
+                                             unsigned(offsetof(RasterDraw::Vertex, inputs) + i * sizeof(float) * 4)};
+                    attributes[17] = {17, 0, VK_FORMAT_R32G32_SFLOAT, unsigned(offsetof(RasterDraw::Vertex, z))};
+                    VkPipelineVertexInputStateCreateInfo input{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+                    input.vertexBindingDescriptionCount = 1;
+                    input.pVertexBindingDescriptions = &vertexBinding;
+                    input.vertexAttributeDescriptionCount = 18;
+                    input.pVertexAttributeDescriptions = attributes;
+                    VkPipelineInputAssemblyStateCreateInfo assembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+                    assembly.topology = draw.topology == RasterDraw::Topology::Points ? VK_PRIMITIVE_TOPOLOGY_POINT_LIST
+                                                                                      : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+                    VkViewport viewport{0, 0, float(rasterWidth(draw)), float(rasterHeight(draw)), 0, 1};
+                    const auto scissor = clippedScissor(draw);
+                    VkPipelineViewportStateCreateInfo viewportState{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+                    viewportState.viewportCount = viewportState.scissorCount = 1;
+                    viewportState.pViewports = &viewport;
+                    viewportState.pScissors = &scissor;
+                    constexpr VkDynamicState dynamicStates[]{VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_DEPTH_BIAS};
+                    VkPipelineDynamicStateCreateInfo dynamic{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+                    dynamic.dynamicStateCount = std::size(dynamicStates);
+                    dynamic.pDynamicStates = dynamicStates;
+                    VkPipelineRasterizationStateCreateInfo raster{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+                    raster.polygonMode = VK_POLYGON_MODE_FILL;
+                    raster.cullMode = (draw.cullFront ? VK_CULL_MODE_FRONT_BIT : 0) | (draw.cullBack ? VK_CULL_MODE_BACK_BIT : 0);
+                    raster.frontFace = draw.frontFaceClockwise ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE;
+                    raster.lineWidth = 1;
+                    raster.depthBiasEnable = draw.depthBias.enabled && draw.depth.format == DepthFormat::Float32;
+                    VkPipelineMultisampleStateCreateInfo samples{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+                    samples.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+                    VkPipelineColorBlendAttachmentState blend{};
+                    blend.colorWriteMask = draw.channelMask;
+                    if (draw.blend.enabled) {
+                        blend.blendEnable = VK_TRUE;
+                        const auto colorSource = blendFactor(draw.blend.colorSource);
+                        const auto colorDestination = blendFactor(draw.blend.colorDestination);
+                        const auto alphaSource = blendFactor(draw.blend.alphaSource);
+                        const auto alphaDestination = blendFactor(draw.blend.alphaDestination);
+                        if (!colorSource || !colorDestination || !alphaSource || !alphaDestination)
+                            throw std::runtime_error("Unsupported blend factors");
+                        blend.srcColorBlendFactor = *colorSource;
+                        blend.dstColorBlendFactor = *colorDestination;
+                        blend.colorBlendOp = blendOperation(draw.blend.colorOperation);
+                        blend.srcAlphaBlendFactor = *alphaSource;
+                        blend.dstAlphaBlendFactor = *alphaDestination;
+                        blend.alphaBlendOp = blendOperation(draw.blend.alphaOperation);
+                    }
+                    VkPipelineColorBlendStateCreateInfo blending{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+                    blending.attachmentCount = depthOnly(draw) ? 0 : 1;
+                    blending.pAttachments = &blend;
+                    for (unsigned i = 0; i < 4; ++i)
+                        blending.blendConstants[i] = float(draw.blend.constant[i]) / 255.0f;
+                    VkGraphicsPipelineCreateInfo gp{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+                    gp.stageCount = 2;
+                    gp.pStages = stages;
+                    gp.pVertexInputState = &input;
+                    gp.pInputAssemblyState = &assembly;
+                    gp.pViewportState = &viewportState;
+                    gp.pDynamicState = &dynamic;
+                    gp.pRasterizationState = &raster;
+                    gp.pMultisampleState = &samples;
+                    gp.pColorBlendState = &blending;
+                    VkPipelineDepthStencilStateCreateInfo depthState{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+                    depthState.depthTestEnable = draw.depth.test;
+                    depthState.depthWriteEnable = draw.depth.test && draw.depth.write;
+                    depthState.depthCompareOp = VkCompareOp(draw.depth.compare);
+                    gp.pDepthStencilState = &depthState;
+                    gp.layout = created.layout;
+                    gp.renderPass = pass;
+                    check(vkCreateGraphicsPipelines(device, pipelineCache, 1, &gp, nullptr, &created.pipeline), "create pipeline");
+                    for (auto module: modules)
+                        vkDestroyShaderModule(device, module, nullptr);
+                    ++pipelineCreations;
+                    return pipelines.emplace(key, created).first->second;
                 }
                 void destroyPipelines() noexcept
                 {
@@ -536,6 +679,7 @@ void main() {
                 VkDeviceMemory memory{};
                 VkImageView attachmentView{}; // color attachment view shared by every bundle rendering into this image
                 bool initialized{}; // rendered at least once: TRANSFER_SRC_OPTIMAL between draws, else UNDEFINED
+                bool direct{};      // created by DirectRenderer and not adopted by a bundle since: rendered in place
                 unsigned width{}, height{};
                 std::uint64_t version{};
                 VkFormat format{VK_FORMAT_R8G8B8A8_UNORM};
@@ -884,27 +1028,16 @@ void main() {
                     key.topology = unsigned(draw.topology);
                     key.colorFormat = unsigned(draw.colorFormat);
                     key.cull = unsigned(draw.cullFront) | (unsigned(draw.cullBack) << 1) | (unsigned(draw.frontFaceClockwise) << 2);
-                    for (const auto &texture: textures)
+                    std::vector<unsigned> textureBindings;
+                    for (const auto &texture: textures) {
                         key.bindings.push_back(texture.binding);
-                    if (const auto it = context.pipelines.find(key); it != context.pipelines.end()) {
-                        setLayout = it->second.setLayout;
-                        layout = it->second.layout;
-                        pipeline = it->second.pipeline;
-                        cachedPipeline = true;
+                        textureBindings.push_back(texture.binding);
                     }
-                    if (!cachedPipeline) {
-                        std::vector<VkDescriptorSetLayoutBinding> bindings{
-                                {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}};
-                        if (draw.vertexStage.shader)
-                            bindings.push_back({17, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr});
-                        for (const auto &texture: textures)
-                            bindings.push_back({texture.binding, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
-                                                texture.binding > 17 ? VK_SHADER_STAGE_VERTEX_BIT : VK_SHADER_STAGE_FRAGMENT_BIT, nullptr});
-                        VkDescriptorSetLayoutCreateInfo si{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-                        si.bindingCount = bindings.size();
-                        si.pBindings = bindings.data();
-                        check(vkCreateDescriptorSetLayout(device, &si, nullptr, &setLayout), "create descriptor layout");
-                    }
+                    const auto &cached = context.pipelineFor(key, vertex, fragment, draw, textureBindings, pass);
+                    setLayout = cached.setLayout;
+                    layout = cached.layout;
+                    pipeline = cached.pipeline;
+                    cachedPipeline = true;
                     VkDescriptorPoolSize sizes[]{{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, draw.vertexStage.shader ? 2u : 1u},
                                                  {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, static_cast<std::uint32_t>(textures.size())}};
                     VkDescriptorPoolCreateInfo dpi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
@@ -932,107 +1065,6 @@ void main() {
                     }
                     for (const auto &texture: textures)
                         uploadTexture(texture);
-
-                    if (!cachedPipeline) {
-                        VkPushConstantRange push{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 128};
-                        VkPipelineLayoutCreateInfo li{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-                        li.setLayoutCount = li.pushConstantRangeCount = 1;
-                        li.pSetLayouts = &setLayout;
-                        li.pPushConstantRanges = &push;
-                        check(vkCreatePipelineLayout(device, &li, nullptr, &layout), "create pipeline layout");
-                        VkPipelineShaderStageCreateInfo stages[2]{};
-                        for (unsigned i = 0; i < 2; ++i) {
-                            const auto &code = (i ? fragment : vertex).words;
-                            VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
-                            mi.codeSize = code.size() * sizeof(std::uint32_t);
-                            mi.pCode = code.data();
-                            VkShaderModule module{};
-                            check(vkCreateShaderModule(device, &mi, nullptr, &module), "create shader");
-                            modules.push_back(module);
-                            stages[i].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-                            stages[i].stage = i ? VK_SHADER_STAGE_FRAGMENT_BIT : VK_SHADER_STAGE_VERTEX_BIT;
-                            stages[i].module = module;
-                            stages[i].pName = "main";
-                        }
-                        VkVertexInputBindingDescription vertexBinding{0, sizeof(RasterDraw::Vertex), VK_VERTEX_INPUT_RATE_VERTEX};
-                        VkVertexInputAttributeDescription attributes[18]{};
-                        attributes[0] = {0, 0, VK_FORMAT_R32G32_SFLOAT, 0};
-                        for (unsigned i = 0; i < 16; ++i)
-                            attributes[i + 1] = {i + 1, 0, VK_FORMAT_R32G32B32A32_SFLOAT,
-                                                 unsigned(offsetof(RasterDraw::Vertex, inputs) + i * sizeof(float) * 4)};
-                        attributes[17] = {17, 0, VK_FORMAT_R32G32_SFLOAT, unsigned(offsetof(RasterDraw::Vertex, z))};
-                        VkPipelineVertexInputStateCreateInfo input{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
-                        input.vertexBindingDescriptionCount = 1;
-                        input.pVertexBindingDescriptions = &vertexBinding;
-                        input.vertexAttributeDescriptionCount = 18;
-                        input.pVertexAttributeDescriptions = attributes;
-                        VkPipelineInputAssemblyStateCreateInfo assembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
-                        assembly.topology = draw.topology == RasterDraw::Topology::Points ? VK_PRIMITIVE_TOPOLOGY_POINT_LIST
-                                                                                          : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-                        VkViewport viewport{0, 0, float(rasterWidth(draw)), float(rasterHeight(draw)), 0, 1};
-                        const auto scissor = clippedScissor(draw);
-                        VkPipelineViewportStateCreateInfo viewportState{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
-                        viewportState.viewportCount = viewportState.scissorCount = 1;
-                        viewportState.pViewports = &viewport;
-                        viewportState.pScissors = &scissor;
-                        constexpr VkDynamicState dynamicStates[]{VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_DEPTH_BIAS};
-                        VkPipelineDynamicStateCreateInfo dynamic{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
-                        dynamic.dynamicStateCount = std::size(dynamicStates);
-                        dynamic.pDynamicStates = dynamicStates;
-                        VkPipelineRasterizationStateCreateInfo raster{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
-                        raster.polygonMode = VK_POLYGON_MODE_FILL;
-                        raster.cullMode = (draw.cullFront ? VK_CULL_MODE_FRONT_BIT : 0) | (draw.cullBack ? VK_CULL_MODE_BACK_BIT : 0);
-                        raster.frontFace = draw.frontFaceClockwise ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE;
-                        raster.lineWidth = 1;
-                        raster.depthBiasEnable = draw.depthBias.enabled && draw.depth.format == DepthFormat::Float32;
-                        VkPipelineMultisampleStateCreateInfo samples{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
-                        samples.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-                        VkPipelineColorBlendAttachmentState blend{};
-                        blend.colorWriteMask = draw.channelMask;
-                        if (draw.blend.enabled) {
-                            blend.blendEnable = VK_TRUE;
-                            const auto colorSource = blendFactor(draw.blend.colorSource);
-                            const auto colorDestination = blendFactor(draw.blend.colorDestination);
-                            const auto alphaSource = blendFactor(draw.blend.alphaSource);
-                            const auto alphaDestination = blendFactor(draw.blend.alphaDestination);
-                            if (!colorSource || !colorDestination || !alphaSource || !alphaDestination)
-                                throw std::runtime_error("Unsupported blend factors");
-                            blend.srcColorBlendFactor = *colorSource;
-                            blend.dstColorBlendFactor = *colorDestination;
-                            blend.colorBlendOp = blendOperation(draw.blend.colorOperation);
-                            blend.srcAlphaBlendFactor = *alphaSource;
-                            blend.dstAlphaBlendFactor = *alphaDestination;
-                            blend.alphaBlendOp = blendOperation(draw.blend.alphaOperation);
-                        }
-                        VkPipelineColorBlendStateCreateInfo blending{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-                        blending.attachmentCount = depthOnly(draw) ? 0 : 1;
-                        blending.pAttachments = &blend;
-                        for (unsigned i = 0; i < 4; ++i)
-                            blending.blendConstants[i] = float(draw.blend.constant[i]) / 255.0f;
-                        VkGraphicsPipelineCreateInfo gp{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
-                        gp.stageCount = 2;
-                        gp.pStages = stages;
-                        gp.pVertexInputState = &input;
-                        gp.pInputAssemblyState = &assembly;
-                        gp.pViewportState = &viewportState;
-                        gp.pDynamicState = &dynamic;
-                        gp.pRasterizationState = &raster;
-                        gp.pMultisampleState = &samples;
-                        gp.pColorBlendState = &blending;
-                        VkPipelineDepthStencilStateCreateInfo depthState{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
-                        depthState.depthTestEnable = draw.depth.test;
-                        depthState.depthWriteEnable = draw.depth.test && draw.depth.write;
-                        depthState.depthCompareOp = VkCompareOp(draw.depth.compare);
-                        gp.pDepthStencilState = &depthState;
-                        gp.layout = layout;
-                        gp.renderPass = pass;
-                        check(vkCreateGraphicsPipelines(device, pipelineCache, 1, &gp, nullptr, &pipeline), "create pipeline");
-                        ++context.pipelineCreations;
-                        if (context.pipelines.size() >= 512)
-                            context.clearPipelines();
-                        context.pipelines.emplace(std::move(key), Context::PipelineBundle{setLayout, layout, pipeline});
-                        cachedPipeline = true;
-                    }
                 }
 
                 bool ownsImage(const std::shared_ptr<ColorImage> &candidate) const { return colorImage == candidate || depthImage == candidate; }
@@ -1047,6 +1079,7 @@ void main() {
                 void adopt(const std::shared_ptr<ColorImage> &target, DrawResources *owner)
                 {
                     auto previous = std::exchange(colorImage, target);
+                    target->direct = false; // this bundle may overwrite it when reused
                     image = target->image;
                     retainedTarget = true;
                     if (owner) {
@@ -1752,13 +1785,7 @@ void main() {
                             return value;
                         }
                     const auto bytes = texture.bytes() * 2;
-                    constexpr std::uint64_t budget = 512ull * 1024 * 1024;
-                    while (!context.textures.empty() && (context.textureBytes + bytes > budget || context.textures.size() >= 256)) {
-                        const auto oldest = std::min_element(context.textures.begin(), context.textures.end(),
-                                                             [](const auto &a, const auto &b) { return a.second.used < b.second.used; });
-                        context.textureBytes -= oldest->second.bytes;
-                        context.textures.erase(oldest); // In-flight bundles retain their own ownership.
-                    }
+                    context.evictTextures(bytes);
                     auto result = std::make_shared<CachedTexture>();
                     result->device = device;
                     result->owner = texture.snapshotOwner;
@@ -1800,15 +1827,7 @@ void main() {
                     result->bytes = bytes;
                     result->usage = context.textureMemory;
                     result->usage->bytes.fetch_add(bytes, std::memory_order_relaxed);
-                    if (context.retainedTextures.size() >= 4096) {
-                        std::erase_if(context.retainedTextures, [](const auto &entry) { return entry.second.expired(); });
-                        if (context.retainedTextures.size() >= 4096)
-                            context.retainedTextures.clear();
-                    }
-                    context.retainedTextures[key] = result;
-                    context.textures.emplace(std::move(key), Context::TextureEntry{result, bytes, ++context.textureClock});
-                    context.textureBytes += bytes;
-                    ++context.textureUploads;
+                    context.admitTexture(std::move(key), result);
                     return result;
                 }
 
@@ -2153,6 +2172,1047 @@ void main() {
                 std::uint64_t retainedTextureBytes{};
         };
 
+
+        // Records draws whose attachments can stay resident into shared command buffers, instead of
+        // a cached bundle per draw shape (each owning target-sized images and buffers). Images this
+        // path creates (ColorImage::direct) are rendered in place: the replayer supersedes the
+        // previous version's ticket. Other resident images are copied once into a direct image.
+        // Constants, vertices, indices and private texels are suballocated from the open segment's
+        // upload buffer and descriptor sets from its pools. A segment is submitted every few dozen
+        // draws, and always before bundle work or readbacks, so queue order follows replay order.
+        class DirectRenderer : public std::enable_shared_from_this<DirectRenderer> {
+            public:
+                struct Inputs {
+                        const RasterDraw &draw;
+                        const SpirvModule &vertex, &fragment;
+                        const std::array<float, 3200> &constants, &vertexConstants;
+                        std::size_t constantFloats{}, vertexConstantFloats{};
+                        const std::vector<DrawResources::Texture> &textures;
+                        std::shared_ptr<ColorImage> targetSource;
+                        std::shared_ptr<const NativeImage> targetSnapshot;
+                        std::shared_ptr<ColorImage> depthSource;
+                        bool overwriteTarget{};
+                        // The replayer drops the previous versions' tickets, so their images can be
+                        // rendered in place. Verification keeps them and gets copies instead.
+                        bool supersedes{};
+                };
+
+                explicit DirectRenderer(std::shared_ptr<Context> owner) : contextOwner(std::move(owner)), context(*contextOwner), device(context.device)
+                {
+                    VkPhysicalDeviceProperties properties{};
+                    vkGetPhysicalDeviceProperties(context.physical, &properties);
+                    alignment = std::max<VkDeviceSize>({256, properties.limits.minUniformBufferOffsetAlignment,
+                                                        properties.limits.optimalBufferCopyOffsetAlignment});
+                    static const unsigned configured = [] {
+                        const auto *value = std::getenv("WEMU_NATIVE_SEGMENT_DRAWS");
+                        return value ? std::max(1u, unsigned(std::strtoul(value, nullptr, 10))) : 48u;
+                    }();
+                    drawsPerSegment = configured;
+                }
+                DirectRenderer(const DirectRenderer &) = delete;
+                DirectRenderer &operator=(const DirectRenderer &) = delete;
+                ~DirectRenderer()
+                {
+                    try {
+                        submit();
+                    } catch (...) {
+                    }
+                    context.drainNoThrow();
+                    for (auto &segment: segments) {
+                        segment.retained.clear();
+                        for (auto pool: segment.descriptorPools)
+                            vkDestroyDescriptorPool(device, pool, nullptr);
+                        if (segment.pool)
+                            vkDestroyCommandPool(device, segment.pool, nullptr);
+                        destroyBuffer(segment.buffer, segment.memory);
+                    }
+                    if (readbackPool)
+                        vkDestroyCommandPool(device, readbackPool, nullptr);
+                    destroyBuffer(readbackBuffer, readbackMemory);
+                    destroyBuffer(scratchBuffer, scratchMemory);
+                    for (const auto &[key, entry]: framebuffers)
+                        vkDestroyFramebuffer(device, entry.framebuffer, nullptr);
+                    for (const auto &[key, pass]: passes)
+                        vkDestroyRenderPass(device, pass, nullptr);
+                    for (const auto &[key, sampler]: samplers)
+                        vkDestroySampler(device, sampler, nullptr);
+                    scratchTextures.clear();
+                }
+
+                // Queues everything recorded so far. Bundle submissions and readbacks call this first.
+                void submit()
+                {
+                    auto &segment = segments[current];
+                    if (!segment.recording)
+                        return;
+                    check(vkEndCommandBuffer(segment.command), "end direct commands");
+                    segment.fence = context.enqueue(segment.command);
+                    context.flush();
+                    segment.recording = false;
+                    current = (current + 1) % segments.size();
+                }
+
+                std::uint64_t draws() const { return renderedDraws; }
+
+                RasterResult render(const Inputs &in)
+                {
+                    const auto &draw = in.draw;
+                    const bool hasColor = !depthOnly(draw);
+                    const bool colorInPlace = hasColor && in.targetSource && in.targetSource->direct && in.supersedes;
+                    const bool colorCopy = hasColor && in.targetSource && !colorInPlace;
+                    const bool colorUpload = hasColor && !in.targetSource && !in.overwriteTarget;
+                    const bool depthInPlace = draw.depth.test && in.depthSource && in.depthSource->direct && (in.supersedes || !draw.depth.write);
+                    const bool depthCopy = draw.depth.test && in.depthSource && !depthInPlace;
+                    const bool depthUpload = draw.depth.test && !in.depthSource;
+
+                    // Classify textures before recording, so the whole draw fits in one segment.
+                    enum class Source { Shared, Direct, Copy, Private };
+                    std::vector<Source> sources(in.textures.size());
+                    std::vector<std::shared_ptr<CachedTexture>> shared(in.textures.size());
+                    VkDeviceSize need = 0;
+                    const auto reserve = [&](VkDeviceSize bytes) { need += (bytes + alignment - 1) / alignment * alignment; };
+                    reserve(sizeof(in.constants));
+                    if (draw.vertexStage.shader)
+                        reserve(sizeof(in.vertexConstants));
+                    reserve(draw.vertices.size_bytes());
+                    reserve(draw.indices.size_bytes());
+                    if (colorUpload)
+                        reserve(draw.target.size());
+                    if (depthUpload)
+                        reserve(draw.depth.target.size_bytes());
+                    static const bool directTextures = [] {
+                        const auto *value = std::getenv("WEMU_NATIVE_DIRECT_TEXTURES");
+                        return !value || value[0] != '0';
+                    }();
+                    for (std::size_t i = 0; i < in.textures.size(); ++i) {
+                        const auto &texture = in.textures[i];
+                        if (texture.rendered) {
+                            // Sampling an attachment of this draw would be a feedback loop: copy it first.
+                            const bool attached = (hasColor && texture.rendered == in.targetSource) || texture.rendered == in.depthSource;
+                            sources[i] = directTextures && !attached && !texture.array && !texture.cube && texture.mips.empty() &&
+                                                         texture.rendered->format == texture.format
+                                                 ? Source::Direct
+                                                 : Source::Copy;
+                            continue;
+                        }
+                        if (texture.snapshotOwner && !texture.snapshot.empty()) {
+                            sources[i] = Source::Shared;
+                            shared[i] = findSharedTexture(texture);
+                            if (!shared[i])
+                                reserve(texture.bytes());
+                            continue;
+                        }
+                        sources[i] = Source::Private;
+                        reserve(texture.bytes());
+                    }
+
+                    auto &segment = open(need);
+                    const auto command = segment.command;
+                    const auto pushUpload = [&](const void *data, std::size_t bytes, std::size_t reserved) {
+                        const auto offset = segment.used;
+                        if (bytes)
+                            std::memcpy(segment.mapped + offset, data, bytes);
+                        segment.used += (std::max(bytes, reserved) + alignment - 1) / alignment * alignment;
+                        return offset;
+                    };
+                    const auto constantsOffset = pushUpload(in.constants.data(), in.constantFloats * sizeof(float), sizeof(in.constants));
+                    const auto vertexConstantsOffset = draw.vertexStage.shader ? pushUpload(in.vertexConstants.data(), in.vertexConstantFloats * sizeof(float),
+                                                                                            sizeof(in.vertexConstants))
+                                                                               : VkDeviceSize{};
+                    const auto verticesOffset = pushUpload(draw.vertices.data(), draw.vertices.size_bytes(), 0);
+                    const auto indicesOffset = draw.indices.empty() ? VkDeviceSize{} : pushUpload(draw.indices.data(), draw.indices.size_bytes(), 0);
+
+                    // Textures first: their transfers must precede the render pass.
+                    std::vector<VkDescriptorImageInfo> imageInfos(in.textures.size());
+                    std::vector<std::shared_ptr<ColorImage>> sampled;
+                    for (std::size_t i = 0; i < in.textures.size(); ++i) {
+                        const auto &texture = in.textures[i];
+                        imageInfos[i].sampler = sampler(texture);
+                        imageInfos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                        switch (sources[i]) {
+                            case Source::Shared:
+                                if (!shared[i])
+                                    shared[i] = createSharedTexture(texture, segment, pushUpload);
+                                imageInfos[i].imageView = shared[i]->view;
+                                segment.retained.push_back(shared[i]);
+                                break;
+                            case Source::Direct:
+                                imageInfos[i].imageView = texture.rendered->samplingView(texture.components);
+                                if (std::find(sampled.begin(), sampled.end(), texture.rendered) == sampled.end())
+                                    sampled.push_back(texture.rendered);
+                                segment.retained.push_back(texture.rendered);
+                                ++context.directTextureBindings;
+                                context.directTextureBytes += texture.bytes();
+                                break;
+                            case Source::Copy:
+                            case Source::Private: {
+                                auto scratch = scratchTexture(texture);
+                                if (sources[i] == Source::Copy)
+                                    copyRendered(command, texture, *scratch);
+                                else {
+                                    const auto offset = pushUpload(nullptr, 0, texture.bytes());
+                                    texture.copyTo(segment.mapped + offset);
+                                    uploadTexels(command, texture, scratch->image, segment.buffer, offset, true);
+                                }
+                                imageInfos[i].imageView = scratch->view;
+                                segment.retained.push_back(std::move(scratch));
+                                if (sources[i] == Source::Copy) {
+                                    segment.retained.push_back(texture.rendered);
+                                    ++context.residentTextureCopies;
+                                }
+                                break;
+                            }
+                        }
+                    }
+
+                    // Attachments: render in place, or start a direct image from a copy or CPU bytes.
+                    std::shared_ptr<ColorImage> color, depth;
+                    VkImageLayout colorLayout = VK_IMAGE_LAYOUT_UNDEFINED, depthLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+                    if (hasColor) {
+                        if (colorInPlace) {
+                            color = in.targetSource;
+                            colorLayout = color->initialized ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED;
+                        } else {
+                            color = createImage(draw.width, draw.height, colorVkFormat(draw.colorFormat), false);
+                            if (colorCopy) {
+                                copyImage(command, *in.targetSource, *color, false);
+                                segment.retained.push_back(in.targetSource);
+                                ++context.targetCopyTransfers;
+                                colorLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                            } else if (colorUpload) {
+                                const auto offset = pushUpload(draw.target.data(), draw.target.size(), 0);
+                                uploadImage(command, *color, segment.buffer, offset, draw.pitch, false);
+                                ++context.targetUploadTransfers;
+                                colorLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                            } else
+                                ++context.fullOverwriteDraws;
+                        }
+                    }
+                    if (draw.depth.test) {
+                        if (depthInPlace) {
+                            depth = in.depthSource;
+                            depthLayout = depth->initialized ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED;
+                        } else {
+                            depth = createImage(draw.depth.width, draw.depth.height, depthVkFormat(draw.depth.format), true);
+                            depth->depthFormat = draw.depth.format;
+                            if (depthCopy) {
+                                copyImage(command, *in.depthSource, *depth, true);
+                                segment.retained.push_back(in.depthSource);
+                            } else {
+                                const auto offset = pushUpload(draw.depth.target.data(), draw.depth.target.size_bytes(), 0);
+                                uploadImage(command, *depth, segment.buffer, offset, draw.depth.pitch, true);
+                            }
+                            depthLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                        }
+                    }
+                    std::vector<VkImageMemoryBarrier> barriers;
+                    const auto transition = [&](const ColorImage &image, bool depthAspect, VkImageLayout from, VkImageLayout to) {
+                        VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+                        barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                        barrier.image = image.image;
+                        barrier.subresourceRange = {VkImageAspectFlags(depthAspect ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT), 0, 1, 0, 1};
+                        barrier.oldLayout = from;
+                        barrier.newLayout = to;
+                        barrier.srcAccessMask = from == VK_IMAGE_LAYOUT_UNDEFINED ? 0 : VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT;
+                        barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+                        barriers.push_back(barrier);
+                    };
+                    if (color)
+                        transition(*color, false, colorLayout, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+                    if (depth)
+                        transition(*depth, true, depthLayout, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+                    for (const auto &image: sampled)
+                        transition(*image, false, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr,
+                                         unsigned(barriers.size()), barriers.data());
+
+                    const auto pass = renderPass(hasColor ? colorVkFormat(draw.colorFormat) : VK_FORMAT_UNDEFINED,
+                                                 draw.depth.test ? depthVkFormat(draw.depth.format) : VK_FORMAT_UNDEFINED);
+                    Context::PipelineKey key{in.vertex.id, in.fragment.id, {}, draw.channelMask};
+                    key.blend = blendKey(draw.blend);
+                    key.depth = depthKey(draw.depth);
+                    key.depthBias = draw.depthBias.enabled;
+                    key.topology = unsigned(draw.topology);
+                    key.colorFormat = unsigned(draw.colorFormat);
+                    key.cull = unsigned(draw.cullFront) | (unsigned(draw.cullBack) << 1) | (unsigned(draw.frontFaceClockwise) << 2);
+                    std::vector<unsigned> textureBindings;
+                    for (const auto &texture: in.textures) {
+                        key.bindings.push_back(texture.binding);
+                        textureBindings.push_back(texture.binding);
+                    }
+                    const auto &pipeline = context.pipelineFor(key, in.vertex, in.fragment, draw, textureBindings, pass);
+
+                    const auto descriptor = allocateDescriptor(segment, pipeline.setLayout);
+                    std::vector<VkWriteDescriptorSet> writes;
+                    const VkDescriptorBufferInfo constantsInfo{segment.buffer, constantsOffset, sizeof(in.constants)};
+                    const VkDescriptorBufferInfo vertexConstantsInfo{segment.buffer, vertexConstantsOffset, sizeof(in.vertexConstants)};
+                    VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+                    write.dstSet = descriptor;
+                    write.descriptorCount = 1;
+                    write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+                    write.pBufferInfo = &constantsInfo;
+                    writes.push_back(write);
+                    if (draw.vertexStage.shader) {
+                        write.dstBinding = 17;
+                        write.pBufferInfo = &vertexConstantsInfo;
+                        writes.push_back(write);
+                    }
+                    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                    write.pBufferInfo = nullptr;
+                    for (std::size_t i = 0; i < in.textures.size(); ++i) {
+                        write.dstBinding = in.textures[i].binding;
+                        write.pImageInfo = &imageInfos[i];
+                        writes.push_back(write);
+                    }
+                    vkUpdateDescriptorSets(device, unsigned(writes.size()), writes.data(), 0, nullptr);
+
+                    VkRenderPassBeginInfo begin{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+                    begin.renderPass = pass;
+                    begin.renderArea.extent = attachmentExtent(draw);
+                    begin.framebuffer = framebuffer(pass, color, depth, begin.renderArea.extent);
+                    vkCmdBeginRenderPass(command, &begin, VK_SUBPASS_CONTENTS_INLINE);
+                    vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipeline);
+                    const VkViewport viewport{0, 0, float(rasterWidth(draw)), float(rasterHeight(draw)), 0, 1};
+                    const auto scissor = clippedScissor(draw);
+                    vkCmdSetViewport(command, 0, 1, &viewport);
+                    vkCmdSetScissor(command, 0, 1, &scissor);
+                    const bool floatBias = draw.depthBias.enabled && draw.depth.format == DepthFormat::Float32;
+                    vkCmdSetDepthBias(command, floatBias ? draw.depthBias.constant : 0.f, floatBias ? draw.depthBias.clamp : 0.f,
+                                      floatBias ? draw.depthBias.slope : 0.f);
+                    vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.layout, 0, 1, &descriptor, 0, nullptr);
+                    struct VertexPush {
+                            float scale[3], unused;
+                            float window[4], depth[2], padding[2];
+                            std::int32_t inputs[16];
+                            float bias[4];
+                    } push{};
+                    static_assert(sizeof(push) == 128);
+                    push.scale[0] = 2.0f / float(rasterWidth(draw));
+                    push.scale[1] = 2.0f / float(rasterHeight(draw));
+                    push.scale[2] = draw.depth.test ? 1.f : 0.f;
+                    push.window[0] = draw.vertexStage.viewport[0];
+                    push.window[1] = draw.vertexStage.viewport[1];
+                    push.window[2] = draw.vertexStage.viewport[2] * .5f;
+                    push.window[3] = draw.vertexStage.viewport[3] * .5f;
+                    push.depth[0] = draw.vertexStage.viewport[4];
+                    push.depth[1] = draw.vertexStage.viewport[5];
+                    std::fill(std::begin(push.inputs), std::end(push.inputs), -1);
+                    std::copy_n(draw.vertexStage.inputParams.begin(), draw.vertexStage.inputCount, push.inputs);
+                    if (draw.depthBias.enabled && draw.depth.format != DepthFormat::Float32) {
+                        push.bias[0] = draw.depthBias.constant / (draw.depth.format == DepthFormat::UNorm16 ? 65535.f : 16777215.f);
+                        push.bias[1] = draw.depthBias.slope;
+                        push.bias[2] = draw.depthBias.clamp;
+                    }
+                    vkCmdPushConstants(command, pipeline.layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
+                    vkCmdBindVertexBuffers(command, 0, 1, &segment.buffer, &verticesOffset);
+                    if (draw.indices.empty())
+                        vkCmdDraw(command, unsigned(draw.vertices.size()), 1, 0, 0);
+                    else {
+                        vkCmdBindIndexBuffer(command, segment.buffer, indicesOffset, VK_INDEX_TYPE_UINT32);
+                        vkCmdDrawIndexed(command, unsigned(draw.indices.size()), 1, 0, 0, 0);
+                    }
+                    vkCmdEndRenderPass(command);
+                    barriers.clear();
+                    for (const auto &image: sampled)
+                        transition(*image, false, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+                    if (!barriers.empty())
+                        vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr,
+                                             unsigned(barriers.size()), barriers.data());
+
+                    RasterResult result;
+                    if (depth) {
+                        depth->initialized = true;
+                        segment.retained.push_back(depth);
+                        if (draw.depth.write) {
+                            ++depth->version;
+                            const auto padding = depthPadding(draw.depth);
+                            result.depthReadback = std::make_shared<RasterReadback>(
+                                    draw.depth.target.size_bytes(),
+                                    [self = shared_from_this(), image = depth, width = draw.depth.width, height = draw.depth.height, pitch = draw.depth.pitch,
+                                     padding] { return self->read(image, true, width, height, pitch, padding); },
+                                    std::make_shared<NativeImage>(depth, draw.depth.pitch, padding));
+                        }
+                    }
+                    if (++segment.draws >= drawsPerSegment)
+                        submit();
+                    ++renderedDraws;
+                    if (!color) {
+                        // The guest color binding is unused: preserve its exact version.
+                        result.readback = draw.renderedTarget;
+                        if (!result.readback)
+                            result.rgba.assign(draw.target.begin(), draw.target.end());
+                        return result;
+                    }
+                    color->initialized = true;
+                    ++color->version;
+                    segment.retained.push_back(color);
+                    std::shared_ptr<const std::vector<std::uint8_t>> padding;
+                    if (in.targetSnapshot)
+                        padding = in.targetSnapshot->padding;
+                    else if (draw.pitch > draw.width) {
+                        const auto elementBytes = colorElementBytes(draw.colorFormat);
+                        const auto rowBytes = std::size_t(draw.pitch - draw.width) * elementBytes;
+                        auto snapshot = std::make_shared<std::vector<std::uint8_t>>(rowBytes * draw.height);
+                        for (unsigned y = 0; y < draw.height; ++y)
+                            std::memcpy(snapshot->data() + y * rowBytes, draw.target.data() + (std::size_t(y) * draw.pitch + draw.width) * elementBytes,
+                                        rowBytes);
+                        padding = std::move(snapshot);
+                    }
+                    result.readback = std::make_shared<RasterReadback>(
+                            draw.target.size(),
+                            [self = shared_from_this(), image = color, width = draw.width, height = draw.height, pitch = draw.pitch, padding] {
+                                return self->read(image, false, width, height, pitch, padding);
+                            },
+                            std::make_shared<NativeImage>(color, draw.pitch, padding));
+                    return result;
+                }
+
+            private:
+                struct Segment {
+                        VkCommandPool pool{};
+                        VkCommandBuffer command{};
+                        std::shared_ptr<Context::BatchFence> fence;
+                        std::vector<VkDescriptorPool> descriptorPools;
+                        std::size_t descriptorPool{};
+                        VkBuffer buffer{};
+                        VkDeviceMemory memory{};
+                        std::uint8_t *mapped{};
+                        VkDeviceSize capacity{}, used{};
+                        std::vector<std::shared_ptr<const void>> retained; // released once the fence completes
+                        unsigned draws{};
+                        bool recording{};
+                };
+                struct ScratchTexture {
+                        VkDevice device{};
+                        VkImage image{};
+                        VkImageView view{};
+                        VkDeviceMemory memory{};
+                        ~ScratchTexture()
+                        {
+                            if (view)
+                                vkDestroyImageView(device, view, nullptr);
+                            if (image)
+                                vkDestroyImage(device, image, nullptr);
+                            if (memory)
+                                vkFreeMemory(device, memory, nullptr);
+                        }
+                };
+                struct FramebufferEntry {
+                        std::weak_ptr<ColorImage> color, depth;
+                        VkFramebuffer framebuffer{};
+                };
+
+                Segment &open(VkDeviceSize need)
+                {
+                    if (segments[current].recording && segments[current].used + need <= segments[current].capacity)
+                        return segments[current];
+                    submit();
+                    auto &segment = segments[current];
+                    context.wait(segment.fence);
+                    segment.fence.reset();
+                    segment.retained.clear();
+                    for (auto pool: segment.descriptorPools)
+                        check(vkResetDescriptorPool(device, pool, 0), "reset direct descriptors");
+                    segment.descriptorPool = 0;
+                    if (!segment.pool) {
+                        VkCommandPoolCreateInfo info{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+                        info.queueFamilyIndex = context.family;
+                        check(vkCreateCommandPool(device, &info, nullptr, &segment.pool), "create direct command pool");
+                        VkCommandBufferAllocateInfo allocate{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+                        allocate.commandPool = segment.pool;
+                        allocate.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+                        allocate.commandBufferCount = 1;
+                        check(vkAllocateCommandBuffers(device, &allocate, &segment.command), "allocate direct commands");
+                    } else
+                        check(vkResetCommandPool(device, segment.pool, 0), "reset direct commands");
+                    if (segment.capacity < need) {
+                        destroyBuffer(segment.buffer, segment.memory);
+                        segment.capacity = std::max<VkDeviceSize>(need, VkDeviceSize{32} << 20);
+                        segment.buffer = createBuffer(segment.capacity,
+                                                      VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
+                                                              VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                                      segment.memory, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 0);
+                        void *mapped = nullptr;
+                        check(vkMapMemory(device, segment.memory, 0, VK_WHOLE_SIZE, 0, &mapped), "map direct uploads");
+                        segment.mapped = static_cast<std::uint8_t *>(mapped);
+                    }
+                    segment.used = 0;
+                    segment.draws = 0;
+                    VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+                    begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+                    check(vkBeginCommandBuffer(segment.command, &begin), "begin direct commands");
+                    segment.recording = true;
+                    return segment;
+                }
+
+                VkDescriptorSet allocateDescriptor(Segment &segment, VkDescriptorSetLayout layout)
+                {
+                    for (;; ++segment.descriptorPool) {
+                        if (segment.descriptorPool == segment.descriptorPools.size()) {
+                            const VkDescriptorPoolSize sizes[]{{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 512}, {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2048}};
+                            VkDescriptorPoolCreateInfo info{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+                            info.maxSets = 256;
+                            info.poolSizeCount = 2;
+                            info.pPoolSizes = sizes;
+                            VkDescriptorPool pool{};
+                            check(vkCreateDescriptorPool(device, &info, nullptr, &pool), "create direct descriptors");
+                            segment.descriptorPools.push_back(pool);
+                        }
+                        VkDescriptorSetAllocateInfo info{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+                        info.descriptorPool = segment.descriptorPools[segment.descriptorPool];
+                        info.descriptorSetCount = 1;
+                        info.pSetLayouts = &layout;
+                        VkDescriptorSet set{};
+                        const auto result = vkAllocateDescriptorSets(device, &info, &set);
+                        if (result == VK_SUCCESS)
+                            return set;
+                        if (result != VK_ERROR_OUT_OF_POOL_MEMORY && result != VK_ERROR_FRAGMENTED_POOL)
+                            check(result, "allocate direct descriptor");
+                    }
+                }
+
+                VkDeviceMemory allocate(const VkMemoryRequirements &requirements, VkMemoryPropertyFlags required, VkMemoryPropertyFlags preferred)
+                {
+                    VkPhysicalDeviceMemoryProperties properties{};
+                    vkGetPhysicalDeviceMemoryProperties(context.physical, &properties);
+                    for (unsigned pass = 0; pass < 2; ++pass) {
+                        const auto flags = required | (pass ? 0 : preferred);
+                        for (unsigned i = 0; i < properties.memoryTypeCount; ++i) {
+                            if (!(requirements.memoryTypeBits & (1u << i)) || (properties.memoryTypes[i].propertyFlags & flags) != flags)
+                                continue;
+                            VkMemoryAllocateInfo info{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+                            info.allocationSize = requirements.size;
+                            info.memoryTypeIndex = i;
+                            VkDeviceMemory memory{};
+                            check(vkAllocateMemory(device, &info, nullptr, &memory), "allocate direct memory");
+                            return memory;
+                        }
+                    }
+                    throw std::runtime_error("No suitable Vulkan memory type");
+                }
+                VkMemoryPropertyFlags imagePlacement() const
+                {
+                    // Same placement policy as bundle images (see DrawResources::allocate).
+                    static const int localImages = [] {
+                        const auto *value = std::getenv("WEMU_NATIVE_DEVICE_LOCAL_IMAGES");
+                        return value ? int(value[0] == '1') : -1;
+                    }();
+                    return localImages == 1 || (localImages < 0 && context.discrete) ? VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT : 0;
+                }
+                VkBuffer createBuffer(VkDeviceSize bytes, VkBufferUsageFlags usage, VkDeviceMemory &memory, VkMemoryPropertyFlags required,
+                                      VkMemoryPropertyFlags preferred)
+                {
+                    VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+                    info.size = bytes;
+                    info.usage = usage;
+                    VkBuffer buffer{};
+                    check(vkCreateBuffer(device, &info, nullptr, &buffer), "create direct buffer");
+                    VkMemoryRequirements requirements{};
+                    vkGetBufferMemoryRequirements(device, buffer, &requirements);
+                    try {
+                        memory = allocate(requirements, required, preferred);
+                        check(vkBindBufferMemory(device, buffer, memory, 0), "bind direct buffer");
+                    } catch (...) {
+                        vkDestroyBuffer(device, buffer, nullptr);
+                        if (memory)
+                            vkFreeMemory(device, memory, nullptr);
+                        memory = {};
+                        throw;
+                    }
+                    return buffer;
+                }
+                void destroyBuffer(VkBuffer &buffer, VkDeviceMemory &memory)
+                {
+                    if (buffer)
+                        vkDestroyBuffer(device, buffer, nullptr);
+                    if (memory)
+                        vkFreeMemory(device, memory, nullptr);
+                    buffer = {};
+                    memory = {};
+                }
+
+                std::shared_ptr<ColorImage> createImage(unsigned width, unsigned height, VkFormat format, bool depthAspect)
+                {
+                    auto image = std::make_shared<ColorImage>();
+                    image->context = contextOwner;
+                    image->width = width;
+                    image->height = height;
+                    image->format = format;
+                    image->direct = true;
+                    VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+                    info.imageType = VK_IMAGE_TYPE_2D;
+                    info.format = format;
+                    info.extent = {width, height, 1};
+                    info.mipLevels = info.arrayLayers = 1;
+                    info.samples = VK_SAMPLE_COUNT_1_BIT;
+                    info.tiling = VK_IMAGE_TILING_OPTIMAL;
+                    info.usage = depthAspect ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT
+                                             : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                                                       VK_IMAGE_USAGE_SAMPLED_BIT;
+                    check(vkCreateImage(device, &info, nullptr, &image->image), "create direct image");
+                    VkMemoryRequirements requirements{};
+                    vkGetImageMemoryRequirements(device, image->image, &requirements);
+                    image->memory = allocate(requirements, 0, imagePlacement());
+                    check(vkBindImageMemory(device, image->image, image->memory, 0), "bind direct image");
+                    VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+                    view.image = image->image;
+                    view.viewType = VK_IMAGE_VIEW_TYPE_2D;
+                    view.format = format;
+                    view.subresourceRange = {VkImageAspectFlags(depthAspect ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT), 0, 1, 0, 1};
+                    check(vkCreateImageView(device, &view, nullptr, &image->attachmentView), "create direct attachment view");
+                    return image;
+                }
+                void imageBarrier(VkCommandBuffer command, VkImage image, VkImageAspectFlags aspect, VkImageLayout from, VkImageLayout to,
+                                  unsigned levels = 1, unsigned layers = 1)
+                {
+                    VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+                    barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                    barrier.image = image;
+                    barrier.subresourceRange = {aspect, 0, levels, 0, layers};
+                    barrier.oldLayout = from;
+                    barrier.newLayout = to;
+                    barrier.srcAccessMask = from == VK_IMAGE_LAYOUT_UNDEFINED ? 0 : VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT;
+                    barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+                    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1,
+                                         &barrier);
+                }
+                void copyImage(VkCommandBuffer command, const ColorImage &source, const ColorImage &destination, bool depthAspect)
+                {
+                    const VkImageAspectFlags aspect = depthAspect ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+                    imageBarrier(command, destination.image, aspect, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+                    VkImageCopy copy{};
+                    copy.srcSubresource = copy.dstSubresource = {aspect, 0, 0, 1};
+                    copy.extent = {std::min(source.width, destination.width), std::min(source.height, destination.height), 1};
+                    vkCmdCopyImage(command, source.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, destination.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                                   &copy);
+                }
+                void uploadImage(VkCommandBuffer command, const ColorImage &destination, VkBuffer buffer, VkDeviceSize offset, unsigned pitch,
+                                 bool depthAspect)
+                {
+                    const VkImageAspectFlags aspect = depthAspect ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+                    imageBarrier(command, destination.image, aspect, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+                    VkBufferImageCopy copy{};
+                    copy.bufferOffset = offset;
+                    copy.bufferRowLength = pitch;
+                    copy.imageSubresource = {aspect, 0, 0, 1};
+                    copy.imageExtent = {destination.width, destination.height, 1};
+                    vkCmdCopyBufferToImage(command, buffer, destination.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+                }
+
+                // Tightly packed texels (DrawResources::Texture::copyTo) into every level and layer.
+                void uploadTexels(VkCommandBuffer command, const DrawResources::Texture &texture, VkImage image, VkBuffer buffer, VkDeviceSize offset,
+                                  bool initial)
+                {
+                    const unsigned levels = unsigned(texture.mips.size() + 1);
+                    const unsigned depth = texture.volume ? texture.layers : 1;
+                    const unsigned layers = texture.volume ? 1 : texture.layers;
+                    imageBarrier(command, image, VK_IMAGE_ASPECT_COLOR_BIT, initial ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, levels, layers);
+                    std::vector<VkBufferImageCopy> copies;
+                    for (unsigned level = 0; level < levels; ++level) {
+                        VkBufferImageCopy copy{};
+                        copy.bufferOffset = offset;
+                        copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, 0, layers};
+                        copy.imageExtent = {std::max(1u, texture.width >> level), std::max(1u, texture.height >> level), depth};
+                        copies.push_back(copy);
+                        // Multilevel snapshots are RGBA32F; single-level formats need no following offset.
+                        offset += VkDeviceSize(copy.imageExtent.width) * copy.imageExtent.height * depth * layers * 16;
+                    }
+                    vkCmdCopyBufferToImage(command, buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, unsigned(copies.size()), copies.data());
+                    imageBarrier(command, image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                 levels, layers);
+                }
+                // Copies a resident image into a sampled scratch texture; D32 depth goes through a
+                // device buffer to become R32 float texels.
+                void copyRendered(VkCommandBuffer command, const DrawResources::Texture &texture, const ScratchTexture &scratch)
+                {
+                    const auto &source = *texture.rendered;
+                    imageBarrier(command, scratch.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+                    if (source.format == VK_FORMAT_D32_SFLOAT) {
+                        const VkDeviceSize bytes = VkDeviceSize(texture.width) * texture.height * sizeof(float);
+                        if (scratchCapacity < bytes) {
+                            destroyBuffer(scratchBuffer, scratchMemory);
+                            scratchCapacity = std::max(bytes, VkDeviceSize{16} << 20);
+                            scratchBuffer = createBuffer(scratchCapacity, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, scratchMemory, 0,
+                                                         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+                        }
+                        VkMemoryBarrier reuse{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+                        reuse.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+                        reuse.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT;
+                        vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &reuse, 0, nullptr, 0, nullptr);
+                        VkBufferImageCopy copy{};
+                        copy.imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1};
+                        copy.imageExtent = {texture.width, texture.height, 1};
+                        vkCmdCopyImageToBuffer(command, source.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, scratchBuffer, 1, &copy);
+                        vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &reuse, 0, nullptr, 0, nullptr);
+                        copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                        vkCmdCopyBufferToImage(command, scratchBuffer, scratch.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+                    } else {
+                        VkImageCopy copy{};
+                        copy.srcSubresource = copy.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+                        copy.extent = {texture.width, texture.height, 1};
+                        vkCmdCopyImage(command, source.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, scratch.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                                       &copy);
+                    }
+                    imageBarrier(command, scratch.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                }
+
+                std::vector<std::uint64_t> sharedKey(const DrawResources::Texture &texture) const
+                {
+                    // Same identity as DrawResources::cachedTexture, so both paths share uploads.
+                    std::vector<std::uint64_t> key{reinterpret_cast<std::uintptr_t>(texture.snapshotOwner.get()),
+                                                   reinterpret_cast<std::uintptr_t>(texture.snapshot.data()),
+                                                   texture.width,
+                                                   texture.height,
+                                                   texture.layers,
+                                                   unsigned(texture.format),
+                                                   texture.sourcePitch,
+                                                   unsigned(texture.components.r),
+                                                   unsigned(texture.components.g),
+                                                   unsigned(texture.components.b),
+                                                   unsigned(texture.components.a),
+                                                   unsigned(texture.array),
+                                                   unsigned(texture.volume),
+                                                   unsigned(texture.cube)};
+                    for (const auto mip: texture.mips) {
+                        key.push_back(reinterpret_cast<std::uintptr_t>(mip.data()));
+                        key.push_back(mip.size());
+                    }
+                    return key;
+                }
+                std::shared_ptr<CachedTexture> findSharedTexture(const DrawResources::Texture &texture)
+                {
+                    const auto key = sharedKey(texture);
+                    if (auto found = context.textures.find(key); found != context.textures.end() && found->second.value->ready) {
+                        found->second.used = ++context.textureClock;
+                        ++context.textureHits;
+                        return found->second.value;
+                    }
+                    if (const auto retained = context.retainedTextures.find(key); retained != context.retainedTextures.end())
+                        if (auto value = retained->second.lock(); value && value->ready) {
+                            ++context.textureHits;
+                            return value;
+                        }
+                    return {};
+                }
+                template <typename Upload> std::shared_ptr<CachedTexture> createSharedTexture(const DrawResources::Texture &texture, Segment &segment, Upload &upload)
+                {
+                    auto key = sharedKey(texture);
+                    if (const auto found = context.textures.find(key); found != context.textures.end()) {
+                        context.textureBytes -= found->second.bytes;
+                        context.textures.erase(found);
+                    }
+                    const auto bytes = texture.bytes();
+                    context.evictTextures(bytes);
+                    auto result = std::make_shared<CachedTexture>();
+                    result->device = device;
+                    result->owner = texture.snapshotOwner;
+                    result->key = key;
+                    VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+                    info.imageType = texture.volume ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D;
+                    info.flags = texture.cube ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0;
+                    info.format = texture.format;
+                    info.extent = {texture.width, texture.height, texture.volume ? texture.layers : 1};
+                    info.mipLevels = unsigned(texture.mips.size() + 1);
+                    info.arrayLayers = texture.volume ? 1 : texture.layers;
+                    info.samples = VK_SAMPLE_COUNT_1_BIT;
+                    info.tiling = VK_IMAGE_TILING_OPTIMAL;
+                    info.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+                    check(vkCreateImage(device, &info, nullptr, &result->image), "create shared texture");
+                    VkMemoryRequirements requirements{};
+                    vkGetImageMemoryRequirements(device, result->image, &requirements);
+                    result->imageMemory = allocate(requirements, 0, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+                    check(vkBindImageMemory(device, result->image, result->imageMemory, 0), "bind shared texture");
+                    VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+                    view.image = result->image;
+                    view.viewType = texture.cube     ? VK_IMAGE_VIEW_TYPE_CUBE_ARRAY
+                                    : texture.volume ? VK_IMAGE_VIEW_TYPE_3D
+                                    : texture.array  ? VK_IMAGE_VIEW_TYPE_2D_ARRAY
+                                                     : VK_IMAGE_VIEW_TYPE_2D;
+                    view.format = info.format;
+                    view.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, info.mipLevels, 0, info.arrayLayers};
+                    view.components = texture.components;
+                    check(vkCreateImageView(device, &view, nullptr, &result->view), "create shared texture view");
+                    const auto offset = upload(nullptr, 0, bytes);
+                    texture.copyTo(segment.mapped + offset);
+                    uploadTexels(segment.command, texture, result->image, segment.buffer, offset, true);
+                    // Bundles close the open segment before recording, so the upload is already queued
+                    // ahead of any other consumer.
+                    result->ready = true;
+                    result->bytes = bytes; // no staging copy is kept
+                    result->usage = context.textureMemory;
+                    result->usage->bytes.fetch_add(result->bytes, std::memory_order_relaxed);
+                    context.admitTexture(std::move(key), result);
+                    return result;
+                }
+
+                std::shared_ptr<ScratchTexture> scratchTexture(const DrawResources::Texture &texture)
+                {
+                    const std::array<std::uint64_t, 10> key{texture.width,
+                                                             texture.height,
+                                                             texture.layers,
+                                                             unsigned(texture.format),
+                                                             texture.mips.size(),
+                                                             unsigned(texture.array) | unsigned(texture.volume) << 1 | unsigned(texture.cube) << 2,
+                                                             unsigned(texture.components.r),
+                                                             unsigned(texture.components.g),
+                                                             unsigned(texture.components.b),
+                                                             unsigned(texture.components.a)};
+                    auto &pool = scratchTextures[key];
+                    // Retained by in-flight segments until their fences complete.
+                    for (const auto &entry: pool)
+                        if (entry.use_count() == 1)
+                            return entry;
+                    auto result = std::make_shared<ScratchTexture>();
+                    result->device = device;
+                    VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+                    info.imageType = texture.volume ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D;
+                    info.flags = texture.cube ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0;
+                    info.format = texture.format;
+                    info.extent = {texture.width, texture.height, texture.volume ? texture.layers : 1};
+                    info.mipLevels = unsigned(texture.mips.size() + 1);
+                    info.arrayLayers = texture.volume ? 1 : texture.layers;
+                    info.samples = VK_SAMPLE_COUNT_1_BIT;
+                    info.tiling = VK_IMAGE_TILING_OPTIMAL;
+                    info.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+                    check(vkCreateImage(device, &info, nullptr, &result->image), "create scratch texture");
+                    VkMemoryRequirements requirements{};
+                    vkGetImageMemoryRequirements(device, result->image, &requirements);
+                    result->memory = allocate(requirements, 0, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+                    check(vkBindImageMemory(device, result->image, result->memory, 0), "bind scratch texture");
+                    VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+                    view.image = result->image;
+                    view.viewType = texture.cube     ? VK_IMAGE_VIEW_TYPE_CUBE_ARRAY
+                                    : texture.volume ? VK_IMAGE_VIEW_TYPE_3D
+                                    : texture.array  ? VK_IMAGE_VIEW_TYPE_2D_ARRAY
+                                                     : VK_IMAGE_VIEW_TYPE_2D;
+                    view.format = info.format;
+                    view.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, info.mipLevels, 0, info.arrayLayers};
+                    view.components = texture.components;
+                    check(vkCreateImageView(device, &view, nullptr, &result->view), "create scratch texture view");
+                    if (pool.size() >= 16)
+                        std::erase_if(pool, [](const auto &entry) { return entry.use_count() == 1; });
+                    pool.push_back(result);
+                    return result;
+                }
+
+                VkSampler sampler(const DrawResources::Texture &texture)
+                {
+                    const std::array<std::uint32_t, 9> key{unsigned(texture.filter),
+                                                           unsigned(texture.minFilter),
+                                                           unsigned(texture.mipFilter),
+                                                           std::bit_cast<std::uint32_t>(texture.minLod),
+                                                           std::bit_cast<std::uint32_t>(texture.maxLod),
+                                                           unsigned(texture.addressU),
+                                                           unsigned(texture.addressV),
+                                                           unsigned(texture.addressW),
+                                                           unsigned(texture.borderColor)};
+                    if (const auto found = samplers.find(key); found != samplers.end())
+                        return found->second;
+                    VkSamplerCreateInfo info{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+                    info.magFilter = texture.filter;
+                    info.minFilter = texture.minFilter;
+                    info.mipmapMode = texture.mipFilter;
+                    info.minLod = texture.minLod;
+                    info.maxLod = texture.maxLod;
+                    info.addressModeU = texture.addressU;
+                    info.addressModeV = texture.addressV;
+                    info.addressModeW = texture.addressW;
+                    info.borderColor = texture.borderColor;
+                    VkSampler created{};
+                    check(vkCreateSampler(device, &info, nullptr, &created), "create direct sampler");
+                    return samplers.emplace(key, created).first->second;
+                }
+
+                VkRenderPass renderPass(VkFormat colorFormat, VkFormat depthFormat)
+                {
+                    const auto key = std::make_pair(colorFormat, depthFormat);
+                    if (const auto found = passes.find(key); found != passes.end())
+                        return found->second;
+                    // Matches the bundle passes' attachment formats (render-pass compatibility), but
+                    // always loads: images are rendered in place and stay TRANSFER_SRC between draws.
+                    std::vector<VkAttachmentDescription> attachments;
+                    VkAttachmentReference colorReference{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+                    VkAttachmentReference depthReference{0, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+                    VkAttachmentDescription attachment{};
+                    attachment.samples = VK_SAMPLE_COUNT_1_BIT;
+                    attachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+                    attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+                    attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+                    attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+                    attachment.finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+                    if (colorFormat != VK_FORMAT_UNDEFINED) {
+                        attachment.format = colorFormat;
+                        attachment.initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                        attachments.push_back(attachment);
+                    }
+                    if (depthFormat != VK_FORMAT_UNDEFINED) {
+                        depthReference.attachment = unsigned(attachments.size());
+                        attachment.format = depthFormat;
+                        attachment.initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+                        attachments.push_back(attachment);
+                    }
+                    VkSubpassDescription subpass{};
+                    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+                    subpass.colorAttachmentCount = colorFormat != VK_FORMAT_UNDEFINED ? 1 : 0;
+                    subpass.pColorAttachments = &colorReference;
+                    subpass.pDepthStencilAttachment = depthFormat != VK_FORMAT_UNDEFINED ? &depthReference : nullptr;
+                    VkSubpassDependency dependency{};
+                    dependency.srcSubpass = 0;
+                    dependency.dstSubpass = VK_SUBPASS_EXTERNAL;
+                    dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                                              VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+                    dependency.dstStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT;
+                    dependency.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+                    dependency.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+                    VkRenderPassCreateInfo info{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
+                    info.attachmentCount = unsigned(attachments.size());
+                    info.pAttachments = attachments.data();
+                    info.subpassCount = 1;
+                    info.pSubpasses = &subpass;
+                    info.dependencyCount = 1;
+                    info.pDependencies = &dependency;
+                    VkRenderPass pass{};
+                    check(vkCreateRenderPass(device, &info, nullptr, &pass), "create direct render pass");
+                    return passes.emplace(key, pass).first->second;
+                }
+
+                VkFramebuffer framebuffer(VkRenderPass pass, const std::shared_ptr<ColorImage> &color, const std::shared_ptr<ColorImage> &depth,
+                                          VkExtent2D extent)
+                {
+                    const std::tuple key{pass, color ? color->attachmentView : VkImageView{}, depth ? depth->attachmentView : VkImageView{},
+                                         extent.width, extent.height};
+                    if (const auto found = framebuffers.find(key); found != framebuffers.end()) {
+                        // Views of released images can be recycled with the same handle.
+                        if (found->second.color.lock() == color && found->second.depth.lock() == depth)
+                            return found->second.framebuffer;
+                        vkDestroyFramebuffer(device, found->second.framebuffer, nullptr);
+                        framebuffers.erase(found);
+                    }
+                    if (framebuffers.size() >= 1024)
+                        // In-flight segments retain their images, so a framebuffer whose images are
+                        // released is idle.
+                        std::erase_if(framebuffers, [&](const auto &entry) {
+                            if (!entry.second.color.expired() || !entry.second.depth.expired())
+                                return false;
+                            vkDestroyFramebuffer(device, entry.second.framebuffer, nullptr);
+                            return true;
+                        });
+                    VkImageView views[2]{};
+                    unsigned count = 0;
+                    if (color)
+                        views[count++] = color->attachmentView;
+                    if (depth)
+                        views[count++] = depth->attachmentView;
+                    VkFramebufferCreateInfo info{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+                    info.renderPass = pass;
+                    info.attachmentCount = count;
+                    info.pAttachments = views;
+                    info.width = extent.width;
+                    info.height = extent.height;
+                    info.layers = 1;
+                    VkFramebuffer created{};
+                    check(vkCreateFramebuffer(device, &info, nullptr, &created), "create direct framebuffer");
+                    framebuffers.emplace(key, FramebufferEntry{color, depth, created});
+                    return created;
+                }
+
+                std::shared_ptr<const std::vector<std::uint8_t>> depthPadding(const RasterDraw::Depth &depth) const
+                {
+                    if (depth.rendered)
+                        if (const auto native = std::dynamic_pointer_cast<const NativeImage>(depth.rendered->image());
+                            native && native->storage->format == depthVkFormat(depth.format))
+                            return native->padding;
+                    if (depth.pitch == depth.width)
+                        return {};
+                    const auto rowBytes = std::size_t(depth.pitch - depth.width) * sizeof(float);
+                    auto padding = std::make_shared<std::vector<std::uint8_t>>(rowBytes * depth.height);
+                    for (unsigned y = 0; y < depth.height; ++y)
+                        std::memcpy(padding->data() + y * rowBytes, depth.target.data() + std::size_t(y) * depth.pitch + depth.width, rowBytes);
+                    return padding;
+                }
+
+                std::vector<std::uint8_t> read(const std::shared_ptr<ColorImage> &image, bool depthAspect, unsigned width, unsigned height, unsigned pitch,
+                                               const std::shared_ptr<const std::vector<std::uint8_t>> &padding)
+                {
+                    Profile::Scope reading(Profile::Stage::Readback);
+                    submit();
+                    const auto elementBytes = depthAspect ? sizeof(float) : imageElementBytes(image->format);
+                    const VkDeviceSize bytes = VkDeviceSize(pitch) * height * elementBytes;
+                    context.wait(readbackFence);
+                    if (readbackCapacity < bytes) {
+                        destroyBuffer(readbackBuffer, readbackMemory);
+                        readbackCapacity = bytes;
+                        readbackBuffer = createBuffer(bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, readbackMemory,
+                                                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                                      VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+                        void *mapped = nullptr;
+                        check(vkMapMemory(device, readbackMemory, 0, VK_WHOLE_SIZE, 0, &mapped), "map direct readback");
+                        readbackMapped = static_cast<const std::uint8_t *>(mapped);
+                    }
+                    if (!readbackPool) {
+                        VkCommandPoolCreateInfo info{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+                        info.queueFamilyIndex = context.family;
+                        check(vkCreateCommandPool(device, &info, nullptr, &readbackPool), "create direct readback pool");
+                        VkCommandBufferAllocateInfo allocate{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+                        allocate.commandPool = readbackPool;
+                        allocate.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+                        allocate.commandBufferCount = 1;
+                        check(vkAllocateCommandBuffers(device, &allocate, &readbackCommand), "allocate direct readback");
+                    } else
+                        check(vkResetCommandPool(device, readbackPool, 0), "reset direct readback pool");
+                    VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+                    begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+                    check(vkBeginCommandBuffer(readbackCommand, &begin), "begin direct readback");
+                    VkBufferImageCopy copy{};
+                    copy.bufferRowLength = pitch;
+                    copy.imageSubresource = {VkImageAspectFlags(depthAspect ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT), 0, 0, 1};
+                    copy.imageExtent = {width, height, 1};
+                    vkCmdCopyImageToBuffer(readbackCommand, image->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readbackBuffer, 1, &copy);
+                    VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+                    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                    barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+                    vkCmdPipelineBarrier(readbackCommand, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
+                    check(vkEndCommandBuffer(readbackCommand), "end direct readback");
+                    readbackFence = context.enqueue(readbackCommand);
+                    context.wait(readbackFence);
+                    ++context.readbackTransfers;
+                    std::vector<std::uint8_t> result(bytes);
+                    const auto rowBytes = std::size_t(pitch) * elementBytes;
+                    for (unsigned y = 0; y < height; ++y)
+                        std::memcpy(result.data() + y * rowBytes, readbackMapped + y * rowBytes, std::size_t(width) * elementBytes);
+                    if (padding) {
+                        const auto paddingBytes = std::size_t(pitch - width) * elementBytes;
+                        for (unsigned y = 0; y < height; ++y)
+                            std::memcpy(result.data() + y * rowBytes + std::size_t(width) * elementBytes, padding->data() + y * paddingBytes, paddingBytes);
+                    }
+                    return result;
+                }
+
+                std::shared_ptr<Context> contextOwner;
+                Context &context;
+                VkDevice device{};
+                VkDeviceSize alignment{256};
+                unsigned drawsPerSegment{48};
+                std::array<Segment, 4> segments;
+                std::size_t current{};
+                std::uint64_t renderedDraws{};
+                VkCommandPool readbackPool{};
+                VkCommandBuffer readbackCommand{};
+                std::shared_ptr<Context::BatchFence> readbackFence;
+                VkBuffer readbackBuffer{};
+                VkDeviceMemory readbackMemory{};
+                VkDeviceSize readbackCapacity{};
+                const std::uint8_t *readbackMapped{};
+                VkBuffer scratchBuffer{};
+                VkDeviceMemory scratchMemory{};
+                VkDeviceSize scratchCapacity{};
+                std::map<std::array<std::uint32_t, 9>, VkSampler> samplers;
+                std::map<std::pair<VkFormat, VkFormat>, VkRenderPass> passes;
+                std::map<std::tuple<VkRenderPass, VkImageView, VkImageView, unsigned, unsigned>, FramebufferEntry> framebuffers;
+                std::map<std::array<std::uint64_t, 10>, std::vector<std::shared_ptr<ScratchTexture>>> scratchTextures;
+        };
     } // namespace
 
     struct VulkanRasterBackend::Impl {
@@ -2173,6 +3233,7 @@ void main() {
             };
             SpirvCompiler compiler{SpirvCompiler::defaultCacheDirectory()};
             std::shared_ptr<Context> context;
+            std::shared_ptr<DirectRenderer> direct; // destroyed before the context it shares
             struct ResourceEntry {
                     std::shared_ptr<DrawResources> value;
                     std::uint64_t bytes{}, used{};
@@ -2190,12 +3251,14 @@ void main() {
             std::uint64_t completed{};
             bool retainTextures = true;
             bool lazyReadback = false;
+            bool directDraws = true;
     };
 
-    VulkanRasterBackend::VulkanRasterBackend(bool retainTextures, bool lazyReadback) : m_impl(std::make_unique<Impl>())
+    VulkanRasterBackend::VulkanRasterBackend(bool retainTextures, bool lazyReadback, bool directDraws) : m_impl(std::make_unique<Impl>())
     {
         m_impl->retainTextures = retainTextures;
         m_impl->lazyReadback = lazyReadback;
+        m_impl->directDraws = directDraws;
     }
     VulkanRasterBackend::~VulkanRasterBackend() = default;
     const std::string &VulkanRasterBackend::lastError() const noexcept { return m_impl->error; }
@@ -2703,6 +3766,26 @@ void main() {
             stageConstants[offset + 2] = float((sampler >> 9) & 7);
             stageConstants[offset + 3] = float((sampler >> 26) & 7); // DEPTH_COMPARE_FUNCTION
         }
+        static const bool directDraws = [] {
+            const auto *value = std::getenv("WEMU_NATIVE_DIRECT_DRAWS");
+            return !value || value[0] != '0';
+        }();
+        static const bool gpuTiming = [] {
+            const auto *value = std::getenv("WEMU_NATIVE_GPU_TIMING");
+            return value && value[0] == '1';
+        }();
+        // Fixed-point depth writes need the bundle quantization pass; GPU timing uses bundle queries.
+        if (directDraws && m_impl->directDraws && !gpuTiming && deferReadback && m_impl->lazyReadback &&
+            (!draw.depth.test || !draw.depth.write || draw.depth.format == DepthFormat::Float32)) {
+            if (!m_impl->direct)
+                m_impl->direct = std::make_shared<DirectRenderer>(m_impl->context);
+            auto result = m_impl->direct->render({draw, *vertex, *fragment, constants, vertexConstants, constantFloats, vertexConstantFloats, textures,
+                                                  targetSource, targetSnapshot, depthSource, overwriteTarget, draw.supersedesTarget});
+            ++m_impl->completed;
+            return result;
+        }
+        if (m_impl->direct)
+            m_impl->direct->submit(); // keep queue order: bundle commands follow earlier direct draws
         Impl::ResourceKey key;
         key.pipeline = {vertex->id, fragment->id, {}, draw.channelMask};
         key.pipeline.blend = blendKey(draw.blend);
@@ -2820,12 +3903,6 @@ void main() {
                 const auto *value = std::getenv("WEMU_NATIVE_CACHE_MB");
                 return (value ? std::max<std::uint64_t>(128, std::strtoull(value, nullptr, 10)) : 2560ull) * 1024 * 1024;
             }();
-            if (it == m_impl->resources.end() && m_impl->context->pipelines.size() >= 512 && !m_impl->context->pipelines.contains(key.pipeline)) {
-                for (auto &[oldKey, entry]: m_impl->resources)
-                    entry.value->finishPending();
-                m_impl->resources.clear();
-                m_impl->cachedBytes = 0;
-            }
             // Count each shared image once, including images evicted from the
             // texture cache but still held by draw bundles. Reserve a worst-case
             // upload for the incoming snapshots on both allocation and refresh.
