@@ -2523,8 +2523,11 @@ void main() {
                     if (depth) {
                         depth->initialized = true;
                         segment.retained.push_back(depth);
-                        if (draw.depth.write) {
-                            ++depth->version;
+                        // A read-only draw that had to upload or copy its depth still returns the new
+                        // image, so later draws find the surface resident instead of uploading again.
+                        if (draw.depth.write || !depthInPlace) {
+                            if (draw.depth.write)
+                                ++depth->version;
                             const auto padding = depthPadding(draw.depth);
                             result.depthReadback = std::make_shared<RasterReadback>(
                                     draw.depth.target.size_bytes(),

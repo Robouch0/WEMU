@@ -4024,7 +4024,7 @@ namespace Core::Gfx {
                 if (result) {
                     if (result->size() != targetBytes)
                         throw std::runtime_error("Raster backend returned an incomplete target");
-                    if (drawDepth && m_depthWrite &&
+                    if (drawDepth && (m_depthWrite || result->depthReadback) &&
                         (result->depthReadback ? result->depthReadback->size() != drawDepth->pixels.size() * sizeof(float)
                                                : result->depth.size() != drawDepth->pixels.size()))
                         throw std::runtime_error("Raster backend returned an incomplete depth surface");
@@ -4203,7 +4203,8 @@ namespace Core::Gfx {
                         m_pendingReadbacks.erase(makeSurfaceKey(m_color));
                         std::copy(result->rgba.begin(), result->rgba.end(), target);
                     }
-                    if (drawDepth && m_depthWrite) {
+                    // Backends may also return a resident copy of a depth surface they only read.
+                    if (drawDepth && (m_depthWrite || result->depthReadback)) {
                         drawDepth->pending = std::move(result->depthReadback);
                         if (!drawDepth->pending)
                             std::copy(result->depth.begin(), result->depth.end(), drawDepth->pixels.begin());
