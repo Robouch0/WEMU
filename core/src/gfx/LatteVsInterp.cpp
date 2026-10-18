@@ -200,6 +200,7 @@ namespace Core::Gfx {
         std::array<int, 4> address{};
         std::array<bool, 4> addressValid{};
         bool skippedPixelExport = false;
+        bool killed = false; // KILL* ran with a true condition: the pixel is discarded at the end
         std::array<bool, 32> activeStack{};
         unsigned activeDepth = 0;
         std::array<float, 256> cubeIndices{};
@@ -582,6 +583,38 @@ namespace Core::Gfx {
                                 case OP2_NOP:
                                     v = 0.0f;
                                     break;
+                                case OP2_KILLE:
+                                case OP2_KILLGT:
+                                case OP2_KILLGE:
+                                case OP2_KILLNE:
+                                case OP2_KILLGT_UINT:
+                                case OP2_KILLGE_UINT:
+                                case OP2_KILLE_INT:
+                                case OP2_KILLGT_INT:
+                                case OP2_KILLGE_INT:
+                                case OP2_KILLNE_INT: {
+                                    if (!pixelStage)
+                                        return false;
+                                    const auto ia = std::int32_t(asU32(a)), ib = std::int32_t(asU32(b));
+                                    bool condition{};
+                                    switch (in.op) {
+                                        case OP2_KILLE: condition = a == b; break;
+                                        case OP2_KILLGT: condition = a > b; break;
+                                        case OP2_KILLGE: condition = a >= b; break;
+                                        case OP2_KILLNE: condition = a != b; break;
+                                        case OP2_KILLGT_UINT: condition = asU32(a) > asU32(b); break;
+                                        case OP2_KILLGE_UINT: condition = asU32(a) >= asU32(b); break;
+                                        case OP2_KILLE_INT: condition = ia == ib; break;
+                                        case OP2_KILLGT_INT: condition = ia > ib; break;
+                                        case OP2_KILLGE_INT: condition = ia >= ib; break;
+                                        default: condition = ia != ib; break;
+                                    }
+                                    killed |= condition;
+                                    // Integer forms return integer one/zero, like SETxx_INT.
+                                    const bool integer = in.op >= OP2_KILLGT_UINT;
+                                    v = integer ? fromU32(condition ? 1u : 0u) : (condition ? 1.0f : 0.0f);
+                                    break;
+                                }
                                 default:
                                     if (pixelStage)
                                         return false;
@@ -839,7 +872,9 @@ namespace Core::Gfx {
             if (pixelStage && inst != CF_NOP)
                 return {};
         }
-        out.discarded = skippedPixelExport && !out.colorValid && !out.depthValid;
+        out.discarded = (skippedPixelExport && !out.colorValid && !out.depthValid) || killed;
+        if (killed)
+            out.colorValid = out.depthValid = false;
         return out;
     }
 

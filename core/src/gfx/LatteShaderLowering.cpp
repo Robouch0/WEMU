@@ -357,6 +357,27 @@ namespace Core::Gfx::Latte {
                     return "(" + a + " >= " + b + " ? 1.0 : 0.0)";
                 case OP2_SETNE:
                     return "(" + a + " != " + b + " ? 1.0 : 0.0)";
+                // KILL* results are the kill condition; the commit marks the lane killed.
+                case OP2_KILLE:
+                    return "(" + a + " == " + b + " ? 1.0 : 0.0)";
+                case OP2_KILLGT:
+                    return "(" + a + " > " + b + " ? 1.0 : 0.0)";
+                case OP2_KILLGE:
+                    return "(" + a + " >= " + b + " ? 1.0 : 0.0)";
+                case OP2_KILLNE:
+                    return "(" + a + " != " + b + " ? 1.0 : 0.0)";
+                case OP2_KILLGT_UINT:
+                    return "uintBitsToFloat(floatBitsToUint(" + a + ") > floatBitsToUint(" + b + ") ? 1u : 0u)";
+                case OP2_KILLGE_UINT:
+                    return "uintBitsToFloat(floatBitsToUint(" + a + ") >= floatBitsToUint(" + b + ") ? 1u : 0u)";
+                case OP2_KILLE_INT:
+                    return "uintBitsToFloat(floatBitsToInt(" + a + ") == floatBitsToInt(" + b + ") ? 1u : 0u)";
+                case OP2_KILLGT_INT:
+                    return "uintBitsToFloat(floatBitsToInt(" + a + ") > floatBitsToInt(" + b + ") ? 1u : 0u)";
+                case OP2_KILLGE_INT:
+                    return "uintBitsToFloat(floatBitsToInt(" + a + ") >= floatBitsToInt(" + b + ") ? 1u : 0u)";
+                case OP2_KILLNE_INT:
+                    return "uintBitsToFloat(floatBitsToInt(" + a + ") != floatBitsToInt(" + b + ") ? 1u : 0u)";
                 case OP2_SETE_DX10:
                     return "uintBitsToFloat(" + a + " == " + b + " ? 4294967295u : 0u)";
                 case OP2_SETGE_DX10:
@@ -486,7 +507,7 @@ namespace Core::Gfx::Latte {
                 body += vertexStage ? std::format("r[{}]=attributes[{}];\n", i + 1, i) : std::format("r[{}]=inputs[{}];\n", i, i);
             if (vertexStage)
                 body += "vec4 position=vec4(0.0,0.0,0.0,1.0); vec4 parameters[32]; for(int i=0;i<32;++i) parameters[i]=vec4(0.0);\n";
-            body += "vec4 pv=vec4(0.0); float ps=0.0;\nbool pred=true,laneActive=true,wroteOutput=false; bool activeStack[32]; uint pc=0u;\n";
+            body += "vec4 pv=vec4(0.0); float ps=0.0;\nbool pred=true,laneActive=true,wroteOutput=false,killed=false; bool activeStack[32]; uint pc=0u;\n";
             bool exported = false, terminated = false, ignoredColorExports = false;
             bool terminalUnconditionalColor = false;
             bool varyingWholeQuadUsed = false, implicitSamples = false;
@@ -649,6 +670,13 @@ namespace Core::Gfx::Latte {
                                 body += std::format("nextActive=p{};\n", i);
                             if (in.writeMask)
                                 body += std::format("r[{}][{}]=t{};\n", in.dstGpr, in.dstChan, i);
+                            if (in.isKill()) {
+                                if (vertexStage)
+                                    throw std::runtime_error("pixel kill in a vertex program");
+                                // Discard at the end so helper lanes keep feeding derivatives.
+                                body += std::format("if(floatBitsToUint(t{})!=0u) killed=true;\n", i);
+                                result.kills = true;
+                            }
                             if (in.isAddressWrite()) {
                                 body += std::format("ar[{}]=floatBitsToInt(t{});\n", in.dstChan, i);
                                 constants.addressValid[in.dstChan] = true;
@@ -966,7 +994,7 @@ namespace Core::Gfx::Latte {
             if (ignoredColorExports && (maskedControl || rootMaskChanged || !jumpTargets.empty()))
                 throw std::runtime_error("inactive color export specialization requires unconditional exports");
             result.requiresOnlyColorZero = ignoredColorExports;
-            result.alwaysWritesColor = !vertexStage && result.exportsColor && !result.writesDepth &&
+            result.alwaysWritesColor = !vertexStage && result.exportsColor && !result.writesDepth && !result.kills &&
                                        (terminalUnconditionalColor || (!maskedControl && jumpTargets.empty()));
             // Reserve the remaining existing UBO slots for dynamic buffer reads.
             // Replay proves each bound block fits before native dispatch; larger
@@ -1122,7 +1150,7 @@ vec3 cubeDirectionReference(vec3 coord) {
 }
 )";
             else
-                result.source += "if(!wroteOutput) discard;\n}\n";
+                result.source += "if(!wroteOutput||killed) discard;\n}\n";
         } catch (const std::runtime_error &error) {
             result = {};
             result.error = error.what();

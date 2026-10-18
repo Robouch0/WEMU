@@ -836,6 +836,67 @@ TEST(VulkanRasterBackendTest, ArrayDepthCompareSelectsLayerAndAppliesSamplerFunc
         }
 }
 
+TEST(VulkanRasterBackendTest, KillInstructionsDiscardMatchingPixelsAndPreserveTheTarget)
+{
+    using namespace Core::Gfx;
+    using namespace Latte;
+    // Positive floats order like their integer bits, so one set of cases covers every form.
+    for (unsigned op: {unsigned(OP2_KILLE), unsigned(OP2_KILLGT), unsigned(OP2_KILLGE), unsigned(OP2_KILLNE), unsigned(OP2_KILLGT_UINT),
+                       unsigned(OP2_KILLGE_UINT), unsigned(OP2_KILLE_INT), unsigned(OP2_KILLGT_INT), unsigned(OP2_KILLGE_INT),
+                       unsigned(OP2_KILLNE_INT)}) {
+        SCOPED_TRACE(op);
+        // KILLxx R0.x, R0.y (no register write), then export R0 as color.
+        const auto program = decodeProgram({2, 8u << 26, 0, (CF_EXP_DONE << 23) | (1u << 21) | 0x688u, (1u << 31) | (1u << 23), op << 7});
+        const auto shader = lowerFragmentShader(*program);
+        ASSERT_TRUE(shader) << shader.error;
+        EXPECT_TRUE(shader.kills);
+        EXPECT_FALSE(shader.alwaysWritesColor);
+        const auto killedBy = [&](float a, float b) {
+            switch (op) {
+                case OP2_KILLE:
+                case OP2_KILLE_INT:
+                    return a == b;
+                case OP2_KILLGT:
+                case OP2_KILLGT_UINT:
+                case OP2_KILLGT_INT:
+                    return a > b;
+                case OP2_KILLGE:
+                case OP2_KILLGE_UINT:
+                case OP2_KILLGE_INT:
+                    return a >= b;
+                default:
+                    return a != b;
+            }
+        };
+        const std::array<std::array<float, 2>, 3> cases{{{.25f, .75f}, {.5f, .5f}, {.75f, .25f}}};
+        for (const auto &[a, b]: cases) {
+            const std::array<std::array<float, 4>, 1> inputs{{{a, b, .5f, 1}}};
+            const auto reference = LatteVsInterp::runPixel(*program, inputs, nullptr, 0, {});
+            EXPECT_EQ(reference.discarded, killedBy(a, b)) << a << "," << b;
+            EXPECT_EQ(reference.colorValid, !killedBy(a, b)) << a << "," << b;
+        }
+        if (!std::getenv("WEMU_TEST_VULKAN") || !SpirvCompiler::available())
+            continue;
+        // A full-target quad: a killing shader must not be treated as a complete overwrite.
+        std::array<RasterDraw::Vertex, 6> vertices{{{0, 0, {}}, {4, 0, {}}, {0, 4, {}}, {4, 0, {}}, {4, 4, {}}, {0, 4, {}}}};
+        std::vector<std::uint8_t> target(4 * 4 * 4, 123);
+        RasterDraw draw{shader, vertices, {}, {}, target, 4, 4, 4, {0, 0, 4, 4}, 15, {}};
+        VulkanRasterBackend backend;
+        for (const auto &[a, b]: cases) {
+            for (auto &vertex: vertices)
+                vertex.inputs[0] = {a, b, .5f, 1};
+            const auto result = backend.render(draw);
+            ASSERT_TRUE(result) << backend.lastError();
+            const auto expected = killedBy(a, b) ? std::array<std::uint8_t, 4>{123, 123, 123, 123}
+                                                 : std::array<std::uint8_t, 4>{std::uint8_t(a * 255 + .5f), std::uint8_t(b * 255 + .5f), 128, 255};
+            for (unsigned pixel = 0; pixel < 16; ++pixel)
+                for (unsigned c = 0; c < 4; ++c)
+                    EXPECT_NEAR(result->rgba[pixel * 4 + c], expected[c], 1) << a << "," << b << " pixel " << pixel;
+        }
+    }
+    EXPECT_FALSE(lowerVertexShader(*decodeProgram({2, 8u << 26, 0, (CF_EXP_DONE << 23) | (1u << 21) | (60u) | (1u << 13), (1u << 31), OP2_KILLGT << 7})));
+}
+
 TEST(RasterReadbackTest, MaterializesOnceAndRejectsIncompleteResults)
 {
     unsigned calls = 0;

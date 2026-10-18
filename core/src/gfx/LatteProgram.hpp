@@ -74,6 +74,10 @@ namespace Core::Gfx::Latte {
         OP2_PRED_SETGT_PUSH = 0x29,
         OP2_PRED_SETGE_PUSH = 0x2A,
         OP2_PRED_SETNE_PUSH = 0x2B,
+        OP2_KILLE = 0x2C,
+        OP2_KILLGT = 0x2D,
+        OP2_KILLGE = 0x2E,
+        OP2_KILLNE = 0x2F,
         OP2_AND_INT = 0x30,
         OP2_OR_INT = 0x31,
         OP2_XOR_INT = 0x32,
@@ -83,10 +87,16 @@ namespace Core::Gfx::Latte {
         OP2_SETGT_INT = 0x3B,
         OP2_SETGE_INT = 0x3C,
         OP2_SETNE_INT = 0x3D,
+        OP2_KILLGT_UINT = 0x40,
+        OP2_KILLGE_UINT = 0x41,
         OP2_PRED_SETE_INT = 0x42,
         OP2_PRED_SETGT_INT = 0x43,
         OP2_PRED_SETGE_INT = 0x44,
         OP2_PRED_SETNE_INT = 0x45,
+        OP2_KILLE_INT = 0x46,
+        OP2_KILLGT_INT = 0x47,
+        OP2_KILLGE_INT = 0x48,
+        OP2_KILLNE_INT = 0x49,
         OP2_DOT4 = 0x50,
         OP2_DOT4_IEEE = 0x51,
         OP2_CUBE = 0x52,
@@ -141,6 +151,11 @@ namespace Core::Gfx::Latte {
             [[nodiscard]] bool isPredSet() const
             {
                 return !op3 && ((op >= OP2_PRED_SETE && op <= OP2_PRED_SETNE_PUSH) || (op >= OP2_PRED_SETE_INT && op <= OP2_PRED_SETNE_INT));
+            }
+            [[nodiscard]] bool isKill() const
+            {
+                return !op3 && ((op >= OP2_KILLE && op <= OP2_KILLNE) || op == OP2_KILLGT_UINT || op == OP2_KILLGE_UINT ||
+                                (op >= OP2_KILLE_INT && op <= OP2_KILLNE_INT));
             }
             [[nodiscard]] bool isAddressWrite() const { return !op3 && (op == OP2_MOVA || op == OP2_MOVA_FLOOR || op == OP2_MOVA_INT); }
     };
