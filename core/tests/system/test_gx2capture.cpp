@@ -2254,7 +2254,8 @@ TEST_F(Gx2CaptureTest, IndexedVertexReusePreservesParametersAndRefreshesEachDraw
             native.replay(gx2Stream(), &cpu->m_memory);
             EXPECT_EQ(native.framebuffer(), cached.framebuffer());
             EXPECT_EQ(native.differingNativeDraws(), 0u);
-            EXPECT_EQ(backend->completedDraws(), whollyBehind ? 0u : 1u) << backend->lastError();
+            // Vertex programs run on the GPU, which clips the wholly hidden triangle itself.
+            EXPECT_EQ(backend->completedDraws(), 1u) << backend->lastError();
         }
     }
 }

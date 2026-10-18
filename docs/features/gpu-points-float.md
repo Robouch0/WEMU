@@ -104,12 +104,14 @@ These operations allow eligible vertex-texture shaders to remain on Vulkan.
 Unsupported instructions/resources continue to fall back; ordinary small
 triangle vertex passes retain the existing eligibility policy.
 
-`WEMU_NATIVE_TRIANGLE_VERTEX=1` enables broader ordinary-triangle vertex execution
-for validation/profiling. It is disabled by default: commercial-scene comparison
-found color differences beyond the established one-level tolerance, despite no
-Vulkan synchronization errors. Point batches and eligible vertex-texture shaders
-keep their established default eligibility. Pixel fidelity must be resolved
-before broader triangle execution is promoted.
+Ordinary triangle draws also execute eligible vertex programs on Vulkan by
+default; `WEMU_NATIVE_TRIANGLE_VERTEX=0` restores reference vertex execution for
+them. Interpreting vertex programs on the replay thread took about 60% of its
+time in MK8's race and most of the character select's 17 ms replay. Compared with
+reference execution, MK8's menus differ only at triangle edges and in rounding:
+in the kart select, 498 of 921600 pixels differ by more than 2% and none by more
+than 10%. The host rasterizer clips and applies its own coverage rules instead of
+the replayer's CPU clipping and sub-half-pixel culling.
 
 ## Stack-pop control flow
 

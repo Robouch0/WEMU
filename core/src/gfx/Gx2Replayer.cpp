@@ -2975,7 +2975,7 @@ namespace Core::Gfx {
         }();
         static const bool gpuTriangleVertexEnabled = [] {
             const auto *v = std::getenv("WEMU_NATIVE_TRIANGLE_VERTEX");
-            return v && v[0] == '1';
+            return !v || v[0] != '0';
         }();
         if (collectBackend && (mode == 1 || mode == 4 || mode == 0x13) && gpuVertexEnabled && m_rasterBackend->supportsVertexStage() &&
             !m_fetchLayout.empty()) {
@@ -2993,10 +2993,9 @@ namespace Core::Gfx {
                 return surface.imagePtr && surface.dimension == 1 && !surface.aa && !surface.firstMip && !surface.firstSlice &&
                        surface.sliceCount == 1;
             });
-            // Point batches amortize vertex setup; texture shaders also avoid
-            // CPU reads of resident surfaces even for small draws. Keep ordinary
-            // triangle placement/interpolation on the established reference path
-            // unless explicitly benchmarking broader vertex execution.
+            // Interpreting vertex programs on the replay thread dominated MK8's
+            // character select and race frames, so triangles run them on the GPU
+            // too. Software fallback re-executes the reference program per corner.
             if (*candidate && inputsSupported && resourcesSupported && buffersSupported &&
                 ((mode == 1 && count >= 64) || !candidate->textures.empty() || !candidate->uniformBuffers.empty() ||
                  (mode != 1 && gpuTriangleVertexEnabled))) {
@@ -3004,8 +3003,9 @@ namespace Core::Gfx {
                 nativeVertexExecution = true;
             }
             if (nativeAudit)
-                Utils::Log::error("[NATIVEVS] frame={} draw={} lowered={} native={} reason={}", m_presentCount, m_stats.draws, bool(*candidate),
-                                  nativeVertexExecution, candidate->error);
+                Utils::Log::error("[NATIVEVS] frame={} draw={} lowered={} native={} inputs={} buffers={} resources={} mode={} count={} reason={}",
+                                  m_presentCount, m_stats.draws, bool(*candidate), nativeVertexExecution, m_vertexInputCount, buffersSupported,
+                                  resourcesSupported, mode, count, candidate->error);
         }
         const auto clipTriangle = [&](RasterVertex(&rv)[3], const auto &emit) {
             if (!std::all_of(std::begin(rv), std::end(rv), [](const auto &v) { return v.clipPosition.has_value(); })) {
