@@ -11,8 +11,8 @@
 #include <algorithm>
 #include <array>
 #include <bit>
-#include <cmath>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -981,7 +981,9 @@ static void hle_VPADRead(Core::Interpreter &cpu)
     for (const auto offset: {0x6Cu, 0x7Cu, 0x8Cu})
         cpu.m_memory.write<std::uint32_t>(buf_addr + offset, 0x3F800000);
 
-    const auto writeFloat = [&](std::uint32_t offset, float value) { cpu.m_memory.write<std::uint32_t>(buf_addr + offset, std::bit_cast<std::uint32_t>(value)); };
+    const auto writeFloat = [&](std::uint32_t offset, float value) {
+        cpu.m_memory.write<std::uint32_t>(buf_addr + offset, std::bit_cast<std::uint32_t>(value));
+    };
     writeFloat(0x0C, pad.leftStick[0]);
     writeFloat(0x10, pad.leftStick[1]);
     writeFloat(0x14, pad.rightStick[0]);

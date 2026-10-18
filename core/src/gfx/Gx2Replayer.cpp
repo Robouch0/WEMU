@@ -4306,7 +4306,10 @@ namespace Core::Gfx {
         if (backing && backing->size() < bytes)
             return;
         if (!base) {
-            if (!m_mem || !(base = m_mem->hostPtr(s.imagePtr)) || !m_mem->hostPtr(s.imagePtr + bytes - 1))
+            if (!m_mem)
+                return;
+            base = m_mem->hostPtr(s.imagePtr);
+            if (!base || !m_mem->hostPtr(s.imagePtr + bytes - 1))
                 return;
         }
         for (std::uint32_t y = 0; y < kDrcHeight; y++) {
@@ -4320,7 +4323,7 @@ namespace Core::Gfx {
                     for (unsigned c = 0; c < 3; ++c)
                         dst[x * 4 + c] = byteFromUnit(value[c]);
                 } else
-                    std::memcpy(dst + x * 4, src, 3);
+                    std::memcpy(dst + static_cast<std::size_t>(x) * 4, src, 3);
                 dst[x * 4 + 3] = 0xFF;
             }
         }
