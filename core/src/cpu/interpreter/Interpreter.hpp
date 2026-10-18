@@ -245,6 +245,8 @@ namespace Core {
                     // Guest-order words of every validated instruction (instrs plus native lookahead),
                     // compared against live memory with one memcmp on each dispatch.
                     std::vector<std::uint32_t> guestWords;
+                    bool stores{false}; // any instruction may write guest memory (spin detection)
+                    mutable std::uint64_t validatedEpoch{0}; // Memory::codeEpoch() of the last word comparison
 #ifdef WEMU_HAS_LLVM
                     std::vector<std::uint32_t> nativeWords; // supported prefix, empty when not eligible
                     mutable Ppc::NativeBinding nativeCode; // Cache invalidation expires this binding.

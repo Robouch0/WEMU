@@ -96,9 +96,21 @@ namespace Core {
                 return nullptr;
             }
 
+            // A writable view may be used to replace decoded code (HLE memcpy, DMA), so it ends the
+            // current code epoch when the range touches a code page.
             [[nodiscard]] std::uint8_t *hostPtr(const std::uint32_t address, const std::size_t bytes = 1) noexcept
             {
-                return const_cast<std::uint8_t *>(std::as_const(*this).hostPtr(address, bytes));
+                auto *ptr = const_cast<std::uint8_t *>(std::as_const(*this).hostPtr(address, bytes));
+                const std::size_t offset = static_cast<std::size_t>(address) - m_virtAddress;
+                if (ptr && address >= m_virtAddress && offset < m_memory.size()) {
+                    for (std::size_t page = offset >> kCodePageShift, last = (offset + bytes - 1) >> kCodePageShift; page <= last; ++page) {
+                        if (m_codePages[page / 64] >> (page % 64) & 1) {
+                            ++m_codeEpoch;
+                            break;
+                        }
+                    }
+                }
+                return ptr;
             }
 
             template<typename T>
@@ -121,8 +133,10 @@ namespace Core {
                 // as soon as a store touches a page holding decoded code (see markCodePage).
                 const std::size_t offset = static_cast<std::size_t>(address) - m_virtAddress;
                 if (address >= m_virtAddress && offset < m_memory.size() && sizeof(T) <= m_memory.size() - offset) {
-                    if (isCodePage(offset) || isCodePage(offset + sizeof(T) - 1)) [[unlikely]]
+                    if (isCodePage(offset) || isCodePage(offset + sizeof(T) - 1)) [[unlikely]] {
                         m_codeWritten = true;
+                        ++m_codeEpoch;
+                    }
                     std::memcpy(m_memory.data() + offset, &swapped, sizeof(T));
                     return;
                 }
@@ -133,8 +147,10 @@ namespace Core {
             }
 
             // Pages of main RAM that hold decoded (cached) guest code, by memory-relative offset.
-            // Memory::write raises codeWritten() when it stores into one of them; other write paths
-            // (HLE memcpy, loaders) are caught by the interpreter's block revalidation instead.
+            // Memory::write raises codeWritten() when it stores into one of them. Both it and the
+            // writable hostPtr() view advance codeEpoch(), so decoded blocks validated in the
+            // current epoch need no word comparison. Loader views (allocate/getMemory) precede
+            // decoding.
             static constexpr unsigned kCodePageShift = 12;
             void markCodePage(const std::size_t offset)
             {
@@ -148,8 +164,13 @@ namespace Core {
                 const std::size_t page = offset >> kCodePageShift;
                 return m_codePages[page / 64] >> (page % 64) & 1;
             }
-            void clearCodePages() noexcept { std::fill(m_codePages.begin(), m_codePages.end(), 0); }
+            void clearCodePages() noexcept
+            {
+                std::fill(m_codePages.begin(), m_codePages.end(), 0);
+                ++m_codeEpoch;
+            }
             [[nodiscard]] bool codeWritten() const noexcept { return m_codeWritten; }
+            [[nodiscard]] std::uint64_t codeEpoch() const noexcept { return m_codeEpoch; }
             void clearCodeWritten() noexcept { m_codeWritten = false; }
 
             [[nodiscard]] std::uint32_t heapAllocate(const std::uint32_t size, std::uint32_t align)
@@ -187,6 +208,7 @@ namespace Core {
             std::vector<char> m_lockedCache;
             std::vector<std::uint64_t> m_codePages;
             bool m_codeWritten{false};
+            std::uint64_t m_codeEpoch{1}; // blocks start at epoch 0, i.e. unvalidated
             std::size_t m_heapPtr = HEAP_BASE;
             std::size_t m_virtAddress;
             std::size_t m_memSize;

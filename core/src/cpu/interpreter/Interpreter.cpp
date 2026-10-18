@@ -298,6 +298,26 @@ void Core::Interpreter::run()
                                    haveMk8UiArrayZeroFill || haveMk8WorkQueueTrace || haveSeadHeapTrace || haveSeadHeapContextTrace || haveFlvcSkip ||
                                    haveOrderFix || driveMenuTask;
     std::uint64_t schedulerClockRetired = m_retired;
+    // A thread that retires thousands of instructions without a single store is polling memory
+    // that another core writes (job counters, completion flags). On hardware that core runs in
+    // parallel; here it only advances once the poller leaves the host thread, so hand the slice
+    // to other cores early instead of spinning it out. Switching at a block boundary is the same
+    // operation as the periodic timeslice preemption. WEMU_SPIN_YIELD=0 disables it.
+    constexpr std::uint64_t kSpinYieldInstructions = 2048;
+    const bool spinYield = [] {
+        const char *e = std::getenv("WEMU_SPIN_YIELD");
+        return !e || e[0] != '0';
+    }();
+    std::uint64_t lastStoreRetired = m_retired;
+    const auto noteBlockRetired = [&](const Block &blk) {
+        if (blk.stores) {
+            lastStoreRetired = m_retired;
+        } else if (m_retired - lastStoreRetired >= kSpinYieldInstructions && spinYield) {
+            lastStoreRetired = m_retired;
+            if (!m_interruptsDisabled)
+                m_scheduler.preempt(*this);
+        }
+    };
     while (m_running) {
         if (m_retired >= nextServiceTickAt) {
             // Desktop events must not depend on the guest calling VPADRead or WHBProc.
@@ -562,6 +582,7 @@ void Core::Interpreter::run()
                             m_retired += n;
                             if (blk.nativeWords.size() < blk.instrs.size())
                                 m_retired += runBlock(blk, n);
+                            noteBlockRetired(blk);
                             continue;
                         }
                     } catch (const std::exception &error) {
@@ -572,6 +593,7 @@ void Core::Interpreter::run()
 #endif
                 const std::uint32_t n = runBlock(blk);
                 m_retired += n;
+                noteBlockRetired(blk);
                 continue;
             }
         }
@@ -629,12 +651,22 @@ const Core::Interpreter::Block &Core::Interpreter::getBlock(Utils::BeDecoder &de
         nativeLookahead = false;
     const auto &ram = m_memory.getMemory();
     // Cached versions are valid while their guest words are unchanged in memory.
+    // Without a code-page write since the last comparison the words cannot have changed. Native
+    // stores bypass Memory, so native dispatch keeps comparing on every lookup.
     const auto current = [&](const Block &block) {
-        bool valid = !block.instrs.empty() && std::size_t(startPc) + block.guestWords.size() * 4 <= ram.size() &&
-                     std::memcmp(ram.data() + startPc, block.guestWords.data(), block.guestWords.size() * 4) == 0;
+        if (block.instrs.empty())
+            return false;
 #ifdef WEMU_HAS_LLVM
-        valid &= !nativeLookahead || block.nativeLookahead;
+        if (nativeLookahead && !block.nativeLookahead)
+            return false;
 #endif
+        const std::uint64_t epoch = m_memory.codeEpoch();
+        if (block.validatedEpoch == epoch && !nativeLookahead)
+            return true;
+        const bool valid = std::size_t(startPc) + block.guestWords.size() * 4 <= ram.size() &&
+                           std::memcmp(ram.data() + startPc, block.guestWords.data(), block.guestWords.size() * 4) == 0;
+        if (valid)
+            block.validatedEpoch = epoch;
         return valid;
     };
     BlockLookup &slot = m_blockLookup[blockLookupSlot(startPc)];
@@ -714,6 +746,7 @@ const Core::Interpreter::Block &Core::Interpreter::getBlock(Utils::BeDecoder &de
                 break;
         }
         b.instrs.back().store = stores;
+        b.stores |= stores;
         // Interpreted blocks continue past stores: Memory::write flags a store into a page of
         // decoded code and runBlock() leaves the block right after it. Native lookahead keeps its
         // own store policy below, so its reference blocks still stop here.
@@ -755,6 +788,7 @@ const Core::Interpreter::Block &Core::Interpreter::getBlock(Utils::BeDecoder &de
         }
         b.nativePrefixLength = b.nativeWords.size();
     }
+    b.stores |= std::ranges::any_of(b.nativeWords, [](std::uint32_t word) { return Ppc::Block::stores(word); });
     b.nativeLoop = Ppc::Block::loopsToStart(startPc + Memory::ApplicationCode, b.nativeWords);
     const std::size_t validatedWords = std::max(b.instrs.size(), b.nativeWords.size());
 #else
@@ -767,6 +801,7 @@ const Core::Interpreter::Block &Core::Interpreter::getBlock(Utils::BeDecoder &de
             m_memory.markCodePage(offset);
         m_memory.markCodePage(startPc + validatedWords * 4 - 1);
     }
+    b.validatedEpoch = m_memory.codeEpoch();
     Block &stored = m_blockCache.insert_or_assign(startPc, std::move(b)).first->second;
     slot = {startPc, &stored};
     return stored;
