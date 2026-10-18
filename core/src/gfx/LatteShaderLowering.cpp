@@ -750,8 +750,8 @@ namespace Core::Gfx::Latte {
                         }
                         binding->implicitLod |= !explicitLod;
                         binding->explicitLod |= texOp == 0x11;
-                        if (compare && binding->type != TextureType::TwoD && std::getenv("WEMU_ARRAYDIAG") == nullptr) // TEMP-ARRAYDIAG
-                            throw std::runtime_error("array depth-compare sampling not yet supported");
+                        if (compare && binding->type != TextureType::TwoD && binding->type != TextureType::TwoDArray)
+                            throw std::runtime_error("cube/3D depth-compare sampling not yet supported");
                         const auto reg = std::format("r[{}]", (t0 >> 16) & 127);
                         for (unsigned c = 0; c < 4; ++c) {
                             const auto selector = (t2 >> (20 + c * 3)) & 7;
@@ -791,6 +791,17 @@ namespace Core::Gfx::Latte {
                                                 "if(any(isnan(coord))||any(isinf(coord))) sampled=vec4(u.borders[{}].r); "
                                                 "else sampled=textureGather(tex{},coord,0);\n",
                                                 coords, binding->binding - 1, binding->binding);
+                        } else if (compare) {
+                            // Shadow sample: (reference FUNC texel) with the sampler's
+                            // DEPTH_COMPARE_FUNCTION, stored in u.sampling[].w by the backend.
+                            // Array coordinates already carry the rounded layer.
+                            body += std::format("{{ float reference={}; float texel=textureLod(tex{},vec{}({}),0.0).r; "
+                                                "int compareFunction=int(u.sampling[{}].w); bool pass="
+                                                "compareFunction==1?reference<texel:compareFunction==2?reference==texel:"
+                                                "compareFunction==3?reference<=texel:compareFunction==4?reference>texel:"
+                                                "compareFunction==5?reference!=texel:compareFunction==6?reference>=texel:compareFunction==7; "
+                                                "vec4 sampled=vec4(pass?1.0:0.0);\n",
+                                                select(reg, (t2 >> 29) & 7), binding->binding, array ? 3 : 2, coords, binding->binding - 1);
                         } else if (array && texOp == 0x11) {
                             body += std::format("{{ vec4 sampled=textureLod(tex{},vec3({}),{});\n", binding->binding, coords, lod);
                         } else if (array) {
@@ -799,16 +810,6 @@ namespace Core::Gfx::Latte {
                                                 "else sampled=sampleArrayReference(tex{},vec3({}),u.sampling[{}]);\n",
                                                 select(reg, (t2 >> 20) & 7), select(reg, (t2 >> 23) & 7), select(reg, (t2 >> 26) & 7),
                                                 binding->binding - 1, binding->binding, coords, binding->binding - 1);
-                        } else if (compare) {
-                            // Shadow sample: (reference FUNC texel) with the sampler's
-                            // DEPTH_COMPARE_FUNCTION, stored in u.sampling[].w by the backend.
-                            body += std::format("{{ float reference={}; float texel=textureLod(tex{},vec2({}),0.0).r; "
-                                                "int compareFunction=int(u.sampling[{}].w); bool pass="
-                                                "compareFunction==1?reference<texel:compareFunction==2?reference==texel:"
-                                                "compareFunction==3?reference<=texel:compareFunction==4?reference>texel:"
-                                                "compareFunction==5?reference!=texel:compareFunction==6?reference>=texel:compareFunction==7; "
-                                                "vec4 sampled=vec4(pass?1.0:0.0);\n",
-                                                select(reg, (t2 >> 29) & 7), binding->binding, coords, binding->binding - 1);
                         } else {
                             body += std::format("{{ vec4 sampled=textureLod(tex{},vec{}({}),{});\n", binding->binding, volume ? 3 : 2, coords, lod);
                         }

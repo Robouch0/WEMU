@@ -774,6 +774,43 @@ TEST(VulkanRasterBackendTest, ArrayTexturesSelectLayersAndRefreshPaddedSnapshots
         }
 }
 
+TEST(VulkanRasterBackendTest, ArrayDepthCompareSelectsLayerAndAppliesSamplerFunction)
+{
+    using namespace Core::Gfx;
+    // SAMPLE_C with x,y,layer,reference in r0.xyzw (cascaded shadow maps).
+    const auto program = decodeProgram({2, 1u << 23, 0, (0x28u << 23) | (1u << 21) | 0x688u, 0x18u, 0x30000000u | (0x688u << 9),
+                                        (1u << 23) | (2u << 26) | (3u << 29), 0});
+    const std::array types{TextureType::TwoDArray};
+    const auto shader = lowerFragmentShader(*program, types);
+    ASSERT_TRUE(shader) << shader.error;
+    ASSERT_EQ(shader.textures.size(), 1u);
+    EXPECT_EQ(shader.textures[0].type, TextureType::TwoDArray);
+    EXPECT_FALSE(lowerFragmentShader(*program, std::array{TextureType::Cube}));
+    if (!std::getenv("WEMU_TEST_VULKAN") || !SpirvCompiler::available())
+        GTEST_SKIP();
+    std::array<RasterDraw::Vertex, 3> vertices{{{0, 0, {}}, {4, 0, {}}, {0, 4, {}}}};
+    std::vector<std::uint8_t> target(4 * 4 * 4);
+    const std::array<float, 2> depths{0.25f, 0.75f};
+    RasterDraw::Texture texture{shader.textures[0], 1, 1, {}, [](unsigned, unsigned) { return std::array{0.f, 0.f, 0.f, 0.f}; }};
+    texture.r32 = depths;
+    texture.layers = 2;
+    texture.sourceMipCount = 1;
+    RasterDraw draw{shader, vertices, {}, {&texture, 1}, target, 4, 4, 4, {0, 0, 4, 4}, 15, {}};
+    VulkanRasterBackend backend;
+    for (unsigned function: {1u, 4u, 7u})
+        for (unsigned layer: {0u, 1u}) {
+            SCOPED_TRACE(std::format("function={} layer={}", function, layer));
+            texture.sampler.regs[0] = 2u | (2u << 3) | (function << 26);
+            for (auto &vertex: vertices)
+                vertex.inputs[0] = {0.5f, 0.5f, float(layer), 0.5f};
+            const auto result = backend.render(draw);
+            ASSERT_TRUE(result) << backend.lastError();
+            const bool pass = function == 1 ? 0.5f < depths[layer] : function == 4 ? 0.5f > depths[layer] : true;
+            for (unsigned c = 0; c < 4; ++c)
+                EXPECT_EQ(result->rgba[c], pass ? 255 : 0);
+        }
+}
+
 TEST(RasterReadbackTest, MaterializesOnceAndRejectsIncompleteResults)
 {
     unsigned calls = 0;
