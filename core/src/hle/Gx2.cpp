@@ -7,6 +7,7 @@
 #include <exception>
 #include <functional>
 #include <mutex>
+#include <pthread.h>
 #include <thread>
 
 #include "AsyncCallbacks.hpp"
@@ -39,7 +40,11 @@ namespace {
     // submission overlap the guest CPU's next frame, the way the Wii U GPU runs behind the CPU.
     class ReplayWorker {
         public:
-            ReplayWorker() { m_thread = std::thread([this] { loop(); }); }
+            ReplayWorker()
+            {
+                m_thread = std::thread([this] { loop(); });
+                pthread_setname_np(m_thread.native_handle(), "wemu-replay");
+            }
             ~ReplayWorker()
             {
                 {
