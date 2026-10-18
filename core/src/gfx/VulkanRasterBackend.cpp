@@ -3500,6 +3500,16 @@ void main() {
             }
             nativeVertexSource = patchedVertexSource;
         }
+        static const bool directDraws = [] {
+            const auto *value = std::getenv("WEMU_NATIVE_DIRECT_DRAWS");
+            return !value || value[0] != '0';
+        }();
+        static const bool gpuTiming = [] {
+            const auto *value = std::getenv("WEMU_NATIVE_GPU_TIMING");
+            return value && value[0] == '1';
+        }();
+        // GPU timing uses bundle queries.
+        const bool direct = directDraws && m_impl->directDraws && !gpuTiming && deferReadback && m_impl->lazyReadback;
         const auto vertex = m_impl->compiler.compile(ShaderStage::Vertex, nativeVertexSource);
         std::string_view fragmentView = draw.shader.source;
         std::string fragmentSource;
@@ -3516,6 +3526,33 @@ void main() {
                 fragmentSource.replace(initial, std::string("gl_FragDepth=gl_FragCoord.z;").size(), "gl_FragDepth=biasedDepth();");
             else
                 fragmentSource.insert(fragmentSource.find("void main() {") + std::string("void main() {").size(), "\ngl_FragDepth=biasedDepth();\n");
+            fragmentView = fragmentSource;
+        }
+        if (direct && draw.depth.test && draw.depth.write && draw.depth.format != DepthFormat::Float32) {
+            // Direct draws store fixed-point depth from the fragment shader instead of the bundle
+            // quantization pass (three full-surface copies per draw). Rounding matches that pass;
+            // the depth test then compares quantized incoming values, as fixed-point hardware does.
+            if (fragmentSource.empty())
+                fragmentSource = draw.shader.source;
+            const bool writesDepth = fragmentSource.find("gl_FragDepth=") != std::string::npos;
+            const auto maximum = draw.depth.format == DepthFormat::UNorm16 ? "65535u" : "16777215u";
+            fragmentSource.insert(fragmentSource.find('\n') + 1, std::format(R"(float wemuQuantizedDepth(float depth) {{
+    const uint maximum={0};
+    float value=clamp(depth,0.0,1.0);
+    float scaled=value*float(maximum+1u);
+    uint integer=uint(int(scaled)+int(floor(fract(scaled)-value+0.5)));
+    if(integer==0u) return 0.0;
+    if(integer>=maximum) return 1.0;
+    uint leading=uint(findMSB(integer));
+    uint t=integer<<(23u-leading);
+    uint significand=t+(maximum==65535u ? (t+32767u)/65535u : 1u);
+    uint exponent=leading+(maximum==65535u ? 111u : 103u);
+    return uintBitsToFloat((exponent<<23)|(significand&0x7fffffu));
+}}
+)",
+                                                                                              maximum));
+            fragmentSource.insert(fragmentSource.rfind('}'),
+                                  std::format("gl_FragDepth=wemuQuantizedDepth({});\n", writesDepth ? "gl_FragDepth" : "gl_FragCoord.z"));
             fragmentView = fragmentSource;
         }
         const auto fragment = m_impl->compiler.compile(ShaderStage::Fragment, fragmentView);
@@ -3766,17 +3803,7 @@ void main() {
             stageConstants[offset + 2] = float((sampler >> 9) & 7);
             stageConstants[offset + 3] = float((sampler >> 26) & 7); // DEPTH_COMPARE_FUNCTION
         }
-        static const bool directDraws = [] {
-            const auto *value = std::getenv("WEMU_NATIVE_DIRECT_DRAWS");
-            return !value || value[0] != '0';
-        }();
-        static const bool gpuTiming = [] {
-            const auto *value = std::getenv("WEMU_NATIVE_GPU_TIMING");
-            return value && value[0] == '1';
-        }();
-        // Fixed-point depth writes need the bundle quantization pass; GPU timing uses bundle queries.
-        if (directDraws && m_impl->directDraws && !gpuTiming && deferReadback && m_impl->lazyReadback &&
-            (!draw.depth.test || !draw.depth.write || draw.depth.format == DepthFormat::Float32)) {
+        if (direct) {
             if (!m_impl->direct)
                 m_impl->direct = std::make_shared<DirectRenderer>(m_impl->context);
             auto result = m_impl->direct->render({draw, *vertex, *fragment, constants, vertexConstants, constantFloats, vertexConstantFloats, textures,

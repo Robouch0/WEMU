@@ -215,8 +215,14 @@ the previous version's ticket with the draw's result, as it does for adopted
 bundle targets. Resident images from bundles, and targets kept for verification,
 are first copied into a new direct image, which then becomes the surface's
 version; a bundle that later adopts a direct image takes ownership of it. Depth
-is handled the same way, except that fixed-point depth writes keep the bundle
-quantization pass.
+is handled the same way. Fixed-point (16/24-bit) depth writes store their
+quantized value from the fragment shader, with the bundle quantization pass's
+exact rounding, instead of three full-surface copies per draw; the depth test
+then compares the quantized incoming value, as fixed-point hardware does, while
+the reference compares the unquantized one. MK8's race writes a 1024x1024
+16-bit shadow map about 500 times per frame. A read-only draw that had to upload
+or copy its depth returns the new image as well, so later draws find the surface
+resident instead of uploading 3.7 MB again.
 
 Draws are recorded into segment command buffers of 48 draws
 (`WEMU_NATIVE_SEGMENT_DRAWS=N`). Constants, vertices, indices, CPU target/depth
