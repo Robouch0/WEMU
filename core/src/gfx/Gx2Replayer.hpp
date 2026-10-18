@@ -175,6 +175,8 @@ namespace Core::Gfx {
                     DepthFormat format{DepthFormat::Float32};
             };
             DepthBacking *depthBacking(const Surface &s, bool resolve = true) const;
+            // Current versions of an array view's layers when each was rendered as its own surface.
+            std::vector<std::shared_ptr<RasterReadback>> renderedArrayLayers(const Surface &surface) const;
             void clearDepthSurface(const Surface &s, float depth, unsigned flags);
             void drawImage(const Gx2Command &cmd);
             void drawPrimitives(const Gx2Command &cmd, bool indexed, int selectedColor = -1);

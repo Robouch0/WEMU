@@ -755,8 +755,11 @@ namespace Core::Gfx {
                     }
                     const bool gather = pixelStage && op == 0x0F;
                     const auto &fetch = gather ? textureGather : textureSample;
+                    // Texel offsets go through the detailed fetch, which knows the sampled level's size.
+                    const bool offsets = (t2 & 0x7FFF) != 0;
                     if ((!fetch && !(pixelStage && !gather && textureFetch)) || (pixelStage ? !supportsPixelTextureOperation(op) : op != 0x13) ||
-                        (op == 0x11 && !textureFetch) || (t0 & (1u << 23)) || (t1 & (1u << 7)) || (t1 & 0x30000000) != 0x30000000 || (t2 & 0x7FFF))
+                        (op == 0x11 && !textureFetch) || (t0 & (1u << 23)) || (t1 & (1u << 7)) || (t1 & 0x30000000) != 0x30000000 ||
+                        (offsets && (gather || !pixelStage || !textureFetch)))
                         return {};
                     // Gather currently accepts only direct, normalized, zero-offset TEX.
                     if (gather && ((t0 & ~(31u | (255u << 8) | (127u << 16))) || (t1 & ~(127u | (0xFFFu << 9) | (15u << 28)))))
@@ -771,8 +774,13 @@ namespace Core::Gfx {
                     }
                     const auto resource = (t0 >> 8) & 255;
                     const auto sampler = (t2 >> 15) & 31;
-                    if (pixelStage && !gather && textureFetch ? !textureFetch({resource, sampler, coords, cubeIndices[resource], op == 0x11}, rgba)
-                                                              : !fetch(resource, sampler, coords, rgba))
+                    const auto texelOffset = [&](unsigned shift) {
+                        const auto bits = (t2 >> shift) & 31u;
+                        return float(std::int32_t(bits << 27) >> 27) * .5f;
+                    };
+                    if (pixelStage && !gather && textureFetch
+                                ? !textureFetch({resource, sampler, coords, cubeIndices[resource], op == 0x11, {texelOffset(0), texelOffset(5), texelOffset(10)}}, rgba)
+                                : !fetch(resource, sampler, coords, rgba))
                         return {};
                     for (unsigned c = 0; c < 4; c++) {
                         const auto select = (t1 >> (9 + c * 3)) & 7;
