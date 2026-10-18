@@ -407,6 +407,8 @@ namespace Core::Gfx {
             std::unordered_map<std::uint32_t, WrittenSurface> m_cpuWrittenSurfaces;
             std::unordered_set<std::uint64_t> m_surfaceAliasTraced;
             mutable std::unordered_map<SurfaceKey, std::vector<std::uint8_t>, SurfaceKeyHash> m_viewBackings;
+            // Shared zero texels for sized views of null images; replaced (never resized) when too small.
+            std::shared_ptr<const std::vector<std::uint8_t>> m_zeroTexels;
             mutable std::unordered_map<SurfaceKey, std::shared_ptr<RasterReadback>, SurfaceKeyHash> m_pendingReadbacks;
     };
 

@@ -3674,6 +3674,22 @@ namespace Core::Gfx {
                     textures.back().unorm8Map = surface.compMap;
                     continue;
                 }
+                if (!surface.imagePtr && surface.dimension == 1 && !surface.aa && !surface.firstSlice && surface.sliceCount == 1 &&
+                    !m_viewBackings.contains(makeSurfaceKey(surface))) {
+                    // A sized view of a null image also reads zero texels everywhere (no guest memory
+                    // backs it). Keep its size so border addressing filters like the reference.
+                    // MK8's GamePad loading screen samples one every frame.
+                    const auto bytes = std::size_t(surface.width) * surface.height * 4;
+                    if (!m_zeroTexels || m_zeroTexels->size() < bytes)
+                        m_zeroTexels = std::make_shared<const std::vector<std::uint8_t>>(bytes, std::uint8_t{0});
+                    textures.push_back({binding, surface.width, surface.height, boundSamplers[binding.sampler],
+                                        [&, surface](unsigned, unsigned) { return sampleTexture(surface, TextureSampler{}, .5f, .5f); }});
+                    textures.back().unorm8 = std::span(*m_zeroTexels).first(bytes);
+                    textures.back().unorm8Pitch = surface.width;
+                    textures.back().unorm8Map = surface.compMap;
+                    textures.back().snapshotOwner = m_zeroTexels;
+                    continue;
+                }
                 if (!surface.imagePtr || !surface.width || !surface.height || surface.dimension != 1 || surface.aa || surface.firstMip ||
                     surface.firstSlice || surface.sliceCount != 1) {
                     supported = false;
