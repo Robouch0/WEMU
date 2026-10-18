@@ -694,9 +694,10 @@ namespace Core::Gfx {
                     rendered = true;
                     continue;
                 }
-                std::vector<std::uint8_t> bytes(backing->pixels.size() * sizeof(float));
-                std::memcpy(bytes.data(), backing->pixels.data(), bytes.size());
-                layers.push_back(std::make_shared<RasterReadback>(bytes.size(), [bytes = std::move(bytes)] { return bytes; }));
+                const auto size = backing->pixels.size() * sizeof(float);
+                std::vector<std::uint8_t> bytes(size);
+                std::memcpy(bytes.data(), backing->pixels.data(), size);
+                layers.push_back(std::make_shared<RasterReadback>(size, [bytes = std::move(bytes)] { return bytes; }));
                 continue;
             }
             if (const auto pending = m_pendingReadbacks.find(key); pending != m_pendingReadbacks.end()) {
