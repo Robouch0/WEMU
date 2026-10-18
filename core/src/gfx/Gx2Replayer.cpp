@@ -1889,14 +1889,21 @@ namespace Core::Gfx {
     {
         if (!m_rasterizerEnabled)
             return;
-        static const bool nativeAudit = [] {
+        static const bool nativeAuditEnabled = [] {
             const auto *value = std::getenv("WEMU_NATIVE_SHADER_AUDIT");
             return value && value[0] == '1';
         }();
-        static const bool profile = [] {
+        static const bool profileEnabled = [] {
             const auto *value = std::getenv("WEMU_RASTER_PROFILE");
             return value && value[0] == '1';
         }();
+        // WEMU_RASTER_PROFILE_FROM=N limits both per-draw diagnostics to presents >= N.
+        static const std::uint32_t diagnosticsFrom = [] {
+            const auto *value = std::getenv("WEMU_RASTER_PROFILE_FROM");
+            return value ? std::uint32_t(std::strtoul(value, nullptr, 10)) : 0u;
+        }();
+        const bool nativeAudit = nativeAuditEnabled && m_presentCount >= diagnosticsFrom;
+        const bool profile = profileEnabled && m_presentCount >= diagnosticsFrom;
         const auto profileStart = (profile || nativeAudit) ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
         const auto pixelsBefore = m_stats.pixels;
         m_stats.draws++;
