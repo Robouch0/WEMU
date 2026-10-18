@@ -133,4 +133,17 @@ namespace Core::Profile {
                           us(Stage::Readback), us(Stage::GpuWait), us(Stage::Video), us(Stage::Present), us(Stage::Pacing), us(Stage::Pause),
                           us(Stage::Compile), accounted / 1000);
     }
+
+    // Replay-thread record for one frame: that thread's own timeline, reset when the frame
+    // starts, so idle time between frames is not reported as replay work.
+    inline void reportReplay(std::uint64_t presents)
+    {
+        if (!enabled())
+            return;
+        const auto sample = timeline().frame();
+        const auto us = [&](Stage stage) { return sample.time[std::size_t(stage)] / 1000; };
+        Utils::Log::error("[REPLAY_PROFILE] frame={} wall_us={} replay_us={} native_us={} readback_us={} wait_us={} compile_us={}", presents,
+                          sample.wall / 1000, us(Stage::Replay), us(Stage::NativeDraw), us(Stage::Readback), us(Stage::GpuWait),
+                          us(Stage::Compile));
+    }
 } // namespace Core::Profile
