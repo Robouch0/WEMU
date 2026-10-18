@@ -80,7 +80,7 @@ namespace Core::Gfx {
                 return !value || value[0] != '0';
             }();
             if (!enabled || !draw.shader.alwaysWritesColor || draw.channelMask != 15 || draw.blend.enabled || draw.depth.test ||
-                draw.vertexStage.shader || draw.topology != RasterDraw::Topology::Triangles || draw.vertices.size() != 6)
+                draw.vertexStage.shader || draw.topology != RasterDraw::Topology::Triangles || draw.vertices.size() != 6 || !draw.indices.empty())
                 return false;
             const auto scissor = clippedScissor(draw);
             if (scissor.offset.x || scissor.offset.y || scissor.extent.width != draw.width || scissor.extent.height != draw.height)
@@ -863,6 +863,10 @@ void main() {
                     vertexBuffer =
                             buffer(std::bit_ceil(draw.vertices.size()) * sizeof(RasterDraw::Vertex), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, vertexMemory);
                     upload(vertexMemory, draw.vertices.data(), draw.vertices.size_bytes());
+                    if (!draw.indices.empty()) {
+                        indexBuffer = buffer(std::bit_ceil(draw.indices.size()) * sizeof(std::uint32_t), VK_BUFFER_USAGE_INDEX_BUFFER_BIT, indexMemory);
+                        upload(indexMemory, draw.indices.data(), draw.indices.size_bytes());
+                    }
                     if (!depthOnly(draw)) {
                         targetBuffer = buffer(draw.target.size(), VK_BUFFER_USAGE_TRANSFER_SRC_BIT, targetMemory);
                         if (!fullOverwrite && !targetSource)
@@ -1232,7 +1236,12 @@ void main() {
                     vkCmdPushConstants(command, layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
                     const VkDeviceSize offset = 0;
                     vkCmdBindVertexBuffers(command, 0, 1, &vertexBuffer, &offset);
-                    vkCmdDraw(command, draw.vertices.size(), 1, 0, 0);
+                    if (draw.indices.empty()) {
+                        vkCmdDraw(command, draw.vertices.size(), 1, 0, 0);
+                    } else {
+                        vkCmdBindIndexBuffer(command, indexBuffer, 0, VK_INDEX_TYPE_UINT32);
+                        vkCmdDrawIndexed(command, draw.indices.size(), 1, 0, 0, 0);
+                    }
                     vkCmdEndRenderPass(command);
                     transitionDirectTextures(false);
                     if (gpuQueries)
@@ -1588,6 +1597,8 @@ void main() {
                     if (draw.vertexStage.shader)
                         upload(vertexUniformMemory, vertexConstants.data(), vertexConstantFloats * sizeof(float));
                     upload(vertexMemory, draw.vertices.data(), draw.vertices.size_bytes());
+                    if (!draw.indices.empty())
+                        upload(indexMemory, draw.indices.data(), draw.indices.size_bytes());
                     retainedTarget = !depthOnly(draw) && !fullOverwrite && (targetSource ? targetSource == colorImage : targetMatchesReadback(draw));
                     if (!depthOnly(draw) && !fullOverwrite && !targetSource && !retainedTarget)
                         upload(targetMemory, draw.target.data(), draw.target.size());
@@ -2108,7 +2119,8 @@ void main() {
                 VkDescriptorSet descriptor{};
                 VkPipelineLayout layout{};
                 VkPipeline pipeline{};
-                VkBuffer uniform{}, readback{}, vertexBuffer{}, targetBuffer{};
+                VkBuffer uniform{}, readback{}, vertexBuffer{}, targetBuffer{}, indexBuffer{};
+                VkDeviceMemory indexMemory{};
                 VkDeviceMemory uniformMemory{}, vertexUniformMemory{}, vertexMemory{}, targetMemory{};
                 VkBuffer vertexUniform{};
                 VkBuffer depthUpload{}, depthReadback{};
@@ -2143,7 +2155,7 @@ void main() {
     struct VulkanRasterBackend::Impl {
             struct ResourceKey {
                     Context::PipelineKey pipeline;
-                    unsigned width{}, height{}, pitch{}, vertexCapacity{};
+                    unsigned width{}, height{}, pitch{}, vertexCapacity{}, indexCapacity{};
                     bool overwriteTarget{};
                     unsigned depthWidth{}, depthHeight{}, depthPitch{};
                     std::vector<std::uint32_t> textureShape;
@@ -2151,7 +2163,7 @@ void main() {
                     bool sameDraw(const ResourceKey &other) const
                     {
                         return pipeline == other.pipeline && width == other.width && height == other.height && pitch == other.pitch &&
-                               vertexCapacity == other.vertexCapacity && overwriteTarget == other.overwriteTarget && depthWidth == other.depthWidth &&
+                               vertexCapacity == other.vertexCapacity && indexCapacity == other.indexCapacity && overwriteTarget == other.overwriteTarget && depthWidth == other.depthWidth &&
                                depthHeight == other.depthHeight && depthPitch == other.depthPitch && textureShape == other.textureShape;
                     }
                     auto operator<=>(const ResourceKey &) const = default;
@@ -2245,7 +2257,10 @@ void main() {
             std::uint64_t(draw.pitch) * draw.height * colorElementBytes(draw.colorFormat) != draw.target.size() ||
             draw.target.size() > std::size_t{64} * 1024 * 1024)
             return reject("Unsupported target dimensions");
-        if ((draw.topology == RasterDraw::Topology::Triangles && draw.vertices.size() % 3) || draw.vertices.size() > 262144 ||
+        const auto drawnVertices = draw.indices.empty() ? draw.vertices.size() : draw.indices.size();
+        if ((!draw.indices.empty() && (draw.topology != RasterDraw::Topology::Triangles || draw.indices.size() > 262144 * 3 ||
+                                       std::any_of(draw.indices.begin(), draw.indices.end(), [&](auto i) { return i >= draw.vertices.size(); }))) ||
+            (draw.topology == RasterDraw::Topology::Triangles && drawnVertices % 3) || draw.vertices.size() > 262144 ||
             draw.constants.size() > 1024 || draw.uniforms.size() != draw.shader.uniforms.size() * 4 || draw.uniforms.size() > 2048 ||
             draw.textures.size() != draw.shader.textures.size() + (draw.vertexStage.shader ? draw.vertexStage.shader->textures.size() : 0) ||
             draw.textures.size() > 32)
@@ -2701,6 +2716,7 @@ void main() {
         key.depthPitch = draw.depth.test ? draw.depth.pitch : 0;
         key.pitch = draw.pitch;
         key.vertexCapacity = std::bit_ceil(draw.vertices.size());
+        key.indexCapacity = draw.indices.empty() ? 0 : std::bit_ceil(draw.indices.size());
         std::uint64_t depthTransferBytes{}, privateTextureBytes{}, incomingSharedBytes{};
         for (const auto &texture: textures) {
             if (texture.snapshotOwner && !texture.snapshot.empty() && !texture.rendered)
@@ -2712,7 +2728,8 @@ void main() {
             }
         }
         const auto estimatedBytes = (depthOnly(draw) ? 0 : std::uint64_t(draw.target.size()) * 3) + privateTextureBytes * 2 + depthTransferBytes +
-                                    std::uint64_t(key.vertexCapacity) * sizeof(RasterDraw::Vertex) + sizeof(constants) +
+                                    std::uint64_t(key.vertexCapacity) * sizeof(RasterDraw::Vertex) +
+                                    std::uint64_t(key.indexCapacity) * sizeof(std::uint32_t) + sizeof(constants) +
                                     (draw.vertexStage.shader ? sizeof(vertexConstants) : 0) +
                                     (draw.depth.test ? draw.depth.target.size_bytes() * 3 : 0);
         for (const auto &texture: textures) {

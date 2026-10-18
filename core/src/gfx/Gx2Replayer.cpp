@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <format>
 #include <limits>
 #include <stdexcept>
@@ -3082,7 +3083,14 @@ namespace Core::Gfx {
                 emit(triangle);
             }
         };
-        std::vector<std::array<RasterVertex, 3>> preparedTriangles;
+        // Prepared triangles reference assembled corners, or copies kept in clippedCorners for
+        // triangles produced by clipping (a deque keeps those references stable).
+        struct PreparedTriangle {
+                std::array<const RasterVertex *, 3> corners;
+                const RasterVertex &operator[](std::size_t i) const { return *corners[i]; }
+        };
+        std::vector<PreparedTriangle> preparedTriangles;
+        std::deque<RasterVertex> clippedCorners;
         if (collectBackend && mode != 1) {
             const auto triangles = mode == 0x13 ? idx.size() / 4 * 2 : idx.size() / 3;
             preparedTriangles.reserve(triangles);
@@ -3294,28 +3302,126 @@ namespace Core::Gfx {
             m_stats.alphaSum += texel[3];
         };
 
+        // A corner depends only on its vertex index within a draw, so shared corners are assembled
+        // once: cornerState is 0 (pending), 1 (ready) or 2 (unavailable, drops its triangles).
+        std::vector<RasterVertex> corners;
+        std::vector<std::uint8_t> cornerState;
+        std::uint32_t cornerBase = 0;
+        if (indexed && idx.size() >= 6) {
+            const auto [low, high] = std::minmax_element(idx.begin(), idx.end());
+            if (std::uint64_t(*high) - *low + 1 <= idx.size() * 2 + 64) {
+                cornerBase = *low;
+                corners.resize(std::size_t(*high) - *low + 1);
+                cornerState.assign(corners.size(), 0);
+            }
+        }
+        const auto assembleCorner = [&](std::uint32_t vi, RasterVertex &corner) {
+            corner.vertexIndex = vi;
+            if (runShader(vi, corner.x, corner.y, corner.u, corner.v, &corner.params, &corner.paramValid, &corner.z, &corner.reciprocalW,
+                          &corner.clipPosition)) {
+                if (!nativeVertexExecution && !corner.paramValid[0])
+                    corner.params[0] = {1.0f, 1.0f, 1.0f, 1.0f};
+                return true;
+            }
+            float x = 0, y = 0;
+            if (!fetch(vi, x, y, corner.u, corner.v))
+                return false;
+            mapVertex(x, y, corner.x, corner.y);
+            return true;
+        };
+        const auto emit = [&](const RasterVertex(&triangle)[3]) {
+            if (collectBackend) {
+                PreparedTriangle prepared;
+                for (unsigned k = 0; k < 3; ++k)
+                    prepared.corners[k] = &clippedCorners.emplace_back(triangle[k]);
+                preparedTriangles.push_back(prepared);
+            } else {
+                rasterPrepared(triangle);
+            }
+        };
+        // Corners that need no clipping are projected the same way by every triangle using them,
+        // so the projected copy is kept per index too (projectedState like cornerState).
+        std::vector<RasterVertex> projectedCorners;
+        std::vector<std::uint8_t> projectedState;
+        if (collectBackend && !corners.empty() && !nativeVertexExecution) {
+            projectedCorners.resize(corners.size());
+            projectedState.assign(corners.size(), 0);
+        }
+        const auto projectedCorner = [&](std::uint32_t slot) -> const RasterVertex * {
+            if (!projectedState[slot]) {
+                auto &vertex = projectedCorners[slot] = corners[slot];
+                const auto &p = *vertex.clipPosition;
+                projectedState[slot] = 2;
+                if (p[3] > 0) {
+                    vertex.reciprocalW = 1.f / p[3];
+                    vertex.x = m_vp[0] + (p[0] / p[3] * .5f + .5f) * m_vp[2];
+                    vertex.y = m_vp[1] + (.5f - p[1] / p[3] * .5f) * m_vp[3];
+                    vertex.z = (m_vpFar + m_vpNear) * .5f + (p[2] / p[3]) * (m_vpFar - m_vpNear) * .5f;
+                    projectedState[slot] = 1;
+                }
+            }
+            return projectedState[slot] == 1 ? &projectedCorners[slot] : nullptr;
+        };
+        // Outcode of a cached corner against clipTriangle's four planes; 16 marks a non-finite
+        // clip position, for which clipTriangle drops the triangle.
+        const auto clipCode = [](const RasterVertex &vertex) {
+            const auto &p = *vertex.clipPosition;
+            if (!std::all_of(p.begin(), p.end(), [](float value) { return std::isfinite(value); }))
+                return 16u;
+            unsigned code = 0;
+            for (unsigned plane = 0; plane < 4; ++plane)
+                if (double(p[3]) + (plane & 1 ? -double(p[plane / 2]) : double(p[plane / 2])) < 0)
+                    code |= 1u << plane;
+            return code;
+        };
         auto rasterTri = [&](const std::uint32_t i0, const std::uint32_t i1, const std::uint32_t i2) {
             const std::uint32_t vis[3] = {idx[i0], idx[i1], idx[i2]};
-            RasterVertex rv[3];
-            for (int i = 0; i < 3; i++) {
-                rv[i].vertexIndex = vis[i];
-                if (runShader(vis[i], rv[i].x, rv[i].y, rv[i].u, rv[i].v, &rv[i].params, &rv[i].paramValid, &rv[i].z, &rv[i].reciprocalW,
-                              &rv[i].clipPosition)) {
-                    if (!nativeVertexExecution && !rv[i].paramValid[0])
-                        rv[i].params[0] = {1.0f, 1.0f, 1.0f, 1.0f};
-                    continue;
+            if (!corners.empty()) {
+                std::uint32_t slots[3];
+                for (int i = 0; i < 3; i++) {
+                    slots[i] = vis[i] - cornerBase;
+                    if (!cornerState[slots[i]])
+                        cornerState[slots[i]] = assembleCorner(vis[i], corners[slots[i]]) ? 1 : 2;
+                    if (cornerState[slots[i]] != 1)
+                        return;
                 }
-                float x = 0, y = 0;
-                if (!fetch(vis[i], x, y, rv[i].u, rv[i].v))
-                    return;
-                mapVertex(x, y, rv[i].x, rv[i].y);
-            }
-            const auto emit = [&](const RasterVertex(&triangle)[3]) {
-                if (collectBackend)
-                    preparedTriangles.push_back({triangle[0], triangle[1], triangle[2]});
+                if (collectBackend) {
+                    // Fast paths of clipTriangle that keep the corners as they are or only project them.
+                    PreparedTriangle prepared{{&corners[slots[0]], &corners[slots[1]], &corners[slots[2]]}};
+                    const bool clipped = std::all_of(std::begin(slots), std::end(slots), [&](auto slot) { return corners[slot].clipPosition.has_value(); });
+                    if (nativeVertexExecution || !clipped) {
+                        preparedTriangles.push_back(prepared);
+                        return;
+                    }
+                    unsigned outside = 0, sharedOutside = 15;
+                    for (const auto slot: slots) {
+                        const auto code = clipCode(corners[slot]);
+                        if (code & 16)
+                            return;
+                        outside |= code;
+                        sharedOutside &= code;
+                    }
+                    if (sharedOutside)
+                        return;
+                    if (!outside) {
+                        for (unsigned k = 0; k < 3; ++k)
+                            if (!(prepared.corners[k] = projectedCorner(slots[k])))
+                                return;
+                        preparedTriangles.push_back(prepared);
+                        return;
+                    }
+                }
+                RasterVertex rv[3]{corners[slots[0]], corners[slots[1]], corners[slots[2]]};
+                if (nativeVertexExecution)
+                    emit(rv);
                 else
-                    rasterPrepared(triangle);
-            };
+                    clipTriangle(rv, emit);
+                return;
+            }
+            RasterVertex rv[3];
+            for (int i = 0; i < 3; i++)
+                if (!assembleCorner(vis[i], rv[i]))
+                    return;
             if (nativeVertexExecution)
                 emit(rv);
             else
@@ -3366,7 +3472,8 @@ namespace Core::Gfx {
                         preshadedReady[slot] = 1;
                     }
                 };
-                if (unique.size() >= 256) {
+                // About 2.5 us per vertex: from 64 vertices the pool beats its dispatch cost.
+                if (unique.size() >= 64) {
                     if (!m_vertexWorkers)
                         m_vertexWorkers = std::make_unique<RasterWorkers>(std::clamp(std::thread::hardware_concurrency() / 2, 1u, 8u));
                     m_vertexWorkers->run(unsigned(unique.size()), shade);
@@ -3746,12 +3853,30 @@ namespace Core::Gfx {
             }
             std::vector<RasterDraw::Vertex> vertices;
             vertices.reserve(preparedTriangles.size() * 3 + preparedPoints.size());
+            // Triangles index their corners: a corner cached in corners/projectedCorners becomes one
+            // vertex however many triangles share it; clipped corners stay private.
+            std::vector<std::uint32_t> indices;
+            indices.reserve(preparedTriangles.size() * 3);
+            std::vector<std::uint32_t> cornerVertex(corners.size(), ~0u), projectedVertex(projectedCorners.size(), ~0u);
+            const auto vertexSlot = [&](const RasterVertex *corner) -> std::uint32_t * {
+                if (!corners.empty() && corner >= corners.data() && corner < corners.data() + corners.size())
+                    return &cornerVertex[std::size_t(corner - corners.data())];
+                if (!projectedCorners.empty() && corner >= projectedCorners.data() && corner < projectedCorners.data() + projectedCorners.size())
+                    return &projectedVertex[std::size_t(corner - projectedCorners.data())];
+                return nullptr;
+            };
             for (const auto &triangle: preparedTriangles) {
                 const auto &a = triangle[0], &b = triangle[1], &c = triangle[2];
                 const float area = (b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y);
                 if (!nativeVertexShader && std::fabs(area) < 0.5f)
                     continue;
-                for (const auto &rv: triangle) {
+                for (const auto *corner: triangle.corners) {
+                    auto *slot = vertexSlot(corner);
+                    if (slot && *slot != ~0u) {
+                        indices.push_back(*slot);
+                        continue;
+                    }
+                    const auto &rv = *corner;
                     if (!std::isfinite(rv.x) || !std::isfinite(rv.y)) {
                         supported = false;
                         unsupportedReason = "replayer#6";
@@ -3765,6 +3890,9 @@ namespace Core::Gfx {
                         for (unsigned i = 0; i < vertex.inputs.size(); ++i)
                             if (pixelInputParams[i] >= 0)
                                 vertex.inputs[i] = rv.params[pixelInputParams[i]];
+                    if (slot)
+                        *slot = std::uint32_t(vertices.size());
+                    indices.push_back(std::uint32_t(vertices.size()));
                     vertices.push_back(vertex);
                 }
             }
@@ -3852,6 +3980,8 @@ namespace Core::Gfx {
                 }
                 draw.colorFormat = targetFormat;
                 draw.topology = mode == 1 ? RasterDraw::Topology::Points : RasterDraw::Topology::Triangles;
+                if (mode != 1)
+                    draw.indices = indices;
                 draw.renderedTarget = renderedTarget;
                 // The result replaces m_pendingReadbacks for m_color; verification re-reads the old version.
                 draw.supersedesTarget = !m_nativeVerifyEvery;

@@ -677,7 +677,9 @@ TEST_F(Gx2CaptureTest, DeclaredAttributesAndPixelSemanticRenderWithEveryIndexEnd
                                 std::optional<RasterResult> render(const RasterDraw &draw) override
                                 {
                                     ++calls;
-                                    EXPECT_EQ(draw.vertices.size(), 6u);
+                                    // Two triangles share the quad's four corners through indices.
+                                    EXPECT_EQ(draw.vertices.size(), 4u);
+                                    EXPECT_EQ(draw.indices.size(), 6u);
                                     EXPECT_EQ(draw.constants.size(), 256u);
                                     EXPECT_EQ(draw.width, 8u);
                                     EXPECT_EQ(draw.height, 8u);
@@ -2174,9 +2176,11 @@ TEST_F(Gx2CaptureTest, IndexedVertexReusePreservesParametersAndRefreshesEachDraw
         EXPECT_EQ(cached.framebuffer(), uncached.framebuffer());
         EXPECT_EQ(cached.framebuffer()[pass], 255u);
         EXPECT_EQ(cached.framebuffer()[1 - pass], 0u);
+        // Triangle assembly shades each distinct index once, so the shared corners of the
+        // quad never reach the per-draw vertex cache, which stays a fallback.
         EXPECT_EQ(cached.vertexShaderExecutions(), 4u * (pass + 1));
-        EXPECT_EQ(cached.vertexShaderCacheHits(), 2u * (pass + 1));
-        EXPECT_EQ(uncached.vertexShaderExecutions(), 6u * (pass + 1));
+        EXPECT_EQ(cached.vertexShaderCacheHits(), 0u);
+        EXPECT_EQ(uncached.vertexShaderExecutions(), 4u * (pass + 1));
     }
 
     // Hidden triangle meshes must preserve the target and avoid executing their

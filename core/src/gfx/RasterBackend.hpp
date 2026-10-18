@@ -122,6 +122,9 @@ namespace Core::Gfx {
             } depth;
             enum class Topology { Triangles, Points };
             Topology topology{Topology::Triangles};
+            // Triangle-list indices into vertices; empty draws vertices in order. Shared corners are
+            // then built and uploaded once per draw.
+            std::span<const std::uint32_t> indices;
             ColorFormat colorFormat{ColorFormat::RGBA8};
             struct VertexStage {
                     std::shared_ptr<const Latte::VertexShader> shader;
