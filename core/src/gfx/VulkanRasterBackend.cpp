@@ -235,9 +235,12 @@ namespace Core::Gfx {
                                 vkDestroyFence(device, fence, nullptr);
                         }
                 };
-                bool batchSubmissions = [] {
+                // Command buffers per vkQueueSubmit. Waiting on a batch flushes it, so batching
+                // only delays GPU start; 8 balances submit overhead against that delay in MK8's
+                // menu. WEMU_NATIVE_BATCH_SUBMITS=N overrides it, 0 or 1 submits every draw.
+                std::size_t batchLimit = [] {
                     const auto *value = std::getenv("WEMU_NATIVE_BATCH_SUBMITS");
-                    return value && value[0] == '1';
+                    return value ? std::size_t(std::strtoul(value, nullptr, 10)) : std::size_t{8};
                 }();
                 std::vector<VkCommandBuffer> pendingCommands;
                 std::shared_ptr<BatchFence> pendingBatch;
@@ -264,7 +267,7 @@ namespace Core::Gfx {
                     }
                     pendingCommands.push_back(command);
                     auto result = pendingBatch;
-                    if (!batchSubmissions || pendingCommands.size() >= 4)
+                    if (pendingCommands.size() >= batchLimit)
                         flush();
                     return result;
                 }

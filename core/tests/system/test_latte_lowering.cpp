@@ -3531,7 +3531,7 @@ TEST(VulkanRasterBackendTest, QueuedDrawsShareFenceAndReadbacksPreserveTheirVers
     if (!std::getenv("WEMU_TEST_VULKAN") || !SpirvCompiler::available())
         GTEST_SKIP();
     const auto *setting = std::getenv("WEMU_NATIVE_BATCH_SUBMITS");
-    const bool batched = setting && setting[0] == '1';
+    const bool batched = !setting || std::strtoul(setting, nullptr, 10) > 3;
     const auto shader = lowerFragmentShader(*decodeProgram({0, (CF_EXP_DONE << 23) | (1u << 21) | 0x688u}));
     ASSERT_TRUE(shader);
     std::array<RasterDraw::Vertex, 3> vertices{{{0, 0, {}}, {8, 0, {}}, {0, 8, {}}}};

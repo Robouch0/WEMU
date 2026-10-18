@@ -157,11 +157,13 @@ this does not add cross-process GPU texture sharing.
 
 ## Batched submissions and lazy readback copies
 
-`WEMU_NATIVE_BATCH_SUBMITS=1` lets draw commands share a pooled completion fence
-in batches of up to four command buffers. Immediate submission remains the default
-because the measured Pikmin movie path did not gain FPS from delaying
-submissions. The small bound lets the GPU begin work while guest execution continues;
-a CPU dependency, resource reuse or cache drain flushes the current batch.
+Draw commands share a pooled completion fence in batches of up to eight command
+buffers (`WEMU_NATIVE_BATCH_SUBMITS=N` sets the bound). In MK8's main menu, about
+200 draws per frame, this cut per-submission driver work from 13.4 to 11.8 ms of
+replay-thread time; larger bounds delayed the GPU enough to add host fence waits.
+The Pikmin movie path did not gain FPS from delaying submissions. The small bound
+lets the GPU begin work while replay continues; a CPU dependency, resource reuse or
+cache drain flushes the current batch.
 Each resource keeps its completion token and sampled-image owners until work
 completes. Completed tokens are reused only after their last resource releases
 them. Live color/depth tickets retain their existing per-version ownership.
@@ -172,7 +174,7 @@ The copy's fence completes the producer and copy with one host wait. Draw comman
 pools and descriptor/staging data remain protected until completion; copy pools
 are reset only after the previous synchronous copy finishes.
 
-`WEMU_NATIVE_BATCH_SUBMITS=0` submits each command immediately for comparison;
+`WEMU_NATIVE_BATCH_SUBMITS=0` (or `1`) submits each command immediately for comparison;
 it retains the independent readback pool. Timing counters expose actual queue
 submissions, submitted command buffers and host fence waits. GPU execution and
 presentation still use the existing emulated ordering and CPU IPC path.
