@@ -158,6 +158,20 @@ namespace Core::Gfx {
             struct DepthBacking {
                     std::vector<float> pixels;
                     std::shared_ptr<RasterReadback> pending;
+                    // A clear not yet written to pixels: most cleared depth surfaces are only
+                    // rendered on the GPU, so filling the host copy is deferred to its first use.
+                    std::optional<float> clear;
+                    // Every pixel holds this value; a repeated clear then needs no fill.
+                    std::optional<float> uniform;
+                    // Identity of the current pixels for the backend's upload cache (snapshotOwner).
+                    // Dropped whenever pixels change, so an unchanged depth texture skips re-upload
+                    // and byte comparison.
+                    std::shared_ptr<const void> version;
+                    void changed()
+                    {
+                        uniform.reset();
+                        version.reset();
+                    }
                     DepthFormat format{DepthFormat::Float32};
             };
             DepthBacking *depthBacking(const Surface &s, bool resolve = true) const;

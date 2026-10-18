@@ -511,12 +511,22 @@ namespace Core::Gfx {
             found = m_depthBackings.emplace(key, std::move(backing)).first;
         }
         auto &backing = found->second;
+        if (backing.clear) {
+            if (backing.uniform != backing.clear) {
+                for (unsigned y = 0; y < s.height; ++y)
+                    std::fill_n(backing.pixels.data() + std::size_t(y) * s.pitch, s.width, *backing.clear);
+                backing.changed();
+                backing.uniform = backing.clear;
+            }
+            backing.clear.reset();
+        }
         if (resolve && backing.pending) {
             const auto &bytes = backing.pending->resolve();
             if (bytes.size() != backing.pixels.size() * sizeof(float))
                 throw std::runtime_error("Depth backend returned an incomplete surface");
             std::memcpy(backing.pixels.data(), bytes.data(), bytes.size());
             backing.pending.reset();
+            backing.changed();
         }
         return &backing;
     }
@@ -528,9 +538,7 @@ namespace Core::Gfx {
             return;
         if (auto *backing = depthBacking(s, false)) {
             backing->pending.reset();
-            const auto value = quantizeDepth(depth, backing->format);
-            for (unsigned y = 0; y < s.height; ++y)
-                std::fill_n(backing->pixels.data() + std::size_t(y) * s.pitch, s.width, value);
+            backing->clear = quantizeDepth(depth, backing->format);
         }
     }
 
@@ -2017,6 +2025,15 @@ namespace Core::Gfx {
         }
         m_lastDrawColor = m_color;
         auto *drawDepth = m_depthTest ? depthBacking(m_depth, false) : nullptr;
+        // Software raster and copied-back native results write drawDepth->pixels during this call.
+        struct DepthWrites {
+                DepthBacking *backing;
+                ~DepthWrites()
+                {
+                    if (backing)
+                        backing->changed();
+                }
+        } depthWrites{drawDepth && m_depthWrite ? drawDepth : nullptr};
 
         const auto targetFormat = colorFormat(m_color.format);
         const auto targetElementBytes = colorElementBytes(targetFormat);
@@ -3449,7 +3466,7 @@ namespace Core::Gfx {
                 auto depthKey = makeSurfaceKey(surface);
                 depthKey.format = surface.format;
                 if (m_depthBackings.contains(depthKey)) {
-                    const auto *depthTexture = depthBacking(surface, !residentTextures);
+                    auto *depthTexture = depthBacking(surface, !residentTextures);
                     if (!depthTexture) {
                         supported = false;
                         unsupportedReason = "replayer#2";
@@ -3471,6 +3488,9 @@ namespace Core::Gfx {
                         textures.back().r32Bytes = {reinterpret_cast<const std::uint8_t *>(depthTexture->pixels.data()),
                                                     depthTexture->pixels.size() * sizeof(float)};
                         textures.back().r32Pitch = surface.pitch;
+                        if (!depthTexture->version)
+                            depthTexture->version = std::make_shared<int>();
+                        textures.back().snapshotOwner = depthTexture->version;
                     } else {
                         auto &packed = ownedFloatTextures.emplace_back();
                         for (unsigned y = 0; y < surface.height; ++y)
