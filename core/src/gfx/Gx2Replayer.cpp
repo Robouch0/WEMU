@@ -3577,6 +3577,38 @@ namespace Core::Gfx {
                     mipTextures.push_back(std::move(snapshot));
                     continue;
                 }
+                if (surface.dimension == 5 && (surface.format == 0x80E || surface.format == 5 || surface.format == 0x11) && surface.sliceCount) {
+                    // Depth arrays (MK8's cascaded shadow maps) render each slice as its own depth
+                    // surface. Gather their current values into one R32 array snapshot.
+                    std::vector<const DepthBacking *> slices;
+                    for (unsigned slice = 0; slice < surface.sliceCount; ++slice) {
+                        const auto view = arraySlice(surface, slice);
+                        if (!view)
+                            break;
+                        auto key = makeSurfaceKey(*view);
+                        key.format = view->format;
+                        const auto *backing = m_depthBackings.contains(key) ? depthBacking(*view) : nullptr;
+                        if (!backing)
+                            break;
+                        slices.push_back(backing);
+                    }
+                    if (slices.size() == surface.sliceCount) {
+                        auto &packed = ownedFloatTextures.emplace_back();
+                        packed.reserve(std::size_t(surface.width) * surface.height * slices.size());
+                        for (const auto *backing: slices)
+                            for (unsigned y = 0; y < surface.height; ++y)
+                                packed.insert(packed.end(), backing->pixels.begin() + std::size_t(y) * surface.pitch,
+                                              backing->pixels.begin() + std::size_t(y) * surface.pitch + surface.width);
+                        textures.push_back({binding, surface.width, surface.height, boundSamplers[binding.sampler], [&, surface](unsigned x, unsigned y) {
+                                                return sampleTexture(surface, TextureSampler{}, (float(x) + 0.5f) / float(surface.width),
+                                                                     (float(y) + 0.5f) / float(surface.height), 0, nullptr);
+                                            }});
+                        textures.back().r32 = packed;
+                        textures.back().r32Map = surface.compMap;
+                        textures.back().layers = surface.sliceCount;
+                        continue;
+                    }
+                }
                 auto depthKey = makeSurfaceKey(surface);
                 depthKey.format = surface.format;
                 if (m_depthBackings.contains(depthKey)) {
