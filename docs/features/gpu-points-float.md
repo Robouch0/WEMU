@@ -14,10 +14,13 @@ to RGBA8; intermediate targets retain their float precision. The Vulkan image
 format, transfers, preserved row padding, pipeline cache keys and versioned
 readback tickets all carry the target format.
 
-Device-only transfer buffers prefer local GPU memory. Image allocations retain
-the existing compatible-memory selection: forcing local images improved GPU
-raster time but regressed total frame delivery with the current CPU consumers.
-`WEMU_NATIVE_DEVICE_LOCAL_IMAGES=1` enables that diagnostic comparison. Upload
+Device-only transfer buffers prefer local GPU memory. On a discrete GPU, images
+also prefer local memory: the first compatible type is system memory there, so
+rendering and sampling crossed PCIe (MK8's character select spent ~75 ms per
+frame waiting on fences on an RTX 3060 Laptop GPU, ~1 ms with local images).
+Integrated GPUs retain the compatible-memory selection, where forcing local
+images improved GPU raster time but regressed total frame delivery.
+`WEMU_NATIVE_DEVICE_LOCAL_IMAGES=0/1` overrides the choice. Upload
 and readback buffers keep host access. An LRU resource cache, limited to 64
 bundles with a 768 MiB estimated eviction threshold, retains hot draws when new variants
 arrive instead of rebuilding the entire cache.

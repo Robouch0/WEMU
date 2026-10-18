@@ -320,6 +320,7 @@ namespace Core::Gfx {
                 VkPipelineCache pipelineCache{};
                 std::uint32_t family{};
                 std::string deviceName;
+                bool discrete{}; // separate VRAM: host-visible memory sits across PCIe
                 std::uint64_t readbackTransfers{}, residentTextureCopies{}, directTextureBindings{}, directTextureBytes{};
                 std::uint64_t targetUploadTransfers{}, targetCopyTransfers{}, fullOverwriteDraws{};
                 std::uint64_t pipelineCreations{};
@@ -437,6 +438,7 @@ namespace Core::Gfx {
                     VkPhysicalDeviceProperties props{};
                     vkGetPhysicalDeviceProperties(physical, &props);
                     deviceName = props.deviceName;
+                    discrete = props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU;
                     timestampPeriod = props.limits.timestampPeriod;
                     Utils::Log::error("[NATIVE_VULKAN] device={}", deviceName);
                     const float priority = 1.0f;
@@ -2030,16 +2032,17 @@ void main() {
                 VkDeviceMemory allocate(const VkMemoryRequirements &req, VkMemoryPropertyFlags flags, VkMemoryPropertyFlags preferred = 0,
                                         bool track = true)
                 {
-                    // Explicit device-only buffers prefer the local heap. Keep
-                    // the established image placement until CPU consumers no
-                    // longer outweigh the raster gain from local images. The
-                    // diagnostic override measures that tradeoff separately.
+                    // Explicit device-only buffers prefer the local heap. On a discrete GPU, images in
+                    // the first compatible (system memory) type are rendered and sampled across PCIe:
+                    // MK8's character select spent ~75 ms per frame in fence waits. Integrated GPUs keep
+                    // the established placement, where local images regressed total frame delivery.
+                    // WEMU_NATIVE_DEVICE_LOCAL_IMAGES=0/1 overrides the choice.
                     if (!(flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) && !preferred) {
-                        static const bool localImages = [] {
+                        static const int localImages = [] {
                             const auto *value = std::getenv("WEMU_NATIVE_DEVICE_LOCAL_IMAGES");
-                            return value && value[0] == '1';
+                            return value ? int(value[0] == '1') : -1;
                         }();
-                        if (localImages)
+                        if (localImages == 1 || (localImages < 0 && context.discrete))
                             preferred = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
                     }
                     VkPhysicalDeviceMemoryProperties props{};
