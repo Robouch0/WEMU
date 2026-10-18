@@ -2237,9 +2237,8 @@ void main() {
              draw.depth.target.size_bytes() > 64ull * 1024 * 1024 ||
              (draw.depth.rendered && draw.depth.rendered->size() != draw.depth.target.size_bytes())))
             return reject("Unsupported depth dimensions or snapshot");
-        if (draw.blend.enabled && (draw.blend.colorOperation > 4 || draw.blend.alphaOperation > 4 ||
-                                   (draw.colorFormat == ColorFormat::RGBA8 && (draw.blend.colorOperation || draw.blend.alphaOperation)) ||
-                                   !blendFactor(draw.blend.colorSource) || !blendFactor(draw.blend.colorDestination) ||
+        // UNORM targets saturate subtract results to [0, 1], as the reference blender does.
+        if (draw.blend.enabled && (draw.blend.colorOperation > 4 || draw.blend.alphaOperation > 4 || !blendFactor(draw.blend.colorSource) || !blendFactor(draw.blend.colorDestination) ||
                                    !blendFactor(draw.blend.alphaSource) || !blendFactor(draw.blend.alphaDestination)))
             return reject("Unsupported blend factors or equation");
         if (!draw.width || !draw.height || draw.width > 4096 || draw.height > 4096 || draw.pitch < draw.width ||
