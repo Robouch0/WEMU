@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <format>
@@ -247,6 +248,14 @@ namespace Core {
                     std::vector<std::uint32_t> guestWords;
                     bool stores{false}; // any instruction may write guest memory (spin detection)
                     mutable std::uint64_t validatedEpoch{0}; // Memory::codeEpoch() of the last word comparison
+                    // Successor chaining: the blocks most recently dispatched after this one, so the
+                    // common path skips the lookup table. Entries hold for one m_blockGeneration.
+                    struct Successor {
+                            std::uint32_t pc{~0u};
+                            const Block *block{nullptr};
+                            std::uint64_t generation{};
+                    };
+                    mutable std::array<Successor, 2> successors{};
 #ifdef WEMU_HAS_LLVM
                     std::vector<std::uint32_t> nativeWords; // supported prefix, empty when not eligible
                     mutable Ppc::NativeBinding nativeCode; // Cache invalidation expires this binding.
@@ -256,6 +265,7 @@ namespace Core {
 #endif
             };
             std::unordered_map<std::uint32_t, Block> m_blockCache; // keyed by memory-relative PC
+            std::uint64_t m_blockGeneration{1}; // advanced whenever a cached block is destroyed
             // Direct-mapped front of m_blockCache (map nodes are stable). Every erase/clear of the
             // map goes through getBlock()'s replacement or clearBlockCache() so no slot outlives its block.
             struct BlockLookup {
@@ -267,6 +277,7 @@ namespace Core {
             static constexpr std::uint32_t blockLookupSlot(std::uint32_t pc) noexcept { return (pc >> 2) & (kBlockLookupSize - 1); }
             void clearBlockCache()
             {
+                ++m_blockGeneration;
                 m_blockCache.clear();
                 std::fill(m_blockLookup.begin(), m_blockLookup.end(), BlockLookup{});
                 m_memory.clearCodePages();

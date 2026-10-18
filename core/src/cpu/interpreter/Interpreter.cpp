@@ -318,6 +318,25 @@ void Core::Interpreter::run()
                 m_scheduler.preempt(*this);
         }
     };
+    // Resolves m_pc through the previous block's successors, falling back to getBlock(). The
+    // previous block is only trusted within the generation it was dispatched in.
+    const Block *previousBlock = nullptr;
+    std::uint64_t previousGeneration = 0;
+    [[maybe_unused]] const auto chainedBlock = [&](Utils::BeDecoder &decoder) -> const Block & {
+        const Block *previous = previousGeneration == m_blockGeneration ? previousBlock : nullptr;
+        if (previous)
+            for (const auto &next: previous->successors)
+                if (next.pc == m_pc && next.generation == m_blockGeneration && next.block->validatedEpoch == m_memory.codeEpoch())
+                    return *(previousBlock = next.block);
+        const Block &block = getBlock(decoder, m_pc);
+        if (previous && previousGeneration == m_blockGeneration) {
+            previous->successors[1] = previous->successors[0];
+            previous->successors[0] = {m_pc, &block, m_blockGeneration};
+        }
+        previousBlock = &block;
+        previousGeneration = m_blockGeneration;
+        return block;
+    };
     while (m_running) {
         if (m_retired >= nextServiceTickAt) {
             // Desktop events must not depend on the guest calling VPADRead or WHBProc.
@@ -535,7 +554,7 @@ void Core::Interpreter::run()
 #ifdef WEMU_HAS_LLVM
             const Block &blk = getBlock(instructionDecoder, m_pc, bool(native));
 #else
-            const Block &blk = getBlock(instructionDecoder, m_pc);
+            const Block &blk = chainedBlock(instructionDecoder);
 #endif
             if (!blk.instrs.empty()) {
                 if (hotBlocks) // TEMP-HOTBLOCKS
@@ -679,6 +698,7 @@ const Core::Interpreter::Block &Core::Interpreter::getBlock(Utils::BeDecoder &de
         }
         if (slot.block == &it->second)
             slot = {};
+        ++m_blockGeneration;
         m_blockCache.erase(it);
     }
 
