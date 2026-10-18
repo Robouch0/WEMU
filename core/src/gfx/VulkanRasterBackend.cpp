@@ -159,13 +159,9 @@ namespace Core::Gfx {
         {
             return format == ColorFormat::RGBA32Float      ? VK_FORMAT_R32G32B32A32_SFLOAT
                    : format == ColorFormat::R11G11B10Float ? VK_FORMAT_B10G11R11_UFLOAT_PACK32
-                   : format == ColorFormat::RGBA16Float    ? VK_FORMAT_R16G16B16A16_SFLOAT
                                                            : VK_FORMAT_R8G8B8A8_UNORM;
         }
-        unsigned imageElementBytes(VkFormat format)
-        {
-            return format == VK_FORMAT_R32G32B32A32_SFLOAT ? 16u : format == VK_FORMAT_R16G16B16A16_SFLOAT ? 8u : 4u;
-        }
+        unsigned imageElementBytes(VkFormat format) { return format == VK_FORMAT_R32G32B32A32_SFLOAT ? 16u : 4u; }
         VkFormat blockVkFormat(TextureBlockFormat format)
         {
             switch (format) {
@@ -3649,15 +3645,6 @@ void main() {
         }
         std::vector<DrawResources::Texture> textures;
         std::vector<std::vector<std::uint8_t>> packedLayers; // CPU snapshots of non-resident array layers
-        // Half-float CPU snapshots are widened to the RGBA32 float upload path.
-        const auto widenHalves = [&](std::span<const std::uint8_t> halves) -> std::span<const std::uint8_t> {
-            auto &floats = packedLayers.emplace_back(halves.size() * 2);
-            for (std::size_t i = 0; i + 1 < halves.size(); i += 2) {
-                const auto value = decodeHalf(std::uint16_t(halves[i] | (halves[i + 1] << 8)));
-                std::memcpy(floats.data() + i * 2, &value, sizeof(value));
-            }
-            return floats;
-        };
         for (const auto &input: draw.textures) {
             auto texture = input;
             std::shared_ptr<ColorImage> resident;
@@ -3674,10 +3661,6 @@ void main() {
                     texture.unorm8 = {};
                 } else if (texture.renderedFormat == ColorFormat::RGBA32Float) {
                     texture.rgba32Bytes = resident ? std::span<const std::uint8_t>{} : texture.rendered->resolve();
-                    texture.rgba32Pitch = texture.unorm8Pitch;
-                    texture.unorm8 = {};
-                } else if (texture.renderedFormat == ColorFormat::RGBA16Float) {
-                    texture.rgba32Bytes = resident ? std::span<const std::uint8_t>{} : widenHalves(texture.rendered->resolve());
                     texture.rgba32Pitch = texture.unorm8Pitch;
                     texture.unorm8 = {};
                 } else if (texture.renderedFormat == ColorFormat::R11G11B10Float) {
@@ -3728,8 +3711,8 @@ void main() {
                     texture.r32Pitch = texture.width;
                     texture.r32Map = texture.unorm8Map;
                     texture.unorm8 = {};
-                } else if (texture.renderedFormat == ColorFormat::RGBA32Float || texture.renderedFormat == ColorFormat::RGBA16Float) {
-                    texture.rgba32Bytes = texture.renderedFormat == ColorFormat::RGBA16Float && !packed.empty() ? widenHalves(packed) : packed;
+                } else if (texture.renderedFormat == ColorFormat::RGBA32Float) {
+                    texture.rgba32Bytes = packed;
                     texture.rgba32Pitch = texture.width;
                     texture.unorm8 = {};
                 } else if (texture.renderedFormat == ColorFormat::R11G11B10Float) {

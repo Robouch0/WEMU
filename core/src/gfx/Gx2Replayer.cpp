@@ -798,7 +798,9 @@ namespace Core::Gfx {
                 return {};
             for (unsigned layer = 0; layer < surface.sliceCount; ++layer) {
                 const auto slice = view.dimension == 5 ? arraySlice(view, layer) : std::optional{view};
-                if (!slice)
+                // 0x820 is only decoded from its rendered RGBA8 backings (MK8's environment probe);
+                // guest-memory half floats have no CPU decoder.
+                if (!slice || (surface.format == 0x820 && !findViewBacking(*slice)))
                     return {};
                 slices.push_back(*slice);
                 if (const auto written = m_cpuWrittenSurfaces.find(slice->imagePtr); written != m_cpuWrittenSurfaces.end())
@@ -3824,16 +3826,6 @@ namespace Core::Gfx {
                         if (surface.format == 0x816) {
                             textures.back().r11g11b10Bytes = *backing;
                             textures.back().r11g11b10Pitch = surface.pitch;
-                        } else if (colorFormat(surface.format) == ColorFormat::RGBA16Float) {
-                            // Half-float backings widen to tightly packed RGBA32 texels.
-                            auto &values = ownedFloatTextures.emplace_back();
-                            values.reserve(std::size_t(surface.width) * surface.height * 4);
-                            for (unsigned y = 0; y < surface.height; ++y)
-                                for (unsigned x = 0; x < surface.width; ++x) {
-                                    const auto value = readFloatColor(backing->data() + (std::size_t(y) * surface.pitch + x) * 8, ColorFormat::RGBA16Float);
-                                    values.insert(values.end(), value.begin(), value.end());
-                                }
-                            textures.back().rgba32 = values;
                         } else {
                             textures.back().rgba32Bytes = *backing;
                             textures.back().rgba32Pitch = surface.pitch;

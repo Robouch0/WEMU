@@ -42,33 +42,6 @@ TEST(ColorTargetTest, PackedHdrRoundTripsFiniteValuesAndRoundsTiesToEven)
     EXPECT_EQ(readFloatColor(bytes.data(), ColorFormat::R11G11B10Float), (std::array{2.f, 0.f, .5f, 1.f}));
 }
 
-TEST(ColorTargetTest, HalfFloatTargetsRoundTripAndRoundTiesToEven)
-{
-    using namespace Core::Gfx;
-    EXPECT_EQ(colorFormat(0x820), ColorFormat::RGBA16Float);
-    EXPECT_EQ(colorElementBytes(ColorFormat::RGBA16Float), 8u);
-    for (unsigned bits = 0; bits < 0x10000; ++bits) {
-        const auto value = decodeHalf(std::uint16_t(bits));
-        if ((bits & 0x7C00) == 0x7C00 && (bits & 0x3FF))
-            ASSERT_TRUE(std::isnan(value)) << bits;
-        else
-            ASSERT_EQ(encodeHalf(value), bits) << bits;
-    }
-    EXPECT_EQ(encodeHalf(65504.f), 0x7BFFu);
-    EXPECT_EQ(encodeHalf(65520.f), 0x7C00u);
-    EXPECT_EQ(encodeHalf(-1e9f), 0xFC00u);
-    EXPECT_EQ(encodeHalf(1.f + std::ldexp(1.f, -11)), 0x3C00u);     // tie to even
-    EXPECT_EQ(encodeHalf(1.f + 3 * std::ldexp(1.f, -11)), 0x3C02u); // tie to even
-    EXPECT_EQ(encodeHalf(std::ldexp(1.f, -25)), 0u);                // half of the smallest subnormal
-    EXPECT_EQ(encodeHalf(3 * std::ldexp(1.f, -25)), 2u);
-    EXPECT_TRUE(std::isnan(decodeHalf(encodeHalf(std::numeric_limits<float>::quiet_NaN()))));
-    std::array<std::uint8_t, 8> bytes{};
-    writeFloatColor(bytes.data(), {2.f, -4.f, .5f, 1024.f}, 15, ColorFormat::RGBA16Float);
-    EXPECT_EQ(readFloatColor(bytes.data(), ColorFormat::RGBA16Float), (std::array{2.f, -4.f, .5f, 1024.f}));
-    writeFloatColor(bytes.data(), {8.f, 9.f, 16.f, .25f}, 5, ColorFormat::RGBA16Float);
-    EXPECT_EQ(readFloatColor(bytes.data(), ColorFormat::RGBA16Float), (std::array{8.f, -4.f, 16.f, 1024.f}));
-}
-
 TEST(LatteTextureTest, TexelOffsetsReachReferenceFetcherInTexels)
 {
     using namespace Core::Gfx;
