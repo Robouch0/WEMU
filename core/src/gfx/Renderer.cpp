@@ -65,6 +65,21 @@ void Renderer::flip_tv(const std::uint8_t *rgbx, std::uint32_t w, std::uint32_t 
     Core::Profile::report(guest_present_count(), movie_frame_count());
 }
 
+void Renderer::flip_drc(const std::uint8_t *rgbx, std::uint32_t w, std::uint32_t h)
+{
+    if (!drc_wanted() || m_pauseMenu.state() != Core::UI::PauseMenu::State::Running)
+        return;
+    if (!m_hostPresenter->presentDrc({rgbx, std::size_t(w) * h * 4}, w, h))
+        m_open = false;
+}
+
+Core::Gfx::GamepadState Renderer::gamepad_state() const
+{
+    if (!m_hostPresenter || m_pauseMenu.state() != Core::UI::PauseMenu::State::Running)
+        return {};
+    return m_hostPresenter->gamepad();
+}
+
 void Renderer::presentFrame(const std::uint8_t *rgbx, std::uint32_t w, std::uint32_t h, bool guestFrame)
 {
     // The slot's previous submission must release both its upload memory and
@@ -254,6 +269,9 @@ void Renderer::processHostCommands(std::chrono::milliseconds wait)
                     m_hostButtonSamples.push_back(command.value);
                     m_hostButtons = command.value;
                 }
+                break;
+            case Action::DrcStream:
+                m_drcWanted = command.value != 0;
                 break;
         }
     }

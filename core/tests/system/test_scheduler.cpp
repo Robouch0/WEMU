@@ -1,3 +1,5 @@
+#include <bit>
+
 #include "TestFixture.hpp"
 #include "cpu/interpreter/SyscallHandler.hpp"
 #include "cpu/memory/Memory.hpp"
@@ -8,7 +10,15 @@ namespace {
     class InputPresenter final : public Core::Gfx::HostPresenter {
         public:
             std::vector<Command> commands;
+            Core::Gfx::GamepadState pad;
+            std::vector<std::uint32_t> drcFrames; // widths of forwarded GamePad frames
             bool connected() const override { return true; }
+            Core::Gfx::GamepadState gamepad() const override { return pad; }
+            bool presentDrc(std::span<const std::uint8_t>, std::uint32_t width, std::uint32_t) override
+            {
+                drcFrames.push_back(width);
+                return true;
+            }
             std::vector<Command> poll(std::chrono::milliseconds) override { return std::exchange(commands, {}); }
             bool present(std::span<const std::uint8_t>, std::uint32_t, std::uint32_t, const Statistics &) override { return true; }
             void paused(bool, const Statistics &) override {}
@@ -79,8 +89,27 @@ TEST_F(SchedulerTest, VpadReadInitializesOneCompleteSampleAndTracksEdges)
     EXPECT_EQ(cpu->m_memory.read<std::uint32_t>(BUF), 0x8800u);
     EXPECT_EQ(cpu->m_memory.read<std::uint32_t>(BUF + 4), 0x8800u);
     EXPECT_EQ(cpu->m_memory.read<std::uint32_t>(BUF + 8), 0u);
+    // Neutral GamePad: centred sticks, gravity along -y, no touch (both axes invalid), identity orientation.
+    const auto neutral = [](unsigned offset) -> std::uint32_t {
+        switch (offset) {
+            case 0x20: // acc.y
+            case 0x34: // vertical.y
+                return 0xBF800000u;
+            case 0x28: // acc magnitude
+            case 0x6C:
+            case 0x7C:
+            case 0x8C:
+                return 0x3F800000u;
+            case 0x58: // tpNormal / tpFiltered1 / tpFiltered2 validity
+            case 0x60:
+            case 0x68:
+                return 0x00030000u;
+            default:
+                return 0u;
+        }
+    };
     for (unsigned i = 12; i < 0xAC; i += 4)
-        EXPECT_EQ(cpu->m_memory.read<std::uint32_t>(BUF + i), i == 0x6C || i == 0x7C || i == 0x8C ? 0x3F800000u : 0u);
+        EXPECT_EQ(cpu->m_memory.read<std::uint32_t>(BUF + i), neutral(i)) << "offset 0x" << std::hex << i;
     for (unsigned i = 0xAC; i < 0x158; i += 4)
         EXPECT_EQ(cpu->m_memory.read<std::uint32_t>(BUF + i), 0xDEADBEEFu);
     read();
@@ -130,6 +159,74 @@ TEST_F(SchedulerTest, VpadReadObservesPressAndReleaseReceivedBetweenGuestPolls)
     EXPECT_EQ(cpu->m_memory.read<std::uint32_t>(buffer + 4), 0u);
     EXPECT_EQ(cpu->m_memory.read<std::uint32_t>(buffer + 8), 0u);
     cpu->m_renderer = nullptr;
+}
+
+TEST_F(SchedulerTest, VpadReadReportsRemoteGamepadSticksTouchAndMotion)
+{
+    RegisterCoreinitFunctions();
+    cpu->m_controllerMask = 0;
+    Core::syscallHandler.get("VPADInit")(*cpu);
+    auto presenter = std::make_unique<InputPresenter>();
+    auto *transport = presenter.get();
+    Renderer renderer(std::move(presenter));
+    cpu->m_renderer = &renderer;
+    constexpr unsigned buffer = 0x28001000, error = 0x28002000, calibrated = 0x28003000;
+    transport->pad.leftStick = {-0.75f, 0.25f};
+    transport->pad.rightStick = {0.0f, 1.0f};
+    transport->pad.touched = true;
+    transport->pad.touchX = 853;
+    transport->pad.touchY = 240;
+    transport->pad.gyro = {0.5f, 0.0f, -0.25f};
+    cpu->m_gpr[3] = 0;
+    cpu->m_gpr[4] = buffer;
+    cpu->m_gpr[5] = 1;
+    cpu->m_gpr[6] = error;
+    Core::syscallHandler.get("VPADRead")(*cpu);
+    const auto f32 = [&](unsigned offset) { return std::bit_cast<float>(cpu->m_memory.read<std::uint32_t>(buffer + offset)); };
+    EXPECT_FLOAT_EQ(f32(0x0C), -0.75f);
+    EXPECT_FLOAT_EQ(f32(0x10), 0.25f);
+    EXPECT_FLOAT_EQ(f32(0x18), 1.0f);
+    EXPECT_FLOAT_EQ(f32(0x38), 0.5f);
+    EXPECT_FLOAT_EQ(f32(0x40), -0.25f);
+    // Stick emulation bits: left stick left, right stick up.
+    EXPECT_EQ(cpu->m_memory.read<std::uint32_t>(buffer), 0x40000000u | 0x01000000u);
+    EXPECT_EQ(cpu->m_memory.read<std::uint16_t>(buffer + 0x56), 1u); // touched
+    EXPECT_EQ(cpu->m_memory.read<std::uint16_t>(buffer + 0x58), 0u); // valid
+    // The raw panel sample converts back to DRC pixels through the calibration HLE.
+    cpu->m_gpr[3] = 0;
+    cpu->m_gpr[4] = calibrated;
+    cpu->m_gpr[5] = buffer + 0x52;
+    Core::syscallHandler.get("VPADGetTPCalibratedPoint")(*cpu);
+    EXPECT_EQ(cpu->m_memory.read<std::uint16_t>(calibrated), 853u);
+    EXPECT_EQ(cpu->m_memory.read<std::uint16_t>(calibrated + 2), 240u);
+    EXPECT_EQ(cpu->m_memory.read<std::uint16_t>(calibrated + 4), 1u);
+    cpu->m_gpr[3] = 0;
+    cpu->m_gpr[4] = 1; // 1280x720
+    cpu->m_gpr[5] = calibrated;
+    cpu->m_gpr[6] = buffer + 0x52;
+    Core::syscallHandler.get("VPADGetTPCalibratedPointEx")(*cpu);
+    EXPECT_EQ(cpu->m_memory.read<std::uint16_t>(calibrated), 1279u);
+    EXPECT_NEAR(cpu->m_memory.read<std::uint16_t>(calibrated + 2), 360, 1);
+    cpu->m_renderer = nullptr;
+}
+
+TEST_F(SchedulerTest, GamepadFramesAreForwardedOnlyWhileTheHostStreamsThem)
+{
+    auto presenter = std::make_unique<InputPresenter>();
+    auto *transport = presenter.get();
+    Renderer renderer(std::move(presenter));
+    const std::vector<std::uint8_t> frame(854 * 480 * 4);
+    renderer.flip_drc(frame.data(), 854, 480);
+    EXPECT_FALSE(renderer.drc_wanted());
+    using Action = Core::Gfx::HostPresenter::Action;
+    transport->commands = {{Action::DrcStream, 1}};
+    renderer.poll_events();
+    EXPECT_TRUE(renderer.drc_wanted());
+    renderer.flip_drc(frame.data(), 854, 480);
+    transport->commands = {{Action::DrcStream, 0}};
+    renderer.poll_events();
+    renderer.flip_drc(frame.data(), 854, 480);
+    EXPECT_EQ(transport->drcFrames, std::vector<std::uint32_t>{854});
 }
 
 TEST_F(SchedulerTest, OsClockReadsShareSchedulerTimeWithoutAdvancingIt)

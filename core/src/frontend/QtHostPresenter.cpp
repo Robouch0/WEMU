@@ -46,11 +46,19 @@ namespace Core::Frontend {
         if (wait.count() && !m_socket.bytesAvailable() && connected())
             m_socket.waitForReadyRead(int(wait.count()));
         QCoreApplication::processEvents(QEventLoop::AllEvents, 1);
-        m_incoming += m_socket.readAll();
-        if (m_incoming.size() > 4096)
-            throw std::runtime_error("Oversized session control buffer");
+        // Control messages are small, but a stalled guest lets a remote GamePad's input queue up:
+        // bound each read and drain parsed messages, so only one oversized message is an error.
         QByteArray body;
-        while (WemuSession::take(m_incoming, body)) {
+        while (true) {
+            if (!WemuSession::take(m_incoming, body)) {
+                if (m_incoming.size() > 4096)
+                    throw std::runtime_error("Oversized session control buffer");
+                const auto chunk = m_socket.read(4096);
+                if (chunk.isEmpty())
+                    break;
+                m_incoming += chunk;
+                continue;
+            }
             QDataStream stream(body);
             WemuSession::configure(stream);
             quint32 type{};
@@ -64,11 +72,13 @@ namespace Core::Frontend {
             } else if (type == quint32(WemuSession::Type::Command)) {
                 quint32 action{}, value{};
                 stream >> action >> value;
-                if (action < quint32(Action::Pause) || action > quint32(Action::Buttons))
+                if (action < quint32(Action::Pause) || action > quint32(Action::DrcStream))
                     throw std::runtime_error("Invalid session control action");
                 m_commands.push_back({Action(action), value});
                 if (Action(action) == Action::Stop)
                     m_stopping = true;
+            } else if (type == quint32(WemuSession::Type::Gamepad)) {
+                m_gamepad = WemuSession::readGamepad(stream);
             } else
                 throw std::runtime_error("Unexpected session control message");
             if (stream.status() != QDataStream::Ok || !stream.atEnd())
@@ -97,6 +107,19 @@ namespace Core::Frontend {
         while (connected() && m_sequence - m_acknowledged >= 2)
             receive(std::chrono::milliseconds(50));
         return connected();
+    }
+
+    bool QtHostPresenter::presentDrc(std::span<const std::uint8_t> rgba, std::uint32_t width, std::uint32_t height)
+    {
+        if (!width || !height || width > 4096 || height > 4096 || std::uint64_t(width) * height * 4 != rgba.size())
+            throw std::runtime_error("Invalid session GamePad framebuffer");
+        // Unacknowledged: the window keeps only the newest GamePad image, so the TV frame pipeline
+        // alone paces the guest.
+        QByteArray body;
+        QDataStream stream(&body, QIODevice::WriteOnly);
+        WemuSession::configure(stream);
+        stream << quint32(WemuSession::Type::DrcFrame) << quint32(width) << quint32(height);
+        return send(body, rgba);
     }
 
     void QtHostPresenter::paused(bool value, const Statistics &statistics)

@@ -68,6 +68,10 @@ EmulatorLauncher::EmulatorLauncher(QObject *parent) : QObject(parent)
             readChannel();
         }
     });
+    // Coalesce analog input (gyro changes every sample) to one core message per display frame.
+    m_gamepadTimer.setSingleShot(true);
+    m_gamepadTimer.setInterval(8);
+    connect(&m_gamepadTimer, &QTimer::timeout, this, &EmulatorLauncher::sendGamepad);
     m_stopTimer.setSingleShot(true);
     m_stopTimer.setInterval(2000);
     connect(&m_stopTimer, &QTimer::timeout, &m_process, &QProcess::kill);
@@ -149,6 +153,7 @@ void EmulatorLauncher::launch(const QString &rpxPath, const QString &title, cons
     m_stopping = false;
     clearChannel();
     m_title = title;
+    m_rpxPath = rpxPath;
     m_showFps = false;
     if (!QFileInfo(rpxPath).isFile() || !QDir(contentPath).exists()) {
         setError("Game files are missing. Refresh the library.");
@@ -235,9 +240,14 @@ void EmulatorLauncher::clearChannel()
     m_awaitingFrame = m_lastFrame = 0;
     m_frames.clear();
     m_buttons = 0;
+    m_remoteButtons = 0;
+    m_remoteGamepad = {};
+    m_gamepadDirty = false;
+    m_gamepadTimer.stop();
     m_heldKeys.clear();
     m_suppressedKeys.clear();
     emit frameReady({}, 0);
+    emit drcFrameReady({});
     emit sessionChanged();
     emit statisticsChanged();
 }
@@ -305,6 +315,10 @@ void EmulatorLauncher::readChannel()
                 if (m_connected || version != WemuSession::version || !stream.atEnd())
                     throw std::runtime_error("Incompatible game display protocol");
                 m_connected = true;
+                if (m_drcStreaming)
+                    sendCommand(5, 1);
+                m_gamepadDirty = true;
+                sendGamepad();
                 emit sessionChanged();
             } else if (type == quint32(WemuSession::Type::Frame) && m_connected) {
                 quint64 sequence{}, presents{}, movies{};
@@ -325,6 +339,16 @@ void EmulatorLauncher::readChannel()
                 m_frames.push_back({image, sequence, presentFps, movieFps});
                 dispatchFrame();
                 continue; // Pixel bytes are intentionally outside the metadata stream.
+            } else if (type == quint32(WemuSession::Type::DrcFrame) && m_connected) {
+                quint32 width{}, height{};
+                stream >> width >> height;
+                const auto offset = stream.device()->pos();
+                if (stream.status() != QDataStream::Ok || !width || !height || width > 4096 || height > 4096 ||
+                    std::uint64_t(width) * height * 4 != std::uint64_t(body.size() - offset))
+                    throw std::runtime_error("Invalid GamePad framebuffer");
+                emit drcFrameReady(WemuSession::frameImage(std::move(body), offset, width, height));
+                body = {};
+                continue;
             } else if (type == quint32(WemuSession::Type::PauseState) && m_connected) {
                 quint32 paused{};
                 quint64 presents{}, movies{};
@@ -380,13 +404,57 @@ void EmulatorLauncher::toggleFps()
     emit sessionChanged();
 }
 
+void EmulatorLauncher::setRemoteButtons(quint32 buttons)
+{
+    if (buttons == m_remoteButtons)
+        return;
+    m_remoteButtons = buttons;
+    sendButtons();
+}
+
+void EmulatorLauncher::setRemoteGamepad(const Core::Gfx::GamepadState &state)
+{
+    const auto &a = state, &b = m_remoteGamepad;
+    if (a.leftStick == b.leftStick && a.rightStick == b.rightStick && a.touched == b.touched && a.touchX == b.touchX && a.touchY == b.touchY &&
+        a.accel == b.accel && a.gyro == b.gyro)
+        return;
+    m_remoteGamepad = state;
+    m_gamepadDirty = true;
+    if (!m_gamepadTimer.isActive())
+        m_gamepadTimer.start();
+}
+
+void EmulatorLauncher::sendGamepad()
+{
+    if (!m_socket || !m_connected || !m_gamepadDirty)
+        return;
+    m_gamepadDirty = false;
+    QByteArray body;
+    QDataStream stream(&body, QIODevice::WriteOnly);
+    WemuSession::configure(stream);
+    stream << quint32(WemuSession::Type::Gamepad);
+    WemuSession::writeGamepad(stream, m_remoteGamepad);
+    m_socket->write(WemuSession::packet(body));
+    m_socket->flush();
+}
+
+void EmulatorLauncher::setDrcStreaming(bool enabled)
+{
+    if (enabled == m_drcStreaming)
+        return;
+    m_drcStreaming = enabled;
+    sendCommand(5, enabled ? 1 : 0);
+}
+
 void EmulatorLauncher::sendButtons()
 {
     quint32 buttons{};
-    if (!m_paused && !m_pausePending && !m_stopping)
+    if (!m_paused && !m_pausePending && !m_stopping) {
         for (const auto key: m_heldKeys)
             if (!m_suppressedKeys.contains(key))
                 buttons |= buttonForKey(key);
+        buttons |= m_remoteButtons;
+    }
     if (buttons != m_buttons) {
         m_buttons = buttons;
         sendCommand(4, buttons);

@@ -72,6 +72,46 @@ Item {
         onClicked: page.forceActiveFocus()
     }
 
+    // Mobile GamePad connect/disconnect toast.
+    Rectangle {
+        id: gamepadToast
+        property string message: ""
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.top: parent.top
+        anchors.topMargin: 24
+        width: toastText.implicitWidth + 36
+        height: 40
+        radius: 20
+        color: "#cc202632"
+        opacity: 0
+        visible: opacity > 0
+        Text {
+            id: toastText
+            anchors.centerIn: parent
+            text: gamepadToast.message
+            color: "#f2f5fa"
+            font.pixelSize: 14
+            font.bold: true
+        }
+        SequentialAnimation {
+            id: toastAnimation
+            NumberAnimation { target: gamepadToast; property: "opacity"; to: 1; duration: 180 }
+            PauseAnimation { duration: 2600 }
+            NumberAnimation { target: gamepadToast; property: "opacity"; to: 0; duration: 400 }
+        }
+        Connections {
+            target: RemoteGamepad
+            property bool wasConnected: RemoteGamepad.clientConnected
+            function onClientChanged() {
+                if (RemoteGamepad.clientConnected === wasConnected)
+                    return;
+                wasConnected = RemoteGamepad.clientConnected;
+                gamepadToast.message = wasConnected ? "GamePad connected · " + RemoteGamepad.clientName : "GamePad disconnected";
+                toastAnimation.restart();
+            }
+        }
+    }
+
     Rectangle {
         visible: EmulatorLauncher.showFps && EmulatorLauncher.hasFrame && !EmulatorLauncher.paused
         anchors.top: parent.top

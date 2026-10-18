@@ -4289,6 +4289,46 @@ namespace Core::Gfx {
         }
     }
 
+    void Gx2Replayer::copyToDrcBuffer(const Surface &s)
+    {
+        // The scan-out engine scales the source to the 854x480 panel (titles often render the
+        // GamePad view at another size), so resample instead of cropping like the TV path.
+        m_drcFb.assign(static_cast<std::size_t>(kDrcWidth) * kDrcHeight * 4, 0);
+        for (std::size_t i = 3; i < m_drcFb.size(); i += 4)
+            m_drcFb[i] = 0xFF;
+        if (!s.imagePtr || !s.width || !s.height || !s.pitch)
+            return;
+        const bool floatColor = s.format == 0x823;
+        const std::size_t elementBytes = floatColor ? 16 : 4;
+        const auto *backing = useViewBacking() ? findViewBacking(s) : nullptr;
+        const std::uint8_t *base = backing ? backing->data() : nullptr;
+        const std::size_t bytes = static_cast<std::size_t>(s.pitch) * s.height * elementBytes;
+        if (backing && backing->size() < bytes)
+            return;
+        if (!base) {
+            if (!m_mem)
+                return;
+            base = m_mem->hostPtr(s.imagePtr);
+            if (!base || !m_mem->hostPtr(s.imagePtr + bytes - 1))
+                return;
+        }
+        for (std::uint32_t y = 0; y < kDrcHeight; y++) {
+            const std::uint32_t sy = static_cast<std::uint32_t>(std::uint64_t(y) * s.height / kDrcHeight);
+            std::uint8_t *dst = m_drcFb.data() + static_cast<std::size_t>(y) * kDrcWidth * 4;
+            for (std::uint32_t x = 0; x < kDrcWidth; x++) {
+                const std::uint32_t sx = static_cast<std::uint32_t>(std::uint64_t(x) * s.width / kDrcWidth);
+                const std::uint8_t *src = base + (static_cast<std::size_t>(sy) * s.pitch + sx) * elementBytes;
+                if (floatColor) {
+                    const auto value = readFloatColor(src);
+                    for (unsigned c = 0; c < 3; ++c)
+                        dst[x * 4 + c] = byteFromUnit(value[c]);
+                } else
+                    std::memcpy(dst + static_cast<std::size_t>(x) * 4, src, 3);
+                dst[x * 4 + 3] = 0xFF;
+            }
+        }
+    }
+
     void Gx2Replayer::dumpSurface(const Surface &s, const char *kind, const bool force)
     {
         if ((!force && !m_dumpSurfaces) || !m_mem || !s.imagePtr)
@@ -4430,7 +4470,7 @@ namespace Core::Gfx {
                               frame, kind, view.imagePtr, writtenInfo.frame, writtenInfo.writes, written.width, written.height, written.pitch,
                               written.format & 0x3F, written.tileMode, view.width, view.height, view.pitch, view.format & 0x3F, view.tileMode);
         };
-        bool presented = false;
+        bool presented = false, drcPresented = false;
         for (const auto &cmd: stream.commands()) {
             switch (cmd.type) {
                 case Gx2Cmd::SetDepthBuffer:
@@ -4837,6 +4877,13 @@ namespace Core::Gfx {
                     // graph mode records which colour buffer is the TV source to read back at present.
                     if (std::getenv("WEMU_SCAN_TRACE")) // TEMP-SCANTRACE
                         Utils::Log::error("[SCAN] frame={} copy target={} surface={:08X}", m_presentCount, cmd.gpr[1], parseSurface(cmd).imagePtr);
+                    // The DRC copy is captured where it is issued: titles commonly reuse one colour
+                    // buffer for both screens, so reading it back at the swap would show the TV image.
+                    if ((cmd.gpr[1] & 4) && m_drcCapture && !m_gpuRenderer) {
+                        m_lastDrcScan = parseSurface(cmd);
+                        copyToDrcBuffer(m_lastDrcScan);
+                        drcPresented = true;
+                    }
                     if (cmd.gpr[1] & 1) {
                         m_lastScan = attachmentSurface(parseSurface(cmd));
                         if (m_gpuGraph)
@@ -4901,6 +4948,8 @@ namespace Core::Gfx {
                         else
                             buildClearFrame();
                     }
+                    if (m_drcCapture && !drcPresented && m_lastDrcScan.imagePtr && !m_gpuRenderer)
+                        copyToDrcBuffer(m_lastDrcScan);
                     if (std::getenv("WEMU_SCAN_TRACE")) // TEMP-SCANTRACE
                         Utils::Log::error("[SCAN] frame={} presented={} lastScan={:08X} {}x{} fmt={:X} color={:08X} lastDraw={:08X} pending={}",
                                           m_presentCount, presented, m_lastScan.imagePtr, m_lastScan.width, m_lastScan.height, m_lastScan.format,

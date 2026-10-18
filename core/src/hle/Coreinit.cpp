@@ -8,8 +8,11 @@
 #include "Coreinit.hpp"
 
 #include <SDL2/SDL.h>
+#include <algorithm>
 #include <array>
+#include <bit>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -124,6 +127,25 @@ static void hle_OSScreenClearBufferEx(Core::Interpreter &cpu)
     cpu.m_gpr[3] = 0;
 }
 
+// OSScreenPutPixelEx(screen, x, y, 0xRRGGBBXX)
+static void hle_OSScreenPutPixelEx(Core::Interpreter &cpu)
+{
+    const std::uint32_t id = cpu.m_gpr[3], x = cpu.m_gpr[4], y = cpu.m_gpr[5], color = cpu.m_gpr[6];
+    cpu.m_gpr[3] = 0;
+    if (id >= 2 || !s_fb_addr[id])
+        return;
+    const std::uint32_t width = id == 0 ? 1280u : 854u, height = id == 0 ? 720u : 480u;
+    if (x >= width || y >= height)
+        return;
+    std::uint8_t *pixel = cpu.m_memory.hostPtr(s_fb_addr[id] + (y * width + x) * 4);
+    if (!pixel)
+        return;
+    pixel[0] = color >> 24;
+    pixel[1] = color >> 16;
+    pixel[2] = color >> 8;
+    pixel[3] = color;
+}
+
 static void hle_OSScreenPutFontEx(Core::Interpreter &cpu)
 {
     std::uint32_t id = cpu.m_gpr[3];
@@ -158,8 +180,16 @@ static void hle_OSScreenPutFontEx(Core::Interpreter &cpu)
 static void hle_OSScreenFlipBuffersEx(Core::Interpreter &cpu)
 {
     std::uint32_t id = cpu.m_gpr[3];
-    if (id != 0 || !cpu.m_renderer)
+    if (id > 1 || !cpu.m_renderer)
         return;
+
+    if (id == 1) {
+        // GamePad buffer: only forwarded while a remote GamePad displays it.
+        if (cpu.m_renderer->drc_wanted() && s_fb_addr[1] && cpu.m_memory.hostPtr(s_fb_addr[1] + 854 * 480 * 4 - 1))
+            cpu.m_renderer->flip_drc(cpu.m_memory.hostPtr(s_fb_addr[1]), 854, 480);
+        cpu.m_gpr[3] = 0;
+        return;
+    }
 
     std::uint32_t fb_addr = s_fb_addr[0];
     if (!fb_addr)
@@ -838,6 +868,67 @@ static void hle_VPADInit(Core::Interpreter &cpu)
 }
 static void hle_VPADSetAccParam(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
 
+// Raw touch-panel range. Titles convert through VPADGetTPCalibratedPoint, which inverts this
+// mapping, so only its consistency matters.
+static constexpr std::uint32_t kTouchRawMin = 100, kTouchRawMax = 3980;
+
+static std::uint16_t vpadRawTouch(std::uint32_t pixel, std::uint32_t size)
+{
+    return static_cast<std::uint16_t>(kTouchRawMin + std::min(pixel, size - 1) * (kTouchRawMax - kTouchRawMin) / (size - 1));
+}
+
+static std::uint32_t vpadCalibratedTouch(std::uint32_t raw, std::uint32_t size)
+{
+    raw = std::clamp(raw, kTouchRawMin, kTouchRawMax);
+    return ((raw - kTouchRawMin) * (size - 1) + (kTouchRawMax - kTouchRawMin) / 2) / (kTouchRawMax - kTouchRawMin);
+}
+
+// The stick-direction bits VPAD reports alongside the analog values (menus read them as a D-pad).
+static std::uint32_t vpadStickEmulation(const Core::Gfx::GamepadState &pad)
+{
+    constexpr float threshold = 0.5f;
+    std::uint32_t bits = 0;
+    const auto axis = [&](float value, std::uint32_t negative, std::uint32_t positive) {
+        if (value <= -threshold)
+            bits |= negative;
+        else if (value >= threshold)
+            bits |= positive;
+    };
+    axis(pad.leftStick[0], 0x40000000u, 0x20000000u);
+    axis(pad.leftStick[1], 0x08000000u, 0x10000000u);
+    axis(pad.rightStick[0], 0x04000000u, 0x02000000u);
+    axis(pad.rightStick[1], 0x00800000u, 0x01000000u);
+    return bits;
+}
+
+static void writeCalibratedTouch(Core::Interpreter &cpu, std::uint32_t out, std::uint32_t in, std::uint32_t width, std::uint32_t height)
+{
+    if (!out || !in)
+        return;
+    const auto x = cpu.m_memory.read<std::uint16_t>(in + 0), y = cpu.m_memory.read<std::uint16_t>(in + 2);
+    const auto touched = cpu.m_memory.read<std::uint16_t>(in + 4), validity = cpu.m_memory.read<std::uint16_t>(in + 6);
+    cpu.m_memory.write<std::uint16_t>(out + 0, static_cast<std::uint16_t>(vpadCalibratedTouch(x, width)));
+    cpu.m_memory.write<std::uint16_t>(out + 2, static_cast<std::uint16_t>(vpadCalibratedTouch(y, height)));
+    cpu.m_memory.write<std::uint16_t>(out + 4, touched);
+    cpu.m_memory.write<std::uint16_t>(out + 6, validity);
+}
+
+// VPADGetTPCalibratedPoint(chan, VPADTouchData *calibrated, const VPADTouchData *raw): 854x480.
+static void hle_VPADGetTPCalibratedPoint(Core::Interpreter &cpu)
+{
+    writeCalibratedTouch(cpu, cpu.m_gpr[4], cpu.m_gpr[5], 854, 480);
+    cpu.m_gpr[3] = 0;
+}
+
+// VPADGetTPCalibratedPointEx(chan, VPADTouchPadResolution, calibrated, raw).
+static void hle_VPADGetTPCalibratedPointEx(Core::Interpreter &cpu)
+{
+    static constexpr std::uint32_t sizes[3][2] = {{1920, 1080}, {1280, 720}, {854, 480}};
+    const auto resolution = std::min<std::uint32_t>(cpu.m_gpr[4], 2);
+    writeCalibratedTouch(cpu, cpu.m_gpr[5], cpu.m_gpr[6], sizes[resolution][0], sizes[resolution][1]);
+    cpu.m_gpr[3] = 0;
+}
+
 static void hle_VPADRead(Core::Interpreter &cpu)
 {
     std::uint32_t buf_addr = cpu.m_gpr[4];
@@ -855,6 +946,8 @@ static void hle_VPADRead(Core::Interpreter &cpu)
     if (cpu.m_renderer)
         cpu.m_renderer->poll_events();
     std::uint32_t hold = (cpu.m_renderer ? cpu.m_renderer->sample_buttons() : 0u) | cpu.m_controllerMask;
+    const auto pad = cpu.m_renderer ? cpu.m_renderer->gamepad_state() : Core::Gfx::GamepadState{};
+    hold |= vpadStickEmulation(pad);
 
     // WEMU_AUTO_A=1: pulse the confirm buttons so unattended boots pass "press +/A" gates (MK8's
     // title is "Press +"). Pulsing is driven by the VPADRead CALL COUNT, not wall time, so the
@@ -881,11 +974,34 @@ static void hle_VPADRead(Core::Interpreter &cpu)
     if (traceInput && (trigger || released || cpu.m_vpadReadCount == 1 || cpu.m_vpadReadCount % 256 == 0))
         Utils::Log::error("[VPAD_INPUT] read={} hold={:08X} trigger={:08X} release={:08X}", cpu.m_vpadReadCount, hold, trigger, released);
 
-    // One complete sample: centered sticks, no touch/motion, and an identity orientation.
+    // One complete sample: sticks, touch and motion from the remote GamePad (neutral without one)
+    // and an identity orientation.
     for (std::uint32_t offset = 0; offset < 0xAC; offset += 4)
         cpu.m_memory.write<std::uint32_t>(buf_addr + offset, 0);
     for (const auto offset: {0x6Cu, 0x7Cu, 0x8Cu})
         cpu.m_memory.write<std::uint32_t>(buf_addr + offset, 0x3F800000);
+
+    const auto writeFloat = [&](std::uint32_t offset, float value) {
+        cpu.m_memory.write<std::uint32_t>(buf_addr + offset, std::bit_cast<std::uint32_t>(value));
+    };
+    writeFloat(0x0C, pad.leftStick[0]);
+    writeFloat(0x10, pad.leftStick[1]);
+    writeFloat(0x14, pad.rightStick[0]);
+    writeFloat(0x18, pad.rightStick[1]);
+    for (unsigned axis = 0; axis < 3; ++axis) {
+        writeFloat(0x1C + axis * 4, pad.accel[axis]);
+        writeFloat(0x38 + axis * 4, pad.gyro[axis]);
+    }
+    writeFloat(0x28, std::sqrt(pad.accel[0] * pad.accel[0] + pad.accel[1] * pad.accel[1] + pad.accel[2] * pad.accel[2]));
+    writeFloat(0x30, pad.accel[0]); // vertical: gravity projected on the screen plane
+    writeFloat(0x34, pad.accel[1]);
+    // tpNormal and both filtered copies: raw panel coordinates, validity 0 = both axes valid.
+    for (const std::uint32_t offset: {0x52u, 0x5Au, 0x62u}) {
+        cpu.m_memory.write<std::uint16_t>(buf_addr + offset + 0, pad.touched ? vpadRawTouch(pad.touchX, 854) : 0);
+        cpu.m_memory.write<std::uint16_t>(buf_addr + offset + 2, pad.touched ? vpadRawTouch(pad.touchY, 480) : 0);
+        cpu.m_memory.write<std::uint16_t>(buf_addr + offset + 4, pad.touched ? 1 : 0);
+        cpu.m_memory.write<std::uint16_t>(buf_addr + offset + 6, pad.touched ? 0 : 3);
+    }
 
     cpu.m_memory.write<std::uint32_t>(buf_addr + 0, hold);
     cpu.m_memory.write<std::uint32_t>(buf_addr + 4, trigger);
@@ -932,6 +1048,7 @@ void RegisterCoreinitFunctions()
     Core::syscallHandler.registerSyscall("OSScreenEnableEx", hle_OSScreenEnableEx);
     Core::syscallHandler.registerSyscall("OSScreenClearBufferEx", hle_OSScreenClearBufferEx);
     Core::syscallHandler.registerSyscall("OSScreenPutFontEx", hle_OSScreenPutFontEx);
+    Core::syscallHandler.registerSyscall("OSScreenPutPixelEx", hle_OSScreenPutPixelEx);
     Core::syscallHandler.registerSyscall("OSScreenFlipBuffersEx", hle_OSScreenFlipBuffersEx);
 
     // OS misc
@@ -1059,6 +1176,8 @@ void RegisterCoreinitFunctions()
     Core::syscallHandler.registerSyscall("VPADInit", hle_VPADInit);
     Core::syscallHandler.registerSyscall("VPADSetAccParam", hle_VPADSetAccParam);
     Core::syscallHandler.registerSyscall("VPADRead", hle_VPADRead);
+    Core::syscallHandler.registerSyscall("VPADGetTPCalibratedPoint", hle_VPADGetTPCalibratedPoint);
+    Core::syscallHandler.registerSyscall("VPADGetTPCalibratedPointEx", hle_VPADGetTPCalibratedPointEx);
 
     // FS / FSA
     Core::syscallHandler.registerSyscall("FSInit", hle_FSInit);

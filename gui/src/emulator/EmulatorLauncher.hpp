@@ -8,6 +8,8 @@
 #include <QTimer>
 #include <deque>
 
+#include "gfx/HostPresenter.hpp"
+
 class EmulatorLauncher : public QObject {
         Q_OBJECT
         Q_PROPERTY(bool running READ running NOTIFY runningChanged)
@@ -39,6 +41,7 @@ class EmulatorLauncher : public QObject {
         double presentFps() const { return m_presentFps; }
         double movieFps() const { return m_movieFps; }
         QString gameTitle() const { return m_title; }
+        QString gameRpxPath() const { return m_rpxPath; }
         int systemLanguage() const;
         int systemRegion() const;
         void setSystemLanguage(int value);
@@ -50,6 +53,11 @@ class EmulatorLauncher : public QObject {
         Q_INVOKABLE void resume();
         Q_INVOKABLE void toggleFps();
         void acknowledgeFrame(quint64 sequence);
+        // Remote GamePad (phone): its buttons merge with the keyboard's; analog state is forwarded
+        // as-is. setDrcStreaming asks the core for GamePad-screen frames (drcFrameReady).
+        void setRemoteButtons(quint32 buttons);
+        void setRemoteGamepad(const Core::Gfx::GamepadState &state);
+        void setDrcStreaming(bool enabled);
     signals:
         void runningChanged();
         void stateChanged(bool running);
@@ -59,6 +67,7 @@ class EmulatorLauncher : public QObject {
         void statisticsChanged();
         void settingsChanged();
         void frameReady(const QImage &image, quint64 sequence);
+        void drcFrameReady(const QImage &image);
 
     protected:
         bool eventFilter(QObject *object, QEvent *event) override;
@@ -68,6 +77,7 @@ class EmulatorLauncher : public QObject {
         void sendCommand(quint32 action, quint32 value = 0);
         void clearChannel();
         void sendButtons();
+        void sendGamepad();
         void dispatchFrame();
         QProcess m_process;
         QTimer m_stopTimer;
@@ -85,8 +95,11 @@ class EmulatorLauncher : public QObject {
                 double presentFps{}, movieFps{};
         };
         std::deque<PendingFrame> m_frames;
-        quint32 m_buttons{};
+        quint32 m_buttons{}, m_remoteButtons{};
+        Core::Gfx::GamepadState m_remoteGamepad;
+        bool m_gamepadDirty{}, m_drcStreaming{};
+        QTimer m_gamepadTimer;
         QSet<int> m_heldKeys, m_suppressedKeys;
-        QString m_title;
+        QString m_title, m_rpxPath;
         void setError(const QString &error);
 };

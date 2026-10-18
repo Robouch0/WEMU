@@ -11,7 +11,7 @@
 
 WEMU is an open-source Wii U emulator for Linux, written in C++23. The project is in early development: homebrew demos run, while commercial-title booting and rendering remain experimental.
 
-Our goal is to accurately emulate the Wii U's PowerPC CPU and GPU in order to run Wii U software. What sets WEMU apart from existing solutions like Cemu is a companion feature: **use your phone as the Wii U GamePad**. A web application streams the GamePad screen from the emulator to your phone and sends touch inputs back, replacing the physical GamePad entirely.
+Our goal is to accurately emulate the Wii U's PowerPC CPU and GPU in order to run Wii U software. What sets WEMU apart from existing solutions like Cemu is a companion feature: **use your phone as the Wii U GamePad**. The WEMU GamePad app (Android and iOS, in [`mobile/`](mobile/)) streams the GamePad screen from the emulator to your phone over Wi-Fi and sends buttons, sticks, touch and motion back, replacing the physical GamePad entirely. See [docs/features/mobile-gamepad.md](docs/features/mobile-gamepad.md).
 
 ---
 
@@ -30,7 +30,7 @@ Commercial games are not yet fully playable. Current components include:
 | USB/gamepad input (SDL2) | Done        |
 | RPX file format support (SHF_DEFLATED parsing) | Done        |
 | Wii U title library browser | Done |
-| Phone-as-GamePad web app | Planned     |
+| Phone-as-GamePad app (Android/iOS): GamePad screen, buttons, sticks, touch, motion | Implemented; GamePad audio planned |
 
 ---
 

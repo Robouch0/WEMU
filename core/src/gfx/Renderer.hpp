@@ -54,6 +54,12 @@ class Renderer {
         }
 
         void flip_tv(const std::uint8_t *rgbx, std::uint32_t w, std::uint32_t h);
+        // GamePad screen. Forwarded only while the host streams it to a remote GamePad; never paces.
+        void flip_drc(const std::uint8_t *rgbx, std::uint32_t w, std::uint32_t h);
+        // True while a host consumer wants GamePad frames, so callers can skip building them.
+        [[nodiscard]] bool drc_wanted() const { return m_hostPresenter && m_drcWanted; }
+        // Analog GamePad state (sticks, touch, motion); neutral when no remote GamePad is attached.
+        [[nodiscard]] Core::Gfx::GamepadState gamepad_state() const;
 
         // GPU rasterisation path (WEMU_GPU=1). The Gx2Replayer computes screen-space textured
         // triangles on the CPU and hands them here to be filled on the GPU instead of by the
@@ -285,6 +291,7 @@ class Renderer {
         Core::UI::PauseMenu m_pauseMenu;
         std::unique_ptr<Core::Gfx::HostPresenter> m_hostPresenter;
         std::uint32_t m_hostButtons{};
+        bool m_drcWanted{};
         std::deque<std::uint32_t> m_hostButtonSamples;
         Core::UI::FrameRate m_presentRate, m_movieRate;
         std::vector<std::uint8_t> m_pauseBackground;
