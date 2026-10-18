@@ -707,9 +707,12 @@ void main() {
                         vkDestroyCommandPool(device, readbackPool, nullptr);
                 }
 
+                // Only the first constantFloats/vertexConstantFloats values are defined and read by
+                // the bundle's shaders; the rest of each uniform buffer is never accessed.
                 void initialize(const SpirvModule &vertex, const SpirvModule &fragment, const std::array<float, 3200> &constants,
-                                const std::array<float, 3200> &vertexConstants, const std::vector<Texture> &textures, const RasterDraw &draw,
-                                const std::shared_ptr<ColorImage> &targetSource, const std::shared_ptr<ColorImage> &depthSource, bool overwriteTarget)
+                                const std::array<float, 3200> &vertexConstants, std::size_t constantFloats, std::size_t vertexConstantFloats,
+                                const std::vector<Texture> &textures, const RasterDraw &draw, const std::shared_ptr<ColorImage> &targetSource,
+                                const std::shared_ptr<ColorImage> &depthSource, bool overwriteTarget)
                 {
                     fullOverwrite = overwriteTarget;
                     const auto *profile = std::getenv("WEMU_NATIVE_GPU_TIMING");
@@ -846,11 +849,11 @@ void main() {
                     uniform = buffer(sizeof(constants), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, uniformMemory);
                     void *mapped = nullptr;
                     check(vkMapMemory(device, uniformMemory, 0, sizeof(constants), 0, &mapped), "map constants");
-                    std::memcpy(mapped, constants.data(), sizeof(constants));
+                    std::memcpy(mapped, constants.data(), constantFloats * sizeof(float));
                     vkUnmapMemory(device, uniformMemory);
                     if (draw.vertexStage.shader) {
                         vertexUniform = buffer(sizeof(vertexConstants), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, vertexUniformMemory);
-                        upload(vertexUniformMemory, vertexConstants.data(), sizeof(vertexConstants));
+                        upload(vertexUniformMemory, vertexConstants.data(), vertexConstantFloats * sizeof(float));
                     }
                     if (!depthOnly(draw))
                         readback = buffer(draw.target.size(), VK_BUFFER_USAGE_TRANSFER_DST_BIT, readbackMemory, VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
@@ -1572,8 +1575,8 @@ void main() {
                     return result;
                 }
 
-                bool refresh(const std::array<float, 3200> &constants, const std::array<float, 3200> &vertexConstants,
-                             const std::vector<Texture> &textures, const RasterDraw &draw, bool retainTextures,
+                bool refresh(const std::array<float, 3200> &constants, const std::array<float, 3200> &vertexConstants, std::size_t constantFloats,
+                             std::size_t vertexConstantFloats, const std::vector<Texture> &textures, const RasterDraw &draw, bool retainTextures,
                              const std::shared_ptr<ColorImage> &targetSource, const std::shared_ptr<ColorImage> &depthSource)
                 {
                     finishPending();
@@ -1581,9 +1584,9 @@ void main() {
                     check(vkResetCommandPool(device, pool, 0), "reset commands");
                     VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
                     check(vkBeginCommandBuffer(command, &begin), "begin commands");
-                    upload(uniformMemory, constants.data(), sizeof(constants));
+                    upload(uniformMemory, constants.data(), constantFloats * sizeof(float));
                     if (draw.vertexStage.shader)
-                        upload(vertexUniformMemory, vertexConstants.data(), sizeof(vertexConstants));
+                        upload(vertexUniformMemory, vertexConstants.data(), vertexConstantFloats * sizeof(float));
                     upload(vertexMemory, draw.vertices.data(), draw.vertices.size_bytes());
                     retainedTarget = !depthOnly(draw) && !fullOverwrite && (targetSource ? targetSource == colorImage : targetMatchesReadback(draw));
                     if (!depthOnly(draw) && !fullOverwrite && !targetSource && !retainedTarget)
@@ -2655,8 +2658,16 @@ void main() {
                 }
             textures.push_back(std::move(uploaded));
         }
-        std::array<float, 3200> constants{};
-        std::array<float, 3200> vertexConstants{};
+        // Layout: registers [0, 1024), sampler borders and modes [1024, 1152), static uniform-block
+        // references from 1152. Values past the references are never read, so they stay unset.
+        std::array<float, 3200> constants, vertexConstants;
+        const auto constantFloats = std::min<std::size_t>(constants.size(), std::max(draw.constants.size(), 1152 + draw.uniforms.size()));
+        const auto vertexConstantFloats =
+                draw.vertexStage.shader ? std::min<std::size_t>(vertexConstants.size(),
+                                                                std::max(draw.vertexStage.constants.size(), 1152 + draw.vertexStage.uniforms.size()))
+                                        : 0;
+        std::fill_n(constants.begin(), constantFloats, 0.f);
+        std::fill_n(vertexConstants.begin(), vertexConstantFloats, 0.f);
         if (draw.vertexStage.shader) {
             std::copy(draw.vertexStage.constants.begin(), draw.vertexStage.constants.end(), vertexConstants.begin());
             std::copy(draw.vertexStage.uniforms.begin(), draw.vertexStage.uniforms.end(), vertexConstants.begin() + 1152);
@@ -2819,7 +2830,8 @@ void main() {
             }
             if (it == m_impl->resources.end()) {
                 auto resources = std::make_shared<DrawResources>(m_impl->context);
-                resources->initialize(*vertex, *fragment, constants, vertexConstants, textures, draw, targetSource, depthSource, overwriteTarget);
+                resources->initialize(*vertex, *fragment, constants, vertexConstants, constantFloats, vertexConstantFloats, textures, draw, targetSource,
+                                      depthSource, overwriteTarget);
                 it = m_impl->resources.emplace(std::move(key), Impl::ResourceEntry{std::move(resources), estimatedBytes, ++m_impl->resourceClock})
                              .first;
                 m_impl->cachedBytes += estimatedBytes;
@@ -2829,7 +2841,8 @@ void main() {
                 it->second.used = ++m_impl->resourceClock;
                 const auto oldTextures = it->second.value->retainedTextures;
                 const auto oldBytes = it->second.value->retainedTextureBytes;
-                if (it->second.value->refresh(constants, vertexConstants, textures, draw, m_impl->retainTextures, targetSource, depthSource))
+                if (it->second.value->refresh(constants, vertexConstants, constantFloats, vertexConstantFloats, textures, draw, m_impl->retainTextures,
+                                              targetSource, depthSource))
                     ++m_impl->retainedTargets;
                 m_impl->retainedTextures += it->second.value->retainedTextures - oldTextures;
                 m_impl->retainedTextureBytes += it->second.value->retainedTextureBytes - oldBytes;
