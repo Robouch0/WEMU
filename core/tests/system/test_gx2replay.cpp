@@ -3,6 +3,7 @@
 #include <cmath>
 #include <gtest/gtest.h>
 #include <stdexcept>
+#include <utility>
 
 #include "gfx/Gx2CommandStream.hpp"
 #include "gfx/Gx2Replayer.hpp"
@@ -34,6 +35,30 @@ TEST(TriangleCoverageTest, SharedEdgesHaveOneOwnerForBothWindings)
     EXPECT_FALSE(first.contains(-0.5, 100.5));
     EXPECT_FALSE(second.contains(854.5, 100.5));
     EXPECT_FALSE(TriangleCoverage({0, 0}, {1, 1}, {2, 2}).contains(0.5, 0.5));
+}
+
+TEST(Gx2PayloadTest, CopiesShareWordsUntilOneIsWritten)
+{
+    Gx2Command recorded{Gx2Cmd::SetVertexUniformBlock};
+    recorded.payload = {1, 2, 3};
+    // Splicing a display list copies the command, not its words.
+    auto spliced = recorded;
+    EXPECT_EQ(std::as_const(spliced).payload.data(), std::as_const(recorded).payload.data());
+    // A refresh of the spliced copy detaches it and leaves the recording intact.
+    auto &words = spliced.payload.overwrite(2);
+    words = {7, 8};
+    EXPECT_EQ(recorded.payload, Gx2Payload({1, 2, 3}));
+    EXPECT_EQ(spliced.payload, Gx2Payload({7, 8}));
+    // An unshared payload is rewritten in place.
+    const auto *buffer = std::as_const(spliced).payload.data();
+    spliced.payload.overwrite(2)[0] = 9;
+    EXPECT_EQ(std::as_const(spliced).payload.data(), buffer);
+    spliced.payload[1] = 4;
+    EXPECT_EQ(spliced.payload, Gx2Payload({9, 4}));
+    EXPECT_EQ(recorded.payload.size(), 3u);
+    spliced.payload.clear();
+    EXPECT_TRUE(spliced.payload.empty());
+    EXPECT_EQ(spliced.payload.begin(), spliced.payload.end());
 }
 
 TEST(TextureFormatTest, R32FloatPreservesRangePrecisionAndSelectors)

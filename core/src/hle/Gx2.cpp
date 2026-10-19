@@ -426,11 +426,11 @@ namespace {
         }
         if (ptr && words) {
             if (const auto *source = std::as_const(cpu.m_memory).hostPtr(ptr, std::size_t(words) * 4)) {
-                c.payload.resize(words);
+                auto &payload = c.payload.overwrite(words);
                 for (std::uint32_t i = 0; i < words; i++) {
                     std::uint32_t word;
                     std::memcpy(&word, source + std::size_t(i) * 4, 4);
-                    c.payload[i] = std::byteswap(word);
+                    payload[i] = std::byteswap(word);
                 }
             } else {
                 c.payload.reserve(words);
@@ -545,16 +545,17 @@ namespace {
             const std::uint32_t words = std::min<std::uint32_t>(c.gpr[1] / 4, 0x1000);
             if (!c.gpr[2] || !words)
                 continue;
-            c.payload.clear();
             if (const auto *source = std::as_const(cpu.m_memory).hostPtr(c.gpr[2], std::size_t(words) * 4)) {
-                c.payload.resize(words);
+                // Blocks spliced from display lists share their recorded words: detach once.
+                auto &payload = c.payload.overwrite(words);
                 for (std::uint32_t i = 0; i < words; i++) {
                     std::uint32_t word;
                     std::memcpy(&word, source + std::size_t(i) * 4, 4);
-                    c.payload[i] = std::byteswap(word);
+                    payload[i] = std::byteswap(word);
                 }
                 continue;
             }
+            c.payload.clear();
             try {
                 for (std::uint32_t i = 0; i < words; i++)
                     c.payload.push_back(cpu.m_memory.read<std::uint32_t>(c.gpr[2] + i * 4));

@@ -3,6 +3,8 @@
 #include <array>
 #include <bit>
 #include <cstdint>
+#include <initializer_list>
+#include <memory>
 #include <vector>
 
 // GX2 command capture.
@@ -62,11 +64,72 @@ namespace Core::Gfx {
     // payload: for uniform uploads (SetVertexUniformReg/Block) the pointed-to data is snapshotted
     // AT CALL TIME — the game reuses stack/ring memory immediately, so reading the pointers at
     // replay (end of frame) yields garbage.
+    // Payload words of a captured command. Copies share one buffer, so display lists splice
+    // recorded commands into every frame without copying payloads; writers detach first.
+    class Gx2Payload {
+        public:
+            Gx2Payload() = default;
+            Gx2Payload(std::vector<std::uint32_t> words) :
+                m_words(words.empty() ? nullptr : std::make_shared<std::vector<std::uint32_t>>(std::move(words)))
+            {
+            }
+            Gx2Payload(std::initializer_list<std::uint32_t> words) : Gx2Payload(std::vector<std::uint32_t>(words)) {}
+
+            [[nodiscard]] const std::vector<std::uint32_t> &words() const noexcept { return m_words ? *m_words : empty_(); }
+            operator const std::vector<std::uint32_t> &() const noexcept { return words(); }
+            [[nodiscard]] std::size_t size() const noexcept { return m_words ? m_words->size() : 0; }
+            [[nodiscard]] bool empty() const noexcept { return !size(); }
+            [[nodiscard]] const std::uint32_t *data() const noexcept { return words().data(); }
+            [[nodiscard]] const std::uint32_t *begin() const noexcept { return data(); }
+            [[nodiscard]] const std::uint32_t *end() const noexcept { return data() + size(); }
+            [[nodiscard]] const std::uint32_t &operator[](std::size_t index) const noexcept { return (*m_words)[index]; }
+            // Writable element access detaches like mutate(); hot loops should call mutate() once.
+            [[nodiscard]] std::uint32_t &operator[](std::size_t index) { return mutate()[index]; }
+            [[nodiscard]] std::uint32_t *data() { return mutate().data(); }
+            bool operator==(const Gx2Payload &other) const noexcept { return words() == other.words(); }
+
+            // A buffer of its own to write: shared words are copied first.
+            std::vector<std::uint32_t> &mutate()
+            {
+                if (!m_words)
+                    m_words = std::make_shared<std::vector<std::uint32_t>>();
+                else if (m_words.use_count() > 1)
+                    m_words = std::make_shared<std::vector<std::uint32_t>>(*m_words);
+                return *m_words;
+            }
+            // `count` words of its own to overwrite completely: shared words are not copied.
+            std::vector<std::uint32_t> &overwrite(std::size_t count)
+            {
+                if (!m_words || m_words.use_count() > 1)
+                    m_words = std::make_shared<std::vector<std::uint32_t>>(count);
+                else
+                    m_words->resize(count);
+                return *m_words;
+            }
+            void clear() noexcept { m_words.reset(); }
+            void resize(std::size_t count) { mutate().resize(count); }
+            void reserve(std::size_t count) { mutate().reserve(count); }
+            void push_back(std::uint32_t word) { mutate().push_back(word); }
+            template<typename Iterator>
+            void assign(Iterator first, Iterator last)
+            {
+                *this = Gx2Payload(std::vector<std::uint32_t>(first, last));
+            }
+
+        private:
+            static const std::vector<std::uint32_t> &empty_() noexcept
+            {
+                static const std::vector<std::uint32_t> none;
+                return none;
+            }
+            std::shared_ptr<std::vector<std::uint32_t>> m_words;
+    };
+
     struct Gx2Command {
             Gx2Cmd type{};
             std::array<std::uint32_t, 8> gpr{}; // r3..r10
             std::array<double, 8> fpr{}; // f1..f8
-            std::vector<std::uint32_t> payload;
+            Gx2Payload payload;
             std::uint32_t callerLr{0}; // guest LR at capture time; diagnostic metadata, not frame content
     };
 
