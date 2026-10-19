@@ -42,6 +42,26 @@ TEST(ColorTargetTest, PackedHdrRoundTripsFiniteValuesAndRoundsTiesToEven)
     EXPECT_EQ(readFloatColor(bytes.data(), ColorFormat::R11G11B10Float), (std::array{2.f, 0.f, .5f, 1.f}));
 }
 
+TEST(ColorTargetTest, PackedHdrScanoutBytesMatchTheDecodedValues)
+{
+    using namespace Core::Gfx;
+    const auto &unitBytes = packedFloatUnitBytes();
+    std::array<std::uint8_t, 4> bytes{};
+    for (std::uint32_t bits = 0; bits < 2048; ++bits) {
+        SCOPED_TRACE(bits);
+        const auto packed = bits | (bits << 11) | ((bits >> 1) << 22);
+        for (unsigned b = 0; b < 4; ++b)
+            bytes[b] = std::uint8_t(packed >> (b * 8));
+        const auto value = readFloatColor(bytes.data(), ColorFormat::R11G11B10Float);
+        const auto rgb = unitBytes(bytes.data());
+        for (unsigned c = 0; c < 3; ++c)
+            if (!std::isnan(value[c]))
+                ASSERT_EQ(rgb[c], std::lround(std::clamp(double(value[c]), 0.0, 1.0) * 255.0)) << c;
+    }
+    writeFloatColor(bytes.data(), {.5f, std::numeric_limits<float>::infinity(), .25f, 1.f}, 7, ColorFormat::R11G11B10Float);
+    EXPECT_EQ(unitBytes(bytes.data()), (std::array<std::uint8_t, 3>{128, 255, 64}));
+}
+
 TEST(LatteTextureTest, TexelOffsetsReachReferenceFetcherInTexels)
 {
     using namespace Core::Gfx;

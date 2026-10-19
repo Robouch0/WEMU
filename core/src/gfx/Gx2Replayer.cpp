@@ -111,7 +111,7 @@ namespace Core::Gfx {
             return result;
         }
 
-        std::uint8_t byteFromUnit(const double v) { return static_cast<std::uint8_t>(std::lround(std::clamp(v, 0.0, 1.0) * 255.0)); }
+        std::uint8_t byteFromUnit(const double v) { return unitByte(v); }
 
         float interpolateValue(float a, float b, float c, float w0, float w1, float w2)
         {
@@ -5351,6 +5351,22 @@ namespace Core::Gfx {
         const std::uint32_t rows = std::min(kHeight, s.height);
         const std::uint32_t cols = std::min(kWidth, s.width);
         buildClearFrame(cols, rows);
+        if (colorFormat(s.format) == ColorFormat::R11G11B10Float) {
+            // Pikmin 3 scans out both screens in this format every frame.
+            const auto &unitBytes = packedFloatUnitBytes();
+            for (std::uint32_t y = 0; y < rows; y++) {
+                const std::uint8_t *src = base + static_cast<std::size_t>(y) * s.pitch * 4;
+                std::uint8_t *dst = m_fb.data() + static_cast<std::size_t>(y) * kWidth * 4;
+                for (std::uint32_t x = 0; x < cols; x++) {
+                    const auto rgb = unitBytes(src + x * 4);
+                    dst[x * 4] = rgb[0];
+                    dst[x * 4 + 1] = rgb[1];
+                    dst[x * 4 + 2] = rgb[2];
+                    dst[x * 4 + 3] = 255;
+                }
+            }
+            return;
+        }
         if (colorFormat(s.format) != ColorFormat::RGBA8) {
             const auto format = colorFormat(s.format);
             for (unsigned y = 0; y < std::min(kHeight, s.height); ++y)
@@ -5393,13 +5409,17 @@ namespace Core::Gfx {
             if (!m_mem || !(base = m_mem->hostPtr(s.imagePtr)) || !m_mem->hostPtr(s.imagePtr + bytes - 1))
                 return;
         }
+        const auto &unitBytes = packedFloatUnitBytes();
         for (std::uint32_t y = 0; y < kDrcHeight; y++) {
             const std::uint32_t sy = static_cast<std::uint32_t>(std::uint64_t(y) * s.height / kDrcHeight);
             std::uint8_t *dst = m_drcFb.data() + static_cast<std::size_t>(y) * kDrcWidth * 4;
             for (std::uint32_t x = 0; x < kDrcWidth; x++) {
                 const std::uint32_t sx = static_cast<std::uint32_t>(std::uint64_t(x) * s.width / kDrcWidth);
                 const std::uint8_t *src = base + (static_cast<std::size_t>(sy) * s.pitch + sx) * elementBytes;
-                if (format != ColorFormat::RGBA8) {
+                if (format == ColorFormat::R11G11B10Float) {
+                    const auto rgb = unitBytes(src);
+                    std::memcpy(dst + x * 4, rgb.data(), 3);
+                } else if (format != ColorFormat::RGBA8) {
                     const auto value = readFloatColor(src, format);
                     for (unsigned c = 0; c < 3; ++c)
                         dst[x * 4 + c] = byteFromUnit(value[c]);
