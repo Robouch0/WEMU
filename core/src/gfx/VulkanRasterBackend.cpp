@@ -3465,14 +3465,19 @@ void main() {
                     readbackFence = context.enqueue(readbackCommand);
                     context.wait(readbackFence);
                     ++context.readbackTransfers;
-                    std::vector<std::uint8_t> result(bytes);
-                    const auto rowBytes = std::size_t(pitch) * elementBytes;
-                    for (unsigned y = 0; y < height; ++y)
-                        std::memcpy(result.data() + y * rowBytes, readbackMapped + y * rowBytes, std::size_t(width) * elementBytes);
-                    if (padding) {
-                        const auto paddingBytes = std::size_t(pitch - width) * elementBytes;
-                        for (unsigned y = 0; y < height; ++y)
-                            std::memcpy(result.data() + y * rowBytes + std::size_t(width) * elementBytes, padding->data() + y * paddingBytes, paddingBytes);
+                    // Appended row by row: zero-filling the whole target first cost as much as the copy.
+                    std::vector<std::uint8_t> result;
+                    result.reserve(bytes);
+                    const auto rowBytes = std::size_t(pitch) * elementBytes, pixelBytes = std::size_t(width) * elementBytes;
+                    const auto paddingBytes = rowBytes - pixelBytes;
+                    if (!paddingBytes)
+                        result.assign(readbackMapped, readbackMapped + bytes);
+                    for (unsigned y = 0; paddingBytes && y < height; ++y) {
+                        result.insert(result.end(), readbackMapped + y * rowBytes, readbackMapped + y * rowBytes + pixelBytes);
+                        if (padding)
+                            result.insert(result.end(), padding->data() + y * paddingBytes, padding->data() + (y + 1) * paddingBytes);
+                        else
+                            result.resize(result.size() + paddingBytes);
                     }
                     return result;
                 }
