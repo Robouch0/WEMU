@@ -425,12 +425,21 @@ namespace {
                 words = 0x80 / 4; // color/depth viewMip, viewFirstSlice and viewNumSlices
         }
         if (ptr && words) {
-            c.payload.reserve(words);
-            try {
-                for (std::uint32_t i = 0; i < words; i++)
-                    c.payload.push_back(cpu.m_memory.read<std::uint32_t>(ptr + i * 4));
-            } catch (const Core::MemoryException &) {
-                c.payload.clear();
+            if (const auto *source = std::as_const(cpu.m_memory).hostPtr(ptr, std::size_t(words) * 4)) {
+                c.payload.resize(words);
+                for (std::uint32_t i = 0; i < words; i++) {
+                    std::uint32_t word;
+                    std::memcpy(&word, source + std::size_t(i) * 4, 4);
+                    c.payload[i] = std::byteswap(word);
+                }
+            } else {
+                c.payload.reserve(words);
+                try {
+                    for (std::uint32_t i = 0; i < words; i++)
+                        c.payload.push_back(cpu.m_memory.read<std::uint32_t>(ptr + i * 4));
+                } catch (const Core::MemoryException &) {
+                    c.payload.clear();
+                }
             }
         }
         if (type == Core::Gfx::Gx2Cmd::ClearBuffersEx && c.gpr[1]) {
@@ -821,7 +830,8 @@ namespace {
         }();
         static std::uint64_t s_lastHash = 0;
         static bool s_haveFrame = false;
-        const std::uint64_t hash = Core::Gfx::gx2Stream().contentHash();
+        // The hash only serves frame skipping; it walks every command and payload word.
+        const std::uint64_t hash = noSkip ? 0 : Core::Gfx::gx2Stream().contentHash();
         // WEMU_ASYNC_REPLAY=0 replays inside this call. Otherwise the previous frame, replayed
         // while the guest built this one, is finished and presented here, and this frame goes
         // to the replay thread: presentation trails the guest by one frame. Replay only reads
