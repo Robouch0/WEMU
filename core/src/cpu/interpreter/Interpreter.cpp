@@ -542,13 +542,11 @@ void Core::Interpreter::run()
                 }
             }
         }
-        if (ppc_pc >= m_hooks_min && ppc_pc <= m_hooks_max) {
-            if (auto it = m_hooks.find(ppc_pc); it != m_hooks.end()) {
-                Profile::Scope hle(Profile::Stage::Hle);
-                it->second(*this);
-                m_pc = m_lr;
-                continue;
-            }
+        if (hooked(ppc_pc)) {
+            Profile::Scope hle(Profile::Stage::Hle);
+            m_hooks.find(ppc_pc)->second(*this);
+            m_pc = m_lr;
+            continue;
         }
         // Fast path: execute a whole pre-decoded block. The tick cadence keys off m_retired (updated
         // here), so whole-block execution stays accounted for without a separate countdown.
@@ -776,7 +774,7 @@ const Core::Interpreter::Block &Core::Interpreter::getBlock(Utils::BeDecoder &de
             break;
         // Stop just before a hooked address so run()'s HLE hook dispatch still fires for it.
         const std::uint32_t ppc = pc + Core::Memory::MemoryMap::ApplicationCode;
-        if (observed(ppc) || (ppc >= m_hooks_min && ppc <= m_hooks_max && m_hooks.contains(ppc)))
+        if (observed(ppc) || hooked(ppc))
             break;
     }
 #ifdef WEMU_HAS_LLVM

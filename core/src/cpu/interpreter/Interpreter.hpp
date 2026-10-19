@@ -173,6 +173,23 @@ namespace Core {
             std::unordered_map<std::uint32_t, HookFn> m_hooks; // PPC addr → intercept fn
             std::uint32_t m_hooks_min{0xFFFFFFFFu}; // Opt C: hook address range
             std::uint32_t m_hooks_max{0u};
+            // Hooks are spread over the whole code range, so most blocks would otherwise look their PC
+            // up in m_hooks. One bit per (address >> 2) & 0xFFFF screens them first; it is rebuilt
+            // whenever the hook count changes (HLE may add hooks while the guest runs).
+            [[nodiscard]] bool hooked(const std::uint32_t ppc)
+            {
+                if (ppc < m_hooks_min || ppc > m_hooks_max)
+                    return false;
+                if (m_hookFilterCount != m_hooks.size()) {
+                    m_hookFilter.fill(0);
+                    for (const auto &[address, hook]: m_hooks)
+                        m_hookFilter[(address >> 2 & 0xFFFF) / 64] |= std::uint64_t{1} << (address >> 2 & 63);
+                    m_hookFilterCount = m_hooks.size();
+                }
+                return (m_hookFilter[(ppc >> 2 & 0xFFFF) / 64] >> (ppc >> 2 & 63) & 1) && m_hooks.contains(ppc);
+            }
+            std::array<std::uint64_t, 1024> m_hookFilter{};
+            std::size_t m_hookFilterCount{~std::size_t{0}};
 
             Core::Binary m_binary;
             // Data accesses, instruction fetch, and diagnostics share the binary's owned RAM.
