@@ -1,10 +1,10 @@
 #pragma once
 
-#include <map>
+#include <algorithm>
 #include <memory>
 #include <span>
 #include <string>
-#include <tuple>
+#include <unordered_map>
 
 #include "gfx/LatteProgram.hpp"
 
@@ -70,7 +70,7 @@ namespace Core::Gfx::Latte {
             std::shared_ptr<const VertexShader> get(const std::vector<std::uint32_t> &words);
 
         private:
-            std::map<std::vector<std::uint32_t>, std::shared_ptr<const VertexShader>> m_entries;
+            std::unordered_map<std::vector<std::uint32_t>, std::shared_ptr<const VertexShader>, ProgramWordsHash, ProgramWordsEqual> m_entries;
     };
 
     // Replayer-owned, single-threaded cache. Exact keys include resource specialization.
@@ -88,9 +88,39 @@ namespace Core::Gfx::Latte {
             std::size_t misses() const { return m_misses; }
 
         private:
-            using Key = std::tuple<std::vector<std::uint32_t>, std::vector<TextureType>, bool, unsigned>;
-            std::map<Key, std::shared_ptr<const FragmentShader>> m_entries;
-            std::map<std::vector<std::uint32_t>, bool> m_colorOnlyEffects;
+            struct KeyView {
+                    std::span<const std::uint32_t> words;
+                    std::span<const TextureType> resourceTypes;
+                    bool onlyColorZero{};
+                    unsigned colorExport{};
+            };
+            struct Key {
+                    std::vector<std::uint32_t> words;
+                    std::vector<TextureType> resourceTypes;
+                    bool onlyColorZero{};
+                    unsigned colorExport{};
+                    operator KeyView() const { return {words, resourceTypes, onlyColorZero, colorExport}; }
+            };
+            struct KeyHash {
+                    using is_transparent = void;
+                    std::size_t operator()(const KeyView &key) const noexcept
+                    {
+                        auto hash = ProgramWordsHash{}(key.words);
+                        for (const auto type: key.resourceTypes)
+                            hash = hash * 31 + std::size_t(type);
+                        return hash ^ (std::size_t(key.onlyColorZero) << 8) ^ (std::size_t(key.colorExport) << 16);
+                    }
+            };
+            struct KeyEqual {
+                    using is_transparent = void;
+                    bool operator()(const KeyView &a, const KeyView &b) const noexcept
+                    {
+                        return a.onlyColorZero == b.onlyColorZero && a.colorExport == b.colorExport && std::ranges::equal(a.words, b.words) &&
+                               std::ranges::equal(a.resourceTypes, b.resourceTypes);
+                    }
+            };
+            std::unordered_map<Key, std::shared_ptr<const FragmentShader>, KeyHash, KeyEqual> m_entries;
+            std::unordered_map<std::vector<std::uint32_t>, bool, ProgramWordsHash, ProgramWordsEqual> m_colorOnlyEffects;
             std::size_t m_bytes{}, m_hits{}, m_misses{};
     };
 

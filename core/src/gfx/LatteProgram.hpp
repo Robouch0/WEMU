@@ -1,8 +1,10 @@
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <memory>
 #include <span>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -187,4 +189,17 @@ namespace Core::Gfx::Latte {
     // No cache or execution state: callers own caching and capability validation.
     std::shared_ptr<const Program> decodeProgram(const std::vector<std::uint32_t> &words);
 
+    // Program words hashed as bytes, so caches keyed by programs hash once and compare once
+    // without copying the program into a key.
+    struct ProgramWordsHash {
+            using is_transparent = void;
+            std::size_t operator()(std::span<const std::uint32_t> words) const noexcept
+            {
+                return std::hash<std::string_view>{}({reinterpret_cast<const char *>(words.data()), words.size_bytes()});
+            }
+    };
+    struct ProgramWordsEqual {
+            using is_transparent = void;
+            bool operator()(std::span<const std::uint32_t> a, std::span<const std::uint32_t> b) const noexcept { return std::ranges::equal(a, b); }
+    };
 } // namespace Core::Gfx::Latte

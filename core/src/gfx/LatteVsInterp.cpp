@@ -108,9 +108,7 @@ namespace Core::Gfx {
 
     std::shared_ptr<const LatteVsInterp::Program> LatteVsInterp::compile(const std::vector<std::uint32_t> &words)
     {
-        std::uint64_t hash = 14695981039346656037ull;
-        for (auto word: words)
-            hash = (hash ^ word) * 1099511628211ull;
+        const std::uint64_t hash = Latte::ProgramWordsHash{}(words);
         static std::unordered_map<std::uint64_t, std::shared_ptr<const Program>> cache;
         if (const auto it = cache.find(hash); it != cache.end() && it->second->words == words)
             return it->second;

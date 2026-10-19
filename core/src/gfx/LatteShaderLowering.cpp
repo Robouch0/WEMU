@@ -4,6 +4,7 @@
 #include <array>
 #include <bit>
 #include <format>
+#include <map>
 #include <set>
 #include <stdexcept>
 
@@ -17,12 +18,12 @@ namespace Core::Gfx::Latte {
         // Missing resource types default to 2D, so trailing defaults are equivalent.
         while (!resourceTypes.empty() && resourceTypes.back() == TextureType::TwoD)
             resourceTypes = resourceTypes.first(resourceTypes.size() - 1);
-        Key key{words, {resourceTypes.begin(), resourceTypes.end()}, onlyColorZero, colorExport};
-        if (const auto found = m_entries.find(key); found != m_entries.end()) {
+        if (const auto found = m_entries.find(KeyView{words, resourceTypes, onlyColorZero, colorExport}); found != m_entries.end()) {
             ++m_hits;
             return found->second;
         }
         ++m_misses;
+        Key key{words, {resourceTypes.begin(), resourceTypes.end()}, onlyColorZero, colorExport};
         auto shader = std::make_shared<const FragmentShader>(lowerFragmentShader(*decodeProgram(words), resourceTypes, onlyColorZero, colorExport));
         constexpr std::size_t maxBytes = std::size_t{256} * 1024 * 1024;
         const auto bytes = words.size() * sizeof(std::uint32_t) + resourceTypes.size() * sizeof(TextureType) + shader->source.size() +
