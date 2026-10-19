@@ -764,8 +764,10 @@ namespace Core::Gfx::Latte {
                         // final word is padding, not additional instruction flags.
                         // 0x18/0x1B: SAMPLE_C/SAMPLE_C_LZ depth comparison against src.w.
                         const bool compare = texOp == 0x18 || texOp == 0x1B;
-                        if ((texOp != 0x0F && texOp != 0x10 && texOp != 0x11 && texOp != 0x13 && !compare) || (t0 & ~tex0Mask) || (t1 & ~tex1Mask) ||
-                            (t1 & 0x30000000) != 0x30000000 || (t2 & 0x7FFF))
+                        // 0x06: GET_COMP_TEX_LOD.
+                        const bool lodQuery = texOp == 0x06;
+                        if ((texOp != 0x0F && texOp != 0x10 && texOp != 0x11 && texOp != 0x13 && !compare && !lodQuery) || (t0 & ~tex0Mask) ||
+                            (t1 & ~tex1Mask) || (t1 & 0x30000000) != 0x30000000 || (t2 & 0x7FFF))
                             throw std::runtime_error(std::format("unsupported texture instruction: cf={} slot={} op={} words={:08X},{:08X},{:08X}",
                                                                  cf / 2, i, texOp, t0, t1, t2));
                         if (texOp == 0x10 || texOp == 0x0F || texOp == 0x18)
@@ -804,11 +806,26 @@ namespace Core::Gfx::Latte {
                             throw std::runtime_error("cube gather/depth-compare sampling not yet supported");
                         if (volume && (compare || texOp == 0x0F || texOp == 0x11))
                             throw std::runtime_error("3D gather/depth-compare/mip sampling not yet supported");
+                        const auto planar = coords;
                         if (volume)
                             coords += std::format(",{}", select(reg, (t2 >> 26) & 7));
                         if (array)
                             coords += std::format(",arrayLayerReference({},textureSize(tex{},0).z)", select(reg, (t2 >> 26) & 7), binding->binding);
-                        if (cube) {
+                        if (lodQuery) {
+                            // x: the computed LOD relative to the base level, before clamping; y: the
+                            // level it selects (GLSL's textureQueryLod returns them in the other order).
+                            // Implicit derivatives need every lane of the quad to have run the same
+                            // code: only an unmasked clause in uniform control flow qualifies. Cube
+                            // faces are addressed by (s, t, face) like samples: the direction rebuilt
+                            // with a unit major axis has face-coordinate derivatives equal to s and t's.
+                            if (depth || !allActive || !maskUniform || varyingControlSeen || !jumpTargets.empty())
+                                throw std::runtime_error("LOD query under a varying execute mask");
+                            const auto point = cube     ? std::format("cubeDirectionReference(vec3({},{}))", planar, select(reg, (t2 >> 26) & 7))
+                                               : volume ? std::format("vec3({})", coords)
+                                                        : std::format("vec2({})", planar);
+                            body += std::format("{{ vec2 lod=textureQueryLod(tex{},{}); vec4 sampled=vec4(lod.y,lod.x,0.0,0.0);\n", binding->binding,
+                                                point);
+                        } else if (cube) {
                             cubeIndices.insert(resource);
                             body += std::format("{{ vec3 coord=vec3({},{}); vec4 sampled; "
                                                 "if(any(isnan(coord))||any(isinf(coord))||coord.z<0.0||coord.z>=6.0||isnan({})||isinf({})||isnan("

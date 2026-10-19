@@ -2490,6 +2490,63 @@ TEST(LatteLoweringTest, GatherFootprintMatchesVulkan)
     }
 }
 
+TEST(LatteLoweringTest, LodQueryReturnsTheUnclampedLevelOfDetailInX)
+{
+    // GET_COMP_TEX_LOD (TEX op 0x06) of r0.xyz into r0, exported.
+    const std::vector<std::uint32_t> words{2, 1u << 23, 0, (0x28u << 23) | (1u << 21) | 0x688u, 0x06u, 0xF0000000u | (0x688u << 9),
+                                           (1u << 23) | (2u << 26), 0};
+    const auto program = decodeProgram(words);
+    // Coordinates move by scale/2 per pixel of the 4x4 target (r0 = offset + position * scale): with 2x2 texels,
+    // 2x2 cube faces addressed by (s, t, face) or a 2x2x2 volume, the LOD is log2(scale).
+    FragmentShader vertex;
+    vertex.source = R"(#version 450
+layout(push_constant) uniform Parameters { vec4 value[4]; } p;
+layout(location=0) out vec4 inputs[16];
+void main() {
+    vec2 positions[3]=vec2[3](vec2(-1,-1),vec2(3,-1),vec2(-1,3));
+    gl_Position=vec4(positions[gl_VertexIndex],0,1);
+    for(int i=0;i<16;++i) inputs[i]=vec4(0.0);
+    inputs[0]=vec4(p.value[1].xy+positions[gl_VertexIndex]*p.value[0].x,p.value[1].z,0.0);
+}
+)";
+    struct Case {
+            TextureType type;
+            VkImageViewType view;
+            std::array<float, 4> offset;
+            std::vector<float> scales;
+    };
+    // Cube coordinates stay inside face 4 (+Z): s and t within [1, 2].
+    for (const auto &[type, view, offset, scales]: {Case{TextureType::TwoD, VK_IMAGE_VIEW_TYPE_2D, {}, {.25f, 1.f, 8.f}},
+                                                   Case{TextureType::Cube, VK_IMAGE_VIEW_TYPE_CUBE_ARRAY, {1.5f, 1.5f, 4.f, 0.f}, {.125f, .5f}},
+                                                   Case{TextureType::ThreeD, VK_IMAGE_VIEW_TYPE_3D, {0.f, 0.f, .5f, 0.f}, {.25f, 8.f}}}) {
+        SCOPED_TRACE(int(type));
+        const std::array types{type};
+        const auto fragment = lowerFragmentShader(*program, types);
+        ASSERT_TRUE(fragment) << fragment.error;
+        ASSERT_EQ(fragment.textures.size(), 1u);
+        EXPECT_TRUE(fragment.textures[0].implicitLod);
+        EXPECT_FALSE(fragment.requiresBaseLevelOnly);
+        if (!std::getenv("WEMU_TEST_VULKAN"))
+            continue;
+        std::vector<std::uint32_t> vs, ps;
+        ASSERT_NO_FATAL_FAILURE(validateSpirv(vertex, &vs, "vert"));
+        ASSERT_NO_FATAL_FAILURE(validateSpirv(fragment, &ps));
+        for (const float scale: scales) {
+            SCOPED_TRACE(scale);
+            VulkanFragmentProbe probe;
+            probe.initialize(vs, ps, {}, {{1, {}, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_FILTER_LINEAR, view}});
+            VulkanFragmentProbe::Inputs inputs{};
+            inputs[0] = {scale, 0, 0, 0};
+            inputs[1] = offset;
+            for (const auto &pixel: probe.draw(inputs)) {
+                EXPECT_NEAR(pixel[0], std::log2(scale), 1.f / 64);
+                EXPECT_EQ(pixel[2], 0.f);
+                EXPECT_EQ(pixel[3], 0.f);
+            }
+        }
+    }
+}
+
 TEST(LatteLoweringTest, EmitsReferenceArithmeticDomainGuards)
 {
     for (const auto [op, expected]:

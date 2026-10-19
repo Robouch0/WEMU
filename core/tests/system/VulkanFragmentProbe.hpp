@@ -17,6 +17,7 @@ class VulkanFragmentProbe {
                 std::array<std::uint8_t, 16> rgba; // 2x2 RGBA8, one mip
                 VkSamplerAddressMode address = VK_SAMPLER_ADDRESS_MODE_REPEAT;
                 VkFilter filter = VK_FILTER_NEAREST;
+                VkImageViewType view = VK_IMAGE_VIEW_TYPE_2D; // CUBE_ARRAY: six 2x2 faces; 3D: two 2x2 slices (each one copy of rgba)
         };
         VulkanFragmentProbe() = default;
         VulkanFragmentProbe(const VulkanFragmentProbe &) = delete;
@@ -100,9 +101,13 @@ class VulkanFragmentProbe {
             qi.queueFamilyIndex = family;
             qi.queueCount = 1;
             qi.pQueuePriorities = &priority;
+            VkPhysicalDeviceFeatures supported{}, enabled{};
+            vkGetPhysicalDeviceFeatures(physical, &supported);
+            enabled.imageCubeArray = supported.imageCubeArray; // lowered cube samplers are cube arrays
             VkDeviceCreateInfo di{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
             di.queueCreateInfoCount = 1;
             di.pQueueCreateInfos = &qi;
+            di.pEnabledFeatures = &enabled;
             check(vkCreateDevice(physical, &di, nullptr, &device), "create device");
             vkGetDeviceQueue(device, family, 0, &queue);
             VkCommandPoolCreateInfo pi{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
@@ -305,11 +310,15 @@ class VulkanFragmentProbe {
     private:
         void uploadTexture(const Texture &texture)
         {
+            const bool cube = texture.view == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY, volume = texture.view == VK_IMAGE_VIEW_TYPE_3D;
+            const std::uint32_t layers = cube ? 6 : 1, depth = volume ? 2 : 1;
             VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
-            ci.imageType = VK_IMAGE_TYPE_2D;
+            ci.flags = cube ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0;
+            ci.imageType = volume ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D;
             ci.format = VK_FORMAT_R8G8B8A8_UNORM;
-            ci.extent = {2, 2, 1};
-            ci.mipLevels = ci.arrayLayers = 1;
+            ci.extent = {2, 2, depth};
+            ci.mipLevels = 1;
+            ci.arrayLayers = layers;
             ci.samples = VK_SAMPLE_COUNT_1_BIT;
             ci.tiling = VK_IMAGE_TILING_OPTIMAL;
             ci.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
@@ -321,9 +330,9 @@ class VulkanFragmentProbe {
             check(vkBindImageMemory(device, textureImage, allocate(req, 0), 0), "bind texture");
             VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
             vi.image = textureImage;
-            vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+            vi.viewType = texture.view;
             vi.format = ci.format;
-            vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, layers};
             VkImageView textureView{};
             check(vkCreateImageView(device, &vi, nullptr, &textureView), "create texture view");
             textureViews.push_back(textureView);
@@ -334,10 +343,12 @@ class VulkanFragmentProbe {
             check(vkCreateSampler(device, &si, nullptr, &sampler), "create sampler");
             samplers.push_back(sampler);
             VkDeviceMemory stagingMemory{};
-            const auto staging = buffer(texture.rgba.size(), VK_BUFFER_USAGE_TRANSFER_SRC_BIT, stagingMemory);
+            const auto copies = layers * depth;
+            const auto staging = buffer(texture.rgba.size() * copies, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, stagingMemory);
             void *mapped = nullptr;
-            check(vkMapMemory(device, stagingMemory, 0, texture.rgba.size(), 0, &mapped), "map texture staging");
-            std::memcpy(mapped, texture.rgba.data(), texture.rgba.size());
+            check(vkMapMemory(device, stagingMemory, 0, texture.rgba.size() * copies, 0, &mapped), "map texture staging");
+            for (std::uint32_t i = 0; i < copies; ++i)
+                std::memcpy(static_cast<std::uint8_t *>(mapped) + i * texture.rgba.size(), texture.rgba.data(), texture.rgba.size());
             vkUnmapMemory(device, stagingMemory);
             check(vkResetCommandBuffer(command, 0), "reset upload commands");
             VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
@@ -350,7 +361,7 @@ class VulkanFragmentProbe {
             barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
             vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
             VkBufferImageCopy copy{};
-            copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+            copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, layers};
             copy.imageExtent = ci.extent;
             vkCmdCopyBufferToImage(command, staging, textureImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
             barrier.oldLayout = barrier.newLayout;
