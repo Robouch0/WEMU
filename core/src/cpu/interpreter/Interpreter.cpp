@@ -140,6 +140,10 @@ void Core::Interpreter::run()
                              !haveOrderFix && !haveResourceLookupTrace && !haveReadinessTrace && !haveItemResourceTrace && !haveFlvcNullTrace &&
                              !haveMk8UiArrayZeroFill && !haveMk8WorkQueueTrace && !haveSeadHeapTrace && !haveSeadHeapContextTrace &&
                              !haveDriveMenuExperiment;
+    const bool x64Requested = [] {
+        const char *e = std::getenv("WEMU_X64_JIT");
+        return e && e[0] == '1';
+    }();
 #ifdef WEMU_HAS_LLVM
     const bool profileNative = [] {
         const auto *value = std::getenv("WEMU_NATIVE_PROFILE");
@@ -154,7 +158,7 @@ void Core::Interpreter::run()
     nativeState.regions[1] = {m_memory.hostPtr(Memory::STACK_BASE, Memory::STACK_SIZE), Memory::STACK_SIZE, Memory::STACK_BASE};
     nativeState.regions[2] = {m_memory.hostPtr(Memory::DIMPORT_BASE, Memory::DIMPORT_SIZE), Memory::DIMPORT_SIZE, Memory::DIMPORT_BASE};
     std::unique_ptr<Ppc::Dispatcher> native;
-    if (const char *enabled = std::getenv("WEMU_NATIVE_CPU"); enabled && enabled[0] == '1' && jitFastPath) {
+    if (const char *enabled = std::getenv("WEMU_NATIVE_CPU"); enabled && enabled[0] == '1' && jitFastPath && !x64Requested) {
         try {
             const char *cache = std::getenv("WEMU_NATIVE_CACHE_DIR");
             Profile::Scope compiling(Profile::Stage::Compile);
@@ -173,8 +177,14 @@ void Core::Interpreter::run()
 #endif
     // WEMU_IPS=1: report interpreter throughput (instructions/sec) periodically. Works with the JIT
     // fast path (unlike WEMU_HEARTBEAT, which disables it), so it can measure the JIT's real gain.
+    const bool profileX64 = [] {
+        const char *e = std::getenv("WEMU_JIT_PROFILE");
+        return e && e[0] == '1';
+    }();
     const bool reportIps = [&]() {
         const char *e = std::getenv("WEMU_IPS");
+        if (profileX64)
+            return true;
 #ifdef WEMU_HAS_LLVM
         if (profileNative)
             return true;
@@ -300,6 +310,15 @@ void Core::Interpreter::run()
                                    haveResourceLookupTrace || haveReadinessTrace || haveItemResourceTrace || haveFlvcNullTrace ||
                                    haveMk8UiArrayZeroFill || haveMk8WorkQueueTrace || haveSeadHeapTrace || haveSeadHeapContextTrace || haveFlvcSkip ||
                                    haveOrderFix || driveMenuTask;
+#ifdef WEMU_HAS_X64_JIT
+    // Compiled blocks chain without passing through this loop, so per-dispatch PC diagnostics
+    // keep the interpreter.
+    m_x64Jit.reset();
+    if (x64Requested && jitFastPath && !havePcDiagnostics && !hotBlocks) {
+        m_x64Jit = Jit::X64Jit::create(*this, profileX64);
+        Utils::Log::error("[X64JIT] {}", m_x64Jit ? "enabled" : "unavailable on this host; using the interpreter");
+    }
+#endif
     std::uint64_t schedulerClockRetired = m_retired;
     // A thread that retires thousands of instructions without a single store is polling memory
     // that another core writes (job counters, completion flags). On hardware that core runs in
@@ -312,6 +331,10 @@ void Core::Interpreter::run()
         return !e || e[0] != '0';
     }();
     std::uint64_t lastStoreRetired = m_retired;
+#ifdef WEMU_HAS_X64_JIT
+    if (m_x64Jit)
+        m_x64Jit->setSpinThreshold(spinYield ? kSpinYieldInstructions : ~std::uint64_t{0});
+#endif
     const auto noteBlockRetired = [&](const bool stores) {
         if (stores) {
             lastStoreRetired = m_retired;
@@ -376,6 +399,13 @@ void Core::Interpreter::run()
                 if (reportIps && secs >= 2.0) {
                     Utils::Log::error("[IPS] {:.1f}M instr/sec ({} blocks cached)", static_cast<double>(m_retired - ipsLast) / secs / 1e6,
                                       m_blockCache.size());
+#ifdef WEMU_HAS_X64_JIT
+                    if (m_x64Jit && profileX64) {
+                        if (m_renderer)
+                            Utils::Log::error("[X64JIT] presents={}", m_renderer->guest_present_count());
+                        m_x64Jit->report();
+                    }
+#endif
 #ifdef WEMU_HAS_LLVM
                     if (profileNative) {
                         for (unsigned i = 0; i < prefixCounts.size(); ++i)
@@ -544,11 +574,63 @@ void Core::Interpreter::run()
             }
         }
         if (hooked(ppc_pc)) {
+#ifdef WEMU_HAS_X64_JIT
+            if (m_x64Jit)
+                m_x64Jit->installHook(m_pc);
+#endif
             Profile::Scope hle(Profile::Stage::Hle);
             m_hooks.find(ppc_pc)->second(*this);
             m_pc = m_lr;
             continue;
         }
+#ifdef WEMU_HAS_X64_JIT
+        // Compiled blocks run chained until something above needs the loop again: service tick,
+        // hook, sentinel, HLE call, code write or a block that is not compiled yet.
+        if (m_x64Jit) {
+            Jit::X64Jit &jit = *m_x64Jit;
+            jit.sync(m_memory.codeEpoch(), m_hooks.size());
+            bool ready = jit.prepare(m_pc);
+            if (!ready) {
+                const Block &blk = getBlock(instructionDecoder, m_pc);
+                if (!blk.instrs.empty()) {
+                    Profile::Scope compiling(Profile::Stage::Compile);
+                    std::array<Jit::GuestInstruction, 64> guest;
+                    for (std::size_t i = 0; i < blk.instrs.size(); ++i)
+                        guest[i] = {blk.instrs[i].instr.raw, blk.instrs[i].id};
+                    ready = jit.compile(m_pc, std::span(guest.data(), blk.instrs.size()), blk.stores);
+                }
+            }
+            if (ready) {
+                const Jit::X64Jit::Exit exit = jit.run(m_retired, nextServiceTickAt, lastStoreRetired);
+                switch (exit.reason) {
+                    case Jit::ExitReason::Revalidate:
+                        jit.revalidate(exit.pc);
+                        [[fallthrough]];
+                    case Jit::ExitReason::Budget:
+                    case Jit::ExitReason::LookupMiss:
+                        m_pc = m_nextPc = exit.pc;
+                        break;
+                    case Jit::ExitReason::Done:
+                        m_pc = m_nextPc = exit.pc;
+                        noteBlockRetired(exit.stores);
+                        break;
+                    case Jit::ExitReason::Suffix: {
+                        const Block &blk = getBlock(instructionDecoder, exit.blockPc);
+                        m_pc = exit.pc;
+                        m_retired += runBlock(blk, exit.index);
+                        noteBlockRetired(blk.stores);
+                        break;
+                    }
+                    case Jit::ExitReason::Fatal:
+                        noteBlockRetired(exit.stores);
+                        break;
+                    default:
+                        break;
+                }
+                continue;
+            }
+        }
+#endif
         // Fast path: execute a whole pre-decoded block. The tick cadence keys off m_retired (updated
         // here), so whole-block execution stays accounted for without a separate countdown.
         if (jitFastPath) {

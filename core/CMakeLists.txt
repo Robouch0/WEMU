@@ -28,6 +28,7 @@ pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET libavcodec>=60 libavformat lib
 option(ENABLE_COVERAGE "Enable coverage reporting" OFF)
 option(WEMU_BUILD_GUI "Build the desktop game library" OFF)
 option(WEMU_ENABLE_LLVM "Build experimental PPC native block compiler (LLVM 19)" OFF)
+option(WEMU_ENABLE_X64_JIT "Build the PPC x86-64 block recompiler (Linux x86-64)" ON)
 if(WEMU_BUILD_GUI AND CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     add_subdirectory(../gui gui)
 endif()
@@ -212,6 +213,13 @@ if(WEMU_ENABLE_LLVM)
     target_include_directories(core SYSTEM PRIVATE ${LLVM_INCLUDE_DIRS})
     target_compile_definitions(core PUBLIC WEMU_HAS_LLVM=1)
     target_link_libraries(core PRIVATE LLVM)
+endif()
+# PowerPC -> x86-64 block recompiler (WEMU_X64_JIT=1). Linux x86-64 only: System V ABI, mmap/mprotect.
+if(WEMU_ENABLE_X64_JIT AND CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64)$")
+    target_sources(core PRIVATE src/cpu/jit/CodeBuffer.cpp src/cpu/jit/Callouts.cpp src/cpu/jit/X64Jit.cpp src/cpu/jit/Emitter.cpp
+            src/cpu/jit/EmitInteger.cpp src/cpu/jit/EmitSystem.cpp src/cpu/jit/EmitMemory.cpp src/cpu/jit/EmitBranch.cpp src/cpu/jit/EmitFloat.cpp)
+    target_include_directories(core SYSTEM PRIVATE third_party/xbyak)
+    target_compile_definitions(core PUBLIC WEMU_HAS_X64_JIT=1)
 endif()
 if(WEMU_RUNTIME_GLSLANG AND WEMU_RUNTIME_SPIRV_VAL)
     target_compile_definitions(core PRIVATE

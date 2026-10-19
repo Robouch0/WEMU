@@ -33,6 +33,9 @@
 #ifdef WEMU_HAS_LLVM
     #include "cpu/recompiler/LlvmBackend.hpp"
 #endif
+#ifdef WEMU_HAS_X64_JIT
+    #include "cpu/jit/X64Jit.hpp"
+#endif
 
 namespace Core {
     static constexpr std::uint32_t INSTR_SIZE = sizeof(std::uint32_t);
@@ -299,6 +302,11 @@ namespace Core {
                 m_blockCache.clear();
                 std::fill(m_blockLookup.begin(), m_blockLookup.end(), BlockLookup{});
                 m_memory.clearCodePages();
+#ifdef WEMU_HAS_X64_JIT
+                // Compiled code relies on the code-page marks that were just cleared.
+                if (m_x64Jit)
+                    m_x64Jit->flush();
+#endif
             }
             std::vector<std::uint32_t> m_observedPcs; // absolute guest PCs that must reach the diagnostic dispatch
             bool m_jitEnabled{false};
@@ -312,6 +320,9 @@ namespace Core {
             // Reports a guest exception raised by the block instruction at m_pc. Returns true when it
             // killed the current thread or stopped the interpreter, so the block must not continue.
             bool handleBlockException(const Core::Exception &e);
+#ifdef WEMU_HAS_X64_JIT
+            std::unique_ptr<Jit::X64Jit> m_x64Jit; // WEMU_X64_JIT=1: compiled blocks
+#endif
 
             // Import sentinel (st_value >= 0xC0000000) -> symbol name, for BCTR HLE dispatch.
             std::unordered_map<std::uint32_t, const std::string *> m_importBySentinel{};

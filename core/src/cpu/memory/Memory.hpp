@@ -214,6 +214,9 @@ namespace Core {
                 return generation;
             }
             void setUntrackedStores(const bool untracked) noexcept { m_tracking->untracked.store(untracked, std::memory_order_relaxed); }
+            // One bit per main-RAM page holding decoded code or watched data. Generated code stores
+            // directly only into clear pages and sends the others through write().
+            [[nodiscard]] const std::atomic<std::uint64_t> *slowPages() const noexcept { return m_slowPages; }
             [[nodiscard]] bool codeWritten() const noexcept { return m_codeWritten; }
             [[nodiscard]] std::uint64_t codeEpoch() const noexcept { return m_codeEpoch; }
             void clearCodeWritten() noexcept { m_codeWritten = false; }
