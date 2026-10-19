@@ -224,6 +224,15 @@ the reference compares the unquantized one. MK8's race writes a 1024x1024
 or copy its depth returns the new image as well, so later draws find the surface
 resident instead of uploading 3.7 MB again.
 
+With resident targets, a color clear stays pending like a native version (a
+`ClearedImage` readback): the next direct draw into the surface clears its new
+image with `vkCmdClearColorImage` instead of uploading the CPU fill, and the CPU
+bytes are only produced if something reads the surface first. A clear also drops
+a pending native version instead of reading it back, since every element is
+replaced and row padding never comes from draws. A surface sampled while its
+clear is pending resolves it and keeps the CPU snapshot path (one shared upload
+per version).
+
 Draws are recorded into segment command buffers of 48 draws
 (`WEMU_NATIVE_SEGMENT_DRAWS=N`). Constants, vertices, indices, CPU target/depth
 snapshots and private texels are suballocated from the segment's persistently

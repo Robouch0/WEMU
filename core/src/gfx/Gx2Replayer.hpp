@@ -238,6 +238,10 @@ namespace Core::Gfx {
             [[nodiscard]] std::array<std::uint8_t, 4> blendTexel(const std::array<std::uint8_t, 4> &src, const std::uint8_t *dst,
                                                                  const BlendState &blend) const;
             static bool useViewBacking();
+            // WEMU_NATIVE_RESIDENT_TARGETS=1: native results stay on the GPU until read.
+            static bool residentTargets();
+            // The pending native version of a surface, for binding it on the GPU (null: CPU bytes).
+            [[nodiscard]] const std::shared_ptr<RasterReadback> *renderedVersion(const Surface &s) const;
             static SurfaceKey makeSurfaceKey(const Surface &s);
             std::vector<std::uint8_t> &viewBacking(const Surface &s);
             void resolveViewBacking(const Surface &s) const;

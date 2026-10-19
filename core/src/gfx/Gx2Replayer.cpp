@@ -463,6 +463,15 @@ namespace Core::Gfx {
         return static_cast<std::size_t>(h);
     }
 
+    bool Gx2Replayer::residentTargets()
+    {
+        static const bool enabled = [] {
+            const auto *value = std::getenv("WEMU_NATIVE_RESIDENT_TARGETS");
+            return value && std::string_view(value) == "1";
+        }();
+        return enabled;
+    }
+
     bool Gx2Replayer::useViewBacking()
     {
         static const bool enabled = []() {
@@ -591,6 +600,20 @@ namespace Core::Gfx {
         std::copy(pixels.begin(), pixels.end(), backing.begin());
         touchBacking(key);
         m_pendingReadbacks.erase(pending);
+    }
+
+    const std::shared_ptr<RasterReadback> *Gx2Replayer::renderedVersion(const Surface &s) const
+    {
+        const auto pending = m_pendingReadbacks.find(makeSurfaceKey(s));
+        if (pending == m_pendingReadbacks.end())
+            return nullptr;
+        // A deferred clear only saves work as a draw target: sampled, it becomes CPU bytes again
+        // and takes the snapshot paths (one shared upload per version).
+        if (dynamic_cast<const ClearedImage *>(pending->second->image().get())) {
+            resolveViewBacking(s);
+            return nullptr;
+        }
+        return &pending->second;
     }
 
     void Gx2Replayer::resolvePendingBackings(std::span<const Surface> within) const
@@ -729,8 +752,8 @@ namespace Core::Gfx {
                 layers.push_back(std::make_shared<RasterReadback>(size, [bytes = std::move(bytes)] { return bytes; }));
                 continue;
             }
-            if (const auto pending = m_pendingReadbacks.find(key); pending != m_pendingReadbacks.end()) {
-                layers.push_back(pending->second);
+            if (const auto *pending = renderedVersion(*view)) {
+                layers.push_back(*pending);
                 rendered = true;
             } else if (const auto backing = m_viewBackings.find(key); backing != m_viewBackings.end())
                 layers.push_back(std::make_shared<RasterReadback>(backing->second.size(), [bytes = backing->second] { return bytes; }));
@@ -778,10 +801,10 @@ namespace Core::Gfx {
                 const auto slice = view.dimension == 5 ? arraySlice(view, layer) : std::optional{view};
                 if (!slice)
                     return {};
-                const auto pending = m_pendingReadbacks.find(makeSurfaceKey(*slice));
-                if (pending == m_pendingReadbacks.end())
+                const auto *pending = renderedVersion(*slice);
+                if (!pending)
                     return {};
-                result.push_back(pending->second);
+                result.push_back(*pending);
             }
         }
         return result;
@@ -805,7 +828,7 @@ namespace Core::Gfx {
             if (!view || view->width != surface.width || view->height != surface.height)
                 return {};
             const auto key = makeSurfaceKey(*view);
-            if (m_pendingReadbacks.contains(key))
+            if (renderedVersion(*view))
                 return {};
             if (const auto backing = m_viewBackings.find(key); backing != m_viewBackings.end()) {
                 if (backing->second.size() < std::size_t(view->pitch) * view->height * elementBytes)
@@ -1779,16 +1802,6 @@ namespace Core::Gfx {
         w.surface = s;
         w.frame = m_presentCount + 1;
         w.writes++;
-        std::uint8_t *base = nullptr;
-        if (useViewBacking()) {
-            base = viewBacking(s).data();
-        } else {
-            if (!m_writableMem)
-                return;
-            base = m_writableMem->hostPtr(s.imagePtr);
-            if (!base || !m_mem->hostPtr(s.imagePtr + s.pitch * s.height * colorElementBytes(colorFormat(s.format)) - 1))
-                return;
-        }
         // Every element receives the same fully written bytes: encode one, then replicate rows.
         const auto format = colorFormat(s.format);
         const auto elementBytes = colorElementBytes(format);
@@ -1800,12 +1813,53 @@ namespace Core::Gfx {
             element = {toByte(rgba[0]), toByte(rgba[1]), toByte(rgba[2]), toByte(rgba[3])};
         }
         const std::size_t rowBytes = std::size_t(s.width) * elementBytes, pitchBytes = std::size_t(s.pitch) * elementBytes;
+        // By value: a deferred clear fills its bytes after this call returned.
+        const auto fill = [element, elementBytes, width = s.width, height = s.height, rowBytes, pitchBytes](std::uint8_t *base) {
+            for (std::uint32_t x = 0; x < width; x++)
+                std::memcpy(base + std::size_t(x) * elementBytes, element.data(), elementBytes);
+            for (std::uint32_t y = 1; y < height; y++)
+                std::memcpy(base + y * pitchBytes, base, rowBytes);
+        };
+        if (!useViewBacking()) {
+            if (!m_writableMem)
+                return;
+            auto *base = m_writableMem->hostPtr(s.imagePtr);
+            if (!base || !m_mem->hostPtr(s.imagePtr + s.pitch * s.height * elementBytes - 1) || !s.height || !rowBytes)
+                return;
+            fill(base);
+            return;
+        }
+        // Every element is replaced and padding never comes from draws: a native version still
+        // pending needs no readback.
+        const auto key = makeSurfaceKey(s);
+        m_pendingReadbacks.erase(key);
+        auto &backing = viewBacking(s);
         if (!s.height || !rowBytes)
             return;
-        for (std::uint32_t x = 0; x < s.width; x++)
-            std::memcpy(base + std::size_t(x) * elementBytes, element.data(), elementBytes);
-        for (std::uint32_t y = 1; y < s.height; y++)
-            std::memcpy(base + y * pitchBytes, base, rowBytes);
+        if (!residentTargets() || !m_rasterBackend || !m_rasterBackend->supportsRenderedTargets()) {
+            fill(backing.data());
+            return;
+        }
+        // Resident targets: the clear stays pending like a native version, so the next native draw
+        // clears its image on the GPU instead of uploading these bytes. Only padding is kept.
+        std::vector<std::uint8_t> padding;
+        if (pitchBytes > rowBytes)
+            for (std::uint32_t y = 0; y < s.height; ++y)
+                padding.insert(padding.end(), backing.begin() + std::ptrdiff_t(y * pitchBytes + rowBytes),
+                               backing.begin() + std::ptrdiff_t((y + 1) * pitchBytes));
+        const auto color = format == ColorFormat::RGBA8 ? std::array{element[0] / 255.f, element[1] / 255.f, element[2] / 255.f, element[3] / 255.f}
+                                                        : readFloatColor(element.data(), format);
+        m_pendingReadbacks[key] = std::make_shared<RasterReadback>(
+                backing.size(),
+                [fill, bytes = backing.size(), rowBytes, pitchBytes, height = s.height, padding = std::move(padding)] {
+                    std::vector<std::uint8_t> pixels(bytes);
+                    fill(pixels.data());
+                    if (!padding.empty())
+                        for (std::uint32_t y = 0; y < height; ++y)
+                            std::memcpy(pixels.data() + y * pitchBytes + rowBytes, padding.data() + y * (pitchBytes - rowBytes), pitchBytes - rowBytes);
+                    return pixels;
+                },
+                std::make_shared<const ClearedImage>(color));
     }
 
     void Gx2Replayer::repairProjection()
@@ -2435,12 +2489,8 @@ namespace Core::Gfx {
         }
         std::uint8_t *target = nullptr;
         std::shared_ptr<RasterReadback> renderedTarget;
-        static const bool residentTargetsEnabled = [] {
-            const auto *value = std::getenv("WEMU_NATIVE_RESIDENT_TARGETS");
-            return value && std::string_view(value) == "1";
-        }();
         if (useViewBacking()) {
-            if (residentTargetsEnabled && m_rasterBackend && m_rasterBackend->supportsRenderedTargets()) {
+            if (residentTargets() && m_rasterBackend && m_rasterBackend->supportsRenderedTargets()) {
                 const auto pending = m_pendingReadbacks.find(makeSurfaceKey(m_color));
                 if (pending != m_pendingReadbacks.end())
                     renderedTarget = pending->second;
@@ -4451,9 +4501,9 @@ namespace Core::Gfx {
                     textures.back().renderedFormat = colorFormat(surface.format);
                     textures.back().unorm8Map = surface.compMap;
                     textures.back().unorm8Pitch = surface.pitch;
-                    const auto pending = m_pendingReadbacks.find(makeSurfaceKey(surface));
-                    if (residentTextures && pending != m_pendingReadbacks.end())
-                        textures.back().rendered = pending->second;
+                    const auto *pending = renderedVersion(surface);
+                    if (residentTextures && pending)
+                        textures.back().rendered = *pending;
                     else if (backing) {
                         resolveViewBacking(surface);
                         if (surface.format == 0x816) {
@@ -4481,9 +4531,8 @@ namespace Core::Gfx {
                     continue;
                 }
                 if (residentTextures) {
-                    const auto pending = m_pendingReadbacks.find(makeSurfaceKey(surface));
-                    if (pending != m_pendingReadbacks.end()) {
-                        textures.back().rendered = pending->second;
+                    if (const auto *pending = renderedVersion(surface)) {
+                        textures.back().rendered = *pending;
                         textures.back().unorm8Pitch = surface.pitch;
                         textures.back().unorm8Map = surface.compMap;
                         continue;

@@ -23,6 +23,12 @@ namespace Core::Gfx {
     struct RasterImage {
             virtual ~RasterImage() = default;
     };
+    // A target cleared on the CPU side that nothing has drawn into since: a backend may clear its
+    // image to `color` (the stored element, decoded) instead of uploading the resolved bytes.
+    struct ClearedImage final : RasterImage {
+            std::array<float, 4> color;
+            explicit ClearedImage(const std::array<float, 4> &value) : color(value) {}
+    };
     // Synchronous reference-raster ABI. All borrowed data expires when render returns.
     // Positions include window depth and reciprocal clip W. Varyings interpolate
     // perspectively for positive W; full clipping, stencil and multisampling are

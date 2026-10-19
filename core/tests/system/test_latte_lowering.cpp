@@ -4483,6 +4483,42 @@ TEST(VulkanDepthTest, DepthOnlyUsesItsOwnExtentAndPreservesUnusedColorVersions)
     EXPECT_EQ(depthOnly->rgba[2 * 4], 29) << "Color row padding survives";
 }
 
+TEST(VulkanDepthTest, DeferredClearTargetsAreClearedOnTheGpuAndKeepTheirPadding)
+{
+    using namespace Core::Gfx;
+    if (!std::getenv("WEMU_TEST_VULKAN") || !SpirvCompiler::available())
+        GTEST_SKIP();
+    const auto shader = lowerFragmentShader(*decodeProgram({0, (CF_EXP_DONE << 23) | (1u << 21) | 0x688u}));
+    std::array<RasterDraw::Vertex, 6> vertices{{{0, 0, {}}, {4, 0, {}}, {0, 4, {}}, {4, 0, {}}, {4, 4, {}}, {0, 4, {}}}};
+    for (auto &vertex: vertices)
+        vertex.inputs[0] = {1, 0, 0, 1};
+    // A 3x2 target with one padding element per row; its stale bytes only provide that padding.
+    std::vector<std::uint8_t> target(4 * 2 * 4, 29);
+    RasterDraw draw{shader, vertices, {}, {}, target, 3, 2, 4, {0, 0, 1, 1}, 15, {}};
+    const std::array<std::uint8_t, 4> cleared{51, 102, 153, 255};
+    draw.renderedTarget = std::make_shared<RasterReadback>(
+            target.size(),
+            [&] {
+                ADD_FAILURE() << "A deferred clear drawn natively must not be resolved";
+                return target;
+            },
+            std::make_shared<const ClearedImage>(std::array{cleared[0] / 255.f, cleared[1] / 255.f, cleared[2] / 255.f, cleared[3] / 255.f}));
+    auto backend = std::make_unique<VulkanRasterBackend>(true, true);
+    auto result = backend->renderDeferred(draw);
+    ASSERT_TRUE(result) << backend->lastError();
+    EXPECT_EQ(backend->targetClears(), 1u);
+    EXPECT_EQ(backend->targetUploadTransfers(), 0u);
+    result->resolve();
+    ASSERT_EQ(result->rgba.size(), target.size());
+    for (unsigned y = 0; y < 2; ++y)
+        for (unsigned x = 0; x < 4; ++x) {
+            const auto *pixel = result->rgba.data() + (y * 4 + x) * 4;
+            const std::array<std::uint8_t, 4> expected =
+                    x == 3 ? std::array<std::uint8_t, 4>{29, 29, 29, 29} : x == 0 && y == 0 ? std::array<std::uint8_t, 4>{255, 0, 0, 255} : cleared;
+            EXPECT_EQ((std::array{pixel[0], pixel[1], pixel[2], pixel[3]}), expected) << x << "," << y;
+        }
+}
+
 TEST(VulkanDepthTest, PolygonBiasUsesSlopeUnitsClampAndDynamicPipelineState)
 {
     using namespace Core::Gfx;

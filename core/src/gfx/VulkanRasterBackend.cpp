@@ -334,7 +334,7 @@ namespace Core::Gfx {
                 bool discrete{}; // separate VRAM: host-visible memory sits across PCIe
                 std::uint64_t readbackTransfers{}, residentTextureCopies{}, directTextureBindings{}, directTextureBytes{}, residentVertexHits{},
                         assembledTextureHits{};
-                std::uint64_t targetUploadTransfers{}, targetCopyTransfers{}, fullOverwriteDraws{};
+                std::uint64_t targetUploadTransfers{}, targetCopyTransfers{}, fullOverwriteDraws{}, targetClears{};
                 std::uint64_t pipelineCreations{};
                 VkDescriptorSetLayout depthQuantizeSetLayout{};
                 VkPipelineLayout depthQuantizeLayout{};
@@ -2225,6 +2225,8 @@ void main() {
                         // The replayer drops the previous versions' tickets, so their images can be
                         // rendered in place. Verification keeps them and gets copies instead.
                         bool supersedes{};
+                        // The target is a deferred clear (ClearedImage): clear the new image to this.
+                        std::optional<std::array<float, 4>> targetClear;
                 };
 
                 explicit DirectRenderer(std::shared_ptr<Context> owner) : contextOwner(std::move(owner)), context(*contextOwner), device(context.device)
@@ -2331,7 +2333,7 @@ void main() {
                     }
                     if (compact)
                         reserve(sizeof(compactAttributeDefaults));
-                    if (colorUpload)
+                    if (colorUpload && !in.targetClear)
                         reserve(draw.target.size());
                     if (depthUpload)
                         reserve(draw.depth.target.size_bytes());
@@ -2493,6 +2495,10 @@ void main() {
                                 copyImage(command, *in.targetSource, *color, false);
                                 segment.retained.push_back(in.targetSource);
                                 ++context.targetCopyTransfers;
+                                colorLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                            } else if (colorUpload && in.targetClear) {
+                                clearImage(command, *color, *in.targetClear);
+                                ++context.targetClears;
                                 colorLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
                             } else if (colorUpload) {
                                 const auto offset = pushUpload(draw.target.data(), draw.target.size(), 0);
@@ -3035,6 +3041,16 @@ void main() {
                     copy.imageSubresource = {aspect, 0, 0, 1};
                     copy.imageExtent = {destination.width, destination.height, 1};
                     vkCmdCopyBufferToImage(command, buffer, destination.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+                }
+
+                // A whole-target clear the replayer deferred, instead of uploading its CPU bytes.
+                void clearImage(VkCommandBuffer command, const ColorImage &destination, const std::array<float, 4> &color)
+                {
+                    imageBarrier(command, destination.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+                    VkClearColorValue value{};
+                    std::copy(color.begin(), color.end(), value.float32);
+                    const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+                    vkCmdClearColorImage(command, destination.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &value, 1, &range);
                 }
 
                 // Tightly packed texels (DrawResources::Texture::copyTo) into every level and layer.
@@ -3584,6 +3600,7 @@ void main() {
     std::uint64_t VulkanRasterBackend::directTextureBindings() const noexcept { return m_impl->context ? m_impl->context->directTextureBindings : 0; }
     std::uint64_t VulkanRasterBackend::directTextureBytes() const noexcept { return m_impl->context ? m_impl->context->directTextureBytes : 0; }
     std::uint64_t VulkanRasterBackend::targetUploadTransfers() const noexcept { return m_impl->context ? m_impl->context->targetUploadTransfers : 0; }
+    std::uint64_t VulkanRasterBackend::targetClears() const noexcept { return m_impl->context ? m_impl->context->targetClears : 0; }
     std::uint64_t VulkanRasterBackend::targetCopyTransfers() const noexcept { return m_impl->context ? m_impl->context->targetCopyTransfers : 0; }
     std::uint64_t VulkanRasterBackend::fullOverwriteDraws() const noexcept { return m_impl->context ? m_impl->context->fullOverwriteDraws : 0; }
     std::uint64_t VulkanRasterBackend::residentTargetCopies() const noexcept { return m_impl->residentTargetCopies; }
@@ -3991,14 +4008,18 @@ void main() {
         }
         std::shared_ptr<ColorImage> targetSource;
         std::shared_ptr<const NativeImage> targetSnapshot;
+        std::optional<std::array<float, 4>> targetClear;
         if (draw.renderedTarget) {
             const auto native = std::dynamic_pointer_cast<const NativeImage>(draw.renderedTarget->image());
+            const auto *cleared = dynamic_cast<const ClearedImage *>(draw.renderedTarget->image().get());
             if (native && native->pitch == draw.pitch && native->storage->context == m_impl->context && native->storage->version == native->version &&
                 native->storage->width == draw.width && native->storage->height == draw.height &&
                 native->storage->format == colorVkFormat(draw.colorFormat)) {
                 targetSource = native->storage;
                 targetSnapshot = native;
-            } else
+            } else if (cleared && direct)
+                targetClear = cleared->color; // draw.target keeps the padding the clear left
+            else
                 draw.target = draw.renderedTarget->resolve();
         }
         std::vector<DrawResources::Texture> textures;
@@ -4277,7 +4298,7 @@ void main() {
             if (!m_impl->direct)
                 m_impl->direct = std::make_shared<DirectRenderer>(m_impl->context);
             auto result = m_impl->direct->render({draw, *vertex, *fragment, constants, vertexConstants, constantFloats, vertexConstantFloats, textures,
-                                                  targetSource, targetSnapshot, depthSource, overwriteTarget, draw.supersedesTarget});
+                                                  targetSource, targetSnapshot, depthSource, overwriteTarget, draw.supersedesTarget, targetClear});
             ++m_impl->completed;
             return result;
         }
