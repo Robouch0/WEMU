@@ -1176,29 +1176,31 @@ namespace Core::Gfx {
         return result;
     }
 
-    std::shared_ptr<Gx2Replayer::DecodedTexture> Gx2Replayer::decodedTexture(const Surface &surface, bool blocksOnly)
+    std::shared_ptr<Gx2Replayer::DecodedTexture> Gx2Replayer::decodedTexture(const Surface &surface, bool blocksOnly, bool floatTexels)
     {
         constexpr std::uint64_t budget = 256ull * 1024 * 1024;
         constexpr std::uint64_t entryBudget = 128ull * 1024 * 1024;
         const bool signedBc = surface.format == 0x234 || surface.format == 0x235;
         const bool blockFormat = surface.format == 0x31 || surface.format == 0x431 || surface.format == 0x34 || signedBc;
-        if (blocksOnly && !blockFormat)
+        if ((blocksOnly && !blockFormat) || (floatTexels && (blocksOnly || colorFormat(surface.format) == ColorFormat::RGBA8)))
             return {};
+        const bool floating = floatTexels || signedBc;
         const std::uint64_t pixels = std::uint64_t(surface.width) * surface.height;
-        if (!blocksOnly && pixels > entryBudget / (signedBc ? 16 : 4))
+        if (!blocksOnly && pixels > entryBudget / (floating ? 16 : 4))
             return {};
         const unsigned blockBytes = surface.format == 0x235 ? 16 : 8;
         const std::uint64_t bytes = blocksOnly ? ((std::uint64_t(surface.width) + 3) / 4) * ((std::uint64_t(surface.height) + 3) / 4) * blockBytes
-                                               : pixels * (signedBc ? 16 : 4);
+                                               : pixels * (floating ? 16 : 4);
         if (!m_mem || !surface.imagePtr || !surface.imageSize || !surface.width || !surface.height || bytes > entryBudget ||
             surface.imageSize > entryBudget - bytes || std::uint64_t(surface.imagePtr) + surface.imageSize > 0x100000000ull ||
-            findViewBacking(surface) || m_cpuWritten.contains(surface.imagePtr))
+            findViewBacking(surface) || m_cpuWritten.contains(surface.imagePtr) ||
+            (floatTexels && m_pendingReadbacks.contains(makeSurfaceKey(surface))))
             return {};
         const auto *base = m_mem->hostPtr(surface.imagePtr);
         const auto *last = m_mem->hostPtr(surface.imagePtr + surface.imageSize - 1);
         if (!base || !last || std::uintptr_t(last) - std::uintptr_t(base) != surface.imageSize - 1)
             return {};
-        const DecodedKey key{makeSurfaceKey(surface), signedBc && !blocksOnly ? surface.compMap : 0u, surface.imageSize, blocksOnly};
+        const DecodedKey key{makeSurfaceKey(surface), floating && !blocksOnly ? surface.compMap : 0u, surface.imageSize, blocksOnly, floatTexels};
         auto &entry = m_decodedTextures[key];
         if (!entry)
             if (const auto retained = m_retainedDecodedTextures.find(key); retained != m_retainedDecodedTextures.end()) {
@@ -1219,12 +1221,19 @@ namespace Core::Gfx {
                 decoded->validatedFrame = m_presentCount;
                 if (blocksOnly)
                     decoded->blocks.resize(bytes);
-                else if (signedBc)
+                else if (floating)
                     decoded->floating.resize(bytes / sizeof(float));
                 else
                     decoded->rgba.resize(bytes);
                 const auto format = surface.format & 0x3F;
-                if (blocksOnly) {
+                if (floatTexels) {
+                    for (unsigned y = 0; y < surface.height; ++y)
+                        for (unsigned x = 0; x < surface.width; ++x) {
+                            const auto texel = sampleTexture(surface, TextureSampler{}, (float(x) + .5f) / float(surface.width),
+                                                             (float(y) + .5f) / float(surface.height));
+                            std::copy(texel.begin(), texel.end(), decoded->floating.data() + (std::size_t(y) * surface.width + x) * 4);
+                        }
+                } else if (blocksOnly) {
                     const auto width = (surface.width + 3) / 4, height = (surface.height + 3) / 4;
                     for (unsigned y = 0; y < height; ++y)
                         for (unsigned x = 0; x < width; ++x) {
@@ -4195,6 +4204,10 @@ namespace Core::Gfx {
                             textures.back().rgba32Pitch = surface.pitch;
                         }
                         textures.back().snapshotOwner = backingOwner(makeSurfaceKey(surface));
+                    } else if (const auto decoded = decodedTexture(surface, false, true)) {
+                        // Guest float textures are decoded once and shared until their bytes change.
+                        textures.back().rgba32 = decoded->floating;
+                        textures.back().snapshotOwner = decoded;
                     } else {
                         auto &values = ownedFloatTextures.emplace_back();
                         for (unsigned y = 0; y < surface.height; ++y)

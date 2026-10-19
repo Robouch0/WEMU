@@ -306,27 +306,28 @@ namespace Core::Gfx {
                     std::uint32_t validatedFrame{~0u};
                     std::vector<std::uint8_t> source;
                     std::vector<std::uint8_t> rgba;
-                    std::vector<float> floating; // component-mapped signed normalized texels
+                    std::vector<float> floating; // component-mapped signed normalized or float-format texels
                     std::vector<std::uint8_t> blocks;
                     std::size_t bytes() const { return source.size() + rgba.size() + floating.size() * sizeof(float) + blocks.size(); }
             };
             struct DecodedKey {
                     SurfaceKey surface;
                     std::uint32_t componentMap{}, imageSize{};
-                    bool blocksOnly{};
+                    bool blocksOnly{}, floatTexels{};
                     bool operator==(const DecodedKey &) const = default;
             };
             struct DecodedKeyHash {
                     std::size_t operator()(const DecodedKey &key) const
                     {
                         return SurfaceKeyHash{}(key.surface) ^ std::size_t(key.componentMap) ^ std::size_t(key.imageSize) ^
-                               std::size_t(key.blocksOnly);
+                               std::size_t(key.blocksOnly) ^ (std::size_t(key.floatTexels) << 1);
                     }
             };
             std::unordered_map<DecodedKey, std::shared_ptr<DecodedTexture>, DecodedKeyHash> m_decodedTextures;
             std::unordered_map<DecodedKey, std::weak_ptr<DecodedTexture>, DecodedKeyHash> m_retainedDecodedTextures;
             std::uint64_t m_decodedBytes{}, m_decodedClock{};
-            std::shared_ptr<DecodedTexture> decodedTexture(const Surface &surface, bool blocksOnly = false);
+            // floatTexels: component-mapped RGBA32F texels of a non-RGBA8 color format, in `floating`.
+            std::shared_ptr<DecodedTexture> decodedTexture(const Surface &surface, bool blocksOnly = false, bool floatTexels = false);
             std::vector<float> volumeTexels(const Surface &surface) const;
 
             float m_clear[4]{0.0f, 0.0f, 0.0f, 1.0f}; // RGBA, 0..1
