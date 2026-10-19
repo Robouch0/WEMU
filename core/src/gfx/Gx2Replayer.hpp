@@ -426,6 +426,16 @@ namespace Core::Gfx {
             std::unordered_map<std::uint32_t, WrittenSurface> m_cpuWrittenSurfaces;
             std::unordered_set<std::uint64_t> m_surfaceAliasTraced;
             mutable std::unordered_map<SurfaceKey, std::vector<std::uint8_t>, SurfaceKeyHash> m_viewBackings;
+            // Content version of each view backing, bumped by every write path (draws, clears,
+            // resolved GPU versions). Textures read from a backing share one upload per version.
+            struct BackingOwner {
+                    std::uint64_t version{};
+                    std::shared_ptr<const int> token;
+            };
+            mutable std::unordered_map<SurfaceKey, std::uint64_t, SurfaceKeyHash> m_backingVersions;
+            mutable std::unordered_map<SurfaceKey, BackingOwner, SurfaceKeyHash> m_backingOwners;
+            void touchBacking(const SurfaceKey &key) const { ++m_backingVersions[key]; }
+            std::shared_ptr<const void> backingOwner(const SurfaceKey &key) const;
             // Shared zero texels for sized views of null images; replaced (never resized) when too small.
             std::shared_ptr<const std::vector<std::uint8_t>> m_zeroTexels;
             mutable std::unordered_map<SurfaceKey, std::shared_ptr<RasterReadback>, SurfaceKeyHash> m_pendingReadbacks;

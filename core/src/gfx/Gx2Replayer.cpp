@@ -548,9 +548,20 @@ namespace Core::Gfx {
         return {s.imagePtr, s.width, s.height, s.pitch, s.format, s.tileMode, s.swizzle};
     }
 
+    std::shared_ptr<const void> Gx2Replayer::backingOwner(const SurfaceKey &key) const
+    {
+        const auto version = m_backingVersions[key];
+        auto &owner = m_backingOwners[key];
+        if (!owner.token || owner.version != version)
+            owner = {version, std::make_shared<const int>()};
+        return owner.token;
+    }
+
     std::vector<std::uint8_t> &Gx2Replayer::viewBacking(const Surface &s)
     {
         resolveViewBacking(s);
+        // Callers write through the returned reference.
+        touchBacking(makeSurfaceKey(s));
         auto &backing = m_viewBackings[makeSurfaceKey(s)];
         const std::size_t bytes = static_cast<std::size_t>(s.pitch) * s.height * colorElementBytes(colorFormat(s.format));
         if (backing.size() != bytes)
@@ -578,6 +589,7 @@ namespace Core::Gfx {
         if (pixels.size() != backing.size())
             throw std::runtime_error("Deferred raster target size changed");
         std::copy(pixels.begin(), pixels.end(), backing.begin());
+        touchBacking(key);
         m_pendingReadbacks.erase(pending);
     }
 
@@ -606,6 +618,7 @@ namespace Core::Gfx {
             if (pixels.size() != backing.size())
                 throw std::runtime_error("Deferred raster target size changed");
             std::copy(pixels.begin(), pixels.end(), backing.begin());
+            touchBacking(it->first);
             it = m_pendingReadbacks.erase(it);
         }
     }
@@ -1928,6 +1941,7 @@ namespace Core::Gfx {
                     rendered = pending->second;
             }
             auto &target = rendered ? m_viewBackings.at(key) : viewBacking(m_color);
+            touchBacking(key);
             RasterDraw::Texture texture{shader.textures.at(0), width, height, sampler, texel};
             texture.unorm8 = {rgba, std::size_t(width) * height * 4};
             texture.unorm8Pitch = width;
@@ -3005,6 +3019,16 @@ namespace Core::Gfx {
             written.frame = m_presentCount + 1;
             ++written.writes;
         }
+        // Textures sampled by this draw still see the previous backing version; later ones must not.
+        struct BackingWrite {
+                const Gx2Replayer *replayer;
+                std::optional<SurfaceKey> key;
+                ~BackingWrite()
+                {
+                    if (key)
+                        replayer->touchBacking(*key);
+                }
+        } backingWrite{this, colorOutputEnabled ? std::optional{makeSurfaceKey(m_color)} : std::nullopt};
         const auto rasterWidth = drawDepth && !colorOutputEnabled ? m_depth.width : m_color.width;
         const auto rasterHeight = drawDepth && !colorOutputEnabled ? m_depth.height : m_color.height;
         const int sx0 = std::max(m_scissor[0], 0);
@@ -3933,6 +3957,7 @@ namespace Core::Gfx {
                             textures.back().rgba32Bytes = *backing;
                             textures.back().rgba32Pitch = surface.pitch;
                         }
+                        textures.back().snapshotOwner = backingOwner(makeSurfaceKey(surface));
                     } else {
                         auto &values = ownedFloatTextures.emplace_back();
                         for (unsigned y = 0; y < surface.height; ++y)
@@ -4015,6 +4040,7 @@ namespace Core::Gfx {
                     textures.back().unorm8 = *backing;
                     textures.back().unorm8Pitch = surface.pitch;
                     textures.back().unorm8Map = surface.compMap;
+                    textures.back().snapshotOwner = backingOwner(makeSurfaceKey(surface));
                 } else if (rawBytes && surface.imageSize && (surface.tileMode <= 4 || surface.tileMode == 16) &&
                            std::uint64_t(surface.width) * surface.height * 4 <= 64ull * 1024 * 1024 &&
                            std::uint64_t(surface.imagePtr) + surface.imageSize <= 0x100000000ull && m_mem) {
