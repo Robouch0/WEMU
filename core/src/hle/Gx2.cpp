@@ -534,6 +534,15 @@ namespace {
             if (!c.gpr[2] || !words)
                 continue;
             c.payload.clear();
+            if (const auto *source = std::as_const(cpu.m_memory).hostPtr(c.gpr[2], std::size_t(words) * 4)) {
+                c.payload.resize(words);
+                for (std::uint32_t i = 0; i < words; i++) {
+                    std::uint32_t word;
+                    std::memcpy(&word, source + std::size_t(i) * 4, 4);
+                    c.payload[i] = std::byteswap(word);
+                }
+                continue;
+            }
             try {
                 for (std::uint32_t i = 0; i < words; i++)
                     c.payload.push_back(cpu.m_memory.read<std::uint32_t>(c.gpr[2] + i * 4));
