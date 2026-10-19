@@ -1688,21 +1688,23 @@ namespace Core::Gfx {
             if (!base || !m_mem->hostPtr(s.imagePtr + s.pitch * s.height * colorElementBytes(colorFormat(s.format)) - 1))
                 return;
         }
+        // Every element receives the same fully written bytes: encode one, then replicate rows.
         const auto format = colorFormat(s.format);
-        if (format != ColorFormat::RGBA8) {
-            const std::array value{rgba[0], rgba[1], rgba[2], rgba[3]};
-            for (unsigned y = 0; y < s.height; ++y)
-                for (unsigned x = 0; x < s.width; ++x)
-                    writeFloatColor(base + (std::size_t(y) * s.pitch + x) * colorElementBytes(format), value, 15, format);
+        const auto elementBytes = colorElementBytes(format);
+        std::array<std::uint8_t, 16> element{};
+        if (format != ColorFormat::RGBA8)
+            writeFloatColor(element.data(), {rgba[0], rgba[1], rgba[2], rgba[3]}, 15, format);
+        else {
+            const auto toByte = [](float f) { return static_cast<std::uint8_t>(std::lround(std::clamp(f, 0.0f, 1.0f) * 255.0f)); };
+            element = {toByte(rgba[0]), toByte(rgba[1]), toByte(rgba[2]), toByte(rgba[3])};
+        }
+        const std::size_t rowBytes = std::size_t(s.width) * elementBytes, pitchBytes = std::size_t(s.pitch) * elementBytes;
+        if (!s.height || !rowBytes)
             return;
-        }
-        const auto toByte = [](float f) { return static_cast<std::uint8_t>(std::lround(std::clamp(f, 0.0f, 1.0f) * 255.0f)); };
-        const std::uint8_t px[4] = {toByte(rgba[0]), toByte(rgba[1]), toByte(rgba[2]), toByte(rgba[3])};
-        for (std::uint32_t y = 0; y < s.height; y++) {
-            std::uint8_t *row = base + static_cast<std::size_t>(y) * s.pitch * 4;
-            for (std::uint32_t x = 0; x < s.width; x++)
-                std::memcpy(row + std::size_t(x) * 4, px, 4);
-        }
+        for (std::uint32_t x = 0; x < s.width; x++)
+            std::memcpy(base + std::size_t(x) * elementBytes, element.data(), elementBytes);
+        for (std::uint32_t y = 1; y < s.height; y++)
+            std::memcpy(base + y * pitchBytes, base, rowBytes);
     }
 
     void Gx2Replayer::repairProjection()
