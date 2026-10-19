@@ -4717,6 +4717,8 @@ namespace Core::Gfx {
                         prepareSoftwareInputs();
                         result->resolve();
                         result->resolveDepth();
+                        if (result->unchangedTarget)
+                            result->rgba.assign(target, target + targetBytes);
                         // The backend has not changed target; feedback snapshots and
                         // prepared vertices are shared by both executions of this draw.
                         const auto savedStats = m_stats;

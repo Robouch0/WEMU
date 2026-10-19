@@ -210,9 +210,12 @@ namespace Core::Gfx {
             std::vector<std::uint8_t> rgba; // complete target, including preserved padding
             std::uint64_t pixels{}, alphaSum{};
             std::shared_ptr<RasterReadback> readback;
+            // Byte size of a target the draw left exactly as passed (no color attachment): rgba
+            // then stays empty and callers keep their bytes.
+            std::size_t unchangedTarget{};
             std::vector<float> depth;
             std::shared_ptr<RasterReadback> depthReadback;
-            std::size_t size() const { return readback ? readback->size() : rgba.size(); }
+            std::size_t size() const { return readback ? readback->size() : unchangedTarget ? unchangedTarget : rgba.size(); }
             void resolve()
             {
                 if (readback) {

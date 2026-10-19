@@ -2637,7 +2637,7 @@ void main() {
                         // The guest color binding is unused: preserve its exact version.
                         result.readback = draw.renderedTarget;
                         if (!result.readback)
-                            result.rgba.assign(draw.target.begin(), draw.target.end());
+                            result.unchangedTarget = draw.target.size();
                         return result;
                     }
                     color->initialized = true;

@@ -4379,7 +4379,12 @@ TEST(VulkanDepthTest, DepthOnlyUsesItsOwnExtentAndPreservesUnusedColorVersions)
         auto result = backend->renderDeferred(draw);
         ASSERT_TRUE(result) << backend->lastError();
         ASSERT_TRUE(result->depthReadback);
-        EXPECT_EQ(result->rgba, color);
+        // The unused color target comes back untouched, without a copy from the direct renderer.
+        EXPECT_EQ(result->size(), color.size());
+        if (result->unchangedTarget)
+            EXPECT_TRUE(result->rgba.empty());
+        else
+            EXPECT_EQ(result->rgba, color);
         EXPECT_EQ(backend->targetUploadTransfers(), 0u);
         EXPECT_EQ(backend->targetCopyTransfers(), 0u);
         EXPECT_EQ(backend->readbackTransfers(), 0u);
