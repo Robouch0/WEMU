@@ -37,9 +37,18 @@ namespace Core::Gfx::Latte {
             std::uint32_t sel, chan;
             bool rel, neg, abs;
     };
-    // ALU special source selectors. LLVM's R600 register table names 250 as ONE_INT; it must
-    // be represented as integer bits when supplied to *_INT operations.
-    enum : std::uint32_t { SRC_0 = 248, SRC_1 = 249, SRC_1_INT = 250, SRC_HALF = 252, SRC_LITERAL = 253, SRC_PV = 254, SRC_PS = 255 };
+    // ALU special source selectors. LLVM's R600 register table names 250 as ONE_INT and 251 as
+    // MINUS_ONE_INT; they must be represented as integer bits when supplied to *_INT operations.
+    enum : std::uint32_t {
+        SRC_0 = 248,
+        SRC_1 = 249,
+        SRC_1_INT = 250,
+        SRC_M_1_INT = 251,
+        SRC_HALF = 252,
+        SRC_LITERAL = 253,
+        SRC_PV = 254,
+        SRC_PS = 255
+    };
 
     enum Op2 : std::uint32_t {
         OP2_ADD = 0x00,

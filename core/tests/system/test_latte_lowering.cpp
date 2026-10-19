@@ -1912,6 +1912,43 @@ TEST(LatteLoweringTest, VulkanIntegerMasksAndConditionalSelectionPreserveBits)
     }
 }
 
+TEST(LatteLoweringTest, VulkanMinusOneIntegerSourceMatchesReference)
+{
+    if (!std::getenv("WEMU_TEST_VULKAN"))
+        GTEST_SKIP();
+    FragmentShader vertex;
+    vertex.source = probeVertexSource;
+    std::vector<std::uint32_t> vertexCode;
+    ASSERT_NO_FATAL_FAILURE(validateSpirv(vertex, &vertexCode, "vert"));
+    if (vertexCode.empty())
+        GTEST_SKIP();
+    // c[c].x + (-1) == 0 only for 1: selects 1.0 there and 0.0 otherwise.
+    std::vector<std::uint32_t> words{2, (8u << 26) | (7u << 18), 0, (CF_EXP_DONE << 23) | (1u << 21) | 0x688u};
+    for (unsigned c = 0; c < 4; ++c)
+        words.insert(words.end(), {0x80000000u | (256u + c) | (SRC_M_1_INT << 13), (OP2_ADD_INT << 7) | 16u | (c << 29),
+                                   0x80000000u | (c << 10) | (SRC_1 << 13), (OP3_CNDE_INT << 13) | SRC_0 | (c << 29)});
+    const auto program = decodeProgram(words);
+    const auto lowered = lowerFragmentShader(*program);
+    ASSERT_TRUE(lowered) << lowered.error;
+    std::vector<std::uint32_t> fragmentCode;
+    ASSERT_NO_FATAL_FAILURE(validateSpirv(lowered, &fragmentCode));
+    ASSERT_FALSE(fragmentCode.empty());
+    const std::array<std::uint32_t, 4> values{1, 0, 2, 0xFFFFFFFFu};
+    std::array<float, 1024> constants{};
+    for (unsigned c = 0; c < 4; ++c)
+        constants[c * 4] = std::bit_cast<float>(values[c]);
+    VulkanFragmentProbe probe;
+    probe.initialize(vertexCode, fragmentCode, constants);
+    VulkanFragmentProbe::Inputs inputs{};
+    const auto expected = Core::Gfx::LatteVsInterp::runPixel(*program, inputs, constants.data(), constants.size(), {});
+    ASSERT_TRUE(expected.colorValid);
+    for (const auto &pixel: probe.draw(inputs))
+        for (unsigned c = 0; c < 4; ++c) {
+            EXPECT_FLOAT_EQ(expected.color[c], values[c] == 1 ? 1.f : 0.f);
+            EXPECT_FLOAT_EQ(pixel[c], expected.color[c]);
+        }
+}
+
 TEST(LatteLoweringTest, VulkanMinMaxMatchReferenceSpecialValues)
 {
     if (!std::getenv("WEMU_TEST_VULKAN"))

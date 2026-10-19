@@ -251,6 +251,9 @@ namespace Core::Gfx {
                     case SRC_1_INT:
                         v = fromU32(1u);
                         break;
+                    case SRC_M_1_INT:
+                        v = fromU32(0xFFFFFFFFu);
+                        break;
                     case SRC_HALF:
                         v = 0.5f;
                         break;

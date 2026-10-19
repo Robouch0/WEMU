@@ -212,6 +212,9 @@ namespace Core::Gfx::Latte {
                     case SRC_1_INT:
                         value = "uintBitsToFloat(1u)";
                         break;
+                    case SRC_M_1_INT:
+                        value = "uintBitsToFloat(4294967295u)";
+                        break;
                     case SRC_HALF:
                         value = "0.5";
                         break;
@@ -225,7 +228,7 @@ namespace Core::Gfx::Latte {
                         value = "ps";
                         break;
                     default:
-                        throw std::runtime_error("unsupported ALU source selector");
+                        throw std::runtime_error(std::format("unsupported ALU source selector {}", s.sel));
                 }
             if (s.abs)
                 value = "abs(" + value + ")";
