@@ -134,8 +134,7 @@ namespace Core::Instruction {
             const auto it = cpu.m_importBySentinel.find(cpu.m_ctr);
             const std::string *sym_name = it != cpu.m_importBySentinel.end() ? it->second : nullptr;
             cpu.m_hle_redirected = false;
-            if (sym_name && Core::syscallHandler.syscallTable.contains(*sym_name)) {
-                const auto handler = Core::syscallHandler.get(*sym_name);
+            if (const auto handler = sym_name ? cpu.syscallFor(*sym_name) : nullptr) {
                 if (Diag::traceHle()) {
                     const std::uint32_t a3 = cpu.m_gpr[3], a4 = cpu.m_gpr[4], a5 = cpu.m_gpr[5], a6 = cpu.m_gpr[6];
                     handler(cpu);

@@ -326,6 +326,14 @@ namespace Core {
 
             // Import sentinel (st_value >= 0xC0000000) -> symbol name, for BCTR HLE dispatch.
             std::unordered_map<std::uint32_t, const std::string *> m_importBySentinel{};
+
+            // HLE handler registered for a symbol name (sc, bctr to an import), or nullptr. Names
+            // live in m_binary.symbols, so lookups in the string-keyed syscall table are cached by
+            // name address until a registration changes the table.
+            using SyscallFn = void (*)(Interpreter &);
+            [[nodiscard]] SyscallFn syscallFor(const std::string &name);
+            std::unordered_map<const std::string *, SyscallFn> m_syscallCache;
+            std::uint64_t m_syscallCacheVersion{~std::uint64_t{0}};
     };
 
 

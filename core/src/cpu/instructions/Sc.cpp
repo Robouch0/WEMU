@@ -19,11 +19,10 @@ namespace Core::Instruction {
     void SC(Core::Interpreter &cpu, const EncodedInstruction &instr)
     {
         Profile::Scope hle(Profile::Stage::Hle);
-        Core::Symbol sym = cpu.m_binary.symbols[instr.bd];
+        const Core::Symbol &sym = cpu.m_binary.symbols[instr.bd];
 
         cpu.m_hle_redirected = false;
-        if (syscallHandler.syscallTable.contains(sym.name)) {
-            const auto handler = syscallHandler.get(sym.name);
+        if (const auto handler = cpu.syscallFor(sym.name)) {
             // Deliberately not Log::info: the trace flag must work regardless of compile-time log level.
             static const std::uint32_t traceOnlyLr = []() -> std::uint32_t {
                 const char *env = std::getenv("WEMU_TRACE_HLE_LR");

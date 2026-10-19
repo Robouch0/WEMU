@@ -14,6 +14,7 @@
 #include <cstring>
 #include <utility>
 
+#include "cpu/interpreter/SyscallHandler.hpp"
 #include "cpu/types/InstructionTraits.hpp"
 #include "gfx/Renderer.hpp"
 #include "hle/AsyncCallbacks.hpp"
@@ -900,6 +901,20 @@ std::uint32_t Core::Interpreter::runBlock(const Block &block, std::size_t first)
         m_pc = m_nextPc;
     }
     return static_cast<std::uint32_t>(block.instrs.size() - first);
+}
+
+Core::Interpreter::SyscallFn Core::Interpreter::syscallFor(const std::string &name)
+{
+    if (m_syscallCacheVersion != syscallHandler.version) {
+        m_syscallCache.clear();
+        m_syscallCacheVersion = syscallHandler.version;
+    }
+    const auto [it, inserted] = m_syscallCache.try_emplace(&name, nullptr);
+    if (inserted) {
+        const auto found = syscallHandler.syscallTable.find(name);
+        it->second = found != syscallHandler.syscallTable.end() ? found->second : nullptr;
+    }
+    return it->second;
 }
 
 bool Core::Interpreter::handleBlockException(const Core::Exception &e)
