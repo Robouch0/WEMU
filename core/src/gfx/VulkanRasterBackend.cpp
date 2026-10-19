@@ -2728,16 +2728,25 @@ void main() {
                     bytes = (bytes + alignment - 1) / alignment * alignment;
                     if (bytes > blockBytes)
                         return {};
-                    while (!vertexCache.empty() && vertexCacheBytes + bytes > cacheBudget) {
-                        auto oldest = vertexCache.begin();
-                        for (auto it = vertexCache.begin(); it != vertexCache.end(); ++it)
-                            if (it->second.owner.expired() || it->second.used < oldest->second.used) {
-                                oldest = it;
-                                if (it->second.owner.expired())
-                                    break;
-                            }
-                        vertexCacheBytes -= oldest->second.allocation->bytes;
-                        vertexCache.erase(oldest);
+                    if (vertexCacheBytes + bytes > cacheBudget || vertexCache.size() >= 4096) {
+                        // Dead owners first, then least recently used arrays down to three quarters.
+                        std::erase_if(vertexCache, [&](const auto &entry) {
+                            if (!entry.second.owner.expired())
+                                return false;
+                            vertexCacheBytes -= entry.second.allocation->bytes;
+                            return true;
+                        });
+                        std::vector<std::pair<std::uint64_t, const void *>> order;
+                        for (const auto &[owner, cached]: vertexCache)
+                            order.emplace_back(cached.used, owner);
+                        std::ranges::sort(order);
+                        for (const auto &[used, owner]: order) {
+                            if (vertexCacheBytes + bytes <= cacheBudget / 4 * 3 && vertexCache.size() < 3072)
+                                break;
+                            const auto it = vertexCache.find(owner);
+                            vertexCacheBytes -= it->second.allocation->bytes;
+                            vertexCache.erase(it);
+                        }
                     }
                     if (!vertexArena) {
                         vertexArena = std::make_shared<VertexArena>();

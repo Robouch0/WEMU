@@ -221,6 +221,7 @@ namespace Core::Gfx {
                     std::size_t bytes() const;
             };
             std::unordered_map<std::uint64_t, DirectVertexEntry> m_directVertexCache;
+            std::unordered_map<std::uint64_t, std::uint8_t> m_directVertexSeen; // key -> sightings, then changes
             std::uint64_t m_directVertexBytes{}, m_directVertexClock{};
             // Guest byte ranges [address, address + size) the fetch plan reads for vertices
             // low..high, merged; false when a read is not resident in one host range.

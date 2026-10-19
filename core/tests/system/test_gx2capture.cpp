@@ -2188,17 +2188,21 @@ TEST_F(Gx2CaptureTest, DirectVertexArraysAreReusedUntilGuestVertexBytesChange)
     frame();
     ASSERT_EQ(backend->completedDraws(), 1u) << backend->lastError();
     EXPECT_EQ(native.framebuffer(), reference.framebuffer());
+    // A draw is cached from its second sighting and moves to the GPU once reused.
+    frame();
     EXPECT_EQ(native.directVertexReuses(), 0u);
-    EXPECT_EQ(backend->residentVertexHits(), 0u);
     frame();
     EXPECT_EQ(native.directVertexReuses(), 1u);
+    EXPECT_EQ(backend->residentVertexHits(), 0u);
+    frame();
+    EXPECT_EQ(native.directVertexReuses(), 2u);
     EXPECT_EQ(backend->residentVertexHits(), resident);
     EXPECT_EQ(native.framebuffer(), reference.framebuffer());
     // Narrowing the quad in guest memory must reach the GPU despite unchanged indices.
     writeQuad(0);
     frame();
-    EXPECT_EQ(backend->completedDraws(), 3u) << backend->lastError();
-    EXPECT_EQ(native.directVertexReuses(), 1u);
+    EXPECT_EQ(backend->completedDraws(), 5u) << backend->lastError();
+    EXPECT_EQ(native.directVertexReuses(), 2u);
     EXPECT_EQ(backend->residentVertexHits(), resident);
     EXPECT_EQ(native.framebuffer(), reference.framebuffer());
     const auto &fb = native.framebuffer();

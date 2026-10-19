@@ -2396,7 +2396,19 @@ namespace Core::Gfx {
             if (type != 0 && type != 1 && type != 4 && type != 9)
                 return;
             const std::uint32_t indexBytes = type == 9 || type == 1 ? 4 : 2;
-            for (std::uint32_t i = 0; i < count; i++) {
+            // Whole buffers in one mapped range decode without per-index lookups.
+            const std::uint8_t *indices = std::uint64_t(cmd.gpr[3]) + std::uint64_t(count) * indexBytes <= 0x100000000ull
+                                                  ? m_mem->hostPtr(cmd.gpr[3], std::size_t(count) * indexBytes)
+                                                  : nullptr;
+            for (std::uint32_t i = 0; indices && i < count; i++) {
+                const auto *p = indices + std::size_t(i) * indexBytes;
+                const auto value = type == 1 ? std::uint32_t(p[0]) | std::uint32_t(p[1]) << 8 | std::uint32_t(p[2]) << 16 | std::uint32_t(p[3]) << 24
+                                   : type == 9 ? std::uint32_t(p[0]) << 24 | std::uint32_t(p[1]) << 16 | std::uint32_t(p[2]) << 8 | p[3]
+                                   : type == 0 ? std::uint32_t(p[0]) | std::uint32_t(p[1]) << 8
+                                               : std::uint32_t(p[0]) << 8 | p[1];
+                idx.push_back(value + cmd.gpr[4]); // base vertex
+            }
+            for (std::uint32_t i = 0; !indices && i < count; i++) {
                 const std::uint64_t address = std::uint64_t(cmd.gpr[3]) + std::uint64_t(i) * indexBytes;
                 if (address + indexBytes > 0x100000000ull)
                     return;
@@ -3920,6 +3932,7 @@ namespace Core::Gfx {
         std::vector<std::array<float, 4>> directAttributes;
         std::vector<std::uint32_t> directIndices;
         std::shared_ptr<const DirectVertices> directArrays;
+        bool directReused = false;
         const auto attributeStride = unsigned(std::min<std::size_t>(m_vertexInputCount, RasterDraw::Vertex{}.inputs.size()));
         // Static geometry is converted once: a draw whose indices, fetch state and guest vertex
         // bytes match a previous conversion reuses its arrays (and the backend its upload).
@@ -3962,8 +3975,19 @@ namespace Core::Gfx {
                         entry.validatedFrame = m_presentCount;
                         entry.used = ++m_directVertexClock;
                         directArrays = entry.vertices;
+                        directReused = true;
                         ++m_directVertexReuses;
                     }
+                }
+                // Convert into the cache only from a draw's second sighting, and not for draws
+                // whose data kept changing: dynamic buffers would only churn it.
+                if (!directArrays) {
+                    if (m_directVertexSeen.size() >= 65536)
+                        m_directVertexSeen.clear();
+                    auto &changes = m_directVertexSeen[directKey];
+                    cacheDirect = changes > 0 && changes < 4;
+                    if (found != m_directVertexCache.end() || !changes)
+                        changes = std::uint8_t(std::min(changes + 1, 255));
                 }
             }
         }
@@ -4028,13 +4052,19 @@ namespace Core::Gfx {
                     m_directVertexCache.erase(old);
                 }
                 m_directVertexBytes += entry.bytes();
-                while (m_directVertexBytes > budget && !m_directVertexCache.empty()) {
-                    auto oldest = m_directVertexCache.begin();
-                    for (auto it = m_directVertexCache.begin(); it != m_directVertexCache.end(); ++it)
-                        if (it->second.used < oldest->second.used)
-                            oldest = it;
-                    m_directVertexBytes -= oldest->second.bytes();
-                    m_directVertexCache.erase(oldest);
+                if (m_directVertexBytes > budget) {
+                    // Evict least recently used entries in one pass, down to three quarters.
+                    std::vector<std::pair<std::uint64_t, std::uint64_t>> order;
+                    for (const auto &[key, cached]: m_directVertexCache)
+                        order.emplace_back(cached.used, key);
+                    std::ranges::sort(order);
+                    for (const auto &[used, key]: order) {
+                        if (m_directVertexBytes <= budget / 4 * 3)
+                            break;
+                        const auto it = m_directVertexCache.find(key);
+                        m_directVertexBytes -= it->second.bytes();
+                        m_directVertexCache.erase(it);
+                    }
                 }
                 m_directVertexCache.emplace(directKey, std::move(entry));
             }
@@ -4605,7 +4635,9 @@ namespace Core::Gfx {
                     draw.vertexStage.inputCount = m_pixelInputCount;
                     if (directVertices) {
                         draw.vertexStage.attributes = directAttributeView;
-                        draw.vertexStage.attributesOwner = directArrays;
+                        // Only arrays reused at least once are worth keeping on the GPU.
+                        if (directArrays && directReused)
+                            draw.vertexStage.attributesOwner = directArrays;
                         draw.vertexStage.attributeStride = std::max(1u, attributeStride);
                     }
                     draw.vertexStage.viewport = {m_vp[0], m_vp[1], m_vp[2], m_vp[3], m_vpNear, m_vpFar};
