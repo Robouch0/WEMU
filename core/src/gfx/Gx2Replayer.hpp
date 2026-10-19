@@ -184,7 +184,26 @@ namespace Core::Gfx {
             void clearDepthSurface(const Surface &s, float depth, unsigned flags);
             void drawImage(const Gx2Command &cmd);
             void drawPrimitives(const Gx2Command &cmd, bool indexed, int selectedColor = -1);
-            bool fetchAttributes(std::uint32_t vertex, std::span<std::array<float, 4>> out) const;
+            // The bound fetch shader resolved against the attribute buffers once per draw, so
+            // fetching a vertex no longer decodes formats, semantics or memory regions.
+            struct AttributeFetch {
+                    struct Element {
+                            std::uint32_t out{}, mask{}, offset{}, stride{}, size{}, address{};
+                            std::uint8_t components{}, bytes{};
+                            bool fails{}, floating{}, packed1010102{}, integer{}, isSigned{}, scaled{};
+                            std::array<std::uint8_t, 16> order{}; // source byte of each little-endian byte
+                            const std::uint8_t *host{}; // set when every in-bounds element is resident
+                            std::uint64_t count{}; // vertices whose element starts in the buffer
+                    };
+                    std::vector<Element> elements;
+                    bool valid{};
+            };
+            AttributeFetch prepareAttributeFetch() const;
+            bool fetchAttributes(const AttributeFetch &fetch, std::uint32_t vertex, std::span<std::array<float, 4>> out) const;
+            bool fetchAttributes(std::uint32_t vertex, std::span<std::array<float, 4>> out) const
+            {
+                return fetchAttributes(prepareAttributeFetch(), vertex, out);
+            }
             void copyToScanBuffer(const Surface &s);
             void copyToDrcBuffer(const Surface &s);
             void maybeDumpFrame();

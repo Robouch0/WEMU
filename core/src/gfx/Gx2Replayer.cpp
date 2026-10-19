@@ -1844,30 +1844,31 @@ namespace Core::Gfx {
         return {px[0], px[1], px[2], px[3]};
     }
 
-    bool Gx2Replayer::fetchAttributes(std::uint32_t vertex, std::span<std::array<float, 4>> out) const
+    Gx2Replayer::AttributeFetch Gx2Replayer::prepareAttributeFetch() const
     {
+        AttributeFetch plan;
         if (!m_mem || m_fetchLayout.empty())
-            return false;
-        std::ranges::fill(out, std::array<float, 4>{});
-        for (auto &a: out)
-            a[3] = 1.0f;
+            return plan;
+        plan.valid = true;
         for (std::size_t i = 0; i + 7 < m_fetchLayout.size(); i += 8) {
-            const auto location = m_fetchLayout[i], buffer = m_fetchLayout[i + 1], offset = m_fetchLayout[i + 2];
-            const auto format = m_fetchLayout[i + 3], mask = m_fetchLayout[i + 6];
+            const auto location = m_fetchLayout[i], buffer = m_fetchLayout[i + 1];
+            const auto format = m_fetchLayout[i + 3];
             auto endian = m_fetchLayout[i + 7];
             const auto semantic = std::find(m_vertexSemantics.begin(), m_vertexSemantics.end(), location);
             if (semantic == m_vertexSemantics.end())
                 continue;
-            if (std::size_t(std::distance(m_vertexSemantics.begin(), semantic)) >= out.size())
+            auto &e = plan.elements.emplace_back();
+            e.out = std::uint32_t(std::distance(m_vertexSemantics.begin(), semantic));
+            e.mask = m_fetchLayout[i + 6];
+            if (buffer >= m_attribs.size()) {
+                e.fails = true;
                 continue;
-            if (buffer >= m_attribs.size())
-                return false;
+            }
             const auto &binding = m_attribs[buffer];
             // GX2AttribFormat: the low byte selects the component layout; 0x100 = integer,
             // 0x200 = signed, 0x800 = float (or integer scaled to float).
             const auto type = format & 0xFF;
             unsigned components = 0, bytes = 0;
-            bool packed1010102 = false;
             switch (type) {
                 case 0x00:
                     components = 1, bytes = 1;
@@ -1907,72 +1908,119 @@ namespace Core::Gfx {
                     components = 4, bytes = 4;
                     break; // 32_32_32_32 / float
                 case 0x0B:
-                    components = 1, bytes = 4, packed1010102 = true;
+                    components = 1, bytes = 4, e.packed1010102 = true;
                     break; // 2_10_10_10
                 default:
-                    return false;
+                    e.fails = true;
+                    continue;
             }
-            const bool floating = type == 0x03 || type == 0x06 || type == 0x08 || type == 0x0D || type == 0x0F || type == 0x11 || type == 0x13;
-            const bool integer = format & 0x100, isSigned = format & 0x200, scaled = (format & 0x800) && !floating;
+            e.components = std::uint8_t(components);
+            e.bytes = std::uint8_t(bytes);
+            e.floating = type == 0x03 || type == 0x06 || type == 0x08 || type == 0x0D || type == 0x0F || type == 0x11 || type == 0x13;
+            e.integer = format & 0x100;
+            e.isSigned = format & 0x200;
+            e.scaled = (format & 0x800) && !e.floating;
             if (endian == 3)
                 endian = bytes == 4 ? 2 : bytes == 2 ? 1 : 0;
-            const std::uint32_t index = m_fetchLayout[i + 4] == 1 ? 0 : vertex;
-            const std::uint64_t start = std::uint64_t(index) * binding.stride + offset;
-            // Bound a fetch by where its element starts, not by its byte extent: MK8 fetches
-            // 32_32_32_32 positions from 12-byte strides, so the last vertex's fourth float lies
-            // past the declared size and is read from the following memory.
-            if (!binding.addr || start >= binding.size ||
-                std::uint64_t(binding.addr) + start + std::uint64_t(components) * bytes > 0x100000000ull)
-                return false;
-            const auto addr = binding.addr + static_cast<std::uint32_t>(start);
-            const auto *p = m_mem->hostPtr(addr);
-            if (!p || !m_mem->hostPtr(addr + components * bytes - 1))
-                return false;
-            const auto convert = [&](std::uint32_t bits, unsigned width) -> float {
-                const auto signBit = 1u << (width - 1);
-                const auto signedBits = std::int32_t(isSigned && (bits & signBit) && width < 32 ? bits | ~((signBit << 1) - 1) : bits);
-                if (integer && !scaled)
-                    return asFloat(isSigned ? std::uint32_t(signedBits) : bits); // raw integer bits for integer shader inputs
-                if (scaled || integer)
-                    return isSigned ? float(signedBits) : float(bits);
-                if (isSigned)
-                    return std::max(-1.0f, float(signedBits) / float(signBit - 1));
-                return width == 32 ? float(double(bits) / 4294967295.0) : float(bits) / float((signBit << 1) - 1);
-            };
-            const auto halfToFloat = [](std::uint32_t h) {
-                const std::uint32_t sign = (h & 0x8000u) << 16, exponent = (h >> 10) & 0x1F, mantissa = h & 0x3FF;
-                if (exponent == 0) {
-                    const float value = std::ldexp(float(mantissa), -24);
-                    return sign ? -value : value;
-                }
-                if (exponent == 31)
-                    return asFloat(sign | 0x7F800000u | (mantissa << 13));
-                return asFloat(sign | ((exponent + 112) << 23) | (mantissa << 13));
-            };
-            std::array<float, 4> value{0, 0, 0, 1};
-            for (unsigned c = 0; c < components; c++) {
-                std::uint32_t bits = 0;
-                for (unsigned b = 0; b < bytes; b++) {
-                    const auto byteIndex = c * bytes + b;
-                    const auto swapped = endian == 2 ? byteIndex ^ 3u : endian == 1 ? byteIndex ^ 1u : byteIndex;
-                    if (swapped >= components * bytes)
-                        return false;
-                    bits |= std::uint32_t(p[swapped]) << (b * 8);
-                }
-                if (packed1010102) {
-                    for (unsigned k = 0; k < 3; ++k) {
-                        const auto field = (bits >> (k * 10)) & 0x3FF;
-                        value[k] = convert(field, 10);
-                    }
-                    value[3] = (integer || scaled) ? float(bits >> 30) : float(bits >> 30) / 3.0f;
-                } else if (floating)
-                    value[c] = bytes == 2 ? halfToFloat(bits) : asFloat(bits);
-                else
-                    value[c] = convert(bits, bytes * 8);
+            const unsigned extent = components * bytes;
+            for (unsigned byteIndex = 0; byteIndex < extent; ++byteIndex) {
+                const auto swapped = endian == 2 ? byteIndex ^ 3u : endian == 1 ? byteIndex ^ 1u : byteIndex;
+                e.fails |= swapped >= extent;
+                e.order[byteIndex] = std::uint8_t(swapped);
             }
-            auto &a = out[std::distance(m_vertexSemantics.begin(), semantic)];
+            // Per-instance elements always read the first element.
+            e.stride = m_fetchLayout[i + 4] == 1 ? 0 : binding.stride;
+            e.offset = m_fetchLayout[i + 2];
+            e.size = binding.size;
+            e.address = binding.addr;
+            if (e.fails || !binding.addr)
+                e.fails = true;
+            else if (e.offset < binding.size) {
+                // Bound a fetch by where its element starts, not by its byte extent: MK8 fetches
+                // 32_32_32_32 positions from 12-byte strides, so the last vertex's fourth float lies
+                // past the declared size and is read from the following memory.
+                e.count = e.stride ? (binding.size - 1 - e.offset) / e.stride + 1 : ~std::uint64_t{};
+                const std::uint64_t last = std::uint64_t(binding.addr) + e.offset + (e.stride ? (e.count - 1) * e.stride : 0) + extent;
+                if (last <= 0x100000000ull)
+                    e.host = m_mem->hostPtr(binding.addr + e.offset, last - binding.addr - e.offset);
+            }
+        }
+        return plan;
+    }
+
+    bool Gx2Replayer::fetchAttributes(const AttributeFetch &fetch, std::uint32_t vertex, std::span<std::array<float, 4>> out) const
+    {
+        if (!fetch.valid)
+            return false;
+        std::ranges::fill(out, std::array<float, 4>{0, 0, 0, 1});
+        for (const auto &e: fetch.elements) {
+            if (e.out >= out.size())
+                continue;
+            if (e.fails)
+                return false;
+            const unsigned extent = unsigned(e.components) * e.bytes;
+            const std::uint8_t *p;
+            if (e.host) {
+                if (e.stride && vertex >= e.count)
+                    return false;
+                p = e.host + std::uint64_t(vertex) * e.stride;
+            } else {
+                const std::uint64_t start = std::uint64_t(vertex) * e.stride + e.offset;
+                if (start >= e.size || std::uint64_t(e.address) + start + extent > 0x100000000ull)
+                    return false;
+                const auto addr = e.address + static_cast<std::uint32_t>(start);
+                p = m_mem->hostPtr(addr);
+                if (!p || !m_mem->hostPtr(addr + extent - 1))
+                    return false;
+            }
+            std::array<float, 4> value{0, 0, 0, 1};
+            if (e.floating && e.bytes == 4) {
+                for (unsigned c = 0; c < e.components; c++) {
+                    const auto *order = &e.order[c * 4];
+                    value[c] = asFloat(std::uint32_t(p[order[0]]) | std::uint32_t(p[order[1]]) << 8 | std::uint32_t(p[order[2]]) << 16 |
+                                       std::uint32_t(p[order[3]]) << 24);
+                }
+            } else {
+                const auto convert = [&](std::uint32_t bits, unsigned width) -> float {
+                    const auto signBit = 1u << (width - 1);
+                    const auto signedBits = std::int32_t(e.isSigned && (bits & signBit) && width < 32 ? bits | ~((signBit << 1) - 1) : bits);
+                    if (e.integer && !e.scaled)
+                        return asFloat(e.isSigned ? std::uint32_t(signedBits) : bits); // raw integer bits for integer shader inputs
+                    if (e.scaled || e.integer)
+                        return e.isSigned ? float(signedBits) : float(bits);
+                    if (e.isSigned)
+                        return std::max(-1.0f, float(signedBits) / float(signBit - 1));
+                    return width == 32 ? float(double(bits) / 4294967295.0) : float(bits) / float((signBit << 1) - 1);
+                };
+                const auto halfToFloat = [](std::uint32_t h) {
+                    const std::uint32_t sign = (h & 0x8000u) << 16, exponent = (h >> 10) & 0x1F, mantissa = h & 0x3FF;
+                    if (exponent == 0) {
+                        const float value = std::ldexp(float(mantissa), -24);
+                        return sign ? -value : value;
+                    }
+                    if (exponent == 31)
+                        return asFloat(sign | 0x7F800000u | (mantissa << 13));
+                    return asFloat(sign | ((exponent + 112) << 23) | (mantissa << 13));
+                };
+                for (unsigned c = 0; c < e.components; c++) {
+                    std::uint32_t bits = 0;
+                    for (unsigned b = 0; b < e.bytes; b++)
+                        bits |= std::uint32_t(p[e.order[c * e.bytes + b]]) << (b * 8);
+                    if (e.packed1010102) {
+                        for (unsigned k = 0; k < 3; ++k) {
+                            const auto field = (bits >> (k * 10)) & 0x3FF;
+                            value[k] = convert(field, 10);
+                        }
+                        value[3] = (e.integer || e.scaled) ? float(bits >> 30) : float(bits >> 30) / 3.0f;
+                    } else if (e.floating)
+                        value[c] = halfToFloat(bits);
+                    else
+                        value[c] = convert(bits, e.bytes * 8u);
+                }
+            }
+            auto &a = out[e.out];
             for (unsigned c = 0; c < 4; c++) {
-                const auto select = (mask >> (24 - c * 8)) & 7;
+                const auto select = (e.mask >> (24 - c * 8)) & 7;
                 if (select < 4)
                     a[c] = value[select];
                 else if (select == 4 || select == 5)
@@ -2313,11 +2361,12 @@ namespace Core::Gfx {
                 idx.push_back(cmd.gpr[2] + i); // DrawEx: gpr[2] = first vertex offset
         }
 
+        const auto attributeFetch = prepareAttributeFetch();
         // Fetch one vertex: position from floats[0..1], uv heuristics by stride.
         const std::uint32_t nFloats = ab.stride / 4;
         auto fetch = [&](std::uint32_t vi, float &x, float &y, float &u, float &v) -> bool {
             std::array<std::array<float, 4>, 4> attributes{};
-            if (fetchAttributes(vi, attributes)) {
+            if (fetchAttributes(attributeFetch, vi, attributes)) {
                 x = attributes[0][0];
                 y = attributes[0][1];
                 u = attributes[1][0];
@@ -2409,7 +2458,7 @@ namespace Core::Gfx {
             if (preshadedOutput) {
                 // Attributes were consumed by the pre-shading pass.
             } else if (!m_fetchLayout.empty()) {
-                if (!fetchAttributes(vi, std::span(attribs).first(m_vertexInputCount)))
+                if (!fetchAttributes(attributeFetch, vi, std::span(attribs).first(m_vertexInputCount)))
                     return false;
             } else {
                 const std::uint8_t *p = m_mem->hostPtr(ab.addr + vi * ab.stride);
@@ -3763,7 +3812,7 @@ namespace Core::Gfx {
                     std::array<std::array<float, 4>, 32> attribs{};
                     for (unsigned k = first; k < end; ++k) {
                         const auto slot = unique[k] - preshadedBase;
-                        if (!fetchAttributes(unique[k], std::span(attribs).first(m_vertexInputCount))) {
+                        if (!fetchAttributes(attributeFetch, unique[k], std::span(attribs).first(m_vertexInputCount))) {
                             preshadedReady[slot] = 0; // runShader reports the failure as before
                             continue;
                         }
@@ -3832,7 +3881,9 @@ namespace Core::Gfx {
                     // A program without declared inputs still gets slot 0's default.
                     if (!attributeStride)
                         directAttributes[base] = {1, 1, 1, 1};
-                    slot = fetchAttributes(vi, std::span(directAttributes).subspan(base, attributeStride)) ? std::uint32_t(base / stride) : ~1u;
+                    slot = fetchAttributes(attributeFetch, vi, std::span(directAttributes).subspan(base, attributeStride))
+                                   ? std::uint32_t(base / stride)
+                                   : ~1u;
                     if (slot == ~1u)
                         directAttributes.resize(base);
                 }
