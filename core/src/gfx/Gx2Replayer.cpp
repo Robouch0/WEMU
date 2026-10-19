@@ -2061,9 +2061,11 @@ namespace Core::Gfx {
             if ((colorExports & (1u << slot)) && m_colorWriteEnable && m_channelMask[slot] && m_colorBuffers[slot].imagePtr)
                 writableColors |= 1u << slot;
         // Independent color attachments can use separate native passes while the
-        // backend exposes one attachment. Shared depth/stencil and framebuffer
-        // feedback need a simultaneous MRT path, so retain fallback for those.
-        if (selectedColor < 0 && std::popcount(writableColors) > 1 && !m_depthTest && !m_stencilTest && !m_multiWriteEnable && !m_gpuRenderer) {
+        // backend exposes one attachment. A read-only depth test gives every pass the
+        // same coverage; depth writes, stencil and framebuffer feedback need a
+        // simultaneous MRT path, so retain fallback for those.
+        if (selectedColor < 0 && std::popcount(writableColors) > 1 && (!m_depthTest || !m_depthWrite) && !m_stencilTest && !m_multiWriteEnable &&
+            !m_gpuRenderer) {
             bool independent = true;
             const auto aliases = [](const Surface &a, const Surface &b) {
                 return a.imagePtr && b.imagePtr && std::uint64_t(a.imagePtr) < std::uint64_t(b.imagePtr) + b.imageSize &&
@@ -2075,6 +2077,8 @@ namespace Core::Gfx {
                     for (unsigned other = 0; other < slot; ++other)
                         if ((writableColors & (1u << other)) && aliases(m_colorBuffers[slot], m_colorBuffers[other]))
                             independent = false;
+                    if (m_depthTest && aliases(m_colorBuffers[slot], m_depth))
+                        independent = false;
                     for (const auto &texture: m_pixelTextures) {
                         independent &= !aliases(m_colorBuffers[slot], texture);
                         auto mips = texture;

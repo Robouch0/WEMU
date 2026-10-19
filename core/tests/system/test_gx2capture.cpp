@@ -2387,7 +2387,7 @@ TEST_F(Gx2CaptureTest, IndependentColorAttachmentsReceiveDistinctBurstOutputs)
     using namespace Core::Gfx;
     constexpr unsigned VS = 0x28005000, PS = 0x28006000, VSP = 0x28007000, PSP = 0x28008000;
     constexpr unsigned FETCH = 0x28001000, ATTRS = 0x28003000, VERTS = 0x28010000;
-    constexpr unsigned COLOR = 0x28009000, SECOND = 0x2800A000;
+    constexpr unsigned COLOR = 0x28009000, SECOND = 0x2800A000, DEPTH = 0x2800B000;
     const auto record = [&](const char *name, std::initializer_list<unsigned> args) {
         unsigned reg = 3;
         for (const auto arg: args)
@@ -2432,12 +2432,32 @@ TEST_F(Gx2CaptureTest, IndependentColorAttachmentsReceiveDistinctBurstOutputs)
         cpu->m_memory.write<unsigned>(header + 0x78, 0);
         cpu->m_memory.write<unsigned>(header + 0x7C, 1);
     }
+    surface(DEPTH, 0x28060000, 256, 8, 8, 8, 0);
+    cpu->m_memory.write<unsigned>(DEPTH + 0x14, 0x80E);
+    // A read-only depth test gives both separate passes the same coverage: no test, passing, failing.
+    for (unsigned depthMode: {0u, 1u, 2u}) {
+    SCOPED_TRACE(depthMode);
+    gx2Stream().clear();
+    for (const auto header: {COLOR, SECOND}) {
+        for (unsigned c = 1; c <= 4; ++c)
+            cpu->m_fpr[c] = 0;
+        record("GX2ClearColor", {header});
+    }
     record("GX2SetColorBuffer", {COLOR, 0});
     record("GX2SetColorBuffer", {SECOND, 1});
     record("GX2SetColorControl", {0xCC, 0, 0, 1});
     record("GX2SetTargetChannelMasks", {15, 15, 0, 0, 0, 0, 0, 0});
+    if (depthMode) {
+        cpu->m_fpr[1] = depthMode == 1 ? 1. : .25; // geometry lies at window depth 0.5
+        record("GX2ClearDepthStencilEx", {DEPTH, 0, 1});
+        record("GX2SetDepthBuffer", {DEPTH});
+        record("GX2SetDepthOnlyControl", {1, 0, depthMode == 1 ? 3u : 1u}); // LEQUAL passes, LESS fails
+    } else
+        record("GX2SetDepthOnlyControl", {0, 0, 1});
     cpu->m_fpr[1] = cpu->m_fpr[2] = 0;
     cpu->m_fpr[3] = cpu->m_fpr[4] = 8;
+    cpu->m_fpr[5] = 0;
+    cpu->m_fpr[6] = 1;
     record("GX2SetViewport", {});
     record("GX2SetFetchShader", {FETCH});
     record("GX2SetVertexShader", {VS});
@@ -2455,8 +2475,9 @@ TEST_F(Gx2CaptureTest, IndependentColorAttachmentsReceiveDistinctBurstOutputs)
             replay.setRasterBackend(backend);
         replay.setNativeVerificationInterval(1);
         replay.replay(captured, &cpu->m_memory);
+        const bool drawn = depthMode != 2;
         EXPECT_EQ((std::array{replay.framebuffer()[0], replay.framebuffer()[1], replay.framebuffer()[2], replay.framebuffer()[3]}),
-                  (std::array<std::uint8_t, 4>{255, 0, 0, 255}));
+                  (drawn ? std::array<std::uint8_t, 4>{255, 0, 0, 255} : std::array<std::uint8_t, 4>{}));
         if (native) {
             EXPECT_EQ(backend->completedDraws(), 2u) << backend->lastError();
             EXPECT_EQ(replay.differingNativeDraws(), 0u);
@@ -2465,7 +2486,8 @@ TEST_F(Gx2CaptureTest, IndependentColorAttachmentsReceiveDistinctBurstOutputs)
         record("GX2CopyColorBufferToScanBuffer", {SECOND, 1});
         replay.replay(gx2Stream(), &cpu->m_memory);
         EXPECT_EQ((std::array{replay.framebuffer()[0], replay.framebuffer()[1], replay.framebuffer()[2], replay.framebuffer()[3]}),
-                  (std::array<std::uint8_t, 4>{0, 255, 0, 255}));
+                  (drawn ? std::array<std::uint8_t, 4>{0, 255, 0, 255} : std::array<std::uint8_t, 4>{}));
+    }
     }
 }
 
