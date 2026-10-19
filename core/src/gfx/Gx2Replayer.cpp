@@ -1176,6 +1176,28 @@ namespace Core::Gfx {
         return result;
     }
 
+    bool Gx2Replayer::unchangedSinceValidation(WriteValidation &validation, std::uint32_t address, std::size_t bytes, std::uint64_t stagger) const
+    {
+        // A store racing the first watch, or a writable view kept across frames, is caught by
+        // a full comparison at least every 16 frames (staggered across entries).
+        constexpr std::uint32_t recheck = 16;
+        if (!validation.trusted || !validation.generation || (m_presentCount + stagger) % recheck == 0 ||
+            m_presentCount - validation.comparedFrame > recheck)
+            return false;
+        return m_mem->writeGeneration(address, bytes) == validation.generation;
+    }
+
+    void Gx2Replayer::validated(WriteValidation &validation, std::uint32_t address, std::size_t bytes, bool unchanged) const
+    {
+        // Writable views count their store when handed out, before the bytes change: trust only
+        // a generation that already held at the previous comparison.
+        m_mem->watchWrites(address, bytes);
+        const auto generation = m_mem->writeGeneration(address, bytes);
+        validation.trusted = unchanged && generation && generation == validation.generation;
+        validation.generation = generation;
+        validation.comparedFrame = m_presentCount;
+    }
+
     std::shared_ptr<Gx2Replayer::DecodedTexture> Gx2Replayer::decodedTexture(const Surface &surface, bool blocksOnly, bool floatTexels)
     {
         constexpr std::uint64_t budget = 256ull * 1024 * 1024;
@@ -1213,10 +1235,15 @@ namespace Core::Gfx {
         // bytes cannot change during command replay. Include the snapshot in
         // the same cache budget as the decoded pixels.
         if (!entry || entry->validatedFrame != m_presentCount) {
-            if (entry && entry->source.size() == surface.imageSize && std::memcmp(entry->source.data(), base, surface.imageSize) == 0) {
+            if (entry && entry->source.size() == surface.imageSize &&
+                unchangedSinceValidation(entry->writes, surface.imagePtr, surface.imageSize, surface.imagePtr >> 12)) {
                 entry->validatedFrame = m_presentCount;
+            } else if (entry && entry->source.size() == surface.imageSize && std::memcmp(entry->source.data(), base, surface.imageSize) == 0) {
+                entry->validatedFrame = m_presentCount;
+                validated(entry->writes, surface.imagePtr, surface.imageSize, true);
             } else {
                 auto decoded = std::make_shared<DecodedTexture>();
+                validated(decoded->writes, surface.imagePtr, surface.imageSize, false);
                 decoded->source.assign(base, base + surface.imageSize);
                 decoded->validatedFrame = m_presentCount;
                 if (blocksOnly)
@@ -1691,9 +1718,9 @@ namespace Core::Gfx {
         if (useViewBacking()) {
             base = viewBacking(s).data();
         } else {
-            if (!m_mem)
+            if (!m_writableMem)
                 return;
-            base = m_mem->hostPtr(s.imagePtr);
+            base = m_writableMem->hostPtr(s.imagePtr);
             if (!base || !m_mem->hostPtr(s.imagePtr + s.pitch * s.height * colorElementBytes(colorFormat(s.format)) - 1))
                 return;
         }
@@ -2169,7 +2196,7 @@ namespace Core::Gfx {
                 return;
             }
         }
-        auto *target = useViewBacking() ? viewBacking(m_color).data() : m_mem ? m_mem->hostPtr(m_color.imagePtr) : nullptr;
+        auto *target = useViewBacking() ? viewBacking(m_color).data() : m_writableMem ? m_writableMem->hostPtr(m_color.imagePtr) : nullptr;
         if (!target)
             return;
         const unsigned bytes = colorElementBytes(colorFormat(m_color.format));
@@ -2354,7 +2381,7 @@ namespace Core::Gfx {
             }
             target = renderedTarget ? m_viewBackings.at(makeSurfaceKey(m_color)).data() : viewBacking(m_color).data();
         } else {
-            target = m_mem->hostPtr(m_color.imagePtr);
+            target = m_writableMem->hostPtr(m_color.imagePtr);
             if (!target || !m_mem->hostPtr(m_color.imagePtr + m_color.pitch * m_color.height * colorElementBytes(colorFormat(m_color.format)) - 1)) {
                 m_stats.skipBadPtr++;
                 return;
@@ -3255,7 +3282,7 @@ namespace Core::Gfx {
             const auto offset = tiledElementOffset(x, y, rawSurface.pitch, 128, rawSurface.tileMode, rawSurface.swizzle);
             if (rawSurface.imageSize && std::uint64_t(offset) + 16 > rawSurface.imageSize)
                 return;
-            auto *element = m_mem->hostPtr(rawSurface.imagePtr + offset, 16);
+            auto *element = m_writableMem->hostPtr(rawSurface.imagePtr + offset, 16);
             if (!element)
                 return;
             for (unsigned c = 0; c < 4; ++c)
@@ -5311,7 +5338,7 @@ namespace Core::Gfx {
     void Gx2Replayer::replay(const Gx2CommandStream &stream, Core::Memory *mem)
     {
         Profile::Scope replay(Profile::Stage::Replay);
-        m_mem = mem;
+        m_mem = m_writableMem = mem;
         m_lastDrawColor = {};
         // GPU path: open a fresh GPU frame; draws append triangles, the present writes back to m_fb.
         if (m_gpuRenderer) {

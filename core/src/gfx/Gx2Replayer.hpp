@@ -329,9 +329,19 @@ namespace Core::Gfx {
             std::shared_ptr<ArraySnapshot> arraySnapshot(const Surface &surface);
             // Base-level sample() output for guest-memory textures (tiled/compressed), keyed by
             // view and validated against source snapshots so unchanged textures decode once.
+            // Guest bytes compared only when stores may have reached them: an entry is trusted
+            // once two comparisons saw the same write generation, and re-compared periodically.
+            struct WriteValidation {
+                    std::optional<std::uint64_t> generation;
+                    bool trusted{};
+                    std::uint32_t comparedFrame{};
+            };
+            bool unchangedSinceValidation(WriteValidation &validation, std::uint32_t address, std::size_t bytes, std::uint64_t stagger) const;
+            void validated(WriteValidation &validation, std::uint32_t address, std::size_t bytes, bool unchanged) const;
             struct DecodedTexture {
                     std::uint64_t used{};
                     std::uint32_t validatedFrame{~0u};
+                    WriteValidation writes;
                     std::vector<std::uint8_t> source;
                     std::vector<std::uint8_t> rgba;
                     std::vector<float> floating; // component-mapped signed normalized or float-format texels
@@ -363,7 +373,10 @@ namespace Core::Gfx {
             std::uint32_t m_presentCount{0};
             std::uint32_t m_richestTris{0}; // most triangles seen in one frame (WEMU_FB_DUMP_RICH)
 
-            Core::Memory *m_mem{nullptr};
+            // Guest memory, read-only: reads through a writable view would count as stores (see
+            // Memory::watchWrites). The few paths that render into guest memory use m_writableMem.
+            const Core::Memory *m_mem{nullptr};
+            Core::Memory *m_writableMem{nullptr};
             Surface m_color; // bound colour target
             Surface m_depth;
             std::array<Surface, 8> m_colorBuffers{};

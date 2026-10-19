@@ -160,6 +160,8 @@ void Core::Interpreter::run()
             // Decoded versions count hotness before cache admission, so cold
             // prefixes cannot evict compiled code or repeatedly link objects.
             native = std::make_unique<Ppc::Dispatcher>(16384, 1, cache ? cache : "", 4);
+            // Native stores bypass Memory, so its write generations cannot vouch for guest bytes.
+            m_memory.setUntrackedStores(true);
             Utils::Log::error("[NATIVECPU] enabled: supported hot prefixes with interpreter fallback");
             if (cache && *cache)
                 Utils::Log::error("[NATIVECPU] private object cache enabled={}", native->cacheEnabled());

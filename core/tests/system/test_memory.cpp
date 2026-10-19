@@ -138,3 +138,32 @@ TEST(MemoryTest, MovesKeepAllRegionPointersAndHeapProgressStable)
     EXPECT_EQ(destination.read<std::uint32_t>(Core::Memory::DIMPORT_BASE), 0x87654321u);
     EXPECT_EQ(destination.heapAllocate(16, 16), Core::Memory::HEAP_BASE + 16);
 }
+
+TEST(MemoryTest, WriteGenerationsTrackStoresIntoWatchedPages)
+{
+    Core::Memory memory(0x10000);
+    constexpr std::uint32_t texture = app + 0x2000, other = app + 0x8000;
+    EXPECT_FALSE(memory.writeGeneration(texture, 0x1000));
+    memory.watchWrites(texture, 0x1000);
+    const auto initial = memory.writeGeneration(texture, 0x1000);
+    ASSERT_TRUE(initial);
+    // Stores elsewhere, or reads, leave the generation alone.
+    memory.write<std::uint32_t>(other, 1);
+    (void) memory.read<std::uint32_t>(texture);
+    (void) std::as_const(memory).hostPtr(texture, 16);
+    EXPECT_EQ(memory.writeGeneration(texture, 0x1000), initial);
+    // Stores and writable views, including ones straddling into the range, advance it.
+    memory.write<std::uint32_t>(texture + 0x40, 2);
+    const auto stored = memory.writeGeneration(texture, 0x1000);
+    EXPECT_NE(stored, initial);
+    memory.write<std::uint32_t>(texture - 2, 3);
+    EXPECT_NE(memory.writeGeneration(texture, 0x1000), stored);
+    const auto straddled = memory.writeGeneration(texture, 0x1000);
+    ASSERT_NE(memory.hostPtr(texture + 0x800, 8), nullptr);
+    EXPECT_NE(memory.writeGeneration(texture, 0x1000), straddled);
+    // Unwatched pages, ranges outside main RAM and untracked stores report nothing.
+    EXPECT_FALSE(memory.writeGeneration(texture, 0x2000));
+    EXPECT_FALSE(memory.writeGeneration(Core::Memory::STACK_BASE, 16));
+    memory.setUntrackedStores(true);
+    EXPECT_FALSE(memory.writeGeneration(texture, 0x1000));
+}

@@ -3057,6 +3057,107 @@ TEST_F(Gx2CaptureTest, PackedAndBlockDecodeMatchReferenceForTilingPartialBlocksA
     }
 }
 
+TEST_F(Gx2CaptureTest, TrustedTextureSnapshotsStillSeeGuestStoresAndWritableViews)
+{
+    using namespace Core::Gfx;
+    if (!std::getenv("WEMU_TEST_VULKAN"))
+        GTEST_SKIP();
+    constexpr unsigned VS = 0x28001000, PS = 0x28002000, COLOR = 0x28003000, TEX = 0x28004000;
+    constexpr unsigned VSP = 0x28010000, PSP = 0x28011000, VERTS = 0x28012000, IMAGE = 0x28040000, BLOCKS = 0x28080000;
+    const auto record = [&](const char *name, std::initializer_list<unsigned> args) {
+        unsigned r = 3;
+        for (auto arg: args)
+            cpu->m_gpr[r++] = arg;
+        call(name);
+    };
+    const auto shader = [&](unsigned header, unsigned offset, unsigned pointer, const std::vector<unsigned> &words) {
+        for (unsigned i = 0; i < 0x200; i += 4)
+            cpu->m_memory.write<unsigned>(header + i, 0);
+        cpu->m_memory.write<unsigned>(header + offset, words.size() * 4);
+        cpu->m_memory.write<unsigned>(header + offset + 4, pointer);
+        for (unsigned i = 0; i < words.size(); ++i)
+            cpu->m_memory.write<unsigned>(pointer + i * 4, std::byteswap(words[i]));
+    };
+    shader(VS, 0xD0, VSP,
+           {60u | (1u << 13) | (1u << 15), (Latte::CF_EXP << 23) | 0x688u, (2u << 13) | (2u << 15),
+            (Latte::CF_EXP_DONE << 23) | (1u << 21) | 0x688u});
+    cpu->m_memory.write<unsigned>(VS + 0x40, 2);
+    cpu->m_memory.write<unsigned>(VS + 0x44, 0);
+    cpu->m_memory.write<unsigned>(VS + 0x48, 1);
+    shader(PS, 0xA4, PSP,
+           {2, Latte::CF_TEX << 23, 0, (Latte::CF_EXP_DONE << 23) | (1u << 21) | 0x688u, 0x10, 0x30000000u | (0x688u << 9), 1u << 23, 0});
+    cpu->m_memory.write<unsigned>(PS + 0x10, 1);
+    constexpr unsigned width = 7, height = 5;
+    const std::array<std::array<float, 4>, 6> corners{{{-1, 1, 0, 0}, {1, 1, 1, 0}, {-1, -1, 0, 1}, {1, 1, 1, 0}, {1, -1, 1, 1}, {-1, -1, 0, 1}}};
+    for (unsigned i = 0; i < corners.size(); ++i) {
+        const auto &v = corners[i];
+        const std::array<float, 8> data{v[0], v[1], 0, 1, v[2] + .25f / float(width), v[3] + .25f / float(height), 0, 1};
+        for (unsigned c = 0; c < data.size(); ++c)
+            cpu->m_memory.write<unsigned>(VERTS + i * 32 + c * 4, std::bit_cast<unsigned>(data[c]));
+    }
+    // A tiled RGB565 texture goes through the decoded-texture cache.
+    const auto layout = baseSurfaceLayout(width, height, 1, 2, 4, width, height);
+    ASSERT_TRUE(layout);
+    surface(COLOR, IMAGE, width * height * 4, width, height, width, 1);
+    surface(TEX, BLOCKS, layout->imageSize, width, height, layout->pitch, 4);
+    for (const unsigned header: {COLOR, TEX}) {
+        cpu->m_memory.write<unsigned>(header + 0x74, 0);
+        cpu->m_memory.write<unsigned>(header + 0x78, 1);
+        cpu->m_memory.write<unsigned>(header + 0x7C, 0);
+        cpu->m_memory.write<unsigned>(header + 0x80, 1);
+    }
+    cpu->m_memory.write<unsigned>(COLOR + 0x78, 0);
+    cpu->m_memory.write<unsigned>(COLOR + 0x7C, 1);
+    cpu->m_memory.write<unsigned>(TEX + 0x14, 8);
+    cpu->m_memory.write<unsigned>(TEX + 0x84, 0x00010203);
+    cpu->m_memory.write<unsigned>(TEX + 0x24, BLOCKS);
+    const auto fill = [&](unsigned seed) {
+        for (unsigned i = 0; i < layout->imageSize; ++i) {
+            seed = seed * 1664525u + 1013904223u;
+            cpu->m_memory.write<std::uint8_t>(BLOCKS + i, std::uint8_t(seed >> 24));
+        }
+    };
+    fill(0x51u);
+    Gx2Replayer reference, native;
+    const auto backend = std::make_shared<VulkanRasterBackend>(true, true);
+    native.setRasterBackend(backend);
+    native.setNativeVerificationInterval(0);
+    for (unsigned frame = 0; frame < 12; ++frame) {
+        SCOPED_TRACE(frame);
+        // Unchanged frames let the snapshot become trusted; then a store and a writable view
+        // must each still reach the next draw.
+        if (frame == 6)
+            fill(0x77u);
+        if (frame == 10)
+            std::memset(cpu->m_memory.hostPtr(BLOCKS, layout->imageSize), 0x5A, layout->imageSize);
+        gx2Stream().clear();
+        record("GX2SetColorBuffer", {COLOR, 0});
+        record("GX2SetColorControl", {0xCC, 0, 0, 1});
+        cpu->m_fpr[1] = cpu->m_fpr[2] = 0;
+        cpu->m_fpr[3] = width;
+        cpu->m_fpr[4] = height;
+        record("GX2SetViewport", {});
+        record("GX2SetScissor", {0, 0, width, height});
+        Gx2Command fetch{Gx2Cmd::SetFetchShader};
+        fetch.payload = {0, 0, 0, 0x813, 0, 0, 0x00010203, 3, 1, 0, 16, 0x813, 0, 0, 0x00010203, 3};
+        gx2Stream().push(fetch);
+        record("GX2SetVertexShader", {VS});
+        record("GX2SetPixelShader", {PS});
+        record("GX2SetAttribBuffer", {0, 6 * 32, 32, VERTS});
+        record("GX2SetPixelTexture", {TEX, 0});
+        Gx2Command sampler{Gx2Cmd::SetPixelSampler};
+        sampler.payload = {0, 0, 0};
+        gx2Stream().push(sampler);
+        record("GX2DrawEx", {4, 6, 0, 1});
+        record("GX2CopyColorBufferToScanBuffer", {COLOR, 1});
+        gx2Stream().push(Gx2Command{Gx2Cmd::SwapScanBuffers});
+        reference.replay(gx2Stream(), &cpu->m_memory);
+        native.replay(gx2Stream(), &cpu->m_memory);
+        ASSERT_EQ(backend->completedDraws(), frame + 1) << backend->lastError();
+        EXPECT_EQ(native.framebuffer(), reference.framebuffer());
+    }
+}
+
 TEST_F(Gx2CaptureTest, MovieImageDrawUsesViewportTransformUvScissorAndOrderedTarget)
 {
     using namespace Core::Gfx;
