@@ -211,6 +211,8 @@ namespace Core::Jit {
         for (m_index = 0; m_index < m_count; ++m_index) {
             m_pc = pc + m_index * kInstructionBytes;
             m_current = instrs[m_index];
+            m_crLive = m_crInEdx;
+            m_crInEdx = false;
             const EncodedInstruction ei(m_current.raw);
             const InstructionID id = m_current.id;
             const std::uint32_t mask = m_layout.nativeMask;
@@ -219,9 +221,13 @@ namespace Core::Jit {
                 terminated = true;
                 break;
             }
-            const bool native = ((mask & (FamilyInteger | FamilyCompare)) && emitInteger(ei, id)) || ((mask & FamilySystem) && emitSystem(ei, id)) ||
-                                ((mask & (FamilyLoad | FamilyStore)) && emitMemory(ei, id)) || ((mask & FamilyFloat) && emitFloat(ei, id)) ||
-                                ((mask & FamilyPaired) && emitPaired(ei, id));
+            m_crRecorded = false;
+            if ((mask & (FamilyInteger | FamilyCompare)) && emitInteger(ei, id)) {
+                m_crInEdx = m_crRecorded;
+                continue;
+            }
+            const bool native = ((mask & FamilySystem) && emitSystem(ei, id)) || ((mask & (FamilyLoad | FamilyStore)) && emitMemory(ei, id)) ||
+                                ((mask & FamilyFloat) && emitFloat(ei, id)) || ((mask & FamilyPaired) && emitPaired(ei, id));
             if (!native) {
                 emitCallout(m_current);
                 if (endsBlock(m_current.raw)) {
@@ -380,6 +386,7 @@ namespace Core::Jit {
         and_(edx, 1);
         or_(ecx, edx);
         setCrField(0);
+        m_crRecorded = true;
     }
 
     void Emitter::setCrField(const unsigned field)

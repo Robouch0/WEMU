@@ -57,7 +57,10 @@ namespace Core::Jit {
                 jz(notTaken, T_NEAR);
         }
         if (testCr) {
-            bt(cr(), 31 - bi);
+            if (m_crLive)
+                bt(edx, 31 - bi); // CR just written by the previous instruction
+            else
+                bt(cr(), 31 - bi);
             if (crValue)
                 jnc(notTaken, T_NEAR);
             else

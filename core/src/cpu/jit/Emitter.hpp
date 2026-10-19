@@ -173,6 +173,9 @@ namespace Core::Jit {
             std::vector<PendingLink> m_pendingLinks;
             std::uint32_t m_blockPc{}, m_pc{}, m_index{}, m_count{}, m_callouts{};
             GuestInstruction m_current{};
+            // CR in edx: set by integer compares and record forms (their last write), so a bc right
+            // after them tests the register instead of reloading CR.
+            bool m_crRecorded{}, m_crInEdx{}, m_crLive{};
             bool m_stores{};
     };
 } // namespace Core::Jit

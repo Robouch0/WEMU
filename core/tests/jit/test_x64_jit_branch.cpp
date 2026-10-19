@@ -37,6 +37,21 @@ TEST_F(X64JitTest, ConditionalBranchesMatchInterpreter)
     }
 }
 
+TEST_F(X64JitTest, CompareThenBranchMatchesInterpreter)
+{
+    // A compare or record form right before bc: the branch reads the CR value still in a register.
+    Random rng(32);
+    for (int round = 0; round < 512; ++round) {
+        const std::uint32_t crf = rng() & 7, bo = rng() & 31, bi = (rng() & 1) ? crf * 4 + (rng() & 3) : rng() & 31;
+        const std::uint32_t compareOp = (rng() & 1) ? 11u : 10u; // cmpi / cmpli
+        const std::uint32_t first = (rng() % 3) == 0 ? xForm(266, reg(rng), reg(rng), reg(rng), true) // add.
+                                                     : compareOp << 26 | crf << 23 | reg(rng) << 16 | (value(rng) & 0xFFFF);
+        const std::uint32_t second = (rng() % 3) == 0 ? 19u << 26 | bo << 21 | bi << 16 | 16u << 1 // bclr
+                                                      : 16u << 26 | bo << 21 | bi << 16 | (rng() & 0xFFFC);
+        expectSameBlock(std::array{first, second}, [&] { randomize(rng); });
+    }
+}
+
 TEST_F(X64JitTest, CountedLoopsMatchInterpreter)
 {
     // li r3,0 ; mtctr r4 ; loop: addi r3,r3,3 ; bdnz loop

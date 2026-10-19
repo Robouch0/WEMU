@@ -75,6 +75,7 @@ namespace Core::Jit {
             and_(edx, 1);
             or_(ecx, edx);
             setCrField(i.rt >> 2);
+            m_crRecorded = true;
         };
 
         switch (id) {
