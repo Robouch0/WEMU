@@ -21,6 +21,9 @@ namespace Core::Gfx::Latte {
 
     struct FragmentShader {
             std::string source;
+            // Hash of `source`, computed once by lowering (zero for hand-written shaders): lets the
+            // backend find compiled modules without hashing the whole GLSL text on every draw.
+            std::uint64_t sourceHash{};
             std::string error;
             std::vector<TextureBinding> textures;
             bool requiresBaseLevelOnly{};

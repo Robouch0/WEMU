@@ -15,6 +15,7 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 #include <vulkan/vulkan.h>
@@ -3257,6 +3258,8 @@ void main() {
             SpirvCompiler compiler{SpirvCompiler::defaultCacheDirectory()};
             std::shared_ptr<Context> context;
             std::shared_ptr<DirectRenderer> direct; // destroyed before the context it shares
+            // Compiled modules by lowered-source hash and source variant (see renderImpl).
+            std::unordered_map<std::uint64_t, std::shared_ptr<const SpirvModule>> modules;
             struct ResourceEntry {
                     std::shared_ptr<DrawResources> value;
                     std::uint64_t bytes{}, used{};
@@ -3539,20 +3542,24 @@ void main() {
         }();
         const auto t0 = std::chrono::steady_clock::now();
         const bool overwriteTarget = overwritesTarget(draw);
-        // Sources are only copied when they must be patched; the compiler looks them up by view.
-        std::string_view nativeVertexSource = draw.vertexStage.shader ? std::string_view(draw.vertexStage.shader->source) : vertexSource;
-        std::string patchedVertexSource;
-        if (draw.vertexStage.shader && !draw.vertexStage.shader->textures.empty()) {
-            patchedVertexSource = draw.vertexStage.shader->source;
-            for (const auto &binding: draw.vertexStage.shader->textures) {
-                const auto old = "binding=" + std::to_string(binding.binding) + ")";
-                const auto pos = patchedVertexSource.find(old);
-                if (pos == std::string::npos)
-                    return reject("Invalid vertex sampler interface");
-                patchedVertexSource.replace(pos, old.size(), "binding=" + std::to_string(binding.binding + 17) + ")");
+        // Modules of lowered shaders are found by their precomputed source hash and the draw's
+        // source variant, so a hit neither patches nor hashes the GLSL text.
+        const auto mixKey = [](std::uint64_t seed, std::uint64_t value) {
+            return seed ^ (value + 0x9E3779B97F4A7C15ull + (seed << 6) + (seed >> 2));
+        };
+        const auto cachedModule = [&](std::uint64_t key, auto &&build) -> std::shared_ptr<const SpirvModule> {
+            if (!key)
+                return build();
+            if (const auto found = m_impl->modules.find(key); found != m_impl->modules.end())
+                return found->second;
+            auto module = build();
+            if (module) {
+                if (m_impl->modules.size() >= 8192)
+                    m_impl->modules.clear();
+                m_impl->modules.emplace(key, module);
             }
-            nativeVertexSource = patchedVertexSource;
-        }
+            return module;
+        };
         static const bool directDraws = [] {
             const auto *value = std::getenv("WEMU_NATIVE_DIRECT_DRAWS");
             return !value || value[0] != '0';
@@ -3563,33 +3570,56 @@ void main() {
         }();
         // GPU timing uses bundle queries.
         const bool direct = directDraws && m_impl->directDraws && !gpuTiming && deferReadback && m_impl->lazyReadback;
-        const auto vertex = m_impl->compiler.compile(ShaderStage::Vertex, nativeVertexSource);
-        std::string_view fragmentView = draw.shader.source;
-        std::string fragmentSource;
-        if (draw.depthBias.enabled && draw.depth.format != DepthFormat::Float32) {
-            fragmentSource = draw.shader.source;
-            fragmentSource.insert(fragmentSource.find('\n') + 1,
-                                  "layout(push_constant) uniform Bias { layout(offset=112) vec4 value; } bias;\n"
-                                  "float biasedDepth() { float slope=max(abs(dFdx(gl_FragCoord.z)),abs(dFdy(gl_FragCoord.z))); "
-                                  "float b=bias.value.x+bias.value.y*slope; "
-                                  "if(bias.value.z>0.0) b=min(b,bias.value.z); else if(bias.value.z<0.0) b=max(b,bias.value.z); "
-                                  "return clamp(gl_FragCoord.z+b,0.0,1.0); }\n");
-            const auto initial = fragmentSource.find("gl_FragDepth=gl_FragCoord.z;");
-            if (initial != std::string::npos)
-                fragmentSource.replace(initial, std::string("gl_FragDepth=gl_FragCoord.z;").size(), "gl_FragDepth=biasedDepth();");
-            else
-                fragmentSource.insert(fragmentSource.find("void main() {") + std::string("void main() {").size(), "\ngl_FragDepth=biasedDepth();\n");
-            fragmentView = fragmentSource;
-        }
-        if (direct && draw.depth.test && draw.depth.write && draw.depth.format != DepthFormat::Float32) {
-            // Direct draws store fixed-point depth from the fragment shader instead of the bundle
-            // quantization pass (three full-surface copies per draw). Rounding matches that pass;
-            // the depth test then compares quantized incoming values, as fixed-point hardware does.
-            if (fragmentSource.empty())
+        const auto *vertexShader = draw.vertexStage.shader.get();
+        const auto vertex = cachedModule(vertexShader ? vertexShader->sourceHash ? mixKey(0x5653, vertexShader->sourceHash) : 0 : 0x5650,
+                                         [&]() -> std::shared_ptr<const SpirvModule> {
+                                             if (!vertexShader)
+                                                 return m_impl->compiler.compile(ShaderStage::Vertex, vertexSource);
+                                             if (vertexShader->textures.empty())
+                                                 return m_impl->compiler.compile(ShaderStage::Vertex, vertexShader->source);
+                                             // Vertex samplers follow the 16 pixel bindings.
+                                             auto patched = vertexShader->source;
+                                             for (const auto &binding: vertexShader->textures) {
+                                                 const auto old = "binding=" + std::to_string(binding.binding) + ")";
+                                                 const auto pos = patched.find(old);
+                                                 if (pos == std::string::npos)
+                                                     return nullptr;
+                                                 patched.replace(pos, old.size(), "binding=" + std::to_string(binding.binding + 17) + ")");
+                                             }
+                                             return m_impl->compiler.compile(ShaderStage::Vertex, patched);
+                                         });
+        if (!vertex)
+            return reject("Invalid vertex sampler interface");
+        const bool biasedDepth = draw.depthBias.enabled && draw.depth.format != DepthFormat::Float32;
+        const bool quantizedDepth = direct && draw.depth.test && draw.depth.write && draw.depth.format != DepthFormat::Float32;
+        const auto fragmentVariant = unsigned(biasedDepth) | (quantizedDepth ? draw.depth.format == DepthFormat::UNorm16 ? 2u : 4u : 0u);
+        const auto fragment = cachedModule(draw.shader.sourceHash ? mixKey(mixKey(0x4653, draw.shader.sourceHash), fragmentVariant) : 0, [&] {
+            std::string_view fragmentView = draw.shader.source;
+            std::string fragmentSource;
+            if (biasedDepth) {
                 fragmentSource = draw.shader.source;
-            const bool writesDepth = fragmentSource.find("gl_FragDepth=") != std::string::npos;
-            const auto maximum = draw.depth.format == DepthFormat::UNorm16 ? "65535u" : "16777215u";
-            fragmentSource.insert(fragmentSource.find('\n') + 1, std::format(R"(float wemuQuantizedDepth(float depth) {{
+                fragmentSource.insert(fragmentSource.find('\n') + 1,
+                                      "layout(push_constant) uniform Bias { layout(offset=112) vec4 value; } bias;\n"
+                                      "float biasedDepth() { float slope=max(abs(dFdx(gl_FragCoord.z)),abs(dFdy(gl_FragCoord.z))); "
+                                      "float b=bias.value.x+bias.value.y*slope; "
+                                      "if(bias.value.z>0.0) b=min(b,bias.value.z); else if(bias.value.z<0.0) b=max(b,bias.value.z); "
+                                      "return clamp(gl_FragCoord.z+b,0.0,1.0); }\n");
+                const auto initial = fragmentSource.find("gl_FragDepth=gl_FragCoord.z;");
+                if (initial != std::string::npos)
+                    fragmentSource.replace(initial, std::string("gl_FragDepth=gl_FragCoord.z;").size(), "gl_FragDepth=biasedDepth();");
+                else
+                    fragmentSource.insert(fragmentSource.find("void main() {") + std::string("void main() {").size(), "\ngl_FragDepth=biasedDepth();\n");
+                fragmentView = fragmentSource;
+            }
+            if (quantizedDepth) {
+                // Direct draws store fixed-point depth from the fragment shader instead of the bundle
+                // quantization pass (three full-surface copies per draw). Rounding matches that pass;
+                // the depth test then compares quantized incoming values, as fixed-point hardware does.
+                if (fragmentSource.empty())
+                    fragmentSource = draw.shader.source;
+                const bool writesDepth = fragmentSource.find("gl_FragDepth=") != std::string::npos;
+                const auto maximum = draw.depth.format == DepthFormat::UNorm16 ? "65535u" : "16777215u";
+                fragmentSource.insert(fragmentSource.find('\n') + 1, std::format(R"(float wemuQuantizedDepth(float depth) {{
     const uint maximum={0};
     float value=clamp(depth,0.0,1.0);
     float scaled=value*float(maximum+1u);
@@ -3603,12 +3633,13 @@ void main() {
     return uintBitsToFloat((exponent<<23)|(significand&0x7fffffu));
 }}
 )",
-                                                                                              maximum));
-            fragmentSource.insert(fragmentSource.rfind('}'),
-                                  std::format("gl_FragDepth=wemuQuantizedDepth({});\n", writesDepth ? "gl_FragDepth" : "gl_FragCoord.z"));
-            fragmentView = fragmentSource;
-        }
-        const auto fragment = m_impl->compiler.compile(ShaderStage::Fragment, fragmentView);
+                                                                                                  maximum));
+                fragmentSource.insert(fragmentSource.rfind('}'),
+                                      std::format("gl_FragDepth=wemuQuantizedDepth({});\n", writesDepth ? "gl_FragDepth" : "gl_FragCoord.z"));
+                fragmentView = fragmentSource;
+            }
+            return m_impl->compiler.compile(ShaderStage::Fragment, fragmentView);
+        });
         if (!*vertex || !*fragment) {
             m_impl->error = !*vertex ? vertex->error : fragment->error;
             return std::nullopt;

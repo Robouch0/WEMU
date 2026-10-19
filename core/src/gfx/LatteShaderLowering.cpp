@@ -1155,6 +1155,8 @@ vec3 cubeDirectionReference(vec3 coord) {
             result = {};
             result.error = error.what();
         }
+        if (result)
+            result.sourceHash = std::hash<std::string_view>{}(result.source) | 1u;
         return result;
     }
     FragmentShader lowerFragmentShader(const Program &program, std::span<const TextureType> resourceTypes, bool onlyColorZero, unsigned colorExport)
