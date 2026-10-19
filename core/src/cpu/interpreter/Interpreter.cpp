@@ -14,6 +14,7 @@
 #include <cstring>
 #include <utility>
 
+#include "cpu/types/InstructionTraits.hpp"
 #include "gfx/Renderer.hpp"
 #include "hle/AsyncCallbacks.hpp"
 #include "hle/Ax.hpp"
@@ -311,8 +312,8 @@ void Core::Interpreter::run()
         return !e || e[0] != '0';
     }();
     std::uint64_t lastStoreRetired = m_retired;
-    const auto noteBlockRetired = [&](const Block &blk) {
-        if (blk.stores) {
+    const auto noteBlockRetired = [&](const bool stores) {
+        if (stores) {
             lastStoreRetired = m_retired;
         } else if (m_retired - lastStoreRetired >= kSpinYieldInstructions && spinYield) {
             lastStoreRetired = m_retired;
@@ -601,7 +602,7 @@ void Core::Interpreter::run()
                             m_retired += n;
                             if (blk.nativeWords.size() < blk.instrs.size())
                                 m_retired += runBlock(blk, n);
-                            noteBlockRetired(blk);
+                            noteBlockRetired(blk.stores);
                             continue;
                         }
                     } catch (const std::exception &error) {
@@ -612,7 +613,7 @@ void Core::Interpreter::run()
 #endif
                 const std::uint32_t n = runBlock(blk);
                 m_retired += n;
-                noteBlockRetired(blk);
+                noteBlockRetired(blk.stores);
                 continue;
             }
         }
@@ -722,49 +723,16 @@ const Core::Interpreter::Block &Core::Interpreter::getBlock(Utils::BeDecoder &de
         } catch (...) {
             break; // unknown encoding: stop here so the slow path executes and reports it
         }
-        b.instrs.push_back({m_handlers[static_cast<std::size_t>(id)], ei});
+        b.instrs.push_back({m_handlers[static_cast<std::size_t>(id)], ei, false, id});
         pc += Core::INSTR_SIZE;
         // A block ends at any control-flow instruction: bc (16), sc (17), b (18), the opcode-19
         // family (bclr/bcctr/rfi/...), and traps (3/twi). After such an instruction the next PC is
         // data-dependent, so the block boundary is where we hand control back to run().
-        const std::uint32_t op = ei.opcd;
-        if (op == 16 || op == 17 || op == 18 || op == 19 || op == 3)
+        if (endsBlock(word))
             break;
         // A store may replace a later instruction. Return to fetch/validation
         // before executing any instruction after a guest memory write.
-        bool stores = false;
-        switch (id) {
-            case E_STHX:
-            case E_STBX:
-            case E_STB:
-            case E_STH:
-            case E_STMW:
-            case E_STW:
-            case E_STWU:
-            case E_STWX:
-            case E_STBU:
-            case E_STHU:
-            case E_STWUX:
-            case E_STBUX:
-            case E_STHUX:
-            case E_STSWI:
-            case E_STWCX_:
-            case E_STWBRX:
-            case E_DCBZ:
-            case E_STFS:
-            case E_STFSU:
-            case E_STFD:
-            case E_STFDU:
-            case E_STFSX:
-            case E_STFSUX:
-            case E_STFDX:
-            case E_STFIWX:
-            case E_PSQ_ST:
-                stores = true;
-                break;
-            default:
-                break;
-        }
+        const bool stores = isStoreInstruction(id);
         b.instrs.back().store = stores;
         b.stores |= stores;
         // Interpreted blocks continue past stores: Memory::write flags a store into a page of
@@ -842,26 +810,33 @@ std::uint32_t Core::Interpreter::runBlock(const Block &block, std::size_t first)
                 return static_cast<std::uint32_t>(i + 1 - first);
             }
         } catch (Core::Exception &e) {
-            const std::uint32_t ppc = m_pc + Core::Memory::MemoryMap::ApplicationCode;
-            Utils::Log::error("[PC=0x{:08X}] {}", ppc, e.what());
-            if (e.isFatal()) {
-                Diag::dumpCrashContext(*this, ppc, e.what());
-                // Same bring-up policy as step(): a fatal fault on a secondary thread kills only
-                // that thread and the boot continues; on the main thread it stops the interpreter.
-                const std::uint32_t faulting = m_scheduler.currentHandle();
-                if (faulting != m_scheduler.mainHandle() && m_scheduler.exitCurrent(*this)) {
-                    Utils::Log::error("[EMU] thread 0x{:08X} killed by fault at PC=0x{:08X}; continuing boot", faulting, ppc);
-                    return static_cast<std::uint32_t>(i + 1 - first); // m_pc was moved to the next thread
-                }
-                m_failed = true;
-                m_running = false;
+            // A fatal fault moved m_pc to the next thread or stopped the interpreter. Non-fatal:
+            // fall through and advance past the instruction, mirroring step().
+            if (handleBlockException(e))
                 return static_cast<std::uint32_t>(i + 1 - first);
-            }
-            // Non-fatal: fall through and advance past the instruction, mirroring step().
         }
         m_pc = m_nextPc;
     }
     return static_cast<std::uint32_t>(block.instrs.size() - first);
+}
+
+bool Core::Interpreter::handleBlockException(const Core::Exception &e)
+{
+    const std::uint32_t ppc = m_pc + Core::Memory::MemoryMap::ApplicationCode;
+    Utils::Log::error("[PC=0x{:08X}] {}", ppc, e.what());
+    if (!e.isFatal())
+        return false;
+    Diag::dumpCrashContext(*this, ppc, e.what());
+    // Same bring-up policy as step(): a fatal fault on a secondary thread kills only that thread
+    // and the boot continues; on the main thread it stops the interpreter.
+    const std::uint32_t faulting = m_scheduler.currentHandle();
+    if (faulting != m_scheduler.mainHandle() && m_scheduler.exitCurrent(*this)) {
+        Utils::Log::error("[EMU] thread 0x{:08X} killed by fault at PC=0x{:08X}; continuing boot", faulting, ppc);
+        return true;
+    }
+    m_failed = true;
+    m_running = false;
+    return true;
 }
 
 void Core::Interpreter::executeInstruction(const EncodedInstruction &instr)

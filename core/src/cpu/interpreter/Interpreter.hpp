@@ -257,6 +257,7 @@ namespace Core {
                     RawHandler fn;
                     EncodedInstruction instr;
                     bool store{false}; // may write guest memory: leave the block if it hit decoded code
+                    InstructionID id{};
             };
             struct Block {
                     std::vector<DecodedInstr> instrs; // straight-line run, terminator (branch) last
@@ -308,6 +309,9 @@ namespace Core {
             const Block &getBlock(Utils::BeDecoder &decoder, std::uint32_t startPc, bool nativeLookahead = false);
             // Execute a whole block; returns the number of instructions retired (for slice accounting).
             std::uint32_t runBlock(const Block &block, std::size_t first = 0);
+            // Reports a guest exception raised by the block instruction at m_pc. Returns true when it
+            // killed the current thread or stopped the interpreter, so the block must not continue.
+            bool handleBlockException(const Core::Exception &e);
 
             // Import sentinel (st_value >= 0xC0000000) -> symbol name, for BCTR HLE dispatch.
             std::unordered_map<std::uint32_t, const std::string *> m_importBySentinel{};
