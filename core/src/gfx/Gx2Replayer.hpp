@@ -263,6 +263,9 @@ namespace Core::Gfx {
                     std::vector<std::vector<float>> texels;
                     std::vector<RasterDraw::Texture::MipLevel> mips;
                     std::vector<std::uint8_t> source;
+                    // Image range of every (level, slice) view: lets a later lookup in the same frame
+                    // recheck writes and feedback without recomputing the views.
+                    std::vector<std::pair<std::uint32_t, std::uint32_t>> sliceRanges;
             };
             std::vector<std::shared_ptr<MipSnapshot>> m_mipSnapshots;
             std::vector<std::weak_ptr<MipSnapshot>> m_retainedMipSnapshots;

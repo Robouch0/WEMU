@@ -867,6 +867,29 @@ namespace Core::Gfx {
         const auto overlaps = [](unsigned base, std::uint64_t size, unsigned other, std::uint64_t otherSize) {
             return std::uint64_t(base) < std::uint64_t(other) + otherSize && std::uint64_t(other) < std::uint64_t(base) + size;
         };
+        const auto colorBytes = std::uint64_t(m_color.pitch) * m_color.height * colorElementBytes(colorFormat(m_color.format));
+        // A snapshot already validated this frame stays valid while no slice was written since and
+        // the bound target does not alias it. Checking its stored ranges avoids rebuilding every
+        // level and slice view (AddrLib layouts) on each of the hundreds of lookups per frame.
+        const auto validatedThisFrame = [&](const std::shared_ptr<MipSnapshot> &entry) {
+            if (!entry || entry->surface != surface || entry->levelCount != count || entry->validatedFrame != m_presentCount ||
+                entry->sliceRanges.empty())
+                return false;
+            std::uint64_t current = 0;
+            for (const auto &[pointer, size]: entry->sliceRanges) {
+                if (const auto written = m_cpuWrittenSurfaces.find(pointer); written != m_cpuWrittenSurfaces.end())
+                    current = (current ^ written->second.writes ^ pointer) * 1099511628211ull;
+                if (overlaps(pointer, size, m_color.imagePtr, colorBytes))
+                    return false;
+            }
+            return current == entry->generation;
+        };
+        for (const auto &entry: m_mipSnapshots)
+            if (validatedThisFrame(entry))
+                return entry;
+        for (const auto &weak: m_retainedMipSnapshots)
+            if (auto entry = weak.lock(); validatedThisFrame(entry))
+                return entry;
         bool feedback = false;
         for (unsigned level = 0; level < count; ++level) {
             const auto selected = mipSurface(surface, level + surface.firstMip);
@@ -889,8 +912,7 @@ namespace Core::Gfx {
                 slices.push_back(*slice);
                 if (const auto written = m_cpuWrittenSurfaces.find(slice->imagePtr); written != m_cpuWrittenSurfaces.end())
                     generation = (generation ^ written->second.writes ^ slice->imagePtr) * 1099511628211ull;
-                feedback |= overlaps(slice->imagePtr, slice->imageSize, m_color.imagePtr,
-                                     std::uint64_t(m_color.pitch) * m_color.height * colorElementBytes(colorFormat(m_color.format)));
+                feedback |= overlaps(slice->imagePtr, slice->imageSize, m_color.imagePtr, colorBytes);
             }
         }
         const auto rawSize = std::uint64_t(surface.imageSize) + (count > 1 || surface.firstMip ? surface.mipImageSize : 0);
@@ -931,6 +953,8 @@ namespace Core::Gfx {
         result->levelCount = count;
         result->validatedFrame = m_presentCount;
         result->generation = generation;
+        for (const auto &slice: slices)
+            result->sliceRanges.emplace_back(slice.imagePtr, slice.imageSize);
         result->source = std::move(source);
         result->levels = std::move(levels);
         for (unsigned level = 0; level < count; ++level) {
