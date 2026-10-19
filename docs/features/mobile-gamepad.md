@@ -37,7 +37,8 @@ phone app ──TCP 47470──► appgui RemoteGamepadServer ──QLocalSocket
 
 * **Core.** `Gx2Replayer` captures `GX2CopyColorBufferToScanBuffer` copies whose
   scan target includes the DRC (bit 4) into an 854×480 buffer, resampling other
-  sizes like the scan-out engine; `OSScreenFlipBuffersEx(DRC)` forwards the
+  sizes like the scan-out engine and decoding the color formats the TV copy
+  does (RGBA8, RGBA32F, R11G11B10F); `OSScreenFlipBuffersEx(DRC)` forwards the
   OSScreen buffer. Frames are only built and sent while the window asked for
   them (`Action::DrcStream`), so sessions without a phone pay nothing.
   `VPADRead` fills sticks (plus their stick-emulation button bits), the three

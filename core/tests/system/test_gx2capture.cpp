@@ -1960,6 +1960,45 @@ TEST_F(Gx2CaptureTest, ScanoutClearsOnlyMarginsAndInvalidSourcesDoNotRetainPrevi
     EXPECT_EQ(replayer.framebuffer().back(), 255);
 }
 
+TEST_F(Gx2CaptureTest, GamePadScanoutDecodesFloatColorTargets)
+{
+    using namespace Core::Gfx;
+    constexpr std::uint32_t header = 0x28001000, image = 0x28100000;
+    auto *pixels = cpu->m_memory.hostPtr(image);
+    ASSERT_NE(pixels, nullptr);
+    Gx2Replayer replayer;
+    replayer.setDrcCapture(true);
+    // 2x2 sources: the left column and the right column are scaled to each half of the panel.
+    for (const auto format: {0x1Au, 0x823u, 0x816u}) {
+        const auto elementBytes = colorElementBytes(colorFormat(format));
+        for (unsigned i = 0; i < 4; ++i) {
+            const std::array<float, 4> value = i % 2 ? std::array{1.f, .5f, .25f, 1.f} : std::array{.25f, .5f, 1.f, 1.f};
+            if (format == 0x1A)
+                for (unsigned c = 0; c < 4; ++c)
+                    pixels[i * 4 + c] = std::uint8_t(std::lround(value[c] * 255));
+            else
+                writeFloatColor(pixels + i * elementBytes, value, 15, colorFormat(format));
+        }
+        gx2Stream().clear();
+        surface(header, image, 4 * elementBytes, 2, 2, 2, 1);
+        cpu->m_memory.write<std::uint32_t>(header + 0x14, format);
+        cpu->m_gpr[3] = header;
+        cpu->m_gpr[4] = 4;
+        call("GX2CopyColorBufferToScanBuffer");
+        gx2Stream().push(Gx2Command{Gx2Cmd::SwapScanBuffers});
+        replayer.replay(gx2Stream(), &cpu->m_memory);
+        const auto &frame = replayer.drcFramebuffer();
+        ASSERT_EQ(frame.size(), std::size_t(Gx2Replayer::kDrcWidth) * Gx2Replayer::kDrcHeight * 4);
+        const auto pixel = [&](unsigned x, unsigned y) {
+            const auto index = (y * Gx2Replayer::kDrcWidth + x) * 4;
+            return std::array{frame[index], frame[index + 1], frame[index + 2], frame[index + 3]};
+        };
+        EXPECT_EQ(pixel(0, 0), (std::array<std::uint8_t, 4>{64, 128, 255, 255})) << std::hex << format;
+        EXPECT_EQ(pixel(Gx2Replayer::kDrcWidth - 1, Gx2Replayer::kDrcHeight - 1), (std::array<std::uint8_t, 4>{255, 128, 64, 255}))
+                << std::hex << format;
+    }
+}
+
 TEST_F(Gx2CaptureTest, HighVertexSemanticsSurviveContextReload)
 {
     using namespace Core::Gfx;

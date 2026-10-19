@@ -5235,17 +5235,19 @@ namespace Core::Gfx {
         }
     }
 
-    void Gx2Replayer::copyToDrcBuffer(const Surface &s)
+    void Gx2Replayer::copyToDrcBuffer(const Surface &original)
     {
         // The scan-out engine scales the source to the 854x480 panel (titles often render the
         // GamePad view at another size), so resample instead of cropping like the TV path.
         m_drcFb.assign(static_cast<std::size_t>(kDrcWidth) * kDrcHeight * 4, 0);
         for (std::size_t i = 3; i < m_drcFb.size(); i += 4)
             m_drcFb[i] = 0xFF;
+        const auto s = attachmentSurface(original);
         if (!s.imagePtr || !s.width || !s.height || !s.pitch)
             return;
-        const bool floatColor = s.format == 0x823;
-        const std::size_t elementBytes = floatColor ? 16 : 4;
+        // Decoded like the TV copy: Pikmin 3 renders both screens in R11G11B10_FLOAT.
+        const auto format = colorFormat(s.format);
+        const std::size_t elementBytes = colorElementBytes(format);
         const auto *backing = useViewBacking() ? findViewBacking(s) : nullptr;
         const std::uint8_t *base = backing ? backing->data() : nullptr;
         const std::size_t bytes = static_cast<std::size_t>(s.pitch) * s.height * elementBytes;
@@ -5261,8 +5263,8 @@ namespace Core::Gfx {
             for (std::uint32_t x = 0; x < kDrcWidth; x++) {
                 const std::uint32_t sx = static_cast<std::uint32_t>(std::uint64_t(x) * s.width / kDrcWidth);
                 const std::uint8_t *src = base + (static_cast<std::size_t>(sy) * s.pitch + sx) * elementBytes;
-                if (floatColor) {
-                    const auto value = readFloatColor(src);
+                if (format != ColorFormat::RGBA8) {
+                    const auto value = readFloatColor(src, format);
                     for (unsigned c = 0; c < 3; ++c)
                         dst[x * 4 + c] = byteFromUnit(value[c]);
                 } else
