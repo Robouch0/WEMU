@@ -83,6 +83,8 @@ namespace Core::Gfx {
             [[nodiscard]] std::uint64_t earlyDepthRejectedTriangles() const noexcept { return m_earlyDepthRejectedTriangles; }
             [[nodiscard]] std::uint64_t vertexShaderExecutions() const noexcept { return m_vertexShaderExecutions; }
             [[nodiscard]] std::uint64_t vertexShaderCacheHits() const noexcept { return m_vertexShaderCacheHits; }
+            // Draws with a GPU vertex program that reused converted vertex arrays.
+            [[nodiscard]] std::uint64_t directVertexReuses() const noexcept { return m_directVertexReuses; }
             void setVertexCacheEnabled(bool enabled) noexcept { m_vertexCacheEnabled = enabled; }
 
             // GPU render-target graph (the general multi-target compositor). When set, each guest
@@ -97,7 +99,7 @@ namespace Core::Gfx {
             unsigned m_nativeWorstError{};
             std::uint64_t m_earlyDepthRejectedFragments{};
             std::uint64_t m_earlyDepthRejectedTriangles{};
-            std::uint64_t m_vertexShaderExecutions{}, m_vertexShaderCacheHits{};
+            std::uint64_t m_vertexShaderExecutions{}, m_vertexShaderCacheHits{}, m_directVertexReuses{};
             bool m_vertexCacheEnabled{true};
             Latte::VertexShaderCache m_vertexShaderCache;
             std::unique_ptr<RasterWorkers> m_rasterWorkers;
@@ -139,6 +141,7 @@ namespace Core::Gfx {
                     std::uint32_t addr{0};
                     std::uint32_t stride{0};
                     std::uint32_t size{0};
+                    bool operator==(const Attrib &) const = default;
             };
             struct BlendState {
                     bool useAlphaBlend{true};
@@ -199,6 +202,30 @@ namespace Core::Gfx {
                     bool valid{};
             };
             AttributeFetch prepareAttributeFetch() const;
+            // Compact inputs and triangle indices of a draw with a GPU vertex program.
+            struct DirectVertices {
+                    std::vector<std::array<float, 4>> attributes;
+                    std::vector<std::uint32_t> indices;
+            };
+            // DirectVertices reused across draws and frames while the indices, fetch state and
+            // guest vertex bytes they were converted from are unchanged.
+            struct DirectVertexEntry {
+                    std::vector<std::uint32_t> fetchLayout, sourceIndices;
+                    std::array<std::uint32_t, 32> semantics{};
+                    std::array<Attrib, 8> attribs{};
+                    unsigned attributeStride{}, mode{};
+                    std::vector<std::pair<std::uint32_t, std::vector<std::uint8_t>>> sources; // guest ranges read
+                    std::shared_ptr<const DirectVertices> vertices;
+                    std::uint32_t validatedFrame{~0u};
+                    std::uint64_t used{};
+                    std::size_t bytes() const;
+            };
+            std::unordered_map<std::uint64_t, DirectVertexEntry> m_directVertexCache;
+            std::uint64_t m_directVertexBytes{}, m_directVertexClock{};
+            // Guest byte ranges [address, address + size) the fetch plan reads for vertices
+            // low..high, merged; false when a read is not resident in one host range.
+            static bool directVertexSources(const AttributeFetch &fetch, unsigned outputs, std::uint32_t low, std::uint32_t high,
+                                            std::vector<std::pair<std::uint32_t, std::uint32_t>> &ranges);
             bool fetchAttributes(const AttributeFetch &fetch, std::uint32_t vertex, std::span<std::array<float, 4>> out) const;
             bool fetchAttributes(std::uint32_t vertex, std::span<std::array<float, 4>> out) const
             {

@@ -30,6 +30,8 @@ namespace Core::Gfx {
             std::uint64_t retainedTargetDraws() const noexcept;
             std::uint64_t retainedTextureUploads() const noexcept;
             std::uint64_t residentTextureCopies() const noexcept;
+            // Draws that bound vertex arrays kept on the GPU by an earlier draw with the same owner.
+            std::uint64_t residentVertexHits() const noexcept;
             std::uint64_t directTextureBindings() const noexcept;
             std::uint64_t directTextureBytes() const noexcept;
             std::uint64_t targetUploadTransfers() const noexcept;

@@ -12,6 +12,7 @@
 #include <format>
 #include <limits>
 #include <map>
+#include <mutex>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -331,7 +332,7 @@ namespace Core::Gfx {
                 std::uint32_t family{};
                 std::string deviceName;
                 bool discrete{}; // separate VRAM: host-visible memory sits across PCIe
-                std::uint64_t readbackTransfers{}, residentTextureCopies{}, directTextureBindings{}, directTextureBytes{};
+                std::uint64_t readbackTransfers{}, residentTextureCopies{}, directTextureBindings{}, directTextureBytes{}, residentVertexHits{};
                 std::uint64_t targetUploadTransfers{}, targetCopyTransfers{}, fullOverwriteDraws{};
                 std::uint64_t pipelineCreations{};
                 VkDescriptorSetLayout depthQuantizeSetLayout{};
@@ -2305,10 +2306,30 @@ void main() {
                     const bool compact = draw.vertexStage.attributeStride != 0;
                     const auto vertexBytes = compact ? draw.vertexStage.attributes.size_bytes() : draw.vertices.size_bytes();
                     const void *vertexData = compact ? static_cast<const void *>(draw.vertexStage.attributes.data()) : draw.vertices.data();
-                    reserve(vertexBytes);
+                    // Owned compact arrays live in the vertex arena while their owner does: later
+                    // draws bind that copy instead of uploading the same arrays again.
+                    std::shared_ptr<VertexAllocation> residentVertices;
+                    VkDeviceSize residentIndexOffset{};
+                    const auto *vertexOwner = compact ? draw.vertexStage.attributesOwner.get() : nullptr;
+                    if (vertexOwner)
+                        if (const auto found = vertexCache.find(vertexOwner); found != vertexCache.end()) {
+                            if (!found->second.owner.expired() && found->second.attributeBytes == vertexBytes &&
+                                found->second.indexBytes == draw.indices.size_bytes()) {
+                                found->second.used = ++vertexClock;
+                                residentVertices = found->second.allocation;
+                                residentIndexOffset = found->second.indexOffset;
+                                ++context.residentVertexHits;
+                            } else {
+                                vertexCacheBytes -= found->second.allocation->bytes;
+                                vertexCache.erase(found);
+                            }
+                        }
+                    if (!residentVertices) {
+                        reserve(vertexBytes);
+                        reserve(draw.indices.size_bytes());
+                    }
                     if (compact)
                         reserve(sizeof(compactAttributeDefaults));
-                    reserve(draw.indices.size_bytes());
                     if (colorUpload)
                         reserve(draw.target.size());
                     if (depthUpload)
@@ -2358,9 +2379,27 @@ void main() {
                     const auto vertexConstantsOffset = draw.vertexStage.shader ? pushUpload(in.vertexConstants.data(), in.vertexConstantFloats * sizeof(float),
                                                                                             sizeof(in.vertexConstants))
                                                                                : VkDeviceSize{};
-                    const auto verticesOffset = pushUpload(vertexData, vertexBytes, 0);
+                    const auto verticesOffset = residentVertices ? VkDeviceSize{} : pushUpload(vertexData, vertexBytes, 0);
                     const auto defaultsOffset = compact ? pushUpload(compactAttributeDefaults.data(), sizeof(compactAttributeDefaults), 0) : VkDeviceSize{};
-                    const auto indicesOffset = draw.indices.empty() ? VkDeviceSize{} : pushUpload(draw.indices.data(), draw.indices.size_bytes(), 0);
+                    const auto indicesOffset =
+                            residentVertices || draw.indices.empty() ? VkDeviceSize{} : pushUpload(draw.indices.data(), draw.indices.size_bytes(), 0);
+                    bool copiedVertices = false;
+                    if (vertexOwner && !residentVertices) {
+                        const auto indexOffset = (vertexBytes + alignment - 1) / alignment * alignment;
+                        if (auto allocation = allocateVertices(indexOffset + draw.indices.size_bytes())) {
+                            const VkBufferCopy copies[]{{verticesOffset, allocation->offset, vertexBytes},
+                                                        {indicesOffset, allocation->offset + indexOffset, draw.indices.size_bytes()}};
+                            vkCmdCopyBuffer(command, segment.buffer, allocation->buffer, draw.indices.empty() ? 1 : 2, copies);
+                            copiedVertices = true;
+                            vertexCacheBytes += allocation->bytes;
+                            vertexCache[vertexOwner] = {draw.vertexStage.attributesOwner, allocation,   indexOffset, vertexBytes,
+                                                        draw.indices.size_bytes(),        ++vertexClock};
+                            residentVertices = std::move(allocation);
+                            residentIndexOffset = indexOffset;
+                        }
+                    }
+                    if (residentVertices)
+                        segment.retained.push_back(residentVertices);
 
                     // Textures first: their transfers must precede the render pass.
                     std::vector<VkDescriptorImageInfo> imageInfos(in.textures.size());
@@ -2469,8 +2508,10 @@ void main() {
                         transition(*depth, true, depthLayout, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
                     for (const auto &image: sampled)
                         transition(*image, false, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-                    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr,
-                                         unsigned(barriers.size()), barriers.data());
+                    const VkMemoryBarrier vertexCopy{VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr, VK_ACCESS_TRANSFER_WRITE_BIT,
+                                                     VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_INDEX_READ_BIT};
+                    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, copiedVertices ? 1 : 0,
+                                         &vertexCopy, 0, nullptr, unsigned(barriers.size()), barriers.data());
 
                     const auto pass = renderPass(hasColor ? colorVkFormat(draw.colorFormat) : VK_FORMAT_UNDEFINED,
                                                  draw.depth.test ? depthVkFormat(draw.depth.format) : VK_FORMAT_UNDEFINED);
@@ -2551,13 +2592,17 @@ void main() {
                         push.bias[2] = draw.depthBias.clamp;
                     }
                     vkCmdPushConstants(command, pipeline.layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
-                    const VkBuffer vertexBuffers[]{segment.buffer, segment.buffer};
-                    const VkDeviceSize vertexOffsets[]{verticesOffset, defaultsOffset};
+                    const VkBuffer vertexBuffers[]{residentVertices ? residentVertices->buffer : segment.buffer, segment.buffer};
+                    const VkDeviceSize vertexOffsets[]{residentVertices ? residentVertices->offset : verticesOffset, defaultsOffset};
                     vkCmdBindVertexBuffers(command, 0, compact ? 2 : 1, vertexBuffers, vertexOffsets);
                     if (draw.indices.empty())
                         vkCmdDraw(command, unsigned(vertexCount(draw)), 1, 0, 0);
                     else {
-                        vkCmdBindIndexBuffer(command, segment.buffer, indicesOffset, VK_INDEX_TYPE_UINT32);
+                        if (residentVertices)
+                            vkCmdBindIndexBuffer(command, residentVertices->buffer, residentVertices->offset + residentIndexOffset,
+                                                 VK_INDEX_TYPE_UINT32);
+                        else
+                            vkCmdBindIndexBuffer(command, segment.buffer, indicesOffset, VK_INDEX_TYPE_UINT32);
                         vkCmdDrawIndexed(command, unsigned(draw.indices.size()), 1, 0, 0, 0);
                     }
                     vkCmdEndRenderPass(command);
@@ -2620,6 +2665,108 @@ void main() {
                 }
 
             private:
+                // Device-local blocks for vertex arrays reused across draws. A range returns to its
+                // block once neither the cache nor an in-flight segment refers to it.
+                struct VertexArena {
+                        struct Block {
+                                VkBuffer buffer{};
+                                VkDeviceMemory memory{};
+                                VkDeviceSize size{};
+                                std::map<VkDeviceSize, VkDeviceSize> free; // offset -> bytes
+                        };
+                        VkDevice device{};
+                        std::vector<Block> blocks;
+                        std::mutex mutex;
+                        ~VertexArena()
+                        {
+                            for (auto &block: blocks) {
+                                vkDestroyBuffer(device, block.buffer, nullptr);
+                                vkFreeMemory(device, block.memory, nullptr);
+                            }
+                        }
+                        void release(std::size_t index, VkDeviceSize offset, VkDeviceSize bytes)
+                        {
+                            std::lock_guard lock(mutex);
+                            auto &free = blocks[index].free;
+                            auto next = free.lower_bound(offset);
+                            if (next != free.begin())
+                                if (const auto previous = std::prev(next); previous->first + previous->second == offset) {
+                                    offset = previous->first;
+                                    bytes += previous->second;
+                                    free.erase(previous);
+                                }
+                            if (next != free.end() && offset + bytes == next->first) {
+                                bytes += next->second;
+                                free.erase(next);
+                            }
+                            free.emplace(offset, bytes);
+                        }
+                };
+                struct VertexAllocation {
+                        std::shared_ptr<VertexArena> arena;
+                        std::size_t block{};
+                        VkDeviceSize offset{}, bytes{};
+                        VkBuffer buffer{};
+                        VertexAllocation(std::shared_ptr<VertexArena> owner, std::size_t index, VkDeviceSize start, VkDeviceSize size,
+                                         VkBuffer target) : arena(std::move(owner)), block(index), offset(start), bytes(size), buffer(target)
+                        {
+                        }
+                        VertexAllocation(const VertexAllocation &) = delete;
+                        VertexAllocation &operator=(const VertexAllocation &) = delete;
+                        ~VertexAllocation() { arena->release(block, offset, bytes); }
+                };
+                struct CachedVertices {
+                        std::weak_ptr<const void> owner;
+                        std::shared_ptr<VertexAllocation> allocation;
+                        VkDeviceSize indexOffset{}, attributeBytes{}, indexBytes{};
+                        std::uint64_t used{};
+                };
+                // Null when the arena is full, so the draw uploads its arrays as before.
+                std::shared_ptr<VertexAllocation> allocateVertices(VkDeviceSize bytes)
+                {
+                    constexpr VkDeviceSize cacheBudget = 160ull << 20, arenaBudget = 256ull << 20, blockBytes = 64ull << 20;
+                    bytes = (bytes + alignment - 1) / alignment * alignment;
+                    if (bytes > blockBytes)
+                        return {};
+                    while (!vertexCache.empty() && vertexCacheBytes + bytes > cacheBudget) {
+                        auto oldest = vertexCache.begin();
+                        for (auto it = vertexCache.begin(); it != vertexCache.end(); ++it)
+                            if (it->second.owner.expired() || it->second.used < oldest->second.used) {
+                                oldest = it;
+                                if (it->second.owner.expired())
+                                    break;
+                            }
+                        vertexCacheBytes -= oldest->second.allocation->bytes;
+                        vertexCache.erase(oldest);
+                    }
+                    if (!vertexArena) {
+                        vertexArena = std::make_shared<VertexArena>();
+                        vertexArena->device = device;
+                    }
+                    std::lock_guard lock(vertexArena->mutex);
+                    for (std::size_t index = 0; index < vertexArena->blocks.size(); ++index) {
+                        auto &block = vertexArena->blocks[index];
+                        for (auto it = block.free.begin(); it != block.free.end(); ++it)
+                            if (it->second >= bytes) {
+                                const auto [offset, size] = *it;
+                                block.free.erase(it);
+                                if (size > bytes)
+                                    block.free.emplace(offset + bytes, size - bytes);
+                                return std::make_shared<VertexAllocation>(vertexArena, index, offset, bytes, block.buffer);
+                            }
+                    }
+                    if ((vertexArena->blocks.size() + 1) * blockBytes > arenaBudget)
+                        return {};
+                    VertexArena::Block block;
+                    block.size = blockBytes;
+                    block.buffer = createBuffer(
+                            blockBytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                            block.memory, 0, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+                    block.free.emplace(bytes, blockBytes - bytes);
+                    vertexArena->blocks.push_back(std::move(block));
+                    return std::make_shared<VertexAllocation>(vertexArena, vertexArena->blocks.size() - 1, 0, bytes,
+                                                              vertexArena->blocks.back().buffer);
+                }
                 struct Segment {
                         VkCommandPool pool{};
                         VkCommandBuffer command{};
@@ -3286,6 +3433,10 @@ void main() {
                 std::map<std::pair<VkFormat, VkFormat>, VkRenderPass> passes;
                 std::map<std::tuple<VkRenderPass, VkImageView, VkImageView, unsigned, unsigned>, FramebufferEntry> framebuffers;
                 std::map<std::array<std::uint64_t, 10>, std::vector<std::shared_ptr<ScratchTexture>>> scratchTextures;
+                std::shared_ptr<VertexArena> vertexArena;
+                std::unordered_map<const void *, CachedVertices> vertexCache;
+                VkDeviceSize vertexCacheBytes{};
+                std::uint64_t vertexClock{};
         };
     } // namespace
 
@@ -3343,6 +3494,7 @@ void main() {
     std::uint64_t VulkanRasterBackend::retainedTargetDraws() const noexcept { return m_impl->retainedTargets; }
     std::uint64_t VulkanRasterBackend::retainedTextureUploads() const noexcept { return m_impl->retainedTextures; }
     std::uint64_t VulkanRasterBackend::residentTextureCopies() const noexcept { return m_impl->context ? m_impl->context->residentTextureCopies : 0; }
+    std::uint64_t VulkanRasterBackend::residentVertexHits() const noexcept { return m_impl->context ? m_impl->context->residentVertexHits : 0; }
     std::uint64_t VulkanRasterBackend::directTextureBindings() const noexcept { return m_impl->context ? m_impl->context->directTextureBindings : 0; }
     std::uint64_t VulkanRasterBackend::directTextureBytes() const noexcept { return m_impl->context ? m_impl->context->directTextureBytes : 0; }
     std::uint64_t VulkanRasterBackend::targetUploadTransfers() const noexcept { return m_impl->context ? m_impl->context->targetUploadTransfers : 0; }

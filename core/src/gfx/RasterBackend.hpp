@@ -150,6 +150,9 @@ namespace Core::Gfx {
                     // then zeros). Positions come from the program, so none are needed.
                     std::span<const std::array<float, 4>> attributes;
                     unsigned attributeStride{};
+                    // Identity/lifetime of immutable `attributes` and the draw's `indices`: a changed
+                    // array must supply a new owner. Lets backends keep one upload across draws.
+                    std::shared_ptr<const void> attributesOwner;
             } vertexStage;
             // Static kcache references in shader.uniforms, four floats each;
             // replayer snapshots the actual fragment uniform-block values.

@@ -2099,6 +2099,112 @@ TEST_F(Gx2CaptureTest, HighVertexSemanticsSurviveContextReload)
         }
 }
 
+TEST_F(Gx2CaptureTest, DirectVertexArraysAreReusedUntilGuestVertexBytesChange)
+{
+    using namespace Core::Gfx;
+    if (!std::getenv("WEMU_TEST_VULKAN"))
+        GTEST_SKIP();
+    constexpr unsigned VS = 0x28005000, PS = 0x28006000, VSP = 0x28007000, PSP = 0x28008000;
+    constexpr unsigned FETCH = 0x28001000, ATTRS = 0x28003000, VERTS = 0x28010000, INDEX = 0x28011000;
+    constexpr unsigned COLOR = 0x28009000, IMAGE = 0x28040000, UNIFORM = 0x28012000;
+    const auto record = [&](const char *name, std::initializer_list<unsigned> args) {
+        unsigned r = 3;
+        for (auto arg: args)
+            cpu->m_gpr[r++] = arg;
+        call(name);
+    };
+    for (unsigned i = 0; i < 0x200; i += 4) {
+        cpu->m_memory.write<unsigned>(VS + i, 0);
+        cpu->m_memory.write<unsigned>(PS + i, 0);
+    }
+    cpu->m_memory.write<unsigned>(VS + 0x40, 1);
+    cpu->m_memory.write<unsigned>(VS + 0x44, 0);
+    cpu->m_memory.write<unsigned>(PS + 0x10, 1);
+    // Position from attribute 0, parameter 0 from c0.
+    std::vector<unsigned> vertex{3,
+                                 (8u << 26) | (3u << 18),
+                                 60u | (1u << 13) | (1u << 15),
+                                 (Latte::CF_EXP << 23) | 0x688u,
+                                 (2u << 13) | (2u << 15),
+                                 (Latte::CF_EXP_DONE << 23) | (1u << 21) | 0x688u};
+    for (unsigned c = 0; c < 4; ++c) {
+        vertex.push_back(256u | (c << 10) | (c == 3 ? 0x80000000u : 0u));
+        vertex.push_back((Latte::OP2_MOV << 7) | 16u | (2u << 21) | (c << 29));
+    }
+    const std::vector<unsigned> pixel{0, (Latte::CF_EXP_DONE << 23) | (1u << 21) | 0x688u};
+    for (const auto &[header, offset, pointer, words]: {std::tuple{VS, 0xD0u, VSP, vertex}, std::tuple{PS, 0xA4u, PSP, pixel}}) {
+        cpu->m_memory.write<unsigned>(header + offset, words.size() * 4);
+        cpu->m_memory.write<unsigned>(header + offset + 4, pointer);
+        for (unsigned i = 0; i < words.size(); ++i)
+            cpu->m_memory.write<unsigned>(pointer + i * 4, std::byteswap(words[i]));
+    }
+    const std::array<unsigned, 8> attribute{0, 0, 0, 0x813, 0, 0, 0x00010203, 3};
+    for (unsigned i = 0; i < attribute.size(); ++i)
+        cpu->m_memory.write<unsigned>(ATTRS + i * 4, attribute[i]);
+    record("GX2InitFetchShaderEx", {FETCH, 0x28002000, 1, ATTRS, 0, 0});
+    const auto writeQuad = [&](float right) {
+        const std::array<std::array<float, 4>, 4> vertices{{{-1, 1, 0, 1}, {right, 1, 0, 1}, {-1, -1, 0, 1}, {right, -1, 0, 1}}};
+        for (unsigned v = 0; v < vertices.size(); ++v)
+            for (unsigned c = 0; c < 4; ++c)
+                cpu->m_memory.write<unsigned>(VERTS + v * 16 + c * 4, std::bit_cast<unsigned>(vertices[v][c]));
+    };
+    // Enough indices for the conversion cache: the quad repeated twelve times.
+    constexpr unsigned count = 72;
+    const std::array<unsigned, 6> quad{0, 1, 2, 2, 1, 3};
+    for (unsigned i = 0; i < count; ++i)
+        cpu->m_memory.write<std::uint16_t>(INDEX + i * 2, quad[i % quad.size()]);
+    surface(COLOR, IMAGE, 4 * 4 * 4, 4, 4, 4, 1);
+    for (unsigned offset: {0x74u, 0x78u, 0x7Cu})
+        cpu->m_memory.write<unsigned>(COLOR + offset, 0);
+    for (unsigned c = 0; c < 4; ++c)
+        cpu->m_memory.write<unsigned>(UNIFORM + c * 4, std::bit_cast<unsigned>(c == 1 || c == 3 ? 1.f : 0.f));
+    Gx2Replayer reference, native;
+    const auto backend = std::make_shared<VulkanRasterBackend>(true, true);
+    native.setRasterBackend(backend);
+    native.setNativeVerificationInterval(0);
+    const auto frame = [&] {
+        gx2Stream().clear();
+        cpu->m_fpr[1] = cpu->m_fpr[2] = cpu->m_fpr[3] = cpu->m_fpr[4] = 0;
+        record("GX2ClearColor", {COLOR});
+        record("GX2SetFetchShader", {FETCH});
+        record("GX2SetVertexShader", {VS});
+        record("GX2SetPixelShader", {PS});
+        record("GX2SetAttribBuffer", {0, 64, 16, VERTS});
+        record("GX2SetColorBuffer", {COLOR, 0});
+        record("GX2SetColorControl", {0xCC, 0, 0, 1});
+        cpu->m_fpr[3] = cpu->m_fpr[4] = 4;
+        record("GX2SetViewport", {});
+        record("GX2SetVertexUniformReg", {0, 4, UNIFORM});
+        record("GX2DrawIndexedEx", {4, count, 4, INDEX, 0, 1});
+        record("GX2CopyColorBufferToScanBuffer", {COLOR, 1});
+        gx2Stream().push(Gx2Command{Gx2Cmd::SwapScanBuffers});
+        reference.replay(gx2Stream(), &cpu->m_memory);
+        native.replay(gx2Stream(), &cpu->m_memory);
+    };
+    // Only deferred direct rendering keeps the arrays on the GPU between draws.
+    const auto *deferred = std::getenv("WEMU_NATIVE_DEFER_READBACK");
+    const unsigned resident = deferred && std::string_view(deferred) == "1" ? 1 : 0;
+    writeQuad(1);
+    frame();
+    ASSERT_EQ(backend->completedDraws(), 1u) << backend->lastError();
+    EXPECT_EQ(native.framebuffer(), reference.framebuffer());
+    EXPECT_EQ(native.directVertexReuses(), 0u);
+    EXPECT_EQ(backend->residentVertexHits(), 0u);
+    frame();
+    EXPECT_EQ(native.directVertexReuses(), 1u);
+    EXPECT_EQ(backend->residentVertexHits(), resident);
+    EXPECT_EQ(native.framebuffer(), reference.framebuffer());
+    // Narrowing the quad in guest memory must reach the GPU despite unchanged indices.
+    writeQuad(0);
+    frame();
+    EXPECT_EQ(backend->completedDraws(), 3u) << backend->lastError();
+    EXPECT_EQ(native.directVertexReuses(), 1u);
+    EXPECT_EQ(backend->residentVertexHits(), resident);
+    EXPECT_EQ(native.framebuffer(), reference.framebuffer());
+    const auto &fb = native.framebuffer();
+    EXPECT_NE(std::vector(fb.begin(), fb.begin() + 4), std::vector(fb.end() - 4, fb.end()));
+}
+
 TEST_F(Gx2CaptureTest, IndexedVertexReusePreservesParametersAndRefreshesEachDraw)
 {
     using namespace Core::Gfx;

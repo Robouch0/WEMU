@@ -2041,6 +2041,52 @@ namespace Core::Gfx {
         return true;
     }
 
+    std::size_t Gx2Replayer::DirectVertexEntry::bytes() const
+    {
+        std::size_t total = (fetchLayout.size() + sourceIndices.size()) * sizeof(std::uint32_t);
+        for (const auto &[address, data]: sources)
+            total += data.size();
+        if (vertices)
+            total += vertices->attributes.size() * sizeof(vertices->attributes[0]) + vertices->indices.size() * sizeof(std::uint32_t);
+        return total;
+    }
+
+    bool Gx2Replayer::directVertexSources(const AttributeFetch &fetch, unsigned outputs, std::uint32_t low, std::uint32_t high,
+                                          std::vector<std::pair<std::uint32_t, std::uint32_t>> &ranges)
+    {
+        ranges.clear();
+        if (!fetch.valid)
+            return true;
+        for (const auto &e: fetch.elements) {
+            // Skipped and failing elements read nothing; the per-vertex path is not tracked.
+            if (e.out >= outputs || e.fails)
+                continue;
+            if (!e.host)
+                return false;
+            const std::uint64_t extent = std::uint64_t(e.components) * e.bytes;
+            if (!e.stride) {
+                if (e.count)
+                    ranges.emplace_back(e.address + e.offset, std::uint32_t(extent));
+                continue;
+            }
+            if (low >= e.count)
+                continue;
+            const std::uint64_t last = std::min<std::uint64_t>(high, e.count - 1);
+            ranges.emplace_back(e.address + e.offset + low * e.stride, std::uint32_t((last - low) * e.stride + extent));
+        }
+        std::ranges::sort(ranges);
+        std::size_t merged = 0;
+        for (const auto &range: ranges) {
+            if (merged && std::uint64_t(range.first) <= std::uint64_t(ranges[merged - 1].first) + ranges[merged - 1].second) {
+                auto &previous = ranges[merged - 1];
+                previous.second = std::uint32_t(std::max<std::uint64_t>(previous.second, std::uint64_t(range.first) + range.second - previous.first));
+            } else
+                ranges[merged++] = range;
+        }
+        ranges.resize(merged);
+        return true;
+    }
+
     void Gx2Replayer::drawImage(const Gx2Command &cmd)
     {
         const unsigned width = cmd.gpr[0], height = cmd.gpr[1];
@@ -3873,8 +3919,55 @@ namespace Core::Gfx {
         // backend supplies the reference defaults for the other attribute slots.
         std::vector<std::array<float, 4>> directAttributes;
         std::vector<std::uint32_t> directIndices;
+        std::shared_ptr<const DirectVertices> directArrays;
         const auto attributeStride = unsigned(std::min<std::size_t>(m_vertexInputCount, RasterDraw::Vertex{}.inputs.size()));
-        if (directVertices) {
+        // Static geometry is converted once: a draw whose indices, fetch state and guest vertex
+        // bytes match a previous conversion reuses its arrays (and the backend its upload).
+        std::uint64_t directKey = 0;
+        std::vector<std::pair<std::uint32_t, std::uint32_t>> directSources;
+        bool cacheDirect = false;
+        if (directVertices && idx.size() >= 64) {
+            const auto [low, high] = std::minmax_element(idx.begin(), idx.end());
+            cacheDirect = directVertexSources(attributeFetch, attributeStride, *low, *high, directSources);
+            if (cacheDirect) {
+                const auto mix = [&](std::uint64_t value) { directKey = (directKey ^ value) * 0x100000001B3ull + (directKey >> 29); };
+                for (unsigned i = 0; i < 6; ++i)
+                    mix(cmd.gpr[i]);
+                mix(idx.size());
+                mix(*low);
+                mix(*high);
+                mix(mode);
+                mix(attributeStride);
+                for (const auto &binding: m_attribs)
+                    mix((std::uint64_t(binding.addr) << 32) ^ binding.stride ^ (std::uint64_t(binding.size) << 16));
+                for (const auto word: m_fetchLayout)
+                    mix(word);
+                const auto found = m_directVertexCache.find(directKey);
+                if (found != m_directVertexCache.end()) {
+                    auto &entry = found->second;
+                    const bool inputsMatch = entry.mode == mode && entry.attributeStride == attributeStride && entry.attribs == m_attribs &&
+                                             entry.semantics == m_vertexSemantics && entry.fetchLayout == m_fetchLayout &&
+                                             std::ranges::equal(entry.sourceIndices, idx) && entry.sources.size() == directSources.size();
+                    bool bytesMatch = inputsMatch && entry.validatedFrame == m_presentCount;
+                    for (std::size_t i = 0; inputsMatch && !bytesMatch && i < directSources.size(); ++i) {
+                        const auto &[address, bytes] = entry.sources[i];
+                        const auto *current = m_mem->hostPtr(address, bytes.size());
+                        if (address != directSources[i].first || bytes.size() != directSources[i].second || !current ||
+                            std::memcmp(current, bytes.data(), bytes.size()) != 0)
+                            break;
+                        bytesMatch = i + 1 == directSources.size();
+                    }
+                    bytesMatch |= inputsMatch && directSources.empty();
+                    if (bytesMatch) {
+                        entry.validatedFrame = m_presentCount;
+                        entry.used = ++m_directVertexClock;
+                        directArrays = entry.vertices;
+                        ++m_directVertexReuses;
+                    }
+                }
+            }
+        }
+        if (directVertices && !directArrays) {
             const auto stride = std::max(1u, attributeStride);
             const auto [low, high] = idx.empty() ? std::pair{idx.end(), idx.end()} : std::minmax_element(idx.begin(), idx.end());
             const std::uint64_t span = idx.empty() ? 0 : std::uint64_t(*high) - *low + 1;
@@ -3913,11 +4006,46 @@ namespace Core::Gfx {
             else
                 for (std::uint32_t i = 0; i + 2 < idx.size(); i += 3)
                     triangle(i, i + 1, i + 2);
-        } else if (mode != 1)
+            if (cacheDirect) {
+                constexpr std::uint64_t budget = 192ull * 1024 * 1024;
+                DirectVertexEntry entry;
+                entry.fetchLayout = m_fetchLayout;
+                entry.sourceIndices = idx;
+                entry.semantics = m_vertexSemantics;
+                entry.attribs = m_attribs;
+                entry.attributeStride = attributeStride;
+                entry.mode = mode;
+                for (const auto &[address, size]: directSources) {
+                    const auto *bytes = m_mem->hostPtr(address, size);
+                    entry.sources.emplace_back(address, std::vector<std::uint8_t>(bytes, bytes + size));
+                }
+                entry.vertices = directArrays =
+                        std::make_shared<const DirectVertices>(DirectVertices{std::move(directAttributes), std::move(directIndices)});
+                entry.validatedFrame = m_presentCount;
+                entry.used = ++m_directVertexClock;
+                if (const auto old = m_directVertexCache.find(directKey); old != m_directVertexCache.end()) {
+                    m_directVertexBytes -= old->second.bytes();
+                    m_directVertexCache.erase(old);
+                }
+                m_directVertexBytes += entry.bytes();
+                while (m_directVertexBytes > budget && !m_directVertexCache.empty()) {
+                    auto oldest = m_directVertexCache.begin();
+                    for (auto it = m_directVertexCache.begin(); it != m_directVertexCache.end(); ++it)
+                        if (it->second.used < oldest->second.used)
+                            oldest = it;
+                    m_directVertexBytes -= oldest->second.bytes();
+                    m_directVertexCache.erase(oldest);
+                }
+                m_directVertexCache.emplace(directKey, std::move(entry));
+            }
+        } else if (mode != 1 && !directVertices)
             assembleTriangles();
+        const std::span<const std::array<float, 4>> directAttributeView =
+                directArrays ? std::span(directArrays->attributes) : std::span(directAttributes);
+        const std::span<const std::uint32_t> directIndexView = directArrays ? std::span(directArrays->indices) : std::span(directIndices);
         std::int64_t nativePrepareUs{}, nativeExecuteUs{}, nativeVerifyUs{}, fallbackUs{};
         bool nativeCommitted = false;
-        if (collectBackend && (!preparedTriangles.empty() || !preparedPoints.empty() || !directIndices.empty())) {
+        if (collectBackend && (!preparedTriangles.empty() || !preparedPoints.empty() || !directIndexView.empty())) {
             const auto prepareStart = (profile || nativeAudit) ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
             std::vector<Latte::TextureType> resourceTypes(m_pixelTextures.size(), Latte::TextureType::TwoD);
             for (unsigned i = 0; i < m_pixelTextures.size(); ++i)
@@ -4370,7 +4498,7 @@ namespace Core::Gfx {
                     return &projectedVertex[std::size_t(corner - projectedCorners.data())];
                 return nullptr;
             };
-            if (directVertices)
+            if (directVertices && !directArrays)
                 indices = std::move(directIndices);
             for (const auto &triangle: preparedTriangles) {
                 const auto &a = triangle[0], &b = triangle[1], &c = triangle[2];
@@ -4435,7 +4563,7 @@ namespace Core::Gfx {
             bool committed = false;
             if (profile || nativeAudit)
                 nativePrepareUs = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - prepareStart).count();
-            if (supported && (!vertices.empty() || !directAttributes.empty())) {
+            if (supported && (!vertices.empty() || !directAttributeView.empty())) {
                 const auto targetBytes = std::size_t(m_color.pitch) * m_color.height * targetElementBytes;
                 RasterDraw draw{shader,
                                 vertices,
@@ -4476,7 +4604,8 @@ namespace Core::Gfx {
                     std::copy_n(pixelInputParams.begin(), draw.vertexStage.inputParams.size(), draw.vertexStage.inputParams.begin());
                     draw.vertexStage.inputCount = m_pixelInputCount;
                     if (directVertices) {
-                        draw.vertexStage.attributes = directAttributes;
+                        draw.vertexStage.attributes = directAttributeView;
+                        draw.vertexStage.attributesOwner = directArrays;
                         draw.vertexStage.attributeStride = std::max(1u, attributeStride);
                     }
                     draw.vertexStage.viewport = {m_vp[0], m_vp[1], m_vp[2], m_vp[3], m_vpNear, m_vpFar};
@@ -4492,7 +4621,7 @@ namespace Core::Gfx {
                 draw.colorFormat = targetFormat;
                 draw.topology = mode == 1 ? RasterDraw::Topology::Points : RasterDraw::Topology::Triangles;
                 if (mode != 1)
-                    draw.indices = indices;
+                    draw.indices = directArrays ? directIndexView : std::span<const std::uint32_t>(indices);
                 draw.renderedTarget = renderedTarget;
                 // The result replaces m_pendingReadbacks for m_color; verification re-reads the old version.
                 draw.supersedesTarget = !m_nativeVerifyEvery;
@@ -4700,7 +4829,7 @@ namespace Core::Gfx {
                     if (mode == 1)
                         m_stats.points += vertices.size();
                     else
-                        m_stats.tris += (indices.empty() ? vertices.size() : indices.size()) / 3;
+                        m_stats.tris += (draw.indices.empty() ? vertices.size() : draw.indices.size()) / 3;
                     m_stats.pixels += result->pixels;
                     m_stats.alphaSum += result->alphaSum;
                     committed = true;
