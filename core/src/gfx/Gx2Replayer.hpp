@@ -190,7 +190,8 @@ namespace Core::Gfx {
             static SurfaceKey makeSurfaceKey(const Surface &s);
             std::vector<std::uint8_t> &viewBacking(const Surface &s);
             void resolveViewBacking(const Surface &s) const;
-            void resolvePendingBackings() const;
+            // Materializes pending targets; with `within`, only those stored inside these surfaces.
+            void resolvePendingBackings(std::span<const Surface> within = {}) const;
             [[nodiscard]] const std::vector<std::uint8_t> *findViewBacking(const Surface &s) const;
             [[nodiscard]] std::array<std::uint8_t, 4> sampleViewBacking(const Surface &s, const std::vector<std::uint8_t> &backing, float u,
                                                                         float v) const;

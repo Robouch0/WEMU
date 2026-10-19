@@ -581,18 +581,33 @@ namespace Core::Gfx {
         m_pendingReadbacks.erase(pending);
     }
 
-    void Gx2Replayer::resolvePendingBackings() const
+    void Gx2Replayer::resolvePendingBackings(std::span<const Surface> within) const
     {
         // Software workers can select array slices dynamically. Resolve on the
         // replay thread before dispatch so sampling never mutates shared maps.
-        for (const auto &[key, pending]: m_pendingReadbacks) {
-            const auto &pixels = pending->resolve();
-            auto &backing = m_viewBackings.at(key);
+        // Slices of `within` live inside its base or mip storage; other targets stay on the GPU.
+        const auto inside = [&](const SurfaceKey &key, std::size_t bytes) {
+            if (within.empty())
+                return true;
+            const auto overlaps = [&](std::uint64_t base, std::uint64_t size) {
+                return size && key.imagePtr < base + size && base < std::uint64_t(key.imagePtr) + bytes;
+            };
+            return std::any_of(within.begin(), within.end(), [&](const Surface &surface) {
+                return overlaps(surface.imagePtr, surface.imageSize) || overlaps(surface.mipImagePtr, surface.mipImageSize);
+            });
+        };
+        for (auto it = m_pendingReadbacks.begin(); it != m_pendingReadbacks.end();) {
+            auto &backing = m_viewBackings.at(it->first);
+            if (!inside(it->first, backing.size())) {
+                ++it;
+                continue;
+            }
+            const auto &pixels = it->second->resolve();
             if (pixels.size() != backing.size())
                 throw std::runtime_error("Deferred raster target size changed");
             std::copy(pixels.begin(), pixels.end(), backing.begin());
+            it = m_pendingReadbacks.erase(it);
         }
-        m_pendingReadbacks.clear();
     }
 
     std::array<std::uint8_t, 4> Gx2Replayer::sampleViewBacking(const Surface &s, const std::vector<std::uint8_t> &backing, float u, float v) const
@@ -2771,18 +2786,21 @@ namespace Core::Gfx {
                 return;
             }
             // Workers must see immutable CPU inputs, but unrelated render targets
-            // can remain on the GPU. Array slices are selected dynamically, so keep
-            // the conservative all-surface path until their aliases are tracked.
-            if (m_texture.dimension == 5 || std::any_of(m_pixelTextures.begin(), m_pixelTextures.end(),
-                                                        [](const auto &surface) { return surface.dimension == 5 || surface.dimension == 2; }))
-                resolvePendingBackings();
-            else {
-                resolveViewBacking(m_color);
-                resolveViewBacking(m_texture);
-                if (pixelProgram)
-                    for (const auto &surface: m_pixelTextures)
-                        resolveViewBacking(surface);
-            }
+            // can remain on the GPU. Array and volume slices are selected dynamically:
+            // resolve every target stored inside a bound array, not every target.
+            std::vector<Surface> layered;
+            if (m_texture.dimension == 5)
+                layered.push_back(m_texture);
+            for (const auto &surface: m_pixelTextures)
+                if (surface.dimension == 5 || surface.dimension == 2)
+                    layered.push_back(surface);
+            if (!layered.empty())
+                resolvePendingBackings(layered);
+            resolveViewBacking(m_color);
+            resolveViewBacking(m_texture);
+            if (pixelProgram)
+                for (const auto &surface: m_pixelTextures)
+                    resolveViewBacking(surface);
             if (drawDepth && drawDepth->pending)
                 depthBacking(m_depth);
             if (drawDepth && m_depthWrite)
