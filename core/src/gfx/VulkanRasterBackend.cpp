@@ -3402,7 +3402,7 @@ void main() {
                 return reject("Invalid cube texture dimensions or face count");
             if (!texture.layers || texture.layers > 256 || (!array && texture.layers != 1) ||
                 (array && (texture.rendered || (texture.unorm8.empty() && texture.rgba32.empty() && texture.r32.empty() && texture.r32Bytes.empty() &&
-                                                texture.r11g11b10Bytes.empty() && texture.renderedLayers.empty()))))
+                                                texture.r11g11b10Bytes.empty() && texture.rgba32Bytes.empty() && texture.renderedLayers.empty()))))
                 return reject("Unsupported array texture snapshot");
             if (!texture.renderedLayers.empty() &&
                 (binding.type != Latte::TextureType::TwoDArray || texture.rendered || !texture.mips.empty() ||
@@ -3430,7 +3430,7 @@ void main() {
                 return reject("Invalid R32 texture snapshot");
             if (!texture.rgba32Bytes.empty() &&
                 (!texture.unorm8.empty() || !texture.rgba32.empty() || !texture.r32.empty() || !texture.r32Bytes.empty() ||
-                 texture.rgba32Pitch < texture.width || std::uint64_t(texture.rgba32Pitch) * texture.height * 16 > texture.rgba32Bytes.size()))
+                 texture.rgba32Pitch < texture.width || std::uint64_t(texture.rgba32Pitch) * texture.height * texture.layers * 16 > texture.rgba32Bytes.size()))
                 return reject("Invalid RGBA32 float texture snapshot");
             if (!texture.r11g11b10Bytes.empty() &&
                 (std::endian::native != std::endian::little || !texture.unorm8.empty() || !texture.rgba32.empty() || !texture.r32.empty() ||

@@ -236,6 +236,22 @@ namespace Core::Gfx {
                     std::uint32_t validatedFrame{~0u}; // source compared against guest memory during this present
             };
             std::vector<std::shared_ptr<ArraySnapshot>> m_arraySnapshots;
+            // Raw canonical bytes of an array whose layers all live in view backings, packed layer
+            // after layer without row padding. Rebuilt when any layer is written again.
+            struct LayerSnapshot {
+                    Surface surface;
+                    std::uint64_t generation{};
+                    std::shared_ptr<const std::vector<std::uint8_t>> bytes;
+            };
+            std::vector<LayerSnapshot> m_layerSnapshots;
+            // Evicted snapshots still owned by an upload keep their identity (and GPU image).
+            struct RetainedLayerSnapshot {
+                    Surface surface;
+                    std::uint64_t generation{};
+                    std::weak_ptr<const std::vector<std::uint8_t>> bytes;
+            };
+            std::vector<RetainedLayerSnapshot> m_retainedLayerSnapshots;
+            std::shared_ptr<const std::vector<std::uint8_t>> layerSnapshot(const Surface &surface);
             std::optional<Surface> arraySlice(const Surface &surface, unsigned relative) const;
             Surface attachmentSurface(const Surface &surface) const;
             std::optional<Surface> mipSurface(const Surface &surface, unsigned level) const;

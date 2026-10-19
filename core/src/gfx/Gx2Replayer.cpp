@@ -696,8 +696,9 @@ namespace Core::Gfx {
         bool rendered = false;
         for (unsigned layer = 0; layer < surface.sliceCount; ++layer) {
             const auto view = arraySlice(surface, layer);
-            if (!view)
+            if (!view) {
                 return {};
+            }
             auto key = makeSurfaceKey(*view);
             if (depthLayers) {
                 key.format = view->format;
@@ -723,8 +724,62 @@ namespace Core::Gfx {
             else
                 return {};
         }
-        // Without any GPU layer, the existing CPU snapshot paths are at least as fast.
+        // Without any GPU layer, layerSnapshot() shares one upload per version instead.
         return rendered ? layers : std::vector<std::shared_ptr<RasterReadback>>{};
+    }
+
+    std::shared_ptr<const std::vector<std::uint8_t>> Gx2Replayer::layerSnapshot(const Surface &surface)
+    {
+        // Rendered RGBA8/HDR layers that software draws left on the CPU (MK8 writes its 1280x720 HDR
+        // array with multi-target draws). Decoding them through the sampler cost ~140 ms per frame.
+        const auto elementBytes = colorElementBytes(colorFormat(surface.format));
+        if (surface.dimension != 5 || !surface.sliceCount || surface.sliceCount > 256 || !surface.width || !surface.height ||
+            surface.format == 5 || surface.format == 0x11 || surface.format == 0x80E)
+            return {};
+        std::vector<const std::vector<std::uint8_t> *> backings;
+        std::vector<unsigned> pitches;
+        std::uint64_t generation = 0;
+        for (unsigned layer = 0; layer < surface.sliceCount; ++layer) {
+            const auto view = arraySlice(surface, layer);
+            if (!view || view->width != surface.width || view->height != surface.height)
+                return {};
+            const auto key = makeSurfaceKey(*view);
+            const auto backing = m_viewBackings.find(key);
+            if (m_pendingReadbacks.contains(key) || backing == m_viewBackings.end() ||
+                backing->second.size() < std::size_t(view->pitch) * view->height * elementBytes)
+                return {};
+            backings.push_back(&backing->second);
+            pitches.push_back(view->pitch);
+            // Every draw or clear into a layer bumps its write count (see m_cpuWrittenSurfaces).
+            if (const auto written = m_cpuWrittenSurfaces.find(view->imagePtr); written != m_cpuWrittenSurfaces.end())
+                generation = (generation ^ written->second.writes ^ view->imagePtr) * 1099511628211ull;
+        }
+        for (const auto &entry: m_layerSnapshots)
+            if (entry.surface == surface && entry.generation == generation)
+                return entry.bytes;
+        std::shared_ptr<const std::vector<std::uint8_t>> bytes;
+        for (const auto &entry: m_retainedLayerSnapshots)
+            if (entry.surface == surface && entry.generation == generation && (bytes = entry.bytes.lock()))
+                break;
+        if (!bytes) {
+            const auto rowBytes = std::size_t(surface.width) * elementBytes;
+            auto packed = std::make_shared<std::vector<std::uint8_t>>(rowBytes * surface.height * surface.sliceCount);
+            for (unsigned layer = 0; layer < surface.sliceCount; ++layer)
+                for (unsigned y = 0; y < surface.height; ++y)
+                    std::memcpy(packed->data() + (std::size_t(layer) * surface.height + y) * rowBytes,
+                                backings[layer]->data() + std::size_t(y) * pitches[layer] * elementBytes, rowBytes);
+            bytes = std::move(packed);
+            if (m_retainedLayerSnapshots.size() >= 256)
+                std::erase_if(m_retainedLayerSnapshots, [](const auto &entry) { return entry.bytes.expired(); });
+            if (m_retainedLayerSnapshots.size() >= 256)
+                m_retainedLayerSnapshots.clear();
+            m_retainedLayerSnapshots.push_back({surface, generation, bytes});
+        }
+        std::erase_if(m_layerSnapshots, [&](const auto &entry) { return entry.surface == surface; });
+        if (m_layerSnapshots.size() >= 8)
+            m_layerSnapshots.erase(m_layerSnapshots.begin());
+        m_layerSnapshots.push_back({surface, generation, bytes});
+        return bytes;
     }
 
     Gx2Replayer::Surface Gx2Replayer::attachmentSurface(const Surface &surface) const
@@ -3658,10 +3713,11 @@ namespace Core::Gfx {
                     break;
                 }
                 const auto surface = boundSurfaces[binding.resource];
-                if (!vertexBinding && surface.dimension == 5 && !binding.explicitLod) {
+                if (!vertexBinding && surface.dimension == 5 && (!binding.explicitLod || surface.mipCount <= 1)) {
                     // Arrays whose layers were rendered as separate surfaces (MK8's cascaded shadow
                     // maps, HDR and volume slices): pass each layer's current version, so resident
                     // layers are copied on the GPU instead of read back or sampled in software.
+                    // Explicit LODs of a single-level view always select that level.
                     if (auto layers = renderedArrayLayers(surface); !layers.empty()) {
                         const bool depthLayers = surface.format == 0x80E || surface.format == 5 || surface.format == 0x11;
                         textures.push_back({binding, surface.width, surface.height, boundSamplers[binding.sampler], [&, surface](unsigned x, unsigned y) {
@@ -3675,6 +3731,30 @@ namespace Core::Gfx {
                         textures.back().r32Map = surface.compMap;
                         textures.back().renderedDepth = depthLayers;
                         textures.back().renderedFormat = depthLayers ? ColorFormat::RGBA8 : colorFormat(surface.format);
+                        textures.back().sourceMipCount = 1;
+                        continue;
+                    }
+                    if (const auto layers = layerSnapshot(surface)) {
+                        textures.push_back({binding, surface.width, surface.height, boundSamplers[binding.sampler], [&, surface](unsigned x, unsigned y) {
+                                                return sampleTexture(surface, TextureSampler{}, (float(x) + 0.5f) / float(surface.width),
+                                                                     (float(y) + 0.5f) / float(surface.height), 0, nullptr);
+                                            }});
+                        auto &texture = textures.back();
+                        if (surface.format == 0x816) {
+                            texture.r11g11b10Bytes = *layers;
+                            texture.r11g11b10Pitch = surface.width;
+                        } else if (colorFormat(surface.format) == ColorFormat::RGBA32Float) {
+                            texture.rgba32Bytes = *layers;
+                            texture.rgba32Pitch = surface.width;
+                        } else {
+                            texture.unorm8 = *layers;
+                            texture.unorm8Pitch = surface.width;
+                        }
+                        texture.unorm8Map = surface.compMap;
+                        texture.layers = surface.sliceCount;
+                        texture.sourceMipCount = 1;
+                        // Immutable until a layer is written: the backend shares one upload per version.
+                        texture.snapshotOwner = layers;
                         continue;
                     }
                 }
