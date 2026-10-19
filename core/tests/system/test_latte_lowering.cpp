@@ -4519,6 +4519,52 @@ TEST(VulkanDepthTest, DeferredClearTargetsAreClearedOnTheGpuAndKeepTheirPadding)
         }
 }
 
+TEST(VulkanDepthTest, ConsecutiveDrawsIntoAResidentTargetShareOneRenderPass)
+{
+    using namespace Core::Gfx;
+    if (!std::getenv("WEMU_TEST_VULKAN") || !SpirvCompiler::available())
+        GTEST_SKIP();
+    const auto shader = lowerFragmentShader(*decodeProgram({0, (CF_EXP_DONE << 23) | (1u << 21) | 0x688u}));
+    std::array<RasterDraw::Vertex, 6> red{{{0, 0, {}}, {4, 0, {}}, {0, 4, {}}, {4, 0, {}}, {4, 4, {}}, {0, 4, {}}}}, green = red, blue = red;
+    for (auto &vertex: red)
+        vertex.inputs[0] = {1, 0, 0, 1};
+    for (auto &vertex: green)
+        vertex.inputs[0] = {0, 1, 0, 1};
+    for (auto &vertex: blue)
+        vertex.inputs[0] = {0, 0, 1, 1};
+    std::vector<std::uint8_t> target(4 * 2 * 4, 7);
+    auto backend = std::make_unique<VulkanRasterBackend>(true, true);
+    RasterDraw draw{shader, red, {}, {}, target, 4, 2, 4, {0, 0, 1, 2}, 15, {}};
+    draw.supersedesTarget = true;
+    auto first = backend->renderDeferred(draw);
+    ASSERT_TRUE(first && first->readback) << backend->lastError();
+    // The resident result is rendered in place: the next draws continue the open pass.
+    draw.vertices = green;
+    draw.scissor = {1, 0, 1, 2};
+    draw.renderedTarget = first->readback;
+    auto second = backend->renderDeferred(draw);
+    ASSERT_TRUE(second && second->readback) << backend->lastError();
+    draw.vertices = blue;
+    draw.scissor = {2, 1, 2, 1};
+    draw.renderedTarget = second->readback;
+    auto third = backend->renderDeferred(draw);
+    ASSERT_TRUE(third && third->readback) << backend->lastError();
+    EXPECT_EQ(backend->mergedRenderPasses(), 2u);
+    third->resolve();
+    ASSERT_EQ(third->rgba.size(), target.size());
+    const auto pixel = [&](unsigned x, unsigned y) {
+        const auto *p = third->rgba.data() + (y * 4 + x) * 4;
+        return std::array{p[0], p[1], p[2], p[3]};
+    };
+    for (unsigned y = 0; y < 2; ++y) {
+        EXPECT_EQ(pixel(0, y), (std::array<std::uint8_t, 4>{255, 0, 0, 255}));
+        EXPECT_EQ(pixel(1, y), (std::array<std::uint8_t, 4>{0, 255, 0, 255}));
+    }
+    EXPECT_EQ(pixel(2, 0), (std::array<std::uint8_t, 4>{7, 7, 7, 7}));
+    EXPECT_EQ(pixel(2, 1), (std::array<std::uint8_t, 4>{0, 0, 255, 255}));
+    EXPECT_EQ(pixel(3, 1), (std::array<std::uint8_t, 4>{0, 0, 255, 255}));
+}
+
 TEST(VulkanDepthTest, PolygonBiasUsesSlopeUnitsClampAndDynamicPipelineState)
 {
     using namespace Core::Gfx;

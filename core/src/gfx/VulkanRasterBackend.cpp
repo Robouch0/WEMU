@@ -2277,6 +2277,7 @@ void main() {
                     auto &segment = segments[current];
                     if (!segment.recording)
                         return;
+                    endPass(segment.command);
                     check(vkEndCommandBuffer(segment.command), "end direct commands");
                     segment.fence = context.enqueue(segment.command);
                     context.flush();
@@ -2285,6 +2286,7 @@ void main() {
                 }
 
                 std::uint64_t draws() const { return renderedDraws; }
+                std::uint64_t passMerges() const { return mergedDraws; }
 
                 RasterResult render(const Inputs &in)
                 {
@@ -2369,8 +2371,20 @@ void main() {
                         reserve(texture.bytes());
                     }
 
+                    // A draw recording no transfer or layout change, into the attachments of the render
+                    // pass left open, continues it: a pass and two full barriers per draw were most of
+                    // the driver's time in a MK8 race (4500 draws per frame).
+                    bool passFree = (colorInPlace || !hasColor) && (depthInPlace || !draw.depth.test) && !(vertexOwner && !residentVertices);
+                    for (std::size_t i = 0; passFree && i < sources.size(); ++i)
+                        passFree = sources[i] == Source::Shared && shared[i];
                     auto &segment = open(need);
                     const auto command = segment.command;
+                    const auto extent = attachmentExtent(draw);
+                    const bool continuesPass = passFree && openPass && openPass->color == (hasColor ? in.targetSource.get() : nullptr) &&
+                                               openPass->depth == (draw.depth.test ? in.depthSource.get() : nullptr) &&
+                                               openPass->extent.width == extent.width && openPass->extent.height == extent.height;
+                    if (!continuesPass)
+                        endPass(command);
                     const auto pushUpload = [&](const void *data, std::size_t bytes, std::size_t reserved) {
                         const auto offset = segment.used;
                         if (bytes)
@@ -2546,8 +2560,9 @@ void main() {
                         transition(*image, false, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
                     const VkMemoryBarrier vertexCopy{VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr, VK_ACCESS_TRANSFER_WRITE_BIT,
                                                      VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_INDEX_READ_BIT};
-                    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, copiedVertices ? 1 : 0,
-                                         &vertexCopy, 0, nullptr, unsigned(barriers.size()), barriers.data());
+                    if (!continuesPass)
+                        vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, copiedVertices ? 1 : 0,
+                                             &vertexCopy, 0, nullptr, unsigned(barriers.size()), barriers.data());
 
                     const auto pass = renderPass(hasColor ? colorVkFormat(draw.colorFormat) : VK_FORMAT_UNDEFINED,
                                                  draw.depth.test ? depthVkFormat(draw.depth.format) : VK_FORMAT_UNDEFINED);
@@ -2590,11 +2605,16 @@ void main() {
                     }
                     vkUpdateDescriptorSets(device, unsigned(writes.size()), writes.data(), 0, nullptr);
 
-                    VkRenderPassBeginInfo begin{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
-                    begin.renderPass = pass;
-                    begin.renderArea.extent = attachmentExtent(draw);
-                    begin.framebuffer = framebuffer(pass, color, depth, begin.renderArea.extent);
-                    vkCmdBeginRenderPass(command, &begin, VK_SUBPASS_CONTENTS_INLINE);
+                    if (continuesPass)
+                        ++mergedDraws;
+                    else {
+                        VkRenderPassBeginInfo begin{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+                        begin.renderPass = pass;
+                        begin.renderArea.extent = extent;
+                        begin.framebuffer = framebuffer(pass, color, depth, extent);
+                        vkCmdBeginRenderPass(command, &begin, VK_SUBPASS_CONTENTS_INLINE);
+                        openPass = OpenPass{color.get(), depth.get(), extent};
+                    }
                     vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipeline);
                     const VkViewport viewport{0, 0, float(rasterWidth(draw)), float(rasterHeight(draw)), 0, 1};
                     const auto scissor = clippedScissor(draw);
@@ -2641,7 +2661,10 @@ void main() {
                             vkCmdBindIndexBuffer(command, segment.buffer, indicesOffset, VK_INDEX_TYPE_UINT32);
                         vkCmdDrawIndexed(command, unsigned(draw.indices.size()), 1, 0, 0, 0);
                     }
-                    vkCmdEndRenderPass(command);
+                    // The pass stays open for the next draw, unless attachments of earlier draws this
+                    // one sampled must return to TRANSFER_SRC.
+                    if (!sampled.empty())
+                        endPass(command);
                     barriers.clear();
                     for (const auto &image: sampled)
                         transition(*image, false, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
@@ -3504,6 +3527,21 @@ void main() {
                 VkDeviceSize alignment{256};
                 unsigned drawsPerSegment{48};
                 std::array<Segment, 4> segments;
+                // The render pass the last draw left open in the current segment. Its images are
+                // retained by that segment, so their addresses identify them.
+                struct OpenPass {
+                        const ColorImage *color{}, *depth{};
+                        VkExtent2D extent{};
+                };
+                std::optional<OpenPass> openPass;
+                std::uint64_t mergedDraws{};
+                void endPass(VkCommandBuffer command)
+                {
+                    if (!openPass)
+                        return;
+                    vkCmdEndRenderPass(command);
+                    openPass.reset();
+                }
                 std::size_t current{};
                 std::uint64_t renderedDraws{};
                 VkCommandPool readbackPool{};
@@ -3601,6 +3639,7 @@ void main() {
     std::uint64_t VulkanRasterBackend::directTextureBytes() const noexcept { return m_impl->context ? m_impl->context->directTextureBytes : 0; }
     std::uint64_t VulkanRasterBackend::targetUploadTransfers() const noexcept { return m_impl->context ? m_impl->context->targetUploadTransfers : 0; }
     std::uint64_t VulkanRasterBackend::targetClears() const noexcept { return m_impl->context ? m_impl->context->targetClears : 0; }
+    std::uint64_t VulkanRasterBackend::mergedRenderPasses() const noexcept { return m_impl->direct ? m_impl->direct->passMerges() : 0; }
     std::uint64_t VulkanRasterBackend::targetCopyTransfers() const noexcept { return m_impl->context ? m_impl->context->targetCopyTransfers : 0; }
     std::uint64_t VulkanRasterBackend::fullOverwriteDraws() const noexcept { return m_impl->context ? m_impl->context->fullOverwriteDraws : 0; }
     std::uint64_t VulkanRasterBackend::residentTargetCopies() const noexcept { return m_impl->residentTargetCopies; }

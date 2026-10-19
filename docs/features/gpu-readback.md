@@ -244,6 +244,13 @@ before any bundle work and before readbacks, so the queue order matches replay
 order. `WEMU_NATIVE_DIRECT_DRAWS=0` restores the bundle path; GPU timing queries
 also use it.
 
+A direct draw that renders in place into the attachments of the pass the previous
+draw left open, and records no transfer or layout change (resident or host-written
+vertices, textures already in the shared cache), continues that render pass: it
+skips the begin/end and the two full pipeline barriers of a pass of its own.
+Rasterization order keeps blending and depth tests in draw order inside the pass.
+Any other draw, a segment submission and a readback end the pass first.
+
 Tests verify different target sizes and padded/clipped output, repeated scissor
 changes with a single pipeline, live older snapshots and depth comparisons under
 synchronization validation. `pipelineCreations()` records graphics pipeline

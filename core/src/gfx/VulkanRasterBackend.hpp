@@ -39,6 +39,8 @@ namespace Core::Gfx {
             std::uint64_t targetUploadTransfers() const noexcept;
             // Direct draws whose target was a deferred clear (ClearedImage), cleared on the GPU.
             std::uint64_t targetClears() const noexcept;
+            // Direct draws that continued the previous draw's render pass.
+            std::uint64_t mergedRenderPasses() const noexcept;
             std::uint64_t targetCopyTransfers() const noexcept;
             std::uint64_t fullOverwriteDraws() const noexcept;
             std::uint64_t residentTargetCopies() const noexcept;
