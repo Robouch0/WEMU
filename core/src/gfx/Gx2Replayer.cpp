@@ -3692,18 +3692,66 @@ namespace Core::Gfx {
                 else
                     rasterPoint(rv);
             }
-        } else if (mode == 0x13) { // QUADS
-            for (std::uint32_t i = 0; i + 3 < idx.size(); i += 4) {
-                rasterTri(i, i + 1, i + 2);
-                rasterTri(i, i + 2, i + 3);
-            }
-        } else { // treat everything else as a triangle list
-            for (std::uint32_t i = 0; i + 2 < idx.size(); i += 3)
-                rasterTri(i, i + 1, i + 2);
         }
+        const auto assembleTriangles = [&] {
+            if (mode == 0x13) { // QUADS
+                for (std::uint32_t i = 0; i + 3 < idx.size(); i += 4) {
+                    rasterTri(i, i + 1, i + 2);
+                    rasterTri(i, i + 2, i + 3);
+                }
+            } else { // treat everything else as a triangle list
+                for (std::uint32_t i = 0; i + 2 < idx.size(); i += 3)
+                    rasterTri(i, i + 1, i + 2);
+            }
+        };
+        // GPU vertex programs only need the fetched attributes: build each distinct vertex once,
+        // directly in the backend layout. Reference corners (~600 bytes each) are assembled only
+        // if the draw falls back to software. Verification compares against those corners.
+        static const bool verifyEnvironmentSet = std::getenv("WEMU_NATIVE_VERIFY_EVERY") != nullptr;
+        const bool directVertices = collectBackend && nativeVertexExecution && mode != 1 &&
+                                    !(m_nativeVerifyEvery ? *m_nativeVerifyEvery != 0 : verifyEnvironmentSet);
+        std::vector<RasterDraw::Vertex> directVertexList;
+        std::vector<std::uint32_t> directIndices;
+        if (directVertices) {
+            static const RasterVertex defaults{};
+            const auto inputCount = std::min<std::size_t>(m_vertexInputCount, RasterDraw::Vertex{}.inputs.size());
+            const auto [low, high] = idx.empty() ? std::pair{idx.end(), idx.end()} : std::minmax_element(idx.begin(), idx.end());
+            const std::uint64_t span = idx.empty() ? 0 : std::uint64_t(*high) - *low + 1;
+            const bool dense = span <= idx.size() * 2 + 64;
+            std::vector<std::uint32_t> denseSlots(dense ? span : 0, ~0u);
+            std::unordered_map<std::uint32_t, std::uint32_t> sparseSlots;
+            directVertexList.reserve(std::min<std::size_t>(idx.size(), dense ? span : idx.size()));
+            directIndices.reserve(idx.size() / 2 * 3);
+            // ~0u: not fetched yet; ~1u: unavailable, which drops its triangles like a failed corner.
+            const auto slotOf = [&](std::uint32_t vi) {
+                auto &slot = dense ? denseSlots[vi - *low] : sparseSlots.try_emplace(vi, ~0u).first->second;
+                if (slot == ~0u) {
+                    RasterDraw::Vertex vertex{};
+                    std::copy_n(defaults.params.begin(), vertex.inputs.size(), vertex.inputs.begin());
+                    slot = fetchAttributes(vi, std::span(vertex.inputs).first(inputCount)) ? std::uint32_t(directVertexList.size()) : ~1u;
+                    if (slot != ~1u)
+                        directVertexList.push_back(vertex);
+                }
+                return slot;
+            };
+            const auto triangle = [&](std::uint32_t a, std::uint32_t b, std::uint32_t c) {
+                const std::uint32_t slots[]{slotOf(idx[a]), slotOf(idx[b]), slotOf(idx[c])};
+                if (slots[0] != ~1u && slots[1] != ~1u && slots[2] != ~1u)
+                    directIndices.insert(directIndices.end(), std::begin(slots), std::end(slots));
+            };
+            if (mode == 0x13)
+                for (std::uint32_t i = 0; i + 3 < idx.size(); i += 4) {
+                    triangle(i, i + 1, i + 2);
+                    triangle(i, i + 2, i + 3);
+                }
+            else
+                for (std::uint32_t i = 0; i + 2 < idx.size(); i += 3)
+                    triangle(i, i + 1, i + 2);
+        } else if (mode != 1)
+            assembleTriangles();
         std::int64_t nativePrepareUs{}, nativeExecuteUs{}, nativeVerifyUs{}, fallbackUs{};
         bool nativeCommitted = false;
-        if (collectBackend && (!preparedTriangles.empty() || !preparedPoints.empty())) {
+        if (collectBackend && (!preparedTriangles.empty() || !preparedPoints.empty() || !directIndices.empty())) {
             const auto prepareStart = (profile || nativeAudit) ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
             std::vector<Latte::TextureType> resourceTypes(m_pixelTextures.size(), Latte::TextureType::TwoD);
             for (unsigned i = 0; i < m_pixelTextures.size(); ++i)
@@ -4123,6 +4171,10 @@ namespace Core::Gfx {
                     return &projectedVertex[std::size_t(corner - projectedCorners.data())];
                 return nullptr;
             };
+            if (directVertices) {
+                vertices = std::move(directVertexList);
+                indices = std::move(directIndices);
+            }
             for (const auto &triangle: preparedTriangles) {
                 const auto &a = triangle[0], &b = triangle[1], &c = triangle[2];
                 const float area = (b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y);
@@ -4455,6 +4507,8 @@ namespace Core::Gfx {
             }
             if (!committed) {
                 const auto fallbackStart = (profile || nativeAudit) ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+                if (directVertices)
+                    assembleTriangles();
                 for (const auto &triangle: preparedTriangles) {
                     const RasterVertex rv[]{triangle[0], triangle[1], triangle[2]};
                     rasterPrepared(rv);
