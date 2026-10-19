@@ -1141,7 +1141,8 @@ TEST(VulkanRasterBackendTest, DeferredReadbackOwnsInputsAndSurvivesReuseAndBacke
             // More than thirty-two resource keys forces eviction while tickets remain live.
             for (std::size_t i = queued.size(); i-- > 0;) {
                 queued[i].resolve();
-                EXPECT_EQ(queued[i].rgba, references[i]);
+                // Draws without color writes leave the caller's bytes as the result.
+                EXPECT_EQ(queued[i].unchangedTarget ? target : queued[i].rgba, references[i]);
             }
             draw.channelMask = 15;
             draw.scissor = {0, 0, 4, 4};

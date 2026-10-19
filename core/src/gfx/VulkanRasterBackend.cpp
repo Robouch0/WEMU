@@ -3672,9 +3672,18 @@ void main() {
         if (draw.renderedTarget && draw.renderedTarget->size() != draw.target.size())
             return reject("Invalid rendered target size");
         if (!vertices || (!draw.channelMask && !(draw.depth.test && draw.depth.write)) || draw.scissor[2] <= 0 || draw.scissor[3] <= 0) {
-            if (draw.renderedTarget)
-                draw.target = draw.renderedTarget->resolve();
-            RasterResult result{std::vector<std::uint8_t>(draw.target.begin(), draw.target.end()), 0, 0};
+            RasterResult result;
+            if (deferReadback) {
+                // Nothing is drawn: keep the target's current version. Resolving it waited for the
+                // GPU and copied the whole target, for MK8's many draws without color writes.
+                result.readback = draw.renderedTarget;
+                if (!result.readback)
+                    result.unchangedTarget = draw.target.size();
+            } else {
+                if (draw.renderedTarget)
+                    draw.target = draw.renderedTarget->resolve();
+                result.rgba.assign(draw.target.begin(), draw.target.end());
+            }
             if (draw.depth.test && draw.depth.write) {
                 if (draw.depth.rendered)
                     result.depthReadback = draw.depth.rendered;
