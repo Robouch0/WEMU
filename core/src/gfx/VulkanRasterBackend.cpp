@@ -243,6 +243,13 @@ namespace Core::Gfx {
                         usage->bytes.fetch_sub(bytes, std::memory_order_relaxed);
                 }
         };
+        struct KeyWordsHash {
+                std::size_t operator()(const std::vector<std::uint64_t> &words) const noexcept
+                {
+                    return std::hash<std::string_view>{}({reinterpret_cast<const char *>(words.data()), words.size() * sizeof(words[0])});
+                }
+        };
+
         struct Context {
                 struct BatchFence {
                         VkDevice device{};
@@ -357,8 +364,9 @@ namespace Core::Gfx {
                         std::shared_ptr<CachedTexture> value;
                         std::uint64_t bytes{}, used{};
                 };
-                std::map<std::vector<std::uint64_t>, TextureEntry> textures;
-                std::map<std::vector<std::uint64_t>, std::weak_ptr<CachedTexture>> retainedTextures;
+                // Hashed: ordered maps compared key vectors word by word on every lookup.
+                std::unordered_map<std::vector<std::uint64_t>, TextureEntry, KeyWordsHash> textures;
+                std::unordered_map<std::vector<std::uint64_t>, std::weak_ptr<CachedTexture>, KeyWordsHash> retainedTextures;
                 std::uint64_t textureBytes{}, textureClock{}, textureUploads{}, textureHits{};
                 std::shared_ptr<TextureMemoryUsage> textureMemory = std::make_shared<TextureMemoryUsage>();
                 // Shared texture LRU. A race frame samples hundreds of distinct textures; evicting them
@@ -3584,12 +3592,6 @@ void main() {
                         std::vector<std::weak_ptr<ColorImage>> sources; // expired: the key's addresses may be reused
                         std::shared_ptr<ScratchTexture> image;
                         std::uint64_t used{};
-                };
-                struct KeyWordsHash {
-                        std::size_t operator()(const std::vector<std::uint64_t> &words) const noexcept
-                        {
-                            return std::hash<std::string_view>{}({reinterpret_cast<const char *>(words.data()), words.size() * sizeof(words[0])});
-                        }
                 };
                 std::unordered_map<std::vector<std::uint64_t>, AssembledTexture, KeyWordsHash> assembledTextures;
                 std::uint64_t assembledClock{};
