@@ -408,10 +408,28 @@ namespace Core::Gfx {
             // quads with a matrix in c0..c3; m_regsFresh marks regs written since the last draw.
             float m_vsRegs[256]{};
             bool m_regsFresh{false};
-            // Current vertex-shader bytecode (empty = none/unsupported) + cache keyed by the
-            // guest GX2VertexShader struct address.
-            std::vector<std::uint32_t> m_vsProgram;
-            std::unordered_map<std::uint32_t, std::vector<std::uint32_t>> m_vsCache;
+            // A shader's bytecode (empty = unsupported), interned per guest GX2VertexShader or
+            // GX2PixelShader address, with the results of the lookups draws make for it: hashing
+            // and comparing whole programs in each cache cost milliseconds per MK8 race frame.
+            struct ShaderProgram {
+                    std::vector<std::uint32_t> words;
+                    std::shared_ptr<const Latte::Program> declaration;
+                    std::shared_ptr<const Latte::VertexShader> vertexShader;
+                    std::optional<bool> colorOnlyEffects;
+                    // Resource types (two bits each), onlyColorZero, colorExport.
+                    std::map<std::tuple<std::uint64_t, bool, unsigned>, std::shared_ptr<const Latte::FragmentShader>> fragmentShaders;
+            };
+            [[nodiscard]] static const std::vector<std::uint32_t> &programWords(const std::shared_ptr<ShaderProgram> &program);
+            [[nodiscard]] const std::vector<std::uint32_t> &vsProgram() const { return programWords(m_vsShader); }
+            [[nodiscard]] const std::vector<std::uint32_t> &psProgram() const { return programWords(m_psShader); }
+            [[nodiscard]] static std::shared_ptr<const Latte::Program> declaration(const std::shared_ptr<ShaderProgram> &program);
+            [[nodiscard]] std::shared_ptr<const Latte::FragmentShader> fragmentShader(std::span<const Latte::TextureType> resourceTypes, bool onlyColorZero,
+                                                                                     unsigned colorExport);
+            [[nodiscard]] std::shared_ptr<const Latte::VertexShader> vertexShader();
+            [[nodiscard]] bool colorOnlyEffects();
+            // Current vertex shader + cache keyed by the guest GX2VertexShader struct address.
+            std::shared_ptr<ShaderProgram> m_vsShader;
+            std::unordered_map<std::uint32_t, std::shared_ptr<ShaderProgram>> m_vsCache;
             // Vertex uniform BLOCKS (GX2SetVertexUniformBlock): payload snapshots per binding —
             // read through the shader's kcache windows in uniform-block mode.
             std::array<std::vector<std::uint32_t>, 16> m_vsBlocks{};
@@ -420,8 +438,8 @@ namespace Core::Gfx {
             // colour/mask composition, so the bytecode/uniform stream must be visible per draw.
             float m_psRegs[256]{};
             bool m_psRegsFresh{false};
-            std::vector<std::uint32_t> m_psProgram;
-            std::unordered_map<std::uint32_t, std::vector<std::uint32_t>> m_psCache;
+            std::shared_ptr<ShaderProgram> m_psShader;
+            std::unordered_map<std::uint32_t, std::shared_ptr<ShaderProgram>> m_psCache;
             // Opt-in translation audit only; no native dispatch authorization.
             std::map<std::pair<std::vector<std::uint32_t>, bool>, Latte::FragmentShader> m_nativeAuditCache;
             Latte::FragmentShaderCache m_fragmentShaderCache;
@@ -459,7 +477,8 @@ namespace Core::Gfx {
                     std::array<float, 5> polygonOffset{};
                     bool rasterizerEnabled{true}, zClipEnabled{}, halfZ{};
                     std::array<float, 256> vsRegs{}, psRegs{};
-                    std::vector<std::uint32_t> vsProgram, psProgram, fetchLayout;
+                    std::shared_ptr<ShaderProgram> vsShader, psShader;
+                    std::vector<std::uint32_t> fetchLayout;
                     std::array<std::vector<std::uint32_t>, 16> vsBlocks{}, psBlocks{};
                     std::array<Attrib, 8> attribs{};
                     std::array<std::uint32_t, 32> vertexSemantics{};

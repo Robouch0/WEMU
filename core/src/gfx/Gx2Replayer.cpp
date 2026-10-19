@@ -1653,6 +1653,56 @@ namespace Core::Gfx {
         return out;
     }
 
+    const std::vector<std::uint32_t> &Gx2Replayer::programWords(const std::shared_ptr<ShaderProgram> &program)
+    {
+        static const std::vector<std::uint32_t> none;
+        return program ? program->words : none;
+    }
+
+    std::shared_ptr<const Latte::Program> Gx2Replayer::declaration(const std::shared_ptr<ShaderProgram> &program)
+    {
+        if (!program)
+            return LatteVsInterp::compile(programWords(program));
+        if (!program->declaration)
+            program->declaration = LatteVsInterp::compile(program->words);
+        return program->declaration;
+    }
+
+    std::shared_ptr<const Latte::FragmentShader> Gx2Replayer::fragmentShader(std::span<const Latte::TextureType> resourceTypes, bool onlyColorZero,
+                                                                             unsigned colorExport)
+    {
+        // Trailing 2D resources are the default, as in FragmentShaderCache.
+        while (!resourceTypes.empty() && resourceTypes.back() == Latte::TextureType::TwoD)
+            resourceTypes = resourceTypes.first(resourceTypes.size() - 1);
+        if (!m_psShader || resourceTypes.size() > 32)
+            return m_fragmentShaderCache.get(psProgram(), resourceTypes, onlyColorZero, colorExport);
+        std::uint64_t types{};
+        for (std::size_t i = 0; i < resourceTypes.size(); ++i)
+            types |= std::uint64_t(resourceTypes[i]) << (i * 2);
+        auto &shader = m_psShader->fragmentShaders[{types, onlyColorZero, colorExport}];
+        if (!shader)
+            shader = m_fragmentShaderCache.get(m_psShader->words, resourceTypes, onlyColorZero, colorExport);
+        return shader;
+    }
+
+    std::shared_ptr<const Latte::VertexShader> Gx2Replayer::vertexShader()
+    {
+        if (!m_vsShader)
+            return m_vertexShaderCache.get(vsProgram());
+        if (!m_vsShader->vertexShader)
+            m_vsShader->vertexShader = m_vertexShaderCache.get(m_vsShader->words);
+        return m_vsShader->vertexShader;
+    }
+
+    bool Gx2Replayer::colorOnlyEffects()
+    {
+        if (!m_psShader)
+            return m_fragmentShaderCache.hasUnconditionalColorOnlyEffects(psProgram());
+        if (!m_psShader->colorOnlyEffects)
+            m_psShader->colorOnlyEffects = m_fragmentShaderCache.hasUnconditionalColorOnlyEffects(m_psShader->words);
+        return *m_psShader->colorOnlyEffects;
+    }
+
     Gx2Replayer::Surface Gx2Replayer::parseSurface(const std::uint32_t addr)
     {
         Surface s;
@@ -2282,12 +2332,13 @@ namespace Core::Gfx {
         // not the last unit-zero binding (post-process passes commonly bind other units).
         unsigned textureUnit = 0;
         unsigned textureParam = 0, textureSelectX = 0, textureSelectY = 1;
-        for (std::size_t cf = 0; cf + 1 < m_psProgram.size(); cf += 2) {
-            const auto w0 = m_psProgram[cf], w1 = m_psProgram[cf + 1];
+        const auto &pixelWords = psProgram();
+        for (std::size_t cf = 0; cf + 1 < pixelWords.size(); cf += 2) {
+            const auto w0 = pixelWords[cf], w1 = pixelWords[cf + 1];
             if (((w1 >> 26) & 15) >= 8)
                 continue;
-            if (((w1 >> 23) & 127) == 1 && std::uint64_t(w0) * 2 + 2 < m_psProgram.size()) {
-                const auto t0 = m_psProgram[std::size_t(w0) * 2], t2 = m_psProgram[std::size_t(w0) * 2 + 2];
+            if (((w1 >> 23) & 127) == 1 && std::uint64_t(w0) * 2 + 2 < pixelWords.size()) {
+                const auto t0 = pixelWords[std::size_t(w0) * 2], t2 = pixelWords[std::size_t(w0) * 2 + 2];
                 textureUnit = (t0 >> 8) & 255;
                 const auto input = (t0 >> 16) & 127;
                 if (input < m_pixelInputSemantics.size()) {
@@ -2308,7 +2359,7 @@ namespace Core::Gfx {
         // Export destination is independent of translation support. In particular,
         // a burst shader with only slot zero writable still targets slot zero when
         // its other exports or instructions require reference execution.
-        const auto pixelDeclaration = m_psProgram.empty() ? nullptr : LatteVsInterp::compile(m_psProgram);
+        const auto pixelDeclaration = psProgram().empty() ? nullptr : declaration(m_psShader);
         const auto colorExports = pixelDeclaration && pixelDeclaration->valid ? pixelDeclaration->colorExportMask : 0u;
         unsigned writableColors{};
         for (unsigned slot = 0; slot < m_colorBuffers.size(); ++slot)
@@ -2327,7 +2378,7 @@ namespace Core::Gfx {
             };
             for (unsigned slot = 0; slot < 8 && independent; ++slot)
                 if (writableColors & (1u << slot)) {
-                    independent = bool(*m_fragmentShaderCache.get(m_psProgram, {}, true, slot));
+                    independent = bool(*fragmentShader({}, true, slot));
                     for (unsigned other = 0; other < slot; ++other)
                         if ((writableColors & (1u << other)) && aliases(m_colorBuffers[slot], m_colorBuffers[other]))
                             independent = false;
@@ -2371,7 +2422,7 @@ namespace Core::Gfx {
         // Zero writable colors can use the same analysis to prove a depth-only
         // replacement. A specialized original shader still needs mask 1 at submission.
         const bool onlyColorZero = writableColors <= 1 && !m_multiWriteEnable;
-        const auto colorShader = m_psProgram.empty() ? nullptr : m_fragmentShaderCache.get(m_psProgram, {}, onlyColorZero, colorExport);
+        const auto colorShader = psProgram().empty() ? nullptr : fragmentShader({}, onlyColorZero, colorExport);
         if (selectedColor < 0 && m_colorBuffers[0].imagePtr && (writableColors == 1 || (colorShader && *colorShader && colorShader->exportsColor))) {
             m_color = m_colorBuffers[0];
             m_colorTarget = 0;
@@ -2519,19 +2570,20 @@ namespace Core::Gfx {
                 LatteVsInterp::Output output;
         };
         std::vector<CachedVertex> vertexCache;
-        const auto vertexDeclaration = LatteVsInterp::compile(m_vsProgram);
+        const auto vertexDeclaration = declaration(m_vsShader);
         bool vertexShaderReadsTextures = false;
         {
             bool &readsTextures = vertexShaderReadsTextures;
-            for (std::size_t cf = 0; cf + 1 < m_vsProgram.size(); cf += 2) {
-                const auto word = m_vsProgram[cf + 1];
+            const auto &vertexWords = vsProgram();
+            for (std::size_t cf = 0; cf + 1 < vertexWords.size(); cf += 2) {
+                const auto word = vertexWords[cf + 1];
                 if (!Latte::isAluClause(word) &&
                     (Latte::cfInst(word) == Latte::CF_TEX || Latte::cfInst(word) == Latte::CF_VTX || Latte::cfInst(word) == Latte::CF_VTX_TC)) {
                     const auto slots = (((word >> 10) & 7) | ((word >> 16) & 8)) + 1;
                     for (unsigned slot = 0; slot < slots; ++slot) {
-                        const auto offset = std::uint64_t(m_vsProgram[cf]) * 2 + std::uint64_t(slot) * 4;
-                        if (offset + 3 >= m_vsProgram.size() ||
-                            !Latte::decodeUniformBufferFetch(m_vsProgram[offset], m_vsProgram[offset + 1], m_vsProgram[offset + 2]))
+                        const auto offset = std::uint64_t(vertexWords[cf]) * 2 + std::uint64_t(slot) * 4;
+                        if (offset + 3 >= vertexWords.size() ||
+                            !Latte::decodeUniformBufferFetch(vertexWords[offset], vertexWords[offset + 1], vertexWords[offset + 2]))
                             readsTextures = true;
                     }
                 }
@@ -2561,7 +2613,7 @@ namespace Core::Gfx {
                 const char *e = std::getenv("WEMU_VS_EXEC");
                 return !e || e[0] != '0';
             }();
-            if (!enabled || m_vsProgram.empty())
+            if (!enabled || vsProgram().empty())
                 return false;
             const LatteVsInterp::Output *preshadedOutput =
                     vi - preshadedBase < preshaded.size() && preshadedReady[vi - preshadedBase] ? &preshaded[vi - preshadedBase] : nullptr;
@@ -2640,7 +2692,7 @@ namespace Core::Gfx {
             const bool sum = summary && !idx.empty() && vi == idx.front() && (!debugTraceOnly || m_trace);
             if (dbg) {
                 std::fprintf(stderr, "[VSDBG] draw#%u regsFresh=%d prog=%zudw stride=%u attrib0=(%g,%g,%g,%g)\n", m_stats.draws, m_regsFresh ? 1 : 0,
-                             m_vsProgram.size(), ab.stride, attribs[0][0], attribs[0][1], attribs[0][2], attribs[0][3]);
+                             vsProgram().size(), ab.stride, attribs[0][0], attribs[0][1], attribs[0][2], attribs[0][3]);
                 for (int c = 0; c < 20; c++)
                     std::fprintf(stderr, "[VSDBG]   c%-2d %g %g %g %g\n", c, m_vsRegs[std::size_t(c) * 4], m_vsRegs[std::size_t(c) * 4 + 1],
                                  m_vsRegs[std::size_t(c) * 4 + 2], m_vsRegs[std::size_t(c) * 4 + 3]);
@@ -2703,12 +2755,12 @@ namespace Core::Gfx {
                 }
             }
             if (sum) {
-                const std::uint32_t h = shaderHash(m_vsProgram);
+                const std::uint32_t h = shaderHash(vsProgram());
                 std::fprintf(stderr,
                              "[VSSUM] draw#%02u tgt=0x%08X(%ux%u) prog=%zudw hash=%08X stride=%u tex=0x%08X %ux%u | pos=(%g,%g,%g,%g)"
                              " valid=%d p0=(%g,%g,%g,%g)%c p1=(%g,%g,%g,%g)%c | c4=(%g,%g,%g,%g) c5=(%g,%g,%g,%g) c7=(%g,%g,%g,%g) c8=(%g,%g,%g,%g)"
                              " c9=(%g,%g,%g,%g) c15=(%g,%g,%g,%g) c16=(%g,%g,%g,%g)\n",
-                             m_stats.draws, m_color.imagePtr, m_color.width, m_color.height, m_vsProgram.size(), h, ab.stride, m_texture.imagePtr,
+                             m_stats.draws, m_color.imagePtr, m_color.width, m_color.height, vsProgram().size(), h, ab.stride, m_texture.imagePtr,
                              m_texture.width, m_texture.height, o.pos[0], o.pos[1], o.pos[2], o.pos[3], o.valid ? 1 : 0, o.params[0][0],
                              o.params[0][1], o.params[0][2], o.params[0][3], o.paramValid[0] ? 'v' : '-', o.params[1][0], o.params[1][1],
                              o.params[1][2], o.params[1][3], o.paramValid[1] ? 'v' : '-', m_vsRegs[16], m_vsRegs[17], m_vsRegs[18], m_vsRegs[19],
@@ -2891,7 +2943,7 @@ namespace Core::Gfx {
                 float su = 0, sv = 0;
                 if (runShader(idx[0], s0x, s0y, su, sv))
                     Utils::Log::error("[GX2TRACE]   vs#{} out v0 screen=({:.1f},{:.1f}) uv=({:.3f},{:.3f}) prog={}dw", m_stats.draws, s0x, s0y, su,
-                                      sv, m_vsProgram.size());
+                                      sv, vsProgram().size());
                 else
                     mapVertex(tx0, ty0, s0x, s0y);
                 // Snapshot the uniform register file per draw for offline interpreter debugging.
@@ -2922,13 +2974,13 @@ namespace Core::Gfx {
                               m_stats.draws, mode, count, ab.stride, m_texture.imagePtr, m_texture.format & 0x3F, m_texture.tileMode, m_texture.width,
                               m_texture.height, m_color.imagePtr, m_color.width, m_color.height, tx0, ty0, tu0, tv0, s0x, s0y, mid[0], mid[1], mid[2],
                               mid[3]);
-            if (!m_psProgram.empty()) {
+            if (!psProgram().empty()) {
                 std::size_t psBlockWords = 0;
                 for (const auto &blk: m_psBlocks)
                     psBlockWords += blk.size();
                 Utils::Log::error("[PSSUM] draw#{} psProg={}dw hash={:08X} psRegsFresh={} p0=({:.4g},{:.4g},{:.4g},{:.4g})"
                                   " p1=({:.4g},{:.4g},{:.4g},{:.4g}) psBlockWords={}",
-                                  m_stats.draws, m_psProgram.size(), shaderHash(m_psProgram), m_psRegsFresh ? 1 : 0, m_psRegs[0], m_psRegs[1],
+                                  m_stats.draws, psProgram().size(), shaderHash(psProgram()), m_psRegsFresh ? 1 : 0, m_psRegs[0], m_psRegs[1],
                                   m_psRegs[2], m_psRegs[3], m_psRegs[4], m_psRegs[5], m_psRegs[6], m_psRegs[7], psBlockWords);
             }
             // Dump the raw per-vertex positions: this reveals whether menu panes carry real screen
@@ -2993,7 +3045,7 @@ namespace Core::Gfx {
             const char *e = std::getenv("WEMU_PS_TEXMOD");
             return e && e[0] == '1';
         }();
-        const SimplePixelShaderKind psKind = psTexModEnabled ? simplePixelShaderKind(m_psProgram) : SimplePixelShaderKind::None;
+        const SimplePixelShaderKind psKind = psTexModEnabled ? simplePixelShaderKind(psProgram()) : SimplePixelShaderKind::None;
         static const bool pixelExecution = [] {
             const char *e = std::getenv("WEMU_PS_EXEC");
             return !e || e[0] != '0';
@@ -3004,7 +3056,7 @@ namespace Core::Gfx {
         // but avoid texture reads and shader work whose results cannot be stored.
         const bool skipColorShader = pixelProgram && writableColors == 0 && !m_multiWriteEnable &&
                                      (!m_colorWriteEnable || !m_channelMask[m_colorTarget & 7]) &&
-                                     m_fragmentShaderCache.hasUnconditionalColorOnlyEffects(m_psProgram);
+                                     colorOnlyEffects();
         const bool pixelAlwaysRejected = pixelProgram && !skipColorShader && LatteVsInterp::rejectsEveryPixel(*pixelProgram);
         // Rejected coverage has no shader side effects in the translated subset.
         // Depth exports must execute before comparison; unsupported shaders retain
@@ -3012,7 +3064,7 @@ namespace Core::Gfx {
         const auto depthShader = drawDepth && pixelProgram && m_depthCompare != 7 ? colorShader : nullptr;
         const bool earlyDepth = drawDepth && m_depthCompare != 7 &&
                                 (skipColorShader || (depthShader && *depthShader && !depthShader->writesDepth) ||
-                                 (pixelProgram && m_fragmentShaderCache.hasUnconditionalColorOnlyEffects(m_psProgram)));
+                                 (pixelProgram && colorOnlyEffects()));
         std::optional<std::array<float, 2>> depthBounds;
         const auto rejectConstantDepth = [&](float incoming) {
             if (!earlyDepth)
@@ -3079,16 +3131,16 @@ namespace Core::Gfx {
         std::array<bool, 16> sampledResources{}, explicitResources{};
         std::array<std::shared_ptr<MipSnapshot>, 16> pixelMips{};
         if (pixelProgram)
-            for (std::size_t cf = 0; cf + 1 < m_psProgram.size(); cf += 2) {
-                const auto w0 = m_psProgram[cf], w1 = m_psProgram[cf + 1];
+            for (std::size_t cf = 0; cf + 1 < pixelWords.size(); cf += 2) {
+                const auto w0 = pixelWords[cf], w1 = pixelWords[cf + 1];
                 if (Latte::isAluClause(w1))
                     continue;
                 if (Latte::cfInst(w1) == Latte::CF_TEX)
                     for (unsigned slot = 0; slot < (((w1 >> 10) & 7) | ((w1 >> 16) & 8)) + 1; ++slot) {
                         const auto offset = std::uint64_t(w0) * 2 + std::uint64_t(slot) * 4;
-                        if (offset + 3 >= m_psProgram.size())
+                        if (offset + 3 >= pixelWords.size())
                             break;
-                        const auto word = m_psProgram[offset], op = word & 31, resource = (word >> 8) & 255;
+                        const auto word = pixelWords[offset], op = word & 31, resource = (word >> 8) & 255;
                         if (resource < sampledResources.size() && op != 0x0E) {
                             sampledResources[resource] = true;
                             explicitResources[resource] = explicitResources[resource] || op == 0x11;
@@ -3367,7 +3419,7 @@ namespace Core::Gfx {
         // modified by this draw remains on the reference path.
         // GX2 bindings persist across draws, so only resources this vertex program samples can
         // alias the target. Programs that cannot be lowered keep the conservative all-slot check.
-        const auto vertexProgram = m_rasterBackend && !m_vsProgram.empty() ? m_vertexShaderCache.get(m_vsProgram) : nullptr;
+        const auto vertexProgram = m_rasterBackend && !vsProgram().empty() ? vertexShader() : nullptr;
         const auto vertexSamples = [&](const Surface &surface) {
             const auto resource = static_cast<unsigned>(&surface - m_vertexTextures.data());
             return !vertexProgram || !*vertexProgram ||
@@ -3420,7 +3472,7 @@ namespace Core::Gfx {
         }();
         if (collectBackend && (mode == 1 || mode == 4 || mode == 0x13) && gpuVertexEnabled && m_rasterBackend->supportsVertexStage() &&
             !m_fetchLayout.empty()) {
-            const auto candidate = m_vertexShaderCache.get(m_vsProgram);
+            const auto candidate = vertexShader();
             // The current Vulkan vertex payload contains sixteen attributes.
             // Wider fetch inputs must use the complete reference register file.
             const bool inputsSupported = m_vertexInputCount <= 16;
@@ -3681,7 +3733,7 @@ namespace Core::Gfx {
                                                              std::distance(parallelOutput.begin(), mismatch.first)));
                     ++m_verifiedRasterTriangles;
                     Utils::Log::error("[RASTER_VERIFY] matched={} eligible={} frame={} ps={:016X}", m_verifiedRasterTriangles, m_parallelTriangles,
-                                      m_presentCount, shaderHash(m_psProgram));
+                                      m_presentCount, shaderHash(psProgram()));
                 }
             } else {
                 rasterRows(0, unsigned(rows.size()));
@@ -3897,7 +3949,7 @@ namespace Core::Gfx {
             return (!value || value[0] != '0') && !set("WEMU_VS_DEBUG") && !set("WEMU_VS_DEBUG_DRAW") && !set("WEMU_VS_DEBUG_TEX") &&
                    !set("WEMU_VS_SUMMARY") && !set("WEMU_VS_DEGEN_MODEL_FALLBACK") && !set("WEMU_KCACHE_BIAS");
         }();
-        if (preshadeEnabled && !nativeVertexExecution && !m_trace && vertexDeclaration->valid && !vertexShaderReadsTextures && !m_vsProgram.empty() &&
+        if (preshadeEnabled && !nativeVertexExecution && !m_trace && vertexDeclaration->valid && !vertexShaderReadsTextures && !vsProgram().empty() &&
             !m_fetchLayout.empty() && idx.size() >= 64) {
             const auto [low, high] = std::minmax_element(idx.begin(), idx.end());
             const std::uint64_t span = std::uint64_t(*high) - *low + 1;
@@ -4128,7 +4180,7 @@ namespace Core::Gfx {
                 else if (m_pixelTextures[i].dimension == 3)
                     resourceTypes[i] = Latte::TextureType::Cube;
             const auto translatedShader = skipColorShader ? m_fragmentShaderCache.get({0, (Latte::CF_EXP_DONE << 23) | (1u << 21) | 0xB24u})
-                                                          : m_fragmentShaderCache.get(m_psProgram, resourceTypes, onlyColorZero, colorExport);
+                                                          : fragmentShader(resourceTypes, onlyColorZero, colorExport);
             const auto &shader = *translatedShader;
             bool supported = bool(shader);
             std::string unsupportedReason = supported ? std::string{} : "fragment shader not lowered: " + shader.error;
@@ -4748,7 +4800,7 @@ namespace Core::Gfx {
                     const bool compare = interval && m_presentCount >= verifyFrom && m_nativeDraws % interval == 0 &&
                                          (verifyFrame < 0 || m_presentCount == unsigned(verifyFrame)) &&
                                          (verifyDraw < 0 || m_stats.draws == unsigned(verifyDraw)) &&
-                                         (!verifyShader || shaderHash(m_psProgram) == *verifyShader);
+                                         (!verifyShader || shaderHash(psProgram()) == *verifyShader);
                     ++m_nativeDraws;
                     if (compare) {
                         const auto verifyStart =
@@ -4842,7 +4894,7 @@ namespace Core::Gfx {
                             ++m_comparedNativeDraws;
                             m_differingNativeDraws += different != 0;
                             Utils::Log::error("[NATIVE_VERIFY] frame={} draw={} ps={:016X} bytes={} different={} over_one={} max_error={} first={}",
-                                              m_presentCount, m_stats.draws, shaderHash(m_psProgram), targetBytes, different, overOne, maxError,
+                                              m_presentCount, m_stats.draws, shaderHash(psProgram()), targetBytes, different, overOne, maxError,
                                               first);
                             if (different && (m_differingNativeDraws == 1 || maxError > m_nativeWorstError)) {
                                 m_nativeWorstError = std::max(m_nativeWorstError, maxError);
@@ -5029,7 +5081,7 @@ namespace Core::Gfx {
         if (profile || nativeAudit) {
             const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - profileStart).count();
             std::uint64_t hash = 14695981039346656037ull;
-            for (const auto word: m_psProgram) {
+            for (const auto word: psProgram()) {
                 for (unsigned shift = 0; shift < 32; shift += 8) {
                     hash ^= (word >> shift) & 255;
                     hash *= 1099511628211ull;
@@ -5037,19 +5089,19 @@ namespace Core::Gfx {
             }
             Utils::Log::error("[RASTER] frame={} draw={} us={} pixels={} ps={:016X} words={} target={}x{} image={:08X} native={} stencil={} "
                               "depth={}:{:08X} aa={} fmt={:X}",
-                              m_presentCount, m_stats.draws, elapsed, m_stats.pixels - pixelsBefore, hash, m_psProgram.size(), m_color.width,
+                              m_presentCount, m_stats.draws, elapsed, m_stats.pixels - pixelsBefore, hash, psProgram().size(), m_color.width,
                               m_color.height, m_color.imagePtr, nativeCommitted, m_stencilTest, m_depthTest, m_depth.imagePtr, m_color.aa,
                               m_color.format);
             Utils::Log::error("[RASTER_STAGES] frame={} draw={} native={} prepare_us={} execute_us={} verify_us={} fallback_us={} other_us={}",
                               m_presentCount, m_stats.draws, nativeCommitted, nativePrepareUs, nativeExecuteUs, nativeVerifyUs, fallbackUs,
                               elapsed - nativePrepareUs - nativeExecuteUs - nativeVerifyUs - fallbackUs);
             if (nativeAudit) {
-                const auto auditKey = std::make_pair(m_psProgram, onlyColorZero);
+                const auto auditKey = std::make_pair(psProgram(), onlyColorZero);
                 auto found = m_nativeAuditCache.find(auditKey);
                 if (found == m_nativeAuditCache.end()) {
                     if (m_nativeAuditCache.size() >= 128)
                         m_nativeAuditCache.clear();
-                    found = m_nativeAuditCache.emplace(auditKey, Latte::lowerFragmentShader(*Latte::decodeProgram(m_psProgram), {}, onlyColorZero))
+                    found = m_nativeAuditCache.emplace(auditKey, Latte::lowerFragmentShader(*Latte::decodeProgram(psProgram()), {}, onlyColorZero))
                                     .first;
                     const auto &shader = found->second;
                     Utils::Log::error("[NATIVEPS] ps={:016X} lowered={} textures={} base_only={} reason={}", hash, bool(shader),
@@ -5114,8 +5166,8 @@ namespace Core::Gfx {
         state.halfZ = m_halfZ;
         std::copy(std::begin(m_vsRegs), std::end(m_vsRegs), state.vsRegs.begin());
         std::copy(std::begin(m_psRegs), std::end(m_psRegs), state.psRegs.begin());
-        state.vsProgram = m_vsProgram;
-        state.psProgram = m_psProgram;
+        state.vsShader = m_vsShader;
+        state.psShader = m_psShader;
         state.fetchLayout = m_fetchLayout;
         state.vsBlocks = m_vsBlocks;
         state.psBlocks = m_psBlocks;
@@ -5159,8 +5211,8 @@ namespace Core::Gfx {
         m_halfZ = state.halfZ;
         std::copy(state.vsRegs.begin(), state.vsRegs.end(), std::begin(m_vsRegs));
         std::copy(state.psRegs.begin(), state.psRegs.end(), std::begin(m_psRegs));
-        m_vsProgram = state.vsProgram;
-        m_psProgram = state.psProgram;
+        m_vsShader = state.vsShader;
+        m_psShader = state.psShader;
         m_fetchLayout = state.fetchLayout;
         m_vsBlocks = state.vsBlocks;
         m_psBlocks = state.psBlocks;
@@ -5575,7 +5627,7 @@ namespace Core::Gfx {
                     // Capture the shader bytecode (GX2VertexShader: size @+0xD0, program @+0xD4)
                     // so draws can run the real vertex transform via LatteVsInterp.
                     const std::uint32_t sh = cmd.gpr[0];
-                    m_vsProgram.clear();
+                    m_vsShader.reset();
                     if (!m_mem || !sh)
                         break;
                     const auto semanticCount = std::min(m_mem->read<std::uint32_t>(sh + 0x40), 32u);
@@ -5612,16 +5664,16 @@ namespace Core::Gfx {
                             prog.clear();
                         }
                         Utils::Log::error("[GX2] VS 0x{:08X}: size={} program=0x{:08X} -> {} dwords captured", sh, size, ptr, prog.size());
-                        it = m_vsCache.emplace(sh, std::move(prog)).first;
+                        it = m_vsCache.emplace(sh, std::make_shared<ShaderProgram>(ShaderProgram{std::move(prog)})).first;
                     }
-                    m_vsProgram = it->second;
-                    if (m_dumpSurfaces && !m_vsProgram.empty()) {
+                    m_vsShader = it->second;
+                    if (m_dumpSurfaces && !vsProgram().empty()) {
                         const char *dir = std::getenv("WEMU_FB_DUMP_DIR");
                         char path[512];
                         std::snprintf(path, sizeof(path), "%s/vs_%08X.hex", dir ? dir : ".", sh);
                         if (FILE *fp = std::fopen(path, "w")) {
-                            for (std::size_t i = 0; i < m_vsProgram.size(); i++)
-                                std::fprintf(fp, "%08X%c", m_vsProgram[i], (i % 8 == 7) ? '\n' : ' ');
+                            for (std::size_t i = 0; i < vsProgram().size(); i++)
+                                std::fprintf(fp, "%08X%c", vsProgram()[i], (i % 8 == 7) ? '\n' : ' ');
                             std::fclose(fp);
                         }
                     }
@@ -5631,7 +5683,7 @@ namespace Core::Gfx {
                     // GX2PixelShader has a shorter register prefix than GX2VertexShader:
                     // WUT documents size @+0xA4 and program @+0xA8.
                     const std::uint32_t sh = cmd.gpr[0];
-                    m_psProgram.clear();
+                    m_psShader.reset();
                     if (!m_mem || !sh)
                         break;
                     m_pixelInputSemantics.fill(255);
@@ -5657,16 +5709,16 @@ namespace Core::Gfx {
                         }
                         Utils::Log::error("[GX2] PS 0x{:08X}: size={} program=0x{:08X} -> {} dwords captured", sh, size, ptr, prog.size());
                         summarizePixelShaderBytecode(prog, sh);
-                        it = m_psCache.emplace(sh, std::move(prog)).first;
+                        it = m_psCache.emplace(sh, std::make_shared<ShaderProgram>(ShaderProgram{std::move(prog)})).first;
                     }
-                    m_psProgram = it->second;
-                    if (m_dumpSurfaces && !m_psProgram.empty()) {
+                    m_psShader = it->second;
+                    if (m_dumpSurfaces && !psProgram().empty()) {
                         const char *dir = std::getenv("WEMU_FB_DUMP_DIR");
                         char path[512];
                         std::snprintf(path, sizeof(path), "%s/ps_%08X.hex", dir ? dir : ".", sh);
                         if (FILE *fp = std::fopen(path, "w")) {
-                            for (std::size_t i = 0; i < m_psProgram.size(); i++)
-                                std::fprintf(fp, "%08X%c", m_psProgram[i], (i % 8 == 7) ? '\n' : ' ');
+                            for (std::size_t i = 0; i < psProgram().size(); i++)
+                                std::fprintf(fp, "%08X%c", psProgram()[i], (i % 8 == 7) ? '\n' : ' ');
                             std::fclose(fp);
                         }
                     }
