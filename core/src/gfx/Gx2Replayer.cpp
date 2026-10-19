@@ -3214,6 +3214,22 @@ namespace Core::Gfx {
                    std::any_of(vertexProgram->textures.begin(), vertexProgram->textures.end(),
                                [&](const auto &binding) { return binding.resource == resource; });
         };
+        // Array slices can alias a target without matching its base-view key: compare storage.
+        const auto vertexFeedback = [&](const Surface &surface) {
+            if (!surface.imagePtr || !vertexSamples(surface))
+                return false;
+            if (surface.dimension != 5 || !surface.imageSize)
+                return surface.dimension == 5 || makeSurfaceKey(surface) == makeSurfaceKey(m_color) ||
+                       (drawDepth && m_depthWrite && makeSurfaceKey(surface) == makeSurfaceKey(m_depth));
+            const auto overlaps = [&](const Surface &target, std::uint64_t bytes) {
+                const auto inside = [&](std::uint64_t base, std::uint64_t size) {
+                    return size && base < std::uint64_t(target.imagePtr) + bytes && std::uint64_t(target.imagePtr) < base + size;
+                };
+                return target.imagePtr && (inside(surface.imagePtr, surface.imageSize) || inside(surface.mipImagePtr, surface.mipImageSize));
+            };
+            return overlaps(m_color, std::uint64_t(m_color.pitch) * m_color.height * colorElementBytes(colorFormat(m_color.format))) ||
+                   (drawDepth && m_depthWrite && overlaps(m_depth, std::uint64_t(m_depth.pitch) * m_depth.height * 4));
+        };
         const bool frontBias = (m_polygonControl & (1u << 11)) && (m_polygonOffset[0] != 0 || m_polygonOffset[1] != 0);
         const bool backBias = (m_polygonControl & (1u << 12)) && (m_polygonOffset[2] != 0 || m_polygonOffset[3] != 0);
         const bool splitBias =
@@ -3221,26 +3237,17 @@ namespace Core::Gfx {
                 (frontBias != backBias || (frontBias && (m_polygonOffset[0] != m_polygonOffset[2] || m_polygonOffset[1] != m_polygonOffset[3])));
         const bool useBackBias = (m_polygonControl & 1) != 0;
         const bool nativeBias = useBackBias ? backBias : frontBias;
-        const bool collectBackend = m_rasterBackend && !m_gpuRenderer && !rawTarget && !m_stencilTest && !m_multiWriteEnable && (!drawDepth || !splitBias) &&
-                                    (!m_depthTest || !m_depth.imagePtr || drawDepth) &&
+        const bool collectBackend = m_rasterBackend && !m_gpuRenderer && !rawTarget && !m_stencilTest && !m_multiWriteEnable &&
+                                    (!drawDepth || !splitBias) && (!m_depthTest || !m_depth.imagePtr || drawDepth) &&
                                     (!drawDepth || (nativeDepthEnabled && m_rasterBackend->supportsDepth())) && pixelProgram && useViewBacking() &&
                                     m_pixelInputCount <= 16 && m_color.pitch >= m_color.width && !m_color.aa && m_color.dimension == 1 &&
                                     !m_color.firstMip && !m_color.firstSlice && (mode != 1 || m_rasterBackend->supportsPoints()) &&
                                     (targetFormat == ColorFormat::RGBA8 || m_rasterBackend->supportsFloatTargets()) &&
-                                    std::none_of(m_vertexTextures.begin(), m_vertexTextures.end(), [&](const auto &surface) {
-                                        return surface.imagePtr && vertexSamples(surface) &&
-                                               (surface.dimension == 5 || makeSurfaceKey(surface) == makeSurfaceKey(m_color) ||
-                                                (drawDepth && m_depthWrite && makeSurfaceKey(surface) == makeSurfaceKey(m_depth)));
-                                    });
+                                    std::none_of(m_vertexTextures.begin(), m_vertexTextures.end(), vertexFeedback);
         if (nativeAudit && m_rasterBackend && !collectBackend)
             Utils::Log::error("[NATIVE_GATE] split_bias={} stencil={} multi={} inputs={} dim={} mip={} slice={} pitch={} vertex_feedback={}",
                               splitBias, m_stencilTest, m_multiWriteEnable, m_pixelInputCount, m_color.dimension, m_color.firstMip,
-                              m_color.firstSlice, m_color.pitch,
-                              std::any_of(m_vertexTextures.begin(), m_vertexTextures.end(), [&](const auto &surface) {
-                                  return surface.imagePtr && vertexSamples(surface) &&
-                                         (surface.dimension == 5 || makeSurfaceKey(surface) == makeSurfaceKey(m_color) ||
-                                          (drawDepth && m_depthWrite && makeSurfaceKey(surface) == makeSurfaceKey(m_depth)));
-                              }));
+                              m_color.firstSlice, m_color.pitch, std::any_of(m_vertexTextures.begin(), m_vertexTextures.end(), vertexFeedback));
         std::shared_ptr<const Latte::VertexShader> nativeVertexShader;
         static const bool gpuVertexEnabled = [] {
             const auto *v = std::getenv("WEMU_NATIVE_VERTEX");

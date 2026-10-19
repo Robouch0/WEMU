@@ -1734,10 +1734,9 @@ TEST_F(Gx2CaptureTest, IndexedPointsPreserveHdrFloatTargetsThroughVertexTextureS
                       (std::array<std::uint8_t, 4>{128, 0, 16, static_cast<std::uint8_t>(hdrFormat == 0x816 ? 32 : 64)}));
             if (backend) {
                 native.replay(gx2Stream(), &cpu->m_memory);
-                // Array vertex textures retain conservative CPU draw fallback;
-                // their HDR target itself still rendered through Vulkan above.
-                EXPECT_EQ(backend->completedDraws(), hdrFormat == 0x816 ? 1u : 2u) << backend->lastError();
-                EXPECT_EQ(native.comparedNativeDraws(), hdrFormat == 0x816 ? 1u : 2u);
+                // An array vertex texture whose storage does not overlap the target stays native.
+                EXPECT_EQ(backend->completedDraws(), 2u) << backend->lastError();
+                EXPECT_EQ(native.comparedNativeDraws(), 2u);
                 EXPECT_EQ(native.differingNativeDraws(), 0u);
                 EXPECT_EQ(native.framebuffer(), reference.framebuffer());
             }
@@ -1763,8 +1762,8 @@ TEST_F(Gx2CaptureTest, IndexedPointsPreserveHdrFloatTargetsThroughVertexTextureS
                       (std::array<std::uint8_t, 4>{255, 0, 32, static_cast<std::uint8_t>(hdrFormat == 0x816 ? 64 : 128)}));
             if (backend) {
                 native.replay(gx2Stream(), &cpu->m_memory);
-                EXPECT_EQ(backend->completedDraws(), hdrFormat == 0x816 ? 1u : 3u) << backend->lastError();
-                EXPECT_EQ(native.comparedNativeDraws(), hdrFormat == 0x816 ? 1u : 3u);
+                EXPECT_EQ(backend->completedDraws(), 3u) << backend->lastError();
+                EXPECT_EQ(native.comparedNativeDraws(), 3u);
                 EXPECT_EQ(native.differingNativeDraws(), 0u);
                 EXPECT_EQ(native.framebuffer(), reference.framebuffer());
             }
