@@ -741,6 +741,40 @@ namespace Core::Gfx {
         return rendered ? layers : std::vector<std::shared_ptr<RasterReadback>>{};
     }
 
+    std::vector<std::shared_ptr<RasterReadback>> Gx2Replayer::renderedSubresources(const Surface &surface, unsigned levels) const
+    {
+        // Same views as mipSnapshot(), so rendered targets match by surface key. MK8 renders its
+        // HDR glare chain and environment cube faces on the GPU every frame; decoding them on the
+        // CPU cost a readback and ~50 ms per frame.
+        if (surface.format == 5 || surface.format == 0x11 || surface.format == 0x80E || surface.aa || !surface.sliceCount ||
+            surface.sliceCount > 256 || (surface.dimension != 1 && surface.dimension != 3 && surface.dimension != 5) ||
+            (surface.dimension == 1 && surface.sliceCount != 1) || !levels)
+            return {};
+        std::vector<std::shared_ptr<RasterReadback>> result;
+        result.reserve(std::size_t(levels) * surface.sliceCount);
+        for (unsigned level = 0; level < levels; ++level) {
+            const auto selected = mipSurface(surface, level + surface.firstMip);
+            if (!selected)
+                return {};
+            auto view = *selected;
+            view.firstMip = 0;
+            if (view.dimension == 3)
+                view.dimension = 5;
+            if (view.width != std::max(1u, surface.width >> level) || view.height != std::max(1u, surface.height >> level))
+                return {};
+            for (unsigned layer = 0; layer < surface.sliceCount; ++layer) {
+                const auto slice = view.dimension == 5 ? arraySlice(view, layer) : std::optional{view};
+                if (!slice)
+                    return {};
+                const auto pending = m_pendingReadbacks.find(makeSurfaceKey(*slice));
+                if (pending == m_pendingReadbacks.end())
+                    return {};
+                result.push_back(pending->second);
+            }
+        }
+        return result;
+    }
+
     std::shared_ptr<const std::vector<std::uint8_t>> Gx2Replayer::layerSnapshot(const Surface &surface)
     {
         // Rendered RGBA8/HDR layers that software draws left on the CPU (MK8 writes its 1280x720 HDR
@@ -3806,6 +3840,10 @@ namespace Core::Gfx {
                 }
             ownedTextures.reserve(allBindings.size());
             ownedFloatTextures.reserve(allBindings.size());
+            static const bool deferredRender = [] {
+                const auto *value = std::getenv("WEMU_NATIVE_DEFER_READBACK");
+                return value && std::string_view(value) == "1";
+            }();
             for (const auto &binding: allBindings) {
                 const bool vertexBinding = binding.binding > 17;
                 const auto &boundSurfaces = vertexBinding ? m_vertexTextures : m_pixelTextures;
@@ -3858,6 +3896,31 @@ namespace Core::Gfx {
                         texture.sourceMipCount = 1;
                         // Immutable until a layer is written: the backend shares one upload per version.
                         texture.snapshotOwner = layers;
+                        continue;
+                    }
+                }
+                if (!vertexBinding && (surface.dimension == 3 || binding.explicitLod) && m_rasterBackend->supportsRenderedMipLevels() &&
+                    deferredRender) {
+                    // Levels and cube faces still on the GPU are assembled there, not snapshotted.
+                    const auto levels = binding.explicitLod ? std::min(surface.viewMipCount ? surface.viewMipCount : std::max(1u, surface.mipCount),
+                                                                       std::max(1u, surface.mipCount) - surface.firstMip)
+                                                            : 1u;
+                    // A single-level 2D view keeps the ordinary rendered-texture path below.
+                    if (auto subresources = surface.dimension == 1 && levels == 1 ? decltype(renderedSubresources(surface, levels)){}
+                                                                                   : renderedSubresources(surface, levels);
+                        !subresources.empty()) {
+                        textures.push_back({binding, surface.width, surface.height, boundSamplers[binding.sampler], [&, surface](unsigned x, unsigned y) {
+                                                return sampleTexture(surface, TextureSampler{}, (float(x) + 0.5f) / float(surface.width),
+                                                                     (float(y) + 0.5f) / float(surface.height), 0, nullptr);
+                                            }});
+                        auto &texture = textures.back();
+                        texture.renderedLayers = std::move(subresources);
+                        texture.renderedLevels = levels;
+                        texture.layers = surface.sliceCount;
+                        texture.unorm8Pitch = surface.pitch;
+                        texture.unorm8Map = surface.compMap;
+                        texture.renderedFormat = colorFormat(surface.format);
+                        texture.sourceMipCount = levels;
                         continue;
                     }
                 }

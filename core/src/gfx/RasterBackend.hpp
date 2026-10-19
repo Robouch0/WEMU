@@ -63,7 +63,11 @@ namespace Core::Gfx {
                     unsigned layers{1};
                     // Optional rendered layers of a 2D array view, one current version per layer,
                     // laid out like `rendered` (unorm8Pitch, unorm8Map, renderedFormat/Depth).
+                    // With renderedLevels > 1 (2D, array or cube views; backends advertising
+                    // supportsRenderedMipLevels), entries are level-major: levels x layers, each
+                    // level max(1, size >> level), and every entry must still be resident.
                     std::vector<std::shared_ptr<RasterReadback>> renderedLayers;
+                    unsigned renderedLevels{1};
                     // Optional little-endian R32 texels, with pitch in texels. Avoids
                     // expanding guest GPU words into a temporary host float array.
                     std::span<const std::uint8_t> r32Bytes;
@@ -235,6 +239,8 @@ namespace Core::Gfx {
             virtual bool supportsFloatTargets() const { return false; }
             virtual bool supportsVertexStage() const { return false; }
             virtual bool supportsBlockTextures() const { return false; }
+            // Textures may carry rendered mip levels and cube faces (Texture::renderedLevels).
+            virtual bool supportsRenderedMipLevels() const { return false; }
             // Same borrowed-input lifetime as render; only the owned readback may
             // outlive this call. Backends without deferred support remain synchronous.
             virtual std::optional<RasterResult> renderDeferred(const RasterDraw &draw) { return render(draw); }

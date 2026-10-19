@@ -23,6 +23,7 @@ namespace Core::Gfx {
             bool supportsFloatTargets() const override { return true; }
             bool supportsVertexStage() const override { return true; }
             bool supportsBlockTextures() const override { return true; }
+            bool supportsRenderedMipLevels() const override;
             const std::string &lastError() const noexcept;
             std::uint64_t completedDraws() const noexcept;
             std::uint64_t reusedDraws() const noexcept;

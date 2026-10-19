@@ -177,6 +177,9 @@ namespace Core::Gfx {
             DepthBacking *depthBacking(const Surface &s, bool resolve = true) const;
             // Current versions of an array view's layers when each was rendered as its own surface.
             std::vector<std::shared_ptr<RasterReadback>> renderedArrayLayers(const Surface &surface) const;
+            // Level-major pending GPU versions of every (level, slice) of a 2D, array or cube view,
+            // or empty unless all of them are still on the GPU.
+            std::vector<std::shared_ptr<RasterReadback>> renderedSubresources(const Surface &surface, unsigned levels) const;
             void clearDepthSurface(const Surface &s, float depth, unsigned flags);
             void drawImage(const Gx2Command &cmd);
             void drawPrimitives(const Gx2Command &cmd, bool indexed, int selectedColor = -1);

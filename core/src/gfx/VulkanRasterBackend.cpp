@@ -745,7 +745,9 @@ void main() {
                         VkSamplerMipmapMode mipFilter{VK_SAMPLER_MIPMAP_MODE_NEAREST};
                         float minLod{}, maxLod{};
                         std::shared_ptr<ColorImage> rendered;
-                        std::vector<std::shared_ptr<ColorImage>> renderedLayers; // resident array layers (direct draws only)
+                        std::vector<std::shared_ptr<ColorImage>> renderedLayers; // resident levels x layers (direct draws only)
+                        unsigned renderedLevels{1};
+                        unsigned levelCount() const { return std::max(unsigned(mips.size() + 1), renderedLevels); }
                         std::shared_ptr<const void> snapshotOwner;
 
                         std::size_t rowBytes() const
@@ -2837,13 +2839,16 @@ void main() {
                 // texture; D32 depth goes through a device buffer to become R32 float texels.
                 void copyRendered(VkCommandBuffer command, const DrawResources::Texture &texture, const ScratchTexture &scratch)
                 {
-                    const unsigned layers = texture.renderedLayers.empty() ? 1u : unsigned(texture.renderedLayers.size());
-                    imageBarrier(command, scratch.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                    const unsigned levels = texture.renderedLayers.empty() ? 1u : texture.renderedLevels;
+                    const unsigned layers = texture.renderedLayers.empty() ? 1u : unsigned(texture.renderedLayers.size()) / levels;
+                    imageBarrier(command, scratch.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, levels,
                                  layers);
-                    for (unsigned layer = 0; layer < layers; ++layer) {
-                        const auto &source = texture.renderedLayers.empty() ? *texture.rendered : *texture.renderedLayers[layer];
+                    for (unsigned entry = 0; entry < levels * layers; ++entry) {
+                        const unsigned level = entry / layers, layer = entry % layers;
+                        const unsigned width = std::max(1u, texture.width >> level), height = std::max(1u, texture.height >> level);
+                        const auto &source = texture.renderedLayers.empty() ? *texture.rendered : *texture.renderedLayers[entry];
                         if (source.format == VK_FORMAT_D32_SFLOAT) {
-                            const VkDeviceSize bytes = VkDeviceSize(texture.width) * texture.height * sizeof(float);
+                            const VkDeviceSize bytes = VkDeviceSize(width) * height * sizeof(float);
                             if (scratchCapacity < bytes) {
                                 destroyBuffer(scratchBuffer, scratchMemory);
                                 scratchCapacity = std::max(bytes, VkDeviceSize{16} << 20);
@@ -2857,23 +2862,23 @@ void main() {
                                                  nullptr);
                             VkBufferImageCopy copy{};
                             copy.imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1};
-                            copy.imageExtent = {texture.width, texture.height, 1};
+                            copy.imageExtent = {width, height, 1};
                             vkCmdCopyImageToBuffer(command, source.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, scratchBuffer, 1, &copy);
                             vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &reuse, 0, nullptr, 0,
                                                  nullptr);
-                            copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, layer, 1};
+                            copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, layer, 1};
                             vkCmdCopyBufferToImage(command, scratchBuffer, scratch.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
                         } else {
                             VkImageCopy copy{};
                             copy.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-                            copy.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, layer, 1};
-                            copy.extent = {texture.width, texture.height, 1};
+                            copy.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, layer, 1};
+                            copy.extent = {width, height, 1};
                             vkCmdCopyImage(command, source.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, scratch.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                                            1, &copy);
                         }
                     }
                     imageBarrier(command, scratch.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, layers);
+                                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, levels, layers);
                 }
 
                 std::vector<std::uint64_t> sharedKey(const DrawResources::Texture &texture) const
@@ -2971,7 +2976,7 @@ void main() {
                                                              texture.height,
                                                              texture.layers,
                                                              unsigned(texture.format),
-                                                             texture.mips.size(),
+                                                             texture.levelCount(),
                                                              unsigned(texture.array) | unsigned(texture.volume) << 1 | unsigned(texture.cube) << 2,
                                                              unsigned(texture.components.r),
                                                              unsigned(texture.components.g),
@@ -2989,7 +2994,7 @@ void main() {
                     info.flags = texture.cube ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0;
                     info.format = texture.format;
                     info.extent = {texture.width, texture.height, texture.volume ? texture.layers : 1};
-                    info.mipLevels = unsigned(texture.mips.size() + 1);
+                    info.mipLevels = texture.levelCount();
                     info.arrayLayers = texture.volume ? 1 : texture.layers;
                     info.samples = VK_SAMPLE_COUNT_1_BIT;
                     info.tiling = VK_IMAGE_TILING_OPTIMAL;
@@ -3296,6 +3301,20 @@ void main() {
 
     std::optional<RasterResult> VulkanRasterBackend::render(const RasterDraw &draw) { return renderImpl(draw, false); }
 
+    bool VulkanRasterBackend::supportsRenderedMipLevels() const
+    {
+        // Only direct draws assemble resident levels; see renderImpl.
+        static const bool directDraws = [] {
+            const auto *value = std::getenv("WEMU_NATIVE_DIRECT_DRAWS");
+            return !value || value[0] != '0';
+        }();
+        static const bool gpuTiming = [] {
+            const auto *value = std::getenv("WEMU_NATIVE_GPU_TIMING");
+            return value && value[0] == '1';
+        }();
+        return directDraws && !gpuTiming && m_impl->directDraws && m_impl->lazyReadback;
+    }
+
     std::optional<RasterResult> VulkanRasterBackend::renderDeferred(const RasterDraw &draw) { return renderImpl(draw, true); }
 
     std::uint64_t VulkanRasterBackend::queueSubmissions() const noexcept { return m_impl->context ? m_impl->context->queueSubmissions : 0; }
@@ -3404,13 +3423,19 @@ void main() {
                 (array && (texture.rendered || (texture.unorm8.empty() && texture.rgba32.empty() && texture.r32.empty() && texture.r32Bytes.empty() &&
                                                 texture.r11g11b10Bytes.empty() && texture.rgba32Bytes.empty() && texture.renderedLayers.empty()))))
                 return reject("Unsupported array texture snapshot");
+            // Several levels (2D, array or cube) must stay resident; one level may also be packed
+            // from CPU versions, which needs every layer's row pitch.
+            const auto renderedLevels = texture.renderedLevels;
             if (!texture.renderedLayers.empty() &&
-                (binding.type != Latte::TextureType::TwoDArray || texture.rendered || !texture.mips.empty() ||
-                 texture.renderedLayers.size() != texture.layers || texture.unorm8Pitch < texture.width ||
+                (texture.rendered || !texture.mips.empty() || !renderedLevels || renderedLevels > 14 ||
+                 (1u << (renderedLevels - 1)) > std::max(texture.width, texture.height) ||
+                 texture.renderedLayers.size() != std::size_t(texture.layers) * renderedLevels || texture.unorm8Pitch < texture.width ||
+                 (renderedLevels == 1 ? binding.type != Latte::TextureType::TwoDArray && binding.type != Latte::TextureType::Cube
+                                      : binding.type == Latte::TextureType::ThreeD) ||
                  std::any_of(texture.renderedLayers.begin(), texture.renderedLayers.end(), [&](const auto &layer) {
-                     return !layer || std::uint64_t(texture.unorm8Pitch) * texture.height *
-                                              (texture.renderedDepth ? 4u : colorElementBytes(texture.renderedFormat)) !=
-                                              layer->size();
+                     return !layer || (renderedLevels == 1 && std::uint64_t(texture.unorm8Pitch) * texture.height *
+                                                                      (texture.renderedDepth ? 4u : colorElementBytes(texture.renderedFormat)) !=
+                                                              layer->size());
                  })))
                 return reject("Invalid rendered array layers");
             if (texture.rendered &&
@@ -3452,8 +3477,9 @@ void main() {
                     return reject("Incomplete mip chain snapshot");
                 textureBytes += mip.rgba32.size_bytes();
             }
+            const auto extraLevels = std::max<std::size_t>(texture.mips.size(), texture.renderedLevels - 1);
             if (found->explicitLod && (((r >> 12) & 7) > 1 || ((r >> 17) & 3) > 2 ||
-                                       (((r >> 17) & 3) && (!texture.sourceMipCount || texture.mips.size() + 1 < texture.sourceMipCount))))
+                                       (((r >> 17) & 3) && (!texture.sourceMipCount || extraLevels + 1 < texture.sourceMipCount))))
                 return reject("Explicit LOD requires the complete texture view and supported filters");
             if (binding.binding <= 16 && draw.shader.requiresDerivativeFreeSampling && found->implicitLod &&
                 (texture.sourceMipCount != 1 || texture.sourceFirstMip || ((r >> 9) & 7) != ((r >> 12) & 7) || ((r >> 19) & 7)))
@@ -3677,20 +3703,23 @@ void main() {
             }
             std::vector<std::shared_ptr<ColorImage>> residentLayers;
             if (!texture.renderedLayers.empty()) {
-                // Direct draws copy resident layers into the array on the GPU. Otherwise
-                // pack the layers' CPU versions into one tight snapshot.
+                // Direct draws copy resident layers (and levels) into one image on the GPU.
+                // Otherwise pack a single level's CPU versions into one tight snapshot.
                 const auto layerFormat = texture.renderedDepth ? VK_FORMAT_D32_SFLOAT : colorVkFormat(texture.renderedFormat);
                 if (direct)
-                    for (const auto &layer: texture.renderedLayers) {
-                        const auto native = std::dynamic_pointer_cast<const NativeImage>(layer->image());
+                    for (std::size_t entry = 0; entry < texture.renderedLayers.size(); ++entry) {
+                        const auto level = unsigned(entry / texture.layers);
+                        const auto native = std::dynamic_pointer_cast<const NativeImage>(texture.renderedLayers[entry]->image());
                         if (!native || native->storage->context != m_impl->context || native->storage->version != native->version ||
-                            native->storage->width != texture.width || native->storage->height != texture.height ||
-                            native->storage->format != layerFormat) {
+                            native->storage->width != std::max(1u, texture.width >> level) ||
+                            native->storage->height != std::max(1u, texture.height >> level) || native->storage->format != layerFormat) {
                             residentLayers.clear();
                             break;
                         }
                         residentLayers.push_back(native->storage);
                     }
+                if (residentLayers.empty() && texture.renderedLevels > 1)
+                    return reject("Rendered mip levels are no longer resident");
                 std::span<const std::uint8_t> packed;
                 if (residentLayers.empty()) {
                     const auto elementBytes = texture.renderedDepth ? 4u : colorElementBytes(texture.renderedFormat);
@@ -3773,12 +3802,14 @@ void main() {
                 uploaded.minFilter = ((r >> 12) & 7) ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
                 uploaded.mipFilter = ((r >> 17) & 3) == 2 ? VK_SAMPLER_MIPMAP_MODE_LINEAR : VK_SAMPLER_MIPMAP_MODE_NEAREST;
                 if ((r >> 17) & 3) {
-                    uploaded.minLod = std::min(float(texture.mips.size()), float(texture.sampler.regs[1] & 1023) / 64.f);
-                    uploaded.maxLod = std::clamp(float((texture.sampler.regs[1] >> 10) & 1023) / 64.f, uploaded.minLod, float(texture.mips.size()));
+                    const auto extraLevels = std::max<std::size_t>(texture.mips.size(), texture.renderedLevels - 1);
+                    uploaded.minLod = std::min(float(extraLevels), float(texture.sampler.regs[1] & 1023) / 64.f);
+                    uploaded.maxLod = std::clamp(float((texture.sampler.regs[1] >> 10) & 1023) / 64.f, uploaded.minLod, float(extraLevels));
                 }
             }
             uploaded.rendered = resident;
             uploaded.renderedLayers = std::move(residentLayers);
+            uploaded.renderedLevels = uploaded.renderedLayers.empty() ? 1u : texture.renderedLevels;
             if (compressedFormat != VK_FORMAT_UNDEFINED) {
                 const auto channel = [&](unsigned c) {
                     constexpr VkComponentSwizzle channels[]{VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G,    VK_COMPONENT_SWIZZLE_B,

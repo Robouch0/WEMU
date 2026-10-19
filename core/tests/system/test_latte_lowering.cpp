@@ -897,6 +897,65 @@ TEST(VulkanRasterBackendTest, KillInstructionsDiscardMatchingPixelsAndPreserveTh
     EXPECT_FALSE(lowerVertexShader(*decodeProgram({2, 8u << 26, 0, (CF_EXP_DONE << 23) | (1u << 21) | (60u) | (1u << 13), (1u << 31), OP2_KILLGT << 7})));
 }
 
+TEST(VulkanRasterBackendTest, RenderedMipLevelsStayOnTheGpuAndSelectTheirLod)
+{
+    using namespace Core::Gfx;
+    if (!std::getenv("WEMU_TEST_VULKAN") || !SpirvCompiler::available())
+        GTEST_SKIP();
+    // Export R0, the interpolated input, as color: renders each level as its own target.
+    const auto fill = lowerFragmentShader(*decodeProgram({0, (Latte::CF_EXP_DONE << 23) | (1u << 21) | 0x688u}));
+    ASSERT_TRUE(fill) << fill.error;
+    // SAMPLE_L from r0.xy with the LOD in r0.w.
+    const auto shader = lowerFragmentShader(
+            *decodeProgram({2, 1u << 23, 0, (0x28u << 23) | (1u << 21) | 0x688u, 0x11u, 0x30000000u | (0x688u << 9), (1u << 23) | (3u << 29), 0}));
+    ASSERT_TRUE(shader) << shader.error;
+    ASSERT_TRUE(shader.textures.at(0).explicitLod);
+    VulkanRasterBackend backend(true, true);
+    ASSERT_TRUE(backend.supportsRenderedMipLevels());
+    const auto renderLevel = [&](unsigned size, std::array<float, 4> color, std::shared_ptr<RasterReadback> previous = {}) {
+        std::array<RasterDraw::Vertex, 3> vertices{{{0, 0, {}}, {float(size) * 2, 0, {}}, {0, float(size) * 2, {}}}};
+        for (auto &vertex: vertices)
+            vertex.inputs[0] = color;
+        std::vector<std::uint8_t> target(std::size_t(size) * size * 4);
+        RasterDraw draw{fill, vertices, {}, {}, target, size, size, size, {0, 0, int(size), int(size)}, 15, {}};
+        draw.renderedTarget = std::move(previous);
+        draw.supersedesTarget = true;
+        auto result = backend.renderDeferred(draw);
+        EXPECT_TRUE(result && result->readback) << backend.lastError();
+        return result ? result->readback : nullptr;
+    };
+    const auto base = renderLevel(4, {1, 0, 0, 1}), level1 = renderLevel(2, {0, 1, 0, 1});
+    ASSERT_TRUE(base && level1);
+    RasterDraw::Texture texture{shader.textures[0], 4, 4, {}, [](unsigned, unsigned) -> std::array<float, 4> {
+                                    throw std::runtime_error("Rendered levels must not be sampled on the CPU");
+                                }};
+    texture.renderedLayers = {base, level1};
+    texture.renderedLevels = 2;
+    texture.unorm8Pitch = 4;
+    texture.unorm8Map = 0x00010203;
+    texture.sourceMipCount = 2;
+    texture.sampler.regs[0] = 2u | (2u << 3) | (1u << 17); // clamp, point filters, point mip selection
+    texture.sampler.regs[1] = 64u << 10;                    // LOD range [0, 1]
+    std::array<RasterDraw::Vertex, 3> vertices{{{0, 0, {}}, {8, 0, {}}, {0, 8, {}}}};
+    std::vector<std::uint8_t> target(4 * 4 * 4);
+    RasterDraw draw{shader, vertices, {}, {&texture, 1}, target, 4, 4, 4, {0, 0, 4, 4}, 15, {}};
+    for (const auto lod: {0.f, 1.f}) {
+        SCOPED_TRACE(lod);
+        for (auto &vertex: vertices)
+            vertex.inputs[0] = {.5f, .5f, 0, lod};
+        auto result = backend.renderDeferred(draw);
+        ASSERT_TRUE(result) << backend.lastError();
+        result->resolve();
+        EXPECT_EQ((std::array{result->rgba[0], result->rgba[1], result->rgba[2], result->rgba[3]}),
+                  (lod == 0 ? std::array<std::uint8_t, 4>{255, 0, 0, 255} : std::array<std::uint8_t, 4>{0, 255, 0, 255}));
+    }
+    EXPECT_EQ(backend.readbackTransfers(), 2u); // only the two consumer results: both levels stayed on the GPU
+    // Rendering the level again in place supersedes its old ticket, which can no longer be assembled.
+    ASSERT_TRUE(renderLevel(2, {0, 0, 1, 1}, level1));
+    EXPECT_FALSE(backend.renderDeferred(draw));
+    EXPECT_EQ(backend.lastError(), "Rendered mip levels are no longer resident");
+}
+
 TEST(RasterReadbackTest, MaterializesOnceAndRejectsIncompleteResults)
 {
     unsigned calls = 0;
