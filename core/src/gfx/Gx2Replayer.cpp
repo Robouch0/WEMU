@@ -3770,27 +3770,32 @@ namespace Core::Gfx {
                     rasterTri(i, i + 1, i + 2);
             }
         };
-        std::vector<RasterDraw::Vertex> directVertexList;
+        // Only the program's declared inputs are stored per vertex (compact attributes); the
+        // backend supplies the reference defaults for the other attribute slots.
+        std::vector<std::array<float, 4>> directAttributes;
         std::vector<std::uint32_t> directIndices;
+        const auto attributeStride = unsigned(std::min<std::size_t>(m_vertexInputCount, RasterDraw::Vertex{}.inputs.size()));
         if (directVertices) {
-            static const RasterVertex defaults{};
-            const auto inputCount = std::min<std::size_t>(m_vertexInputCount, RasterDraw::Vertex{}.inputs.size());
+            const auto stride = std::max(1u, attributeStride);
             const auto [low, high] = idx.empty() ? std::pair{idx.end(), idx.end()} : std::minmax_element(idx.begin(), idx.end());
             const std::uint64_t span = idx.empty() ? 0 : std::uint64_t(*high) - *low + 1;
             const bool dense = span <= idx.size() * 2 + 64;
             std::vector<std::uint32_t> denseSlots(dense ? span : 0, ~0u);
             std::unordered_map<std::uint32_t, std::uint32_t> sparseSlots;
-            directVertexList.reserve(std::min<std::size_t>(idx.size(), dense ? span : idx.size()));
+            directAttributes.reserve(std::min<std::size_t>(idx.size(), dense ? span : idx.size()) * stride);
             directIndices.reserve(idx.size() / 2 * 3);
             // ~0u: not fetched yet; ~1u: unavailable, which drops its triangles like a failed corner.
             const auto slotOf = [&](std::uint32_t vi) {
                 auto &slot = dense ? denseSlots[vi - *low] : sparseSlots.try_emplace(vi, ~0u).first->second;
                 if (slot == ~0u) {
-                    RasterDraw::Vertex vertex{};
-                    std::copy_n(defaults.params.begin(), vertex.inputs.size(), vertex.inputs.begin());
-                    slot = fetchAttributes(vi, std::span(vertex.inputs).first(inputCount)) ? std::uint32_t(directVertexList.size()) : ~1u;
-                    if (slot != ~1u)
-                        directVertexList.push_back(vertex);
+                    const auto base = directAttributes.size();
+                    directAttributes.resize(base + stride);
+                    // A program without declared inputs still gets slot 0's default.
+                    if (!attributeStride)
+                        directAttributes[base] = {1, 1, 1, 1};
+                    slot = fetchAttributes(vi, std::span(directAttributes).subspan(base, attributeStride)) ? std::uint32_t(base / stride) : ~1u;
+                    if (slot == ~1u)
+                        directAttributes.resize(base);
                 }
                 return slot;
             };
@@ -4260,10 +4265,8 @@ namespace Core::Gfx {
                     return &projectedVertex[std::size_t(corner - projectedCorners.data())];
                 return nullptr;
             };
-            if (directVertices) {
-                vertices = std::move(directVertexList);
+            if (directVertices)
                 indices = std::move(directIndices);
-            }
             for (const auto &triangle: preparedTriangles) {
                 const auto &a = triangle[0], &b = triangle[1], &c = triangle[2];
                 const float area = (b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y);
@@ -4327,7 +4330,7 @@ namespace Core::Gfx {
             bool committed = false;
             if (profile || nativeAudit)
                 nativePrepareUs = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - prepareStart).count();
-            if (supported && !vertices.empty()) {
+            if (supported && (!vertices.empty() || !directAttributes.empty())) {
                 const auto targetBytes = std::size_t(m_color.pitch) * m_color.height * targetElementBytes;
                 RasterDraw draw{shader,
                                 vertices,
@@ -4367,6 +4370,10 @@ namespace Core::Gfx {
                     draw.vertexStage.uniforms = vertexUniforms;
                     std::copy_n(pixelInputParams.begin(), draw.vertexStage.inputParams.size(), draw.vertexStage.inputParams.begin());
                     draw.vertexStage.inputCount = m_pixelInputCount;
+                    if (directVertices) {
+                        draw.vertexStage.attributes = directAttributes;
+                        draw.vertexStage.attributeStride = std::max(1u, attributeStride);
+                    }
                     draw.vertexStage.viewport = {m_vp[0], m_vp[1], m_vp[2], m_vp[3], m_vpNear, m_vpFar};
                 }
                 draw.enabledColorTargets = writableColors;
@@ -4588,7 +4595,7 @@ namespace Core::Gfx {
                     if (mode == 1)
                         m_stats.points += vertices.size();
                     else
-                        m_stats.tris += vertices.size() / 3;
+                        m_stats.tris += (indices.empty() ? vertices.size() : indices.size()) / 3;
                     m_stats.pixels += result->pixels;
                     m_stats.alphaSum += result->alphaSum;
                     committed = true;

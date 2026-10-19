@@ -32,6 +32,14 @@ namespace Core::Gfx {
                 throw std::runtime_error(std::string(operation) + ": Vulkan result " + std::to_string(result));
         }
         bool depthOnly(const RasterDraw &draw) { return draw.depth.test && !draw.channelMask; }
+        std::size_t vertexCount(const RasterDraw &draw)
+        {
+            const auto stride = draw.vertexStage.attributeStride;
+            return stride ? draw.vertexStage.attributes.size() / stride : draw.vertices.size();
+        }
+        // Defaults of program inputs past a compact draw's attribute stride (see VertexStage).
+        constexpr std::array<std::array<float, 4>, 16> compactAttributeDefaults{
+                {{1, 1, 1, 1}, {0, 0, 0, 1}, {0, 0, 0, 1}, {0, 0, 0, 1}}};
         unsigned rasterWidth(const RasterDraw &draw) { return depthOnly(draw) ? draw.depth.width : draw.width; }
         unsigned rasterHeight(const RasterDraw &draw) { return depthOnly(draw) ? draw.depth.height : draw.height; }
         VkExtent2D attachmentExtent(const RasterDraw &draw)
@@ -307,6 +315,7 @@ namespace Core::Gfx {
                         std::array<unsigned, 4> depth{};
                         unsigned topology{}, colorFormat{}, cull{};
                         bool depthBias{};
+                        unsigned attributeStride{}; // compact program inputs (0: full RasterDraw::Vertex)
                         auto operator<=>(const PipelineKey &) const = default;
                 };
                 struct PipelineBundle {
@@ -423,18 +432,29 @@ namespace Core::Gfx {
                         stages[i].module = module;
                         stages[i].pName = "main";
                     }
-                    VkVertexInputBindingDescription vertexBinding{0, sizeof(RasterDraw::Vertex), VK_VERTEX_INPUT_RATE_VERTEX};
+                    VkVertexInputBindingDescription vertexBindings[2]{{0, sizeof(RasterDraw::Vertex), VK_VERTEX_INPUT_RATE_VERTEX}};
                     VkVertexInputAttributeDescription attributes[18]{};
-                    attributes[0] = {0, 0, VK_FORMAT_R32G32_SFLOAT, 0};
-                    for (unsigned i = 0; i < 16; ++i)
-                        attributes[i + 1] = {i + 1, 0, VK_FORMAT_R32G32B32A32_SFLOAT,
-                                             unsigned(offsetof(RasterDraw::Vertex, inputs) + i * sizeof(float) * 4)};
-                    attributes[17] = {17, 0, VK_FORMAT_R32G32_SFLOAT, unsigned(offsetof(RasterDraw::Vertex, z))};
                     VkPipelineVertexInputStateCreateInfo input{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
-                    input.vertexBindingDescriptionCount = 1;
-                    input.pVertexBindingDescriptions = &vertexBinding;
-                    input.vertexAttributeDescriptionCount = 18;
+                    input.pVertexBindingDescriptions = vertexBindings;
                     input.pVertexAttributeDescriptions = attributes;
+                    if (const auto stride = key.attributeStride) {
+                        // Translated programs read locations 1..16 only. The first `stride` come from
+                        // the compact buffer, the rest from a constant defaults buffer (stride 0).
+                        vertexBindings[0] = {0, stride * unsigned(sizeof(float) * 4), VK_VERTEX_INPUT_RATE_VERTEX};
+                        vertexBindings[1] = {1, 0, VK_VERTEX_INPUT_RATE_VERTEX};
+                        for (unsigned i = 0; i < 16; ++i)
+                            attributes[i] = {i + 1, i < stride ? 0u : 1u, VK_FORMAT_R32G32B32A32_SFLOAT, unsigned(i * sizeof(float) * 4)};
+                        input.vertexBindingDescriptionCount = 2;
+                        input.vertexAttributeDescriptionCount = 16;
+                    } else {
+                        attributes[0] = {0, 0, VK_FORMAT_R32G32_SFLOAT, 0};
+                        for (unsigned i = 0; i < 16; ++i)
+                            attributes[i + 1] = {i + 1, 0, VK_FORMAT_R32G32B32A32_SFLOAT,
+                                                 unsigned(offsetof(RasterDraw::Vertex, inputs) + i * sizeof(float) * 4)};
+                        attributes[17] = {17, 0, VK_FORMAT_R32G32_SFLOAT, unsigned(offsetof(RasterDraw::Vertex, z))};
+                        input.vertexBindingDescriptionCount = 1;
+                        input.vertexAttributeDescriptionCount = 18;
+                    }
                     VkPipelineInputAssemblyStateCreateInfo assembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
                     assembly.topology = draw.topology == RasterDraw::Topology::Points ? VK_PRIMITIVE_TOPOLOGY_POINT_LIST
                                                                                       : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
@@ -2278,7 +2298,12 @@ void main() {
                     reserve(sizeof(in.constants));
                     if (draw.vertexStage.shader)
                         reserve(sizeof(in.vertexConstants));
-                    reserve(draw.vertices.size_bytes());
+                    const bool compact = draw.vertexStage.attributeStride != 0;
+                    const auto vertexBytes = compact ? draw.vertexStage.attributes.size_bytes() : draw.vertices.size_bytes();
+                    const void *vertexData = compact ? static_cast<const void *>(draw.vertexStage.attributes.data()) : draw.vertices.data();
+                    reserve(vertexBytes);
+                    if (compact)
+                        reserve(sizeof(compactAttributeDefaults));
                     reserve(draw.indices.size_bytes());
                     if (colorUpload)
                         reserve(draw.target.size());
@@ -2327,7 +2352,8 @@ void main() {
                     const auto vertexConstantsOffset = draw.vertexStage.shader ? pushUpload(in.vertexConstants.data(), in.vertexConstantFloats * sizeof(float),
                                                                                             sizeof(in.vertexConstants))
                                                                                : VkDeviceSize{};
-                    const auto verticesOffset = pushUpload(draw.vertices.data(), draw.vertices.size_bytes(), 0);
+                    const auto verticesOffset = pushUpload(vertexData, vertexBytes, 0);
+                    const auto defaultsOffset = compact ? pushUpload(compactAttributeDefaults.data(), sizeof(compactAttributeDefaults), 0) : VkDeviceSize{};
                     const auto indicesOffset = draw.indices.empty() ? VkDeviceSize{} : pushUpload(draw.indices.data(), draw.indices.size_bytes(), 0);
 
                     // Textures first: their transfers must precede the render pass.
@@ -2446,6 +2472,7 @@ void main() {
                     key.topology = unsigned(draw.topology);
                     key.colorFormat = unsigned(draw.colorFormat);
                     key.cull = unsigned(draw.cullFront) | (unsigned(draw.cullBack) << 1) | (unsigned(draw.frontFaceClockwise) << 2);
+                    key.attributeStride = draw.vertexStage.attributeStride;
                     std::vector<unsigned> textureBindings;
                     for (const auto &texture: in.textures) {
                         key.bindings.push_back(texture.binding);
@@ -2515,9 +2542,11 @@ void main() {
                         push.bias[2] = draw.depthBias.clamp;
                     }
                     vkCmdPushConstants(command, pipeline.layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
-                    vkCmdBindVertexBuffers(command, 0, 1, &segment.buffer, &verticesOffset);
+                    const VkBuffer vertexBuffers[]{segment.buffer, segment.buffer};
+                    const VkDeviceSize vertexOffsets[]{verticesOffset, defaultsOffset};
+                    vkCmdBindVertexBuffers(command, 0, compact ? 2 : 1, vertexBuffers, vertexOffsets);
                     if (draw.indices.empty())
-                        vkCmdDraw(command, unsigned(draw.vertices.size()), 1, 0, 0);
+                        vkCmdDraw(command, unsigned(vertexCount(draw)), 1, 0, 0);
                     else {
                         vkCmdBindIndexBuffer(command, segment.buffer, indicesOffset, VK_INDEX_TYPE_UINT32);
                         vkCmdDrawIndexed(command, unsigned(draw.indices.size()), 1, 0, 0, 0);
@@ -3363,10 +3392,14 @@ void main() {
             std::uint64_t(draw.pitch) * draw.height * colorElementBytes(draw.colorFormat) != draw.target.size() ||
             draw.target.size() > std::size_t{64} * 1024 * 1024)
             return reject("Unsupported target dimensions");
-        const auto drawnVertices = draw.indices.empty() ? draw.vertices.size() : draw.indices.size();
+        const auto stride = draw.vertexStage.attributeStride;
+        if (stride && (!draw.vertexStage.shader || stride > 16 || draw.vertexStage.attributes.size() % stride || !draw.vertices.empty()))
+            return reject("Invalid compact vertex attributes");
+        const auto vertices = vertexCount(draw);
+        const auto drawnVertices = draw.indices.empty() ? vertices : draw.indices.size();
         if ((!draw.indices.empty() && (draw.topology != RasterDraw::Topology::Triangles || draw.indices.size() > 262144 * 3 ||
-                                       std::any_of(draw.indices.begin(), draw.indices.end(), [&](auto i) { return i >= draw.vertices.size(); }))) ||
-            (draw.topology == RasterDraw::Topology::Triangles && drawnVertices % 3) || draw.vertices.size() > 262144 ||
+                                       std::any_of(draw.indices.begin(), draw.indices.end(), [&](auto i) { return i >= vertices; }))) ||
+            (draw.topology == RasterDraw::Topology::Triangles && drawnVertices % 3) || vertices > 262144 ||
             draw.constants.size() > 1024 || draw.uniforms.size() != draw.shader.uniforms.size() * 4 || draw.uniforms.size() > 2048 ||
             draw.textures.size() != draw.shader.textures.size() + (draw.vertexStage.shader ? draw.vertexStage.shader->textures.size() : 0) ||
             draw.textures.size() > 32)
@@ -3384,7 +3417,7 @@ void main() {
                 return reject("Nonfinite vertex position");
         if (draw.renderedTarget && draw.renderedTarget->size() != draw.target.size())
             return reject("Invalid rendered target size");
-        if (draw.vertices.empty() || (!draw.channelMask && !(draw.depth.test && draw.depth.write)) || draw.scissor[2] <= 0 || draw.scissor[3] <= 0) {
+        if (!vertices || (!draw.channelMask && !(draw.depth.test && draw.depth.write)) || draw.scissor[2] <= 0 || draw.scissor[3] <= 0) {
             if (draw.renderedTarget)
                 draw.target = draw.renderedTarget->resolve();
             RasterResult result{std::vector<std::uint8_t>(draw.target.begin(), draw.target.end()), 0, 0};
@@ -3945,6 +3978,18 @@ void main() {
             stageConstants[offset + 1] = float((sampler >> 3) & 7);
             stageConstants[offset + 2] = float((sampler >> 9) & 7);
             stageConstants[offset + 3] = float((sampler >> 26) & 7); // DEPTH_COMPARE_FUNCTION
+        }
+        std::vector<RasterDraw::Vertex> expandedVertices;
+        if (stride && !direct) {
+            // Cached bundles keep the full vertex layout.
+            expandedVertices.resize(vertices);
+            for (std::size_t v = 0; v < vertices; ++v) {
+                std::copy(compactAttributeDefaults.begin(), compactAttributeDefaults.end(), expandedVertices[v].inputs.begin());
+                std::copy_n(draw.vertexStage.attributes.begin() + std::ptrdiff_t(v * stride), stride, expandedVertices[v].inputs.begin());
+            }
+            draw.vertices = expandedVertices;
+            draw.vertexStage.attributes = {};
+            draw.vertexStage.attributeStride = 0;
         }
         if (direct) {
             if (!m_impl->direct)

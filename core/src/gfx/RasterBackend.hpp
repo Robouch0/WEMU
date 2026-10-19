@@ -144,6 +144,12 @@ namespace Core::Gfx {
                     }();
                     std::array<float, 6> viewport{};
                     unsigned inputCount{4};
+                    // Optional compact program inputs replacing `vertices` (then empty): for each
+                    // vertex, attributeStride consecutive attributes 0..stride-1. Attributes from
+                    // attributeStride on read the reference defaults ({1,1,1,1}, three {0,0,0,1},
+                    // then zeros). Positions come from the program, so none are needed.
+                    std::span<const std::array<float, 4>> attributes;
+                    unsigned attributeStride{};
             } vertexStage;
             // Static kcache references in shader.uniforms, four floats each;
             // replayer snapshots the actual fragment uniform-block values.
