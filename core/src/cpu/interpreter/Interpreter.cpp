@@ -604,9 +604,6 @@ void Core::Interpreter::run()
             if (ready) {
                 const Jit::X64Jit::Exit exit = jit.run(m_retired, nextServiceTickAt, lastStoreRetired);
                 switch (exit.reason) {
-                    case Jit::ExitReason::Revalidate:
-                        jit.revalidate(exit.pc);
-                        [[fallthrough]];
                     case Jit::ExitReason::Budget:
                     case Jit::ExitReason::LookupMiss:
                         m_pc = m_nextPc = exit.pc;

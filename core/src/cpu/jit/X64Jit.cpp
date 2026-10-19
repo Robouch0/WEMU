@@ -73,6 +73,8 @@ namespace Core::Jit {
                     const std::uint8_t *code{};
                     BlockSlot *slot{};
                     bool stores{};
+                    bool live{true}; // words checked since the last code write: reachable
+                    std::uint32_t callouts{}; // instructions left to their call-out
                     std::vector<Site> incoming; // jumps linked to this block
             };
 
@@ -175,7 +177,20 @@ namespace Core::Jit {
             // Points E9 rel32 jumps elsewhere, making each touched code page writable once.
             void patch(std::vector<std::pair<std::uint8_t *, const void *>> &jumps)
             {
+                if (jumps.empty())
+                    return;
                 std::ranges::sort(jumps);
+                if (jumps.size() > 64) {
+                    // Many pages: one protection change for all the code instead.
+                    buffer.writable(codeStart, static_cast<std::size_t>(cursor - codeStart));
+                    for (const auto &[jump, to]: jumps) {
+                        const auto rel = static_cast<std::int32_t>(reinterpret_cast<std::intptr_t>(to) - reinterpret_cast<std::intptr_t>(jump + 5));
+                        std::memcpy(jump + 1, &rel, sizeof(rel));
+                    }
+                    buffer.executable(codeStart, static_cast<std::size_t>(cursor - codeStart));
+                    stats.links += jumps.size();
+                    return;
+                }
                 for (std::size_t first = 0; first < jumps.size();) {
                     std::size_t last = first;
                     while (last + 1 < jumps.size() && jumps[last + 1].first - jumps[first].first < 4096)
@@ -191,6 +206,30 @@ namespace Core::Jit {
                     first = last + 1;
                 }
                 stats.links += jumps.size();
+            }
+
+            // Points the jumps linked to `block` back at the lookup, to be relinked when it is current.
+            void unlink(const std::uint32_t pc, Block &block, std::vector<std::pair<std::uint8_t *, const void *>> &jumps)
+            {
+                auto &waiting = unlinked[pc];
+                for (const Site &site: block.incoming) {
+                    jumps.emplace_back(site.jump, site.fallback);
+                    waiting.push_back(site);
+                }
+                block.incoming.clear();
+            }
+
+            // Links the jumps waiting for `pc` to its (current) block.
+            void relink(const std::uint32_t pc, Block &block, std::vector<std::pair<std::uint8_t *, const void *>> &jumps)
+            {
+                const auto waiting = unlinked.find(pc);
+                if (waiting == unlinked.end())
+                    return;
+                for (const Site &site: waiting->second) {
+                    block.incoming.push_back(site);
+                    jumps.emplace_back(site.jump, block.code);
+                }
+                unlinked.erase(waiting);
             }
 
             void flush()
@@ -221,7 +260,14 @@ namespace Core::Jit {
         return std::unique_ptr<X64Jit>(new X64Jit(std::move(impl)));
     }
 
-    void X64Jit::setSpinThreshold(const std::uint64_t instructions) noexcept { m_impl->context.spinThreshold = instructions; }
+    void X64Jit::setSpinThreshold(const std::uint64_t instructions)
+    {
+        // Compiled into every block: a new threshold needs new code.
+        if (m_impl->layout.spinThreshold != instructions) {
+            m_impl->layout.spinThreshold = instructions;
+            m_impl->flush();
+        }
+    }
 
     void X64Jit::sync(const std::uint64_t codeEpoch, const std::size_t hookCount)
     {
@@ -233,9 +279,18 @@ namespace Core::Jit {
             d.seenHooks = hookCount;
         }
         if (codeEpoch != d.seenEpoch) {
+            // Code was written: no block may run before prepare() compares its words again.
             d.seenEpoch = codeEpoch;
-            ++d.context.generation;
             ++d.stats.generations;
+            std::vector<std::pair<std::uint8_t *, const void *>> jumps;
+            for (auto &[pc, block]: d.blocks) {
+                if (block.live) {
+                    block.live = false;
+                    d.unlink(pc, block, jumps);
+                }
+            }
+            d.patch(jumps);
+            d.resetTable();
         }
     }
 
@@ -247,7 +302,23 @@ namespace Core::Jit {
         const auto it = d.blocks.find(pc);
         if (it == d.blocks.end())
             return false;
-        d.install(pc, it->second.code);
+        Impl::Block &block = it->second;
+        if (!block.live) {
+            // Compiled before the last code write: keep it only if its words are unchanged.
+            const auto &ram = d.cpu.m_memory.getMemory();
+            const std::size_t bytes = block.memoryWords.size() * sizeof(std::uint32_t);
+            if (std::size_t{pc} + bytes > ram.size() || std::memcmp(ram.data() + pc, block.memoryWords.data(), bytes) != 0) {
+                d.blocks.erase(it);
+                ++d.stats.recompiled;
+                return false;
+            }
+            block.live = true;
+            ++d.stats.revalidated;
+            std::vector<std::pair<std::uint8_t *, const void *>> jumps;
+            d.relink(pc, block, jumps);
+            d.patch(jumps);
+        }
+        d.install(pc, block.code);
         return true;
     }
 
@@ -262,16 +333,18 @@ namespace Core::Jit {
         if (d.slotCount == kBlockSlots || static_cast<std::size_t>(d.buffer.code() + d.buffer.codeBytes() - d.cursor) < kBlockReserve)
             d.flush();
         BlockSlot *slot = &d.slots[d.slotCount];
-        *slot = {0, d.context.generation, 0};
+        *slot = {0};
         if (!d.buffer.writable(d.cursor, kBlockReserve))
             return false;
         std::size_t size = 0;
+        std::uint32_t calloutCount = 0;
         std::vector<Link> links;
         try {
             Emitter e(d.cursor, kBlockReserve, d.layout, d.stubs);
             e.emitBlock(pc, instrs, stores, slot);
             size = e.getSize();
             links = e.links();
+            calloutCount = e.callouts();
             d.stats.instructions += instrs.size();
             d.stats.callouts += e.callouts();
         } catch (const Xbyak::Error &error) {
@@ -280,6 +353,7 @@ namespace Core::Jit {
         if (!d.buffer.executable(d.cursor, kBlockReserve) || !size)
             return false;
         Impl::Block block{{}, {}, d.cursor, slot, stores};
+        block.callouts = calloutCount;
         block.memoryWords.reserve(instrs.size());
         block.ids.reserve(instrs.size());
         for (const auto &instr: instrs) {
@@ -294,20 +368,14 @@ namespace Core::Jit {
         std::vector<std::pair<std::uint8_t *, const void *>> jumps;
         for (const Link &link: links) {
             const Impl::Site site{link.jump, link.fallback};
-            if (const auto target = d.blocks.find(link.target); target != d.blocks.end()) {
+            if (const auto target = d.blocks.find(link.target); target != d.blocks.end() && target->second.live) {
                 target->second.incoming.push_back(site);
                 jumps.emplace_back(site.jump, target->second.code);
             } else {
                 d.unlinked[link.target].push_back(site);
             }
         }
-        if (const auto waiting = d.unlinked.find(pc); waiting != d.unlinked.end()) {
-            for (const Impl::Site &site: waiting->second) {
-                stored.incoming.push_back(site);
-                jumps.emplace_back(site.jump, stored.code);
-            }
-            d.unlinked.erase(waiting);
-        }
+        d.relink(pc, stored, jumps);
         d.patch(jumps);
         ++d.slotCount;
         d.cursor += (size + 15) & ~std::size_t{15};
@@ -324,46 +392,19 @@ namespace Core::Jit {
         Context &c = d.context;
         c.retired = retired;
         c.retireLimit = retireLimit;
-        c.lastStoreRetired = lastStoreRetired;
+        const std::uint64_t threshold = d.layout.spinThreshold;
+        const bool spins = threshold != ~std::uint64_t{0};
+        c.spinDeadline = spins ? lastStoreRetired + threshold : ~std::uint64_t{0};
         c.reason = ExitReason::Continue;
         d.stubs.enter(&c, d.cpu.m_pc);
         retired = c.retired;
-        lastStoreRetired = c.lastStoreRetired;
+        if (spins)
+            lastStoreRetired = c.spinDeadline - threshold;
         ++d.stats.entries;
         ++d.stats.exits[static_cast<std::size_t>(c.reason) & 7];
         if (c.reason == ExitReason::Rethrow)
             std::rethrow_exception(takePendingException());
         return {c.reason, c.exitPc, c.blockPc, c.index, c.blockStores != 0};
-    }
-
-    void X64Jit::revalidate(const std::uint32_t pc)
-    {
-        Impl &d = *m_impl;
-        const auto it = d.blocks.find(pc);
-        if (it == d.blocks.end())
-            return;
-        const auto &ram = d.cpu.m_memory.getMemory();
-        const auto &words = it->second.memoryWords;
-        const std::size_t bytes = words.size() * sizeof(std::uint32_t);
-        if (std::size_t{pc} + bytes <= ram.size() && std::memcmp(ram.data() + pc, words.data(), bytes) == 0) {
-            it->second.slot->generation = d.context.generation;
-            ++d.stats.revalidated;
-            return;
-        }
-        // Changed code: jumps linked to the block go back to the lookup until the new words are
-        // compiled.
-        it->second.slot->generation = 0;
-        if (d.table[slotOf(pc)].pc == pc)
-            d.table[slotOf(pc)] = {kEmptyPc, 0, d.stubs.miss};
-        std::vector<std::pair<std::uint8_t *, const void *>> jumps;
-        auto &waiting = d.unlinked[pc];
-        for (const Impl::Site &site: it->second.incoming) {
-            jumps.emplace_back(site.jump, site.fallback);
-            waiting.push_back(site);
-        }
-        d.patch(jumps);
-        d.blocks.erase(it);
-        ++d.stats.recompiled;
     }
 
     void X64Jit::flush() { m_impl->flush(); }
@@ -374,7 +415,7 @@ namespace Core::Jit {
     {
         Impl &d = *m_impl;
         std::vector<std::uint64_t> mix(kInstructionCount, 0);
-        std::uint64_t executed = 0, blockRuns = 0, hot = 0;
+        std::uint64_t executed = 0, blockRuns = 0, hot = 0, calledOut = 0;
         for (auto &[pc, block]: d.blocks) {
             const std::uint64_t runs = std::exchange(block.slot->executions, 0);
             if (!runs)
@@ -382,6 +423,7 @@ namespace Core::Jit {
             ++hot;
             blockRuns += runs;
             executed += runs * block.ids.size();
+            calledOut += runs * block.callouts;
             for (const auto id: block.ids)
                 mix[id] += runs;
         }
@@ -389,14 +431,15 @@ namespace Core::Jit {
         const Stats &r = d.reported;
         Utils::Log::error(
                 "[X64JIT] instructions={} block_runs={} hot_blocks={} blocks={} compiled={} compile_ms={:.1f} code_mb={:.1f} flushes={} links={} "
-                "static_callouts={:.1f}% generations={} revalidated={} recompiled={} entries={} exits: budget={} revalidate={} miss={} done={} "
+                "static_callouts={:.1f}% callouts={:.2f}% generations={} revalidated={} recompiled={} entries={} exits: budget={} miss={} done={} "
                 "fatal={} suffix={}",
                 executed, blockRuns, hot, d.blocks.size(), s.compiled - r.compiled,
                 static_cast<double>(s.compileNanoseconds - r.compileNanoseconds) / 1e6, static_cast<double>(s.codeBytes) / (1 << 20),
                 s.flushes - r.flushes, s.links - r.links,
-                100.0 * static_cast<double>(s.callouts) / static_cast<double>(s.instructions ? s.instructions : 1), s.generations - r.generations,
+                100.0 * static_cast<double>(s.callouts) / static_cast<double>(s.instructions ? s.instructions : 1),
+                100.0 * static_cast<double>(calledOut) / static_cast<double>(executed ? executed : 1), s.generations - r.generations,
                 s.revalidated - r.revalidated, s.recompiled - r.recompiled, s.entries - r.entries, s.exits[1] - r.exits[1], s.exits[2] - r.exits[2],
-                s.exits[3] - r.exits[3], s.exits[4] - r.exits[4], s.exits[5] - r.exits[5], s.exits[7] - r.exits[7]);
+                s.exits[3] - r.exits[3], s.exits[4] - r.exits[4], s.exits[6] - r.exits[6]);
         d.reported = s;
         if (!executed)
             return;

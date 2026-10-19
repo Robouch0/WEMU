@@ -38,8 +38,6 @@ namespace Core::Jit {
     // Per-block data the block's code addresses RIP-relative.
     struct BlockSlot {
             std::uint64_t executions;
-            std::uint32_t generation;
-            std::uint32_t reserved;
     };
 
     // A direct jump to the block at `target`, patched once that block is compiled. `fallback`
@@ -64,6 +62,7 @@ namespace Core::Jit {
             const TableEntry *table{};
             const void *memory{}; // Core::Memory, for slow-path helpers
             bool profile{};
+            std::uint64_t spinThreshold{~std::uint64_t{0}}; // ~0: spin-yield disabled
             std::uint32_t nativeMask{~0u}; // Family bits allowed to compile natively (WEMU_JIT_CALLOUT)
     };
 

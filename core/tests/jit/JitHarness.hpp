@@ -162,24 +162,17 @@ class X64JitTest : public InstructionTest {
 
         // Compiles (if needed) and runs compiled code from m_pc the way Interpreter::run() does,
         // until an exit; `limit` is the retired count at which the next block must not start.
-        // Revalidation exits are handled here unless `revalidate` is false.
-        Core::Jit::X64Jit::Exit enter(std::uint64_t &retired, const std::uint64_t limit, std::uint64_t &lastStore, const bool revalidate = true)
+        Core::Jit::X64Jit::Exit enter(std::uint64_t &retired, const std::uint64_t limit, std::uint64_t &lastStore)
         {
-            for (;;) {
-                jit().sync(cpu->m_memory.codeEpoch(), cpu->m_hooks.size());
-                if (!jit().prepare(cpu->m_pc)) {
-                    const auto &b = block(cpu->m_pc);
-                    std::vector<Core::Jit::GuestInstruction> guest;
-                    for (const auto &i: b.instrs)
-                        guest.push_back({i.instr.raw, i.id});
-                    EXPECT_TRUE(jit().compile(cpu->m_pc, guest, b.stores));
-                }
-                const auto exit = jit().run(retired, limit, lastStore);
-                if (exit.reason != Core::Jit::ExitReason::Revalidate || !revalidate)
-                    return exit;
-                cpu->m_pc = exit.pc;
-                jit().revalidate(exit.pc);
+            jit().sync(cpu->m_memory.codeEpoch(), cpu->m_hooks.size());
+            if (!jit().prepare(cpu->m_pc)) {
+                const auto &b = block(cpu->m_pc);
+                std::vector<Core::Jit::GuestInstruction> guest;
+                for (const auto &i: b.instrs)
+                    guest.push_back({i.instr.raw, i.id});
+                EXPECT_TRUE(jit().compile(cpu->m_pc, guest, b.stores));
             }
+            return jit().run(retired, limit, lastStore);
         }
 
         // Applies an exit to the interpreter state as Interpreter::run() does (spin-yield aside).
@@ -189,7 +182,6 @@ class X64JitTest : public InstructionTest {
             switch (exit.reason) {
                 case ExitReason::Budget:
                 case ExitReason::LookupMiss:
-                case ExitReason::Revalidate:
                 case ExitReason::Done:
                     cpu->m_pc = cpu->m_nextPc = exit.pc;
                     break;

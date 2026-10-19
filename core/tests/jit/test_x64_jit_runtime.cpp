@@ -122,22 +122,17 @@ TEST_F(X64JitTest, CodeChangesRevalidateAndRecompile)
     // Same words written again: a new epoch, but the block survives revalidation.
     load(first);
     cpu->m_pc = kCode;
-    auto exit = enter(retired, 1000, lastStore, false);
-    ASSERT_EQ(exit.reason, ExitReason::Revalidate);
-    jit().revalidate(exit.pc);
-    EXPECT_EQ(jit().stats().revalidated, 1u);
     EXPECT_EQ(enter(retired, 1000, lastStore).reason, ExitReason::LookupMiss);
+    EXPECT_EQ(jit().stats().revalidated, 1u);
+    EXPECT_EQ(jit().stats().compiled, 1u);
 
     // Different words: dropped, then compiled again from live memory.
     const std::array<std::uint32_t, 2> second{0x38600002, 0x48000008};
     load(second);
     cpu->m_pc = kCode;
-    exit = enter(retired, 1000, lastStore, false);
-    ASSERT_EQ(exit.reason, ExitReason::Revalidate);
-    jit().revalidate(exit.pc);
-    EXPECT_EQ(jit().stats().recompiled, 1u);
-    EXPECT_FALSE(jit().prepare(kCode));
     EXPECT_EQ(enter(retired, 1000, lastStore).reason, ExitReason::LookupMiss);
+    EXPECT_EQ(jit().stats().recompiled, 1u);
+    EXPECT_EQ(jit().stats().compiled, 2u);
     EXPECT_EQ(cpu->m_gpr[3], 2u);
 }
 
@@ -237,7 +232,12 @@ TEST_F(X64JitTest, DirectExitsLinkToCompiledBlocks)
     cpu->m_pc = kCode;
     cpu->m_gpr[3] = 0;
     retired = 0;
-    EXPECT_EQ(enter(retired, 10, lastStore).reason, ExitReason::Budget);
+    Core::Jit::X64Jit::Exit next{};
+    do {
+        next = enter(retired, 10, lastStore);
+        settle(next, retired);
+    } while (next.reason == ExitReason::LookupMiss);
+    EXPECT_EQ(next.reason, ExitReason::Budget);
     EXPECT_EQ(cpu->m_gpr[3], 11u); // 1 + 4 + 1 + 4 + 1
     EXPECT_EQ(jit().stats().recompiled, 1u);
 }

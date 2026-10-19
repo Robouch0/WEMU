@@ -197,14 +197,12 @@ namespace Core::Jit {
         m_blockPc = pc;
         m_count = static_cast<std::uint32_t>(instrs.size());
         m_stores = stores;
-        Xbyak::Label budget, revalidate;
+        Xbyak::Label budget;
 
-        // Same checks as the interpreter loop before a block: service tick, then live code.
+        // The interpreter loop's service-tick check before a block. Blocks are only reachable
+        // while their words are current (X64Jit::sync unlinks them after a code write).
         cmp(r13, qword[r15 + CTX(retireLimit)]);
         jae(budget, T_NEAR);
-        mov(eax, dword[r15 + CTX(generation)]);
-        cmp(eax, dword[at(&slot->generation)]);
-        jne(revalidate, T_NEAR);
         add(r13, m_count);
         if (m_layout.profile)
             inc(qword[at(&slot->executions)]);
@@ -240,10 +238,6 @@ namespace Core::Jit {
         mov(dword[r15 + CTX(exitPc)], pc);
         mov(dword[r15 + CTX(reason)], code(ExitReason::Budget));
         jmp(m_stubs.exit, T_NEAR);
-        L(revalidate);
-        mov(dword[r15 + CTX(exitPc)], pc);
-        mov(dword[r15 + CTX(reason)], code(ExitReason::Revalidate));
-        jmp(m_stubs.exit, T_NEAR);
         for (std::size_t i = 0; i < m_cold.size(); ++i)
             m_cold[i]();
     }
@@ -278,13 +272,20 @@ namespace Core::Jit {
     {
         // The interpreter's noteBlockRetired after a whole block: blocks with stores record the
         // retired count, the others leave once the spin threshold is reached (eax = next pc).
+        const std::uint64_t threshold = m_layout.spinThreshold;
+        if (threshold == ~std::uint64_t{0})
+            return;
         if (m_stores) {
-            mov(qword[r15 + CTX(lastStoreRetired)], r13);
+            if (threshold <= 0x7FFFFFFF) {
+                lea(rcx, ptr[r13 + static_cast<std::int32_t>(threshold)]);
+            } else {
+                mov(rcx, threshold);
+                add(rcx, r13);
+            }
+            mov(qword[r15 + CTX(spinDeadline)], rcx);
             return;
         }
-        mov(rcx, r13);
-        sub(rcx, qword[r15 + CTX(lastStoreRetired)]);
-        cmp(rcx, qword[r15 + CTX(spinThreshold)]);
+        cmp(r13, qword[r15 + CTX(spinDeadline)]);
         if (!target) {
             jae(m_stubs.spinExit);
             return;
