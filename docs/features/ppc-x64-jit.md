@@ -18,7 +18,8 @@ are requested.
   64-instruction cap, and the code pages they cover are marked the same way.
   Retired-instruction counting, the service-tick budget and spin-yield
   bookkeeping follow the interpreter block by block, so a compiled run takes
-  the same preemption decisions.
+  the same preemption decisions. Spin-yield keeps a deadline (last block with
+  stores + threshold) that store-less blocks compare against.
 - **Guest state stays in the `Interpreter`.** Generated code addresses `m_gpr`,
   `m_fpr`, `m_ps1`, CR, XER, LR, CTR, GQRs and FPSCR through `rbx`; HLE, the
   scheduler's context switches and diagnostics see the usual fields. The
@@ -30,7 +31,8 @@ are requested.
   exception crosses generated code.
 - **Chaining.** A block exit to a constant pc is a direct jump, patched once the
   target is compiled (and reset when the target is invalidated); register
-  branches (`blr`, `bctr`) probe a direct-mapped pc-to-code table inline.
+  branches (`blr`, `bctr`) probe a direct-mapped pc-to-code table inline. A
+  `bc` right after a compare tests the CR value still in a register.
 - **HLE without leaving.** After `sc` or a `bctr` to an import, compiled code goes
   on unless the call switched threads, stopped the interpreter, wrote decoded
   code or changed the hooks. Hooked addresses get a lookup-table entry that runs
@@ -55,11 +57,13 @@ the interpreter executes the rest of the block, raising the usual
 
 ## Invalidation
 
-Each block checks a generation slot on entry. A new `Memory::codeEpoch()` starts
-a generation; a block from an older one returns to the loop, which compares its
-words with memory and either keeps it or drops it for recompilation. A store
-into decoded code leaves right after the store, as in `runBlock`. A change in the
-number of HLE hooks, `clearBlockCache()` and a full code buffer drop all code.
+A new `Memory::codeEpoch()` (some store or HLE wrote a page holding decoded code)
+unlinks every compiled block and clears the lookup table, so no block runs again
+before `prepare()` compares its words with memory: unchanged blocks are relinked,
+changed ones are compiled again. Blocks need no check of their own on entry. A
+store into decoded code leaves right after the store, as in `runBlock`. A change
+in the number of HLE hooks, `clearBlockCache()`, a new spin-yield threshold and a
+full code buffer drop all code. Code epochs do not change during a MK8 race.
 
 ## Native coverage
 
