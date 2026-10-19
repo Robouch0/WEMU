@@ -505,11 +505,14 @@ namespace {
         Core::advanceGuestFrameClock(cpu);
         // Uniform BLOCKS are bound before the game fills them (the GPU reads at submission), so
         // their call-time payload snapshot is premature — refresh from memory now, at frame end.
+        static const bool regProbe = std::getenv("WEMU_GX2_REG_PROBE") != nullptr;
         for (auto &c: Core::Gfx::gx2Stream().mutableCommands()) {
-            // Probe: if a reg upload's source memory holds different data at frame end than it
-            // did at call time, the title fills the buffer after binding (would need frame-end
-            // snapshots for regs too). Logs first few diffs.
+            // Probe (WEMU_GX2_REG_PROBE): if a reg upload's source memory holds different data at
+            // frame end than it did at call time, the title fills the buffer after binding (would
+            // need frame-end snapshots for regs too). Logs first few diffs.
             if ((c.type == Core::Gfx::Gx2Cmd::SetVertexUniformReg || c.type == Core::Gfx::Gx2Cmd::SetPixelUniformReg) && !c.payload.empty()) {
+                if (!regProbe)
+                    continue;
                 static int regDiffs = 0;
                 if (regDiffs < 8) {
                     try {
