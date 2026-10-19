@@ -19,6 +19,10 @@
 
 #include "exception/Exception.hpp"
 
+#ifdef __linux__
+    #include <sys/mman.h>
+#endif
+
 namespace Core {
 
     class MemoryException final : public Core::Exception {
@@ -54,6 +58,10 @@ namespace Core {
             explicit Memory(const std::size_t &size = ApplicationMemoryEnd - ApplicationCode) :
                 m_memory(), m_virtAddress(ApplicationCode), m_memSize(size)
             {
+                // Guest code walks pointers across hundreds of MB: back RAM with transparent huge
+                // pages (requested before the zero fill touches it) to spare TLB misses.
+                m_memory.reserve(size);
+                adviseHugePages(m_memory.data(), size);
                 m_memory.resize(size);
                 m_stack.resize(STACK_SIZE);
                 m_dimport.resize(DIMPORT_SIZE);
@@ -250,6 +258,20 @@ namespace Core {
             }
 
         private:
+            static void adviseHugePages(void *data, const std::size_t bytes) noexcept
+            {
+#ifdef __linux__
+                constexpr std::uintptr_t kHugePage = std::uintptr_t{1} << 21;
+                const auto first = (reinterpret_cast<std::uintptr_t>(data) + kHugePage - 1) & ~(kHugePage - 1);
+                const auto last = (reinterpret_cast<std::uintptr_t>(data) + bytes) & ~(kHugePage - 1);
+                if (last > first)
+                    madvise(reinterpret_cast<void *>(first), last - first, MADV_HUGEPAGE);
+#else
+                (void) data;
+                (void) bytes;
+#endif
+            }
+
             struct WriteTracking {
                     WriteTracking(std::size_t words, std::size_t pages) : slowPages(words), watchedPages(words), pageWrites(pages) {}
                     std::vector<std::atomic<std::uint64_t>> slowPages; // code or watched: stores take the slow path

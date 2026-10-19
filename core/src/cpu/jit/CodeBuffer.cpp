@@ -52,6 +52,8 @@ namespace Core::Jit {
             munmap(base, code + data);
             return;
         }
+        // The lookup table is probed on every register branch: huge pages keep it TLB-resident.
+        madvise(base + code, data, MADV_HUGEPAGE);
         m_base = base;
         m_codeBytes = code;
         m_dataBytes = data;
