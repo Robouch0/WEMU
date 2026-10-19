@@ -5635,22 +5635,20 @@ namespace Core::Gfx {
                     // big-endian read<u32> behind the snapshot leaves every word reversed. Without
                     // this swap a 1.0f identity row reads back as the denormal 4.6e-41 and every
                     // transform collapses to the origin.
+                    // Blocks are rebound for nearly every draw: swap into the bank's existing storage.
                     if (cmd.gpr[0] < m_vsBlocks.size() && !cmd.payload.empty()) {
-                        auto blk = cmd.payload;
-                        for (auto &w: blk)
-                            w = std::byteswap(w);
-                        m_vsBlocks[cmd.gpr[0]] = std::move(blk);
+                        auto &block = m_vsBlocks[cmd.gpr[0]];
+                        block.resize(cmd.payload.size());
+                        std::ranges::transform(cmd.payload, block.begin(), [](std::uint32_t word) { return std::byteswap(word); });
                     }
                     break;
                 case Gx2Cmd::SetPixelUniformBlock:
                     if (cmd.gpr[0] < m_psBlocks.size() && !cmd.payload.empty()) {
-                        auto blk = cmd.payload;
-                        for (auto &w: blk)
-                            w = std::byteswap(w);
-                        const std::size_t words = blk.size();
-                        m_psBlocks[cmd.gpr[0]] = std::move(blk);
+                        auto &block = m_psBlocks[cmd.gpr[0]];
+                        block.resize(cmd.payload.size());
+                        std::ranges::transform(cmd.payload, block.begin(), [](std::uint32_t word) { return std::byteswap(word); });
                         if (m_trace)
-                            Utils::Log::error("[GX2TRACE] setPsBlock loc={} bytes={} words={}", cmd.gpr[0], cmd.gpr[1], words);
+                            Utils::Log::error("[GX2TRACE] setPsBlock loc={} bytes={} words={}", cmd.gpr[0], cmd.gpr[1], block.size());
                     }
                     break;
                 case Gx2Cmd::SetVertexUniformReg: {
