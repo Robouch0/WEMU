@@ -2583,6 +2583,19 @@ namespace Core::Gfx {
             for (std::uint32_t i = 0; i < count; i++)
                 idx.push_back(cmd.gpr[2] + i); // DrawEx: gpr[2] = first vertex offset
         }
+        // Smallest and largest index, reduced once (vectorized) for the paths that need them.
+        std::optional<std::pair<std::uint32_t, std::uint32_t>> indexRange;
+        const auto indexBounds = [&] {
+            if (!indexRange) {
+                std::uint32_t low = ~0u, high = 0;
+                for (const auto value: idx) {
+                    low = std::min(low, value);
+                    high = std::max(high, value);
+                }
+                indexRange = std::pair{low, high};
+            }
+            return *indexRange;
+        };
 
         const auto attributeFetch = prepareAttributeFetch();
         // Fetch one vertex: position from floats[0..1], uv heuristics by stride.
@@ -3881,10 +3894,10 @@ namespace Core::Gfx {
         std::vector<std::uint8_t> cornerState;
         std::uint32_t cornerBase = 0;
         if (indexed && idx.size() >= 6 && !directVertices) {
-            const auto [low, high] = std::minmax_element(idx.begin(), idx.end());
-            if (std::uint64_t(*high) - *low + 1 <= idx.size() * 2 + 64) {
-                cornerBase = *low;
-                corners.resize(std::size_t(*high) - *low + 1);
+            const auto [low, high] = indexBounds();
+            if (std::uint64_t(high) - low + 1 <= idx.size() * 2 + 64) {
+                cornerBase = low;
+                corners.resize(std::size_t(high) - low + 1);
                 cornerState.assign(corners.size(), 0);
             }
         }
@@ -4012,10 +4025,10 @@ namespace Core::Gfx {
         }();
         if (preshadeEnabled && !nativeVertexExecution && !m_trace && vertexDeclaration->valid && !vertexShaderReadsTextures && !vsProgram().empty() &&
             !m_fetchLayout.empty() && idx.size() >= 64) {
-            const auto [low, high] = std::minmax_element(idx.begin(), idx.end());
-            const std::uint64_t span = std::uint64_t(*high) - *low + 1;
+            const auto [low, high] = indexBounds();
+            const std::uint64_t span = std::uint64_t(high) - low + 1;
             if (span <= idx.size() * 4 + 256) {
-                preshadedBase = *low;
+                preshadedBase = low;
                 preshaded.resize(span);
                 preshadedReady.assign(span, 0);
                 std::vector<std::uint32_t> unique;
@@ -4095,15 +4108,15 @@ namespace Core::Gfx {
         std::vector<std::pair<std::uint32_t, std::uint32_t>> directSources;
         bool cacheDirect = false;
         if (directVertices && idx.size() >= 64) {
-            const auto [low, high] = std::minmax_element(idx.begin(), idx.end());
-            cacheDirect = directVertexSources(attributeFetch, attributeStride, *low, *high, directSources);
+            const auto [low, high] = indexBounds();
+            cacheDirect = directVertexSources(attributeFetch, attributeStride, low, high, directSources);
             if (cacheDirect) {
                 const auto mix = [&](std::uint64_t value) { directKey = (directKey ^ value) * 0x100000001B3ull + (directKey >> 29); };
                 for (unsigned i = 0; i < 6; ++i)
                     mix(cmd.gpr[i]);
                 mix(idx.size());
-                mix(*low);
-                mix(*high);
+                mix(low);
+                mix(high);
                 mix(mode);
                 mix(attributeStride);
                 for (const auto &binding: m_attribs)
@@ -4148,8 +4161,8 @@ namespace Core::Gfx {
         }
         if (directVertices && !directArrays) {
             const auto stride = std::max(1u, attributeStride);
-            const auto [low, high] = idx.empty() ? std::pair{idx.end(), idx.end()} : std::minmax_element(idx.begin(), idx.end());
-            const std::uint64_t span = idx.empty() ? 0 : std::uint64_t(*high) - *low + 1;
+            const auto [low, high] = idx.empty() ? std::pair{0u, 0u} : indexBounds();
+            const std::uint64_t span = idx.empty() ? 0 : std::uint64_t(high) - low + 1;
             const bool dense = span <= idx.size() * 2 + 64;
             std::vector<std::uint32_t> denseSlots(dense ? span : 0, ~0u);
             std::unordered_map<std::uint32_t, std::uint32_t> sparseSlots;
@@ -4157,7 +4170,7 @@ namespace Core::Gfx {
             directIndices.reserve(idx.size() / 2 * 3);
             // ~0u: not fetched yet; ~1u: unavailable, which drops its triangles like a failed corner.
             const auto slotOf = [&](std::uint32_t vi) {
-                auto &slot = dense ? denseSlots[vi - *low] : sparseSlots.try_emplace(vi, ~0u).first->second;
+                auto &slot = dense ? denseSlots[vi - low] : sparseSlots.try_emplace(vi, ~0u).first->second;
                 if (slot == ~0u) {
                     const auto base = directAttributes.size();
                     directAttributes.resize(base + stride);
