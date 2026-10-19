@@ -2493,13 +2493,21 @@ namespace Core::Gfx {
             const std::uint8_t *indices = std::uint64_t(cmd.gpr[3]) + std::uint64_t(count) * indexBytes <= 0x100000000ull
                                                   ? m_mem->hostPtr(cmd.gpr[3], std::size_t(count) * indexBytes)
                                                   : nullptr;
-            for (std::uint32_t i = 0; indices && i < count; i++) {
-                const auto *p = indices + std::size_t(i) * indexBytes;
-                const auto value = type == 1 ? std::uint32_t(p[0]) | std::uint32_t(p[1]) << 8 | std::uint32_t(p[2]) << 16 | std::uint32_t(p[3]) << 24
-                                   : type == 9 ? std::uint32_t(p[0]) << 24 | std::uint32_t(p[1]) << 16 | std::uint32_t(p[2]) << 8 | p[3]
-                                   : type == 0 ? std::uint32_t(p[0]) | std::uint32_t(p[1]) << 8
-                                               : std::uint32_t(p[0]) << 8 | p[1];
-                idx.push_back(value + cmd.gpr[4]); // base vertex
+            if (indices) {
+                // One loop per index type, so the decode vectorizes: every draw decodes all its indices.
+                idx.resize(count);
+                const auto decode = [&](auto read) {
+                    for (std::uint32_t i = 0; i < count; i++)
+                        idx[i] = read(indices + std::size_t(i) * indexBytes) + cmd.gpr[4]; // base vertex
+                };
+                if (type == 1)
+                    decode([](const std::uint8_t *p) { return std::uint32_t(p[0]) | std::uint32_t(p[1]) << 8 | std::uint32_t(p[2]) << 16 | std::uint32_t(p[3]) << 24; });
+                else if (type == 9)
+                    decode([](const std::uint8_t *p) { return std::uint32_t(p[0]) << 24 | std::uint32_t(p[1]) << 16 | std::uint32_t(p[2]) << 8 | p[3]; });
+                else if (type == 0)
+                    decode([](const std::uint8_t *p) { return std::uint32_t(p[0]) | std::uint32_t(p[1]) << 8; });
+                else
+                    decode([](const std::uint8_t *p) { return std::uint32_t(p[0]) << 8 | p[1]; });
             }
             for (std::uint32_t i = 0; !indices && i < count; i++) {
                 const std::uint64_t address = std::uint64_t(cmd.gpr[3]) + std::uint64_t(i) * indexBytes;
@@ -4711,6 +4719,7 @@ namespace Core::Gfx {
                 draw.uniforms = pixelUniforms;
                 std::vector<float> vertexUniforms;
                 if (nativeVertexShader) {
+                    vertexUniforms.reserve(nativeVertexShader->uniforms.size() * 4);
                     static const unsigned bias = [] {
                         const auto *v = std::getenv("WEMU_KCACHE_BIAS");
                         return v ? unsigned(std::atoi(v)) : 0u;
