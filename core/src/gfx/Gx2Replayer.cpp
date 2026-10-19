@@ -1128,6 +1128,10 @@ namespace Core::Gfx {
         if (!surface.width || !surface.height || surface.width > 4096 || surface.height > 4096 || !surface.sliceCount || surface.sliceCount > 256 ||
             decodedBytes + surface.imageSize > budget || !useViewBacking())
             return {};
+        for (const auto &entry: m_arraySnapshots)
+            if (entry->validatedFrame == m_presentCount && entry->checkedBackings == m_viewBackings.size() &&
+                entry->checkedCpuWrites == m_cpuWritten.size() && entry->surface == surface)
+                return entry;
         const auto sourceEnd = std::uint64_t(surface.imagePtr) + surface.imageSize;
         for (const auto &[key, backing]: m_viewBackings)
             if (std::uint64_t(key.imagePtr) < sourceEnd && std::uint64_t(surface.imagePtr) < std::uint64_t(key.imagePtr) + backing.size())
@@ -1146,15 +1150,26 @@ namespace Core::Gfx {
             return {};
         // Guest memory does not change while one frame replays, and the checks above exclude
         // surfaces this replay renders into, so each snapshot is compared at most once per present.
-        for (const auto &entry: m_arraySnapshots)
-            if (entry->surface == surface && entry->source.size() == surface.imageSize &&
-                (entry->validatedFrame == m_presentCount || std::memcmp(entry->source.data(), begin, surface.imageSize) == 0)) {
-                entry->validatedFrame = m_presentCount;
-                return entry;
+        for (const auto &entry: m_arraySnapshots) {
+            if (entry->surface != surface || entry->source.size() != surface.imageSize)
+                continue;
+            if (entry->validatedFrame != m_presentCount &&
+                !unchangedSinceValidation(entry->writes, surface.imagePtr, surface.imageSize, surface.imagePtr >> 12)) {
+                if (std::memcmp(entry->source.data(), begin, surface.imageSize) != 0)
+                    continue;
+                validated(entry->writes, surface.imagePtr, surface.imageSize, true);
             }
+            entry->validatedFrame = m_presentCount;
+            entry->checkedBackings = m_viewBackings.size();
+            entry->checkedCpuWrites = m_cpuWritten.size();
+            return entry;
+        }
         auto result = std::make_shared<ArraySnapshot>();
         result->surface = surface;
         result->validatedFrame = m_presentCount;
+        result->checkedBackings = m_viewBackings.size();
+        result->checkedCpuWrites = m_cpuWritten.size();
+        validated(result->writes, surface.imagePtr, surface.imageSize, false);
         result->source.assign(begin, begin + surface.imageSize);
         result->rgba.resize(decodedBytes);
         for (unsigned layer = 0; layer < slices.size(); ++layer)

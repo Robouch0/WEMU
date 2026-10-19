@@ -281,10 +281,23 @@ namespace Core::Gfx {
                     std::uint32_t w = 0, h = 0;
             };
             std::unordered_map<std::uint32_t, DecodedTex> m_texCache;
+            // Guest bytes compared only when stores may have reached them: an entry is trusted
+            // once two comparisons saw the same write generation, and re-compared periodically.
+            struct WriteValidation {
+                    std::optional<std::uint64_t> generation;
+                    bool trusted{};
+                    std::uint32_t comparedFrame{};
+            };
+            bool unchangedSinceValidation(WriteValidation &validation, std::uint32_t address, std::size_t bytes, std::uint64_t stagger) const;
+            void validated(WriteValidation &validation, std::uint32_t address, std::size_t bytes, bool unchanged) const;
             struct ArraySnapshot {
                     Surface surface;
                     std::vector<std::uint8_t> source, rgba;
                     std::uint32_t validatedFrame{~0u}; // source compared against guest memory during this present
+                    // Alias checks passed with this many view backings and CPU-written images; both
+                    // only grow, so equal counts in the same present skip the checks.
+                    std::size_t checkedBackings{}, checkedCpuWrites{};
+                    WriteValidation writes;
             };
             std::vector<std::shared_ptr<ArraySnapshot>> m_arraySnapshots;
             // Raw canonical bytes of an array whose layers all live in view backings, packed layer
@@ -329,15 +342,6 @@ namespace Core::Gfx {
             std::shared_ptr<ArraySnapshot> arraySnapshot(const Surface &surface);
             // Base-level sample() output for guest-memory textures (tiled/compressed), keyed by
             // view and validated against source snapshots so unchanged textures decode once.
-            // Guest bytes compared only when stores may have reached them: an entry is trusted
-            // once two comparisons saw the same write generation, and re-compared periodically.
-            struct WriteValidation {
-                    std::optional<std::uint64_t> generation;
-                    bool trusted{};
-                    std::uint32_t comparedFrame{};
-            };
-            bool unchangedSinceValidation(WriteValidation &validation, std::uint32_t address, std::size_t bytes, std::uint64_t stagger) const;
-            void validated(WriteValidation &validation, std::uint32_t address, std::size_t bytes, bool unchanged) const;
             struct DecodedTexture {
                     std::uint64_t used{};
                     std::uint32_t validatedFrame{~0u};
