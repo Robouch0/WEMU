@@ -1727,6 +1727,15 @@ namespace Core::Gfx {
         return *m_psShader->colorOnlyEffects;
     }
 
+    bool Gx2Replayer::rejectsEveryPixel()
+    {
+        if (!m_psShader)
+            return LatteVsInterp::rejectsEveryPixel(*declaration(m_psShader));
+        if (!m_psShader->rejectsEveryPixel)
+            m_psShader->rejectsEveryPixel = LatteVsInterp::rejectsEveryPixel(*declaration(m_psShader));
+        return *m_psShader->rejectsEveryPixel;
+    }
+
     Gx2Replayer::Surface Gx2Replayer::parseSurface(const std::uint32_t addr)
     {
         Surface s;
@@ -3131,7 +3140,7 @@ namespace Core::Gfx {
         const bool skipColorShader = pixelProgram && writableColors == 0 && !m_multiWriteEnable &&
                                      (!m_colorWriteEnable || !m_channelMask[m_colorTarget & 7]) &&
                                      colorOnlyEffects();
-        const bool pixelAlwaysRejected = pixelProgram && !skipColorShader && LatteVsInterp::rejectsEveryPixel(*pixelProgram);
+        const bool pixelAlwaysRejected = pixelProgram && !skipColorShader && rejectsEveryPixel();
         // Rejected coverage has no shader side effects in the translated subset.
         // Depth exports must execute before comparison; unsupported shaders retain
         // the late test until their effects are understood.

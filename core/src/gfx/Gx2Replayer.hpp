@@ -420,7 +420,7 @@ namespace Core::Gfx {
                     std::vector<std::uint32_t> words;
                     std::shared_ptr<const Latte::Program> declaration;
                     std::shared_ptr<const Latte::VertexShader> vertexShader;
-                    std::optional<bool> colorOnlyEffects;
+                    std::optional<bool> colorOnlyEffects, rejectsEveryPixel;
                     // Resource types (two bits each), onlyColorZero, colorExport.
                     std::map<std::tuple<std::uint64_t, bool, unsigned>, std::shared_ptr<const Latte::FragmentShader>> fragmentShaders;
             };
@@ -432,6 +432,7 @@ namespace Core::Gfx {
                                                                                      unsigned colorExport);
             [[nodiscard]] std::shared_ptr<const Latte::VertexShader> vertexShader();
             [[nodiscard]] bool colorOnlyEffects();
+            [[nodiscard]] bool rejectsEveryPixel();
             // Current vertex shader + cache keyed by the guest GX2VertexShader struct address.
             std::shared_ptr<ShaderProgram> m_vsShader;
             std::unordered_map<std::uint32_t, std::shared_ptr<ShaderProgram>> m_vsCache;
