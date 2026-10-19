@@ -181,7 +181,9 @@ namespace Core::Gfx::Latte {
                         }
                         return std::format("u.k[{}][{}]", std::distance(shader.uniforms.begin(), it), src.chan);
                     }
-                    return std::format("u.c[{}][{}]", src.sel >= 256 ? src.sel - 256 : src.sel - 128, src.chan);
+                    const auto index = src.sel >= 256 ? src.sel - 256 : src.sel - 128;
+                    shader.constantRegisters = std::max(shader.constantRegisters, index + 1);
+                    return std::format("u.c[{}][{}]", index, src.chan);
                 }
         };
         std::string source(const Src &s, const AluInst &instruction, LoweringConstants &constants)
@@ -196,8 +198,10 @@ namespace Core::Gfx::Latte {
                 if (s.sel < 128) {
                     const auto index = std::format("({}+ar[{}])", s.sel, indexMode);
                     value = std::format("({0}>=0 && {0}<128 ? r[clamp({0},0,127)][{1}] : uintBitsToFloat(2147483647u))", index, s.chan);
-                } else
+                } else {
+                    constants.shader.constantRegisters = 256;
                     value = std::format("relativeConstant({}+ar[{}],{})", s.sel - 256, indexMode, s.chan);
+                }
             } else if (s.sel < 128)
                 value = std::format("r[{}][{}]", s.sel, s.chan);
             else if (s.sel < 192 || (s.sel >= 256 && s.sel < 512))
@@ -501,6 +505,7 @@ namespace Core::Gfx::Latte {
     {
         FragmentShader result;
         result.exportsColor = false;
+        result.constantRegisters = 0;
         LoweringConstants constants{result, {}, {}, {}};
         try {
             if (!program.valid || program.words.size() < 2 || colorExport >= 8 || (!onlyColorZero && colorExport))

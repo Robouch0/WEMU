@@ -4147,14 +4147,22 @@ void main() {
                 draw.vertexStage.shader ? std::min<std::size_t>(vertexConstants.size(),
                                                                 std::max(draw.vertexStage.constants.size(), 1152 + draw.vertexStage.uniforms.size()))
                                         : 0;
-        std::fill_n(constants.begin(), constantFloats, 0.f);
-        std::fill_n(vertexConstants.begin(), vertexConstantFloats, 0.f);
-        if (draw.vertexStage.shader) {
-            std::copy(draw.vertexStage.constants.begin(), draw.vertexStage.constants.end(), vertexConstants.begin());
-            std::copy(draw.vertexStage.uniforms.begin(), draw.vertexStage.uniforms.end(), vertexConstants.begin() + 1152);
-        }
-        std::copy(draw.constants.begin(), draw.constants.end(), constants.begin());
-        std::copy(draw.uniforms.begin(), draw.uniforms.end(), constants.begin() + 1152);
+        // Registers a program never reads stay unset too: most titles read uniform blocks.
+        const auto stageConstants = [](std::array<float, 3200> &values, std::size_t floats, std::span<const float> registers, unsigned used,
+                                       std::span<const float> uniforms) {
+            const auto copied = std::min<std::size_t>(registers.size(), std::size_t(used) * 4);
+            std::copy_n(registers.begin(), copied, values.begin());
+            std::fill(values.begin() + std::ptrdiff_t(copied), values.begin() + std::ptrdiff_t(std::min<std::size_t>(std::size_t(used) * 4, 1024)),
+                      0.f);
+            std::fill(values.begin() + 1024, values.begin() + std::ptrdiff_t(std::min<std::size_t>(floats, 1152)), 0.f);
+            std::copy(uniforms.begin(), uniforms.end(), values.begin() + 1152);
+            if (floats > 1152 + uniforms.size())
+                std::fill(values.begin() + std::ptrdiff_t(1152 + uniforms.size()), values.begin() + std::ptrdiff_t(floats), 0.f);
+        };
+        if (draw.vertexStage.shader)
+            stageConstants(vertexConstants, vertexConstantFloats, draw.vertexStage.constants, draw.vertexStage.shader->constantRegisters,
+                           draw.vertexStage.uniforms);
+        stageConstants(constants, constantFloats, draw.constants, draw.shader.constantRegisters, draw.uniforms);
         for (const auto &texture: draw.textures) {
             const auto border = texture.sampler.border();
             const auto slot = texture.binding.binding - (texture.binding.binding > 17 ? 18 : 1);

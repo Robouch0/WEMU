@@ -46,6 +46,9 @@ namespace Core::Gfx::Latte {
             };
             std::vector<UniformBuffer> uniformBuffers;
             unsigned parameterMask{};
+            // Constant registers u.c[0, constantRegisters) the program may read; hand-written
+            // shaders keep the whole file.
+            unsigned constantRegisters{256};
             explicit operator bool() const { return error.empty() && !source.empty(); }
     };
 
