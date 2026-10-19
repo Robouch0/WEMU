@@ -1828,7 +1828,10 @@ namespace Core::Gfx {
                 endian = bytes == 4 ? 2 : bytes == 2 ? 1 : 0;
             const std::uint32_t index = m_fetchLayout[i + 4] == 1 ? 0 : vertex;
             const std::uint64_t start = std::uint64_t(index) * binding.stride + offset;
-            if (!binding.addr || start + std::uint64_t(components) * bytes > binding.size ||
+            // Bound a fetch by where its element starts, not by its byte extent: MK8 fetches
+            // 32_32_32_32 positions from 12-byte strides, so the last vertex's fourth float lies
+            // past the declared size and is read from the following memory.
+            if (!binding.addr || start >= binding.size ||
                 std::uint64_t(binding.addr) + start + std::uint64_t(components) * bytes > 0x100000000ull)
                 return false;
             const auto addr = binding.addr + static_cast<std::uint32_t>(start);

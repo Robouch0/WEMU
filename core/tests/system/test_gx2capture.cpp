@@ -2491,6 +2491,84 @@ TEST_F(Gx2CaptureTest, IndependentColorAttachmentsReceiveDistinctBurstOutputs)
     }
 }
 
+TEST_F(Gx2CaptureTest, AttributeFetchesAreBoundedByElementStartNotByteExtent)
+{
+    using namespace Core::Gfx;
+    constexpr unsigned VS = 0x28005000, PS = 0x28006000, VSP = 0x28007000, PSP = 0x28008000;
+    constexpr unsigned FETCH = 0x28001000, ATTRS = 0x28003000, VERTS = 0x28010000, COLOR = 0x28009000;
+    const auto record = [&](const char *name, std::initializer_list<unsigned> args) {
+        unsigned reg = 3;
+        for (const auto arg: args)
+            cpu->m_gpr[reg++] = arg;
+        call(name);
+    };
+    // 32_32_32_32 positions with W forced to 1, read from a 12-byte stride: the last vertex's
+    // fourth float lies past the declared 36-byte buffer, as in MK8's course geometry.
+    const std::array<unsigned, 8> attrs{0, 0, 0, 0x813, 0, 0, 0x00010205, 3};
+    for (unsigned i = 0; i < attrs.size(); ++i)
+        cpu->m_memory.write<unsigned>(ATTRS + i * 4, attrs[i]);
+    record("GX2InitFetchShaderEx", {FETCH, 0x28002000, 1, ATTRS, 0, 0});
+    const std::array<std::array<float, 3>, 3> vertices{{{-1, 1, 0}, {3, 1, 0}, {-1, -3, 0}}};
+    for (unsigned v = 0; v < vertices.size(); ++v)
+        for (unsigned c = 0; c < 3; ++c)
+            cpu->m_memory.write<unsigned>(VERTS + v * 12 + c * 4, std::bit_cast<unsigned>(vertices[v][c]));
+    cpu->m_memory.write<unsigned>(VERTS + 36, std::bit_cast<unsigned>(123.f)); // never selected
+    for (unsigned i = 0; i < 0x200; i += 4) {
+        cpu->m_memory.write<unsigned>(VS + i, 0);
+        cpu->m_memory.write<unsigned>(PS + i, 0);
+    }
+    cpu->m_memory.write<unsigned>(VS + 0xC, 1);
+    cpu->m_memory.write<unsigned>(VS + 0x10, 0xFFFFFF00);
+    cpu->m_memory.write<unsigned>(VS + 0x14, 0xFFFFFFFF);
+    cpu->m_memory.write<unsigned>(VS + 0x18, 0xFFFFFFFF);
+    const std::array<unsigned, 2> vertex{60u | (1u << 13) | (1u << 15), (0x28u << 23) | (1u << 21) | 0x688u};
+    // Export constant red: MOV R0, (1, 0, 0, 1).
+    std::vector<unsigned> pixel{2, (8u << 26) | (3u << 18), 0, (0x28u << 23) | (1u << 21) | 0x688u};
+    for (unsigned c = 0; c < 4; ++c) {
+        pixel.push_back((c == 0 || c == 3 ? 249u : 248u) | (c == 3 ? 1u << 31 : 0));
+        pixel.push_back(16u | (0x19u << 7) | (c << 29));
+    }
+    const auto shader = [&](unsigned header, unsigned offset, unsigned ptr, const auto &words) {
+        cpu->m_memory.write<unsigned>(header + offset, words.size() * 4);
+        cpu->m_memory.write<unsigned>(header + offset + 4, ptr);
+        for (unsigned i = 0; i < words.size(); ++i)
+            cpu->m_memory.write<unsigned>(ptr + i * 4, std::byteswap(words[i]));
+    };
+    shader(VS, 0xD0, VSP, vertex);
+    shader(PS, 0xA4, PSP, pixel);
+    surface(COLOR, 0x28040000, 256, 8, 8, 8, 1);
+    for (unsigned c = 1; c <= 4; ++c)
+        cpu->m_fpr[c] = 0;
+    record("GX2ClearColor", {COLOR});
+    record("GX2SetColorBuffer", {COLOR, 0});
+    record("GX2SetColorControl", {0xCC, 0, 0, 1});
+    record("GX2SetTargetChannelMasks", {15, 0, 0, 0, 0, 0, 0, 0});
+    cpu->m_fpr[1] = cpu->m_fpr[2] = 0;
+    cpu->m_fpr[3] = cpu->m_fpr[4] = 8;
+    cpu->m_fpr[5] = 0;
+    cpu->m_fpr[6] = 1;
+    record("GX2SetViewport", {});
+    record("GX2SetFetchShader", {FETCH});
+    record("GX2SetVertexShader", {VS});
+    record("GX2SetPixelShader", {PS});
+    record("GX2SetAttribBuffer", {0, 36, 12, VERTS});
+    record("GX2DrawEx", {4, 3, 0, 1});
+    record("GX2CopyColorBufferToScanBuffer", {COLOR, 1});
+    const auto captured = gx2Stream();
+    for (bool native: {false, true}) {
+        if (native && !std::getenv("WEMU_TEST_VULKAN"))
+            continue;
+        SCOPED_TRACE(native);
+        Gx2Replayer replay;
+        auto backend = std::make_shared<VulkanRasterBackend>(true, true);
+        if (native)
+            replay.setRasterBackend(backend);
+        replay.replay(captured, &cpu->m_memory);
+        EXPECT_EQ((std::array{replay.framebuffer()[0], replay.framebuffer()[1], replay.framebuffer()[2], replay.framebuffer()[3]}),
+                  (std::array<std::uint8_t, 4>{255, 0, 0, 255}));
+    }
+}
+
 TEST_F(Gx2CaptureTest, PolygonRegisterCapturePreservesStackArgumentsAndRoundTrips)
 {
     constexpr unsigned REG = 0x28001000, STACK = 0x28002000, OUT = 0x28003000;
