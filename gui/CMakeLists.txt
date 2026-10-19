@@ -34,6 +34,7 @@ target_sources(appgui PRIVATE
         src/input/InputManager.hpp
         src/input/SDLGamepadInput.hpp
         src/input/InputProfile.hpp
+        src/input/ControllerMapping.hpp
         src/input/InputProfileManager.hpp
         src/library/TitleScanner.hpp
         src/remote/RemoteProtocol.hpp
@@ -116,8 +117,13 @@ target_include_directories(wemu_remote_protocol_tests PRIVATE ../core/src src/re
 target_link_libraries(wemu_remote_protocol_tests PRIVATE Qt6::Core gtest_main)
 add_test(NAME wemu_remote_protocol_tests COMMAND wemu_remote_protocol_tests)
 
+add_executable(wemu_controller_mapping_tests tests/ControllerMappingTest.cpp)
+target_include_directories(wemu_controller_mapping_tests PRIVATE src/input)
+target_link_libraries(wemu_controller_mapping_tests PRIVATE Qt6::Core gtest_main)
+add_test(NAME wemu_controller_mapping_tests COMMAND wemu_controller_mapping_tests)
+
 add_executable(wemu_session_lifecycle_tests tests/SessionLifecycleTest.cpp src/emulator/EmulatorLauncher.cpp)
-target_include_directories(wemu_session_lifecycle_tests PRIVATE src/emulator ../core/src)
+target_include_directories(wemu_session_lifecycle_tests PRIVATE src/emulator src/input ../core/src)
 target_compile_definitions(wemu_session_lifecycle_tests PRIVATE WEMU_CORE_BINARY="$<TARGET_FILE:wemu>")
 if(WEMU_ENABLE_LLVM)
     target_compile_definitions(wemu_session_lifecycle_tests PRIVATE WEMU_GUI_HAS_LLVM=1)

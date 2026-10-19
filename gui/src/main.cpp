@@ -43,6 +43,10 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty("TitleScanner", &scanner);
     engine.rootContext()->setContextProperty("EmulatorLauncher", &launcher);
     engine.rootContext()->setContextProperty("RemoteGamepad", &remoteGamepad);
+    QObject::connect(&input, &InputManager::inputUpdated, &launcher, [&input, &profiles, &launcher] {
+        const auto pad = input.controllerState(profiles.bindings());
+        launcher.setControllerInput(pad.buttons, pad.leftStick, pad.rightStick);
+    });
     QObject::connect(&engine, &QQmlApplicationEngine::objectCreationFailed, &app,
                      []() { QCoreApplication::exit(-1); }, Qt::QueuedConnection);
     QObject::connect(&app, &QGuiApplication::aboutToQuit, &input, &InputManager::stopPolling);
