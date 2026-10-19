@@ -3373,7 +3373,7 @@ void main() {
                         vkDestroyFramebuffer(device, found->second.framebuffer, nullptr);
                         framebuffers.erase(found);
                     }
-                    if (framebuffers.size() >= 1024)
+                    if (framebuffers.size() >= framebufferPurgeAt) {
                         // In-flight segments retain their images, so a framebuffer whose images are
                         // released is idle.
                         std::erase_if(framebuffers, [&](const auto &entry) {
@@ -3382,6 +3382,10 @@ void main() {
                             vkDestroyFramebuffer(device, entry.second.framebuffer, nullptr);
                             return true;
                         });
+                        // A MK8 race keeps more than 1024 attachments alive: scanning them again at
+                        // every new framebuffer cost 5% of the replay thread. Wait for the map to double.
+                        framebufferPurgeAt = std::max<std::size_t>(1024, framebuffers.size() * 2);
+                    }
                     VkImageView views[2]{};
                     unsigned count = 0;
                     if (color)
@@ -3494,6 +3498,7 @@ void main() {
                 std::map<std::array<std::uint32_t, 9>, VkSampler> samplers;
                 std::map<std::pair<VkFormat, VkFormat>, VkRenderPass> passes;
                 std::map<std::tuple<VkRenderPass, VkImageView, VkImageView, unsigned, unsigned>, FramebufferEntry> framebuffers;
+                std::size_t framebufferPurgeAt{1024};
                 std::map<std::array<std::uint64_t, 10>, std::vector<std::shared_ptr<ScratchTexture>>> scratchTextures;
                 struct AssembledTexture {
                         std::vector<std::weak_ptr<ColorImage>> sources; // expired: the key's addresses may be reused
