@@ -2347,8 +2347,8 @@ namespace Core::Gfx {
                     break;
             }
         }
-        if (indexed && count >= 6 && m_vertexCacheEnabled && vertexDeclaration->valid && !vertexShaderReadsTextures)
-            vertexCache.resize(128);
+        // Allocated on the first CPU shading: 128 outputs are ~77 KB, wasted on GPU vertex draws.
+        const bool vertexCacheWanted = indexed && count >= 6 && m_vertexCacheEnabled && vertexDeclaration->valid && !vertexShaderReadsTextures;
         // Outputs of the pre-shading pass (filled below, once the draw's vertex path is known),
         // indexed by vertex index - preshadedBase. preshadedReady marks computed entries.
         std::vector<LatteVsInterp::Output> preshaded;
@@ -2462,6 +2462,8 @@ namespace Core::Gfx {
                 rgba = sampleTexture(surface, m_vertexSamplers[sampler], coords[0], coords[1], coords[2]);
                 return true;
             };
+            if (vertexCacheWanted && vertexCache.empty())
+                vertexCache.resize(128);
             auto *cached = vertexCache.empty() ? nullptr : &vertexCache[vi % vertexCache.size()];
             LatteVsInterp::Output o;
             if (preshadedOutput) {
@@ -3557,10 +3559,16 @@ namespace Core::Gfx {
 
         // A corner depends only on its vertex index within a draw, so shared corners are assembled
         // once: cornerState is 0 (pending), 1 (ready) or 2 (unavailable, drops its triangles).
+        // GPU vertex programs only need the fetched attributes: build each distinct vertex once,
+        // directly in the backend layout. Reference corners (~600 bytes each) are assembled only
+        // if the draw falls back to software. Verification compares against those corners.
+        static const bool verifyEnvironmentSet = std::getenv("WEMU_NATIVE_VERIFY_EVERY") != nullptr;
+        const bool directVertices = collectBackend && nativeVertexExecution && mode != 1 &&
+                                    !(m_nativeVerifyEvery ? *m_nativeVerifyEvery != 0 : verifyEnvironmentSet);
         std::vector<RasterVertex> corners;
         std::vector<std::uint8_t> cornerState;
         std::uint32_t cornerBase = 0;
-        if (indexed && idx.size() >= 6) {
+        if (indexed && idx.size() >= 6 && !directVertices) {
             const auto [low, high] = std::minmax_element(idx.begin(), idx.end());
             if (std::uint64_t(*high) - *low + 1 <= idx.size() * 2 + 64) {
                 cornerBase = *low;
@@ -3762,12 +3770,6 @@ namespace Core::Gfx {
                     rasterTri(i, i + 1, i + 2);
             }
         };
-        // GPU vertex programs only need the fetched attributes: build each distinct vertex once,
-        // directly in the backend layout. Reference corners (~600 bytes each) are assembled only
-        // if the draw falls back to software. Verification compares against those corners.
-        static const bool verifyEnvironmentSet = std::getenv("WEMU_NATIVE_VERIFY_EVERY") != nullptr;
-        const bool directVertices = collectBackend && nativeVertexExecution && mode != 1 &&
-                                    !(m_nativeVerifyEvery ? *m_nativeVerifyEvery != 0 : verifyEnvironmentSet);
         std::vector<RasterDraw::Vertex> directVertexList;
         std::vector<std::uint32_t> directIndices;
         if (directVertices) {
