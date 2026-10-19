@@ -700,7 +700,7 @@ namespace Core::Gfx {
         return selected;
     }
 
-    std::vector<std::shared_ptr<RasterReadback>> Gx2Replayer::renderedArrayLayers(const Surface &surface) const
+    std::vector<std::shared_ptr<RasterReadback>> Gx2Replayer::renderedArrayLayers(const Surface &surface)
     {
         // Every layer must have been rendered (or cleared) as its own surface; otherwise the guest
         // memory snapshot paths keep the array.
@@ -734,10 +734,22 @@ namespace Core::Gfx {
                 rendered = true;
             } else if (const auto backing = m_viewBackings.find(key); backing != m_viewBackings.end())
                 layers.push_back(std::make_shared<RasterReadback>(backing->second.size(), [bytes = backing->second] { return bytes; }));
-            else
-                return {};
+            else {
+                // A layer never rendered keeps its guest data (MK8 renders 17 of a 32-slice
+                // R8 volume array and samples all of them): decode it like an ordinary texture.
+                const auto decoded = view->format == surface.format ? decodedTexture(*view) : nullptr;
+                const auto rowBytes = std::size_t(surface.width) * 4;
+                if (!decoded || decoded->rgba.size() != rowBytes * surface.height || surface.pitch < surface.width)
+                    return {};
+                std::vector<std::uint8_t> bytes(std::size_t(surface.pitch) * surface.height * 4);
+                for (unsigned y = 0; y < surface.height; ++y)
+                    std::memcpy(bytes.data() + std::size_t(y) * surface.pitch * 4, decoded->rgba.data() + y * rowBytes, rowBytes);
+                const auto size = bytes.size();
+                layers.push_back(std::make_shared<RasterReadback>(size, [bytes = std::move(bytes)] { return bytes; }));
+            }
         }
-        // Without any GPU layer, layerSnapshot() shares one upload per version instead.
+        // Without a GPU layer, layerSnapshot() (CPU-rendered layers, possibly with guest ones) or
+        // arraySnapshot() (never rendered) share one upload per version instead.
         return rendered ? layers : std::vector<std::shared_ptr<RasterReadback>>{};
     }
 
@@ -785,29 +797,49 @@ namespace Core::Gfx {
             return {};
         std::vector<const std::vector<std::uint8_t> *> backings;
         std::vector<unsigned> pitches;
+        std::vector<std::shared_ptr<DecodedTexture>> guestLayers; // keeps decoded layers alive while packing
         std::uint64_t generation = 0;
+        bool rendered = false;
         for (unsigned layer = 0; layer < surface.sliceCount; ++layer) {
             const auto view = arraySlice(surface, layer);
             if (!view || view->width != surface.width || view->height != surface.height)
                 return {};
             const auto key = makeSurfaceKey(*view);
-            const auto backing = m_viewBackings.find(key);
-            if (m_pendingReadbacks.contains(key) || backing == m_viewBackings.end() ||
-                backing->second.size() < std::size_t(view->pitch) * view->height * elementBytes)
+            if (m_pendingReadbacks.contains(key))
                 return {};
-            backings.push_back(&backing->second);
-            pitches.push_back(view->pitch);
+            if (const auto backing = m_viewBackings.find(key); backing != m_viewBackings.end()) {
+                if (backing->second.size() < std::size_t(view->pitch) * view->height * elementBytes)
+                    return {};
+                backings.push_back(&backing->second);
+                pitches.push_back(view->pitch);
+                rendered = true;
+            } else {
+                // Layers never rendered keep their guest data; RGBA8 arrays can decode it like an
+                // ordinary texture (MK8 renders 17 of a 32-slice R8 volume array).
+                auto decoded = colorFormat(surface.format) == ColorFormat::RGBA8 ? decodedTexture(*view) : nullptr;
+                if (!decoded || decoded->rgba.size() != std::size_t(surface.width) * surface.height * 4)
+                    return {};
+                backings.push_back(&decoded->rgba);
+                pitches.push_back(surface.width);
+                // A changed guest layer is decoded into a new entry.
+                generation = (generation ^ reinterpret_cast<std::uintptr_t>(decoded.get())) * 1099511628211ull;
+                guestLayers.push_back(std::move(decoded));
+            }
             // Every draw or clear into a layer bumps its write count (see m_cpuWrittenSurfaces).
             if (const auto written = m_cpuWrittenSurfaces.find(view->imagePtr); written != m_cpuWrittenSurfaces.end())
                 generation = (generation ^ written->second.writes ^ view->imagePtr) * 1099511628211ull;
         }
+        if (!rendered)
+            return {}; // arraySnapshot() keeps arrays that were never rendered
         for (const auto &entry: m_layerSnapshots)
             if (entry.surface == surface && entry.generation == generation)
                 return entry.bytes;
         std::shared_ptr<const std::vector<std::uint8_t>> bytes;
-        for (const auto &entry: m_retainedLayerSnapshots)
-            if (entry.surface == surface && entry.generation == generation && (bytes = entry.bytes.lock()))
-                break;
+        // Evicted snapshots no longer pin their decoded guest layers, whose addresses could be reused.
+        if (guestLayers.empty())
+            for (const auto &entry: m_retainedLayerSnapshots)
+                if (entry.surface == surface && entry.generation == generation && (bytes = entry.bytes.lock()))
+                    break;
         if (!bytes) {
             const auto rowBytes = std::size_t(surface.width) * elementBytes;
             auto packed = std::make_shared<std::vector<std::uint8_t>>(rowBytes * surface.height * surface.sliceCount);
@@ -825,7 +857,7 @@ namespace Core::Gfx {
         std::erase_if(m_layerSnapshots, [&](const auto &entry) { return entry.surface == surface; });
         if (m_layerSnapshots.size() >= 8)
             m_layerSnapshots.erase(m_layerSnapshots.begin());
-        m_layerSnapshots.push_back({surface, generation, bytes});
+        m_layerSnapshots.push_back({surface, generation, bytes, std::move(guestLayers)});
         return bytes;
     }
 

@@ -956,6 +956,55 @@ TEST(VulkanRasterBackendTest, RenderedMipLevelsStayOnTheGpuAndSelectTheirLod)
     EXPECT_EQ(backend.lastError(), "Rendered mip levels are no longer resident");
 }
 
+TEST(VulkanRasterBackendTest, ArrayLayersMixResidentAndCpuVersions)
+{
+    using namespace Core::Gfx;
+    if (!std::getenv("WEMU_TEST_VULKAN") || !SpirvCompiler::available())
+        GTEST_SKIP();
+    const auto fill = lowerFragmentShader(*decodeProgram({0, (Latte::CF_EXP_DONE << 23) | (1u << 21) | 0x688u}));
+    ASSERT_TRUE(fill) << fill.error;
+    // SAMPLE_LZ from r0.xy, layer r0.z.
+    const std::array types{TextureType::TwoDArray};
+    const auto shader = lowerFragmentShader(
+            *decodeProgram({2, 1u << 23, 0, (0x28u << 23) | (1u << 21) | 0x688u, 0x13u, 0x30000000u | (0x688u << 9), (1u << 23) | (2u << 26), 0}),
+            types);
+    ASSERT_TRUE(shader) << shader.error;
+    VulkanRasterBackend backend(true, true);
+    std::array<RasterDraw::Vertex, 3> producerVertices{{{0, 0, {}}, {8, 0, {}}, {0, 8, {}}}};
+    for (auto &vertex: producerVertices)
+        vertex.inputs[0] = {1, 0, 0, 1};
+    std::vector<std::uint8_t> producerTarget(4 * 4 * 4);
+    RasterDraw producer{fill, producerVertices, {}, {}, producerTarget, 4, 4, 4, {0, 0, 4, 4}, 15, {}};
+    auto resident = backend.renderDeferred(producer);
+    ASSERT_TRUE(resident && resident->readback) << backend.lastError();
+    std::vector<std::uint8_t> green(4 * 4 * 4);
+    for (unsigned i = 0; i < 16; ++i)
+        green[i * 4 + 1] = green[i * 4 + 3] = 255;
+    auto cpu = std::make_shared<RasterReadback>(green.size(), [green] { return green; });
+    RasterDraw::Texture texture{shader.textures[0], 4, 4, {}, [](unsigned, unsigned) -> std::array<float, 4> {
+                                    throw std::runtime_error("Array layers must not be sampled on the CPU");
+                                }};
+    texture.renderedLayers = {resident->readback, cpu};
+    texture.layers = 2;
+    texture.unorm8Pitch = 4;
+    texture.unorm8Map = 0x00010203;
+    texture.sampler.regs[0] = 2u | (2u << 3);
+    std::array<RasterDraw::Vertex, 3> vertices{{{0, 0, {}}, {8, 0, {}}, {0, 8, {}}}};
+    std::vector<std::uint8_t> target(4 * 4 * 4);
+    RasterDraw draw{shader, vertices, {}, {&texture, 1}, target, 4, 4, 4, {0, 0, 4, 4}, 15, {}};
+    for (const auto layer: {0.f, 1.f}) {
+        SCOPED_TRACE(layer);
+        for (auto &vertex: vertices)
+            vertex.inputs[0] = {.5f, .5f, layer, 0};
+        auto result = backend.renderDeferred(draw);
+        ASSERT_TRUE(result) << backend.lastError();
+        result->resolve();
+        EXPECT_EQ((std::array{result->rgba[0], result->rgba[1], result->rgba[2], result->rgba[3]}),
+                  (layer == 0 ? std::array<std::uint8_t, 4>{255, 0, 0, 255} : std::array<std::uint8_t, 4>{0, 255, 0, 255}));
+    }
+    EXPECT_EQ(backend.readbackTransfers(), 2u); // the resident layer was copied on the GPU, never read back
+}
+
 TEST(RasterReadbackTest, MaterializesOnceAndRejectsIncompleteResults)
 {
     unsigned calls = 0;

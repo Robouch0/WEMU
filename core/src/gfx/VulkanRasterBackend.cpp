@@ -766,7 +766,11 @@ void main() {
                         VkSamplerMipmapMode mipFilter{VK_SAMPLER_MIPMAP_MODE_NEAREST};
                         float minLod{}, maxLod{};
                         std::shared_ptr<ColorImage> rendered;
-                        std::vector<std::shared_ptr<ColorImage>> renderedLayers; // resident levels x layers (direct draws only)
+                        // Levels x layers for direct draws: resident images, or null with the layer's CPU
+                        // bytes (rows of layerPitch bytes) in layerBytes.
+                        std::vector<std::shared_ptr<ColorImage>> renderedLayers;
+                        std::vector<std::span<const std::uint8_t>> layerBytes;
+                        std::size_t layerPitch{};
                         unsigned renderedLevels{1};
                         unsigned levelCount() const { return std::max(unsigned(mips.size() + 1), renderedLevels); }
                         std::shared_ptr<const void> snapshotOwner;
@@ -2317,6 +2321,8 @@ void main() {
                         const auto &texture = in.textures[i];
                         if (!texture.renderedLayers.empty()) {
                             sources[i] = Source::Copy;
+                            for (const auto bytes: texture.layerBytes)
+                                reserve(bytes.size());
                             continue;
                         }
                         if (texture.rendered) {
@@ -2382,7 +2388,9 @@ void main() {
                             case Source::Private: {
                                 auto scratch = scratchTexture(texture);
                                 if (sources[i] == Source::Copy)
-                                    copyRendered(command, texture, *scratch);
+                                    copyRendered(command, texture, *scratch, [&](std::span<const std::uint8_t> bytes) {
+                                        return std::pair{segment.buffer, pushUpload(bytes.data(), bytes.size(), 0)};
+                                    });
                                 else {
                                     const auto offset = pushUpload(nullptr, 0, texture.bytes());
                                     texture.copyTo(segment.mapped + offset);
@@ -2394,7 +2402,8 @@ void main() {
                                     if (texture.rendered)
                                         segment.retained.push_back(texture.rendered);
                                     for (const auto &layer: texture.renderedLayers)
-                                        segment.retained.push_back(layer);
+                                        if (layer)
+                                            segment.retained.push_back(layer);
                                     ++context.residentTextureCopies;
                                 }
                                 break;
@@ -2865,9 +2874,11 @@ void main() {
                     imageBarrier(command, image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                                  levels, layers);
                 }
-                // Copies a resident image, or each resident layer of an array, into a sampled scratch
-                // texture; D32 depth goes through a device buffer to become R32 float texels.
-                void copyRendered(VkCommandBuffer command, const DrawResources::Texture &texture, const ScratchTexture &scratch)
+                // Copies a resident image, or each layer (and level) of an array, into a sampled scratch
+                // texture; D32 depth goes through a device buffer to become R32 float texels. Layers
+                // without a resident image upload their CPU bytes through `upload`.
+                template <typename Upload>
+                void copyRendered(VkCommandBuffer command, const DrawResources::Texture &texture, const ScratchTexture &scratch, Upload &&upload)
                 {
                     const unsigned levels = texture.renderedLayers.empty() ? 1u : texture.renderedLevels;
                     const unsigned layers = texture.renderedLayers.empty() ? 1u : unsigned(texture.renderedLayers.size()) / levels;
@@ -2876,6 +2887,16 @@ void main() {
                     for (unsigned entry = 0; entry < levels * layers; ++entry) {
                         const unsigned level = entry / layers, layer = entry % layers;
                         const unsigned width = std::max(1u, texture.width >> level), height = std::max(1u, texture.height >> level);
+                        if (!texture.renderedLayers.empty() && !texture.renderedLayers[entry]) {
+                            const auto [buffer, offset] = upload(texture.layerBytes[entry]);
+                            VkBufferImageCopy copy{};
+                            copy.bufferOffset = offset;
+                            copy.bufferRowLength = unsigned(texture.layerPitch / imageElementBytes(texture.format));
+                            copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, layer, 1};
+                            copy.imageExtent = {width, height, 1};
+                            vkCmdCopyBufferToImage(command, buffer, scratch.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+                            continue;
+                        }
                         const auto &source = texture.renderedLayers.empty() ? *texture.rendered : *texture.renderedLayers[entry];
                         if (source.format == VK_FORMAT_D32_SFLOAT) {
                             const VkDeviceSize bytes = VkDeviceSize(width) * height * sizeof(float);
@@ -3766,26 +3787,30 @@ void main() {
                 texture.rgba32 = {};
             }
             std::vector<std::shared_ptr<ColorImage>> residentLayers;
+            std::vector<std::span<const std::uint8_t>> layerBytes;
             if (!texture.renderedLayers.empty()) {
-                // Direct draws copy resident layers (and levels) into one image on the GPU.
-                // Otherwise pack a single level's CPU versions into one tight snapshot.
+                // Direct draws assemble the layers (and levels) into one image on the GPU: resident
+                // ones by copy, the others from their CPU version. Otherwise pack a single level's
+                // CPU versions into one tight snapshot.
                 const auto layerFormat = texture.renderedDepth ? VK_FORMAT_D32_SFLOAT : colorVkFormat(texture.renderedFormat);
                 if (direct)
                     for (std::size_t entry = 0; entry < texture.renderedLayers.size(); ++entry) {
                         const auto level = unsigned(entry / texture.layers);
                         const auto native = std::dynamic_pointer_cast<const NativeImage>(texture.renderedLayers[entry]->image());
-                        if (!native || native->storage->context != m_impl->context || native->storage->version != native->version ||
-                            native->storage->width != std::max(1u, texture.width >> level) ||
-                            native->storage->height != std::max(1u, texture.height >> level) || native->storage->format != layerFormat) {
-                            residentLayers.clear();
-                            break;
+                        if (native && native->storage->context == m_impl->context && native->storage->version == native->version &&
+                            native->storage->width == std::max(1u, texture.width >> level) &&
+                            native->storage->height == std::max(1u, texture.height >> level) && native->storage->format == layerFormat) {
+                            residentLayers.push_back(native->storage);
+                            layerBytes.emplace_back();
+                        } else if (texture.renderedLevels > 1)
+                            return reject("Rendered mip levels are no longer resident");
+                        else {
+                            residentLayers.emplace_back();
+                            layerBytes.push_back(texture.renderedLayers[entry]->resolve());
                         }
-                        residentLayers.push_back(native->storage);
                     }
-                if (residentLayers.empty() && texture.renderedLevels > 1)
-                    return reject("Rendered mip levels are no longer resident");
                 std::span<const std::uint8_t> packed;
-                if (residentLayers.empty()) {
+                if (!direct) {
                     const auto elementBytes = texture.renderedDepth ? 4u : colorElementBytes(texture.renderedFormat);
                     const auto rowBytes = std::size_t(texture.width) * elementBytes;
                     auto &bytes = packedLayers.emplace_back();
@@ -3824,7 +3849,7 @@ void main() {
                 return reject("Device lacks BC texture compression support");
             const auto textureFormat = compressedFormat != VK_FORMAT_UNDEFINED ? compressedFormat
                                        : resident                              ? (texture.renderedDepth ? VK_FORMAT_R32_SFLOAT : resident->format)
-                                       : residentArray ? (texture.renderedDepth ? VK_FORMAT_R32_SFLOAT : residentLayers.front()->format)
+                                       : residentArray ? (texture.renderedDepth ? VK_FORMAT_R32_SFLOAT : colorVkFormat(texture.renderedFormat))
                                        : !texture.r32.empty() || !texture.r32Bytes.empty() ? VK_FORMAT_R32_SFLOAT
                                        : !texture.r11g11b10Bytes.empty()                   ? VK_FORMAT_B10G11R11_UFLOAT_PACK32
                                        : texture.unorm8.empty()                            ? VK_FORMAT_R32G32B32A32_SFLOAT
@@ -3873,6 +3898,8 @@ void main() {
             }
             uploaded.rendered = resident;
             uploaded.renderedLayers = std::move(residentLayers);
+            uploaded.layerBytes = std::move(layerBytes);
+            uploaded.layerPitch = std::size_t(texture.unorm8Pitch) * (texture.renderedDepth ? 4u : colorElementBytes(texture.renderedFormat));
             uploaded.renderedLevels = uploaded.renderedLayers.empty() ? 1u : texture.renderedLevels;
             if (compressedFormat != VK_FORMAT_UNDEFINED) {
                 const auto channel = [&](unsigned c) {

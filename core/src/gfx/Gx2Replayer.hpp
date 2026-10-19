@@ -175,8 +175,9 @@ namespace Core::Gfx {
                     DepthFormat format{DepthFormat::Float32};
             };
             DepthBacking *depthBacking(const Surface &s, bool resolve = true) const;
-            // Current versions of an array view's layers when each was rendered as its own surface.
-            std::vector<std::shared_ptr<RasterReadback>> renderedArrayLayers(const Surface &surface) const;
+            // Current versions of an array view's layers when at least one was rendered as its own
+            // surface (a pending GPU version); layers never rendered come from guest memory.
+            std::vector<std::shared_ptr<RasterReadback>> renderedArrayLayers(const Surface &surface);
             // Level-major pending GPU versions of every (level, slice) of a 2D, array or cube view,
             // or empty unless all of them are still on the GPU.
             std::vector<std::shared_ptr<RasterReadback>> renderedSubresources(const Surface &surface, unsigned levels) const;
@@ -241,10 +242,13 @@ namespace Core::Gfx {
             std::vector<std::shared_ptr<ArraySnapshot>> m_arraySnapshots;
             // Raw canonical bytes of an array whose layers all live in view backings, packed layer
             // after layer without row padding. Rebuilt when any layer is written again.
+            struct DecodedTexture;
             struct LayerSnapshot {
                     Surface surface;
                     std::uint64_t generation{};
                     std::shared_ptr<const std::vector<std::uint8_t>> bytes;
+                    // Decoded guest layers, kept alive so their addresses in `generation` stay unique.
+                    std::vector<std::shared_ptr<DecodedTexture>> guestLayers;
             };
             std::vector<LayerSnapshot> m_layerSnapshots;
             // Evicted snapshots still owned by an upload keep their identity (and GPU image).
