@@ -332,7 +332,8 @@ namespace Core::Gfx {
                 std::uint32_t family{};
                 std::string deviceName;
                 bool discrete{}; // separate VRAM: host-visible memory sits across PCIe
-                std::uint64_t readbackTransfers{}, residentTextureCopies{}, directTextureBindings{}, directTextureBytes{}, residentVertexHits{};
+                std::uint64_t readbackTransfers{}, residentTextureCopies{}, directTextureBindings{}, directTextureBytes{}, residentVertexHits{},
+                        assembledTextureHits{};
                 std::uint64_t targetUploadTransfers{}, targetCopyTransfers{}, fullOverwriteDraws{};
                 std::uint64_t pipelineCreations{};
                 VkDescriptorSetLayout depthQuantizeSetLayout{};
@@ -2425,6 +2426,19 @@ void main() {
                                 break;
                             case Source::Copy:
                             case Source::Private: {
+                                // Every draw sampling a rendered array, cube or mip chain assembled it
+                                // again: reuse the copy while its sources keep their versions.
+                                const auto assembled = sources[i] == Source::Copy ? assembledKey(texture) : std::nullopt;
+                                if (assembled)
+                                    if (const auto found = assembledTextures.find(*assembled);
+                                        found != assembledTextures.end() &&
+                                        std::ranges::none_of(found->second.sources, [](const auto &source) { return source.expired(); })) {
+                                        found->second.used = ++assembledClock;
+                                        imageInfos[i].imageView = found->second.image->view;
+                                        segment.retained.push_back(found->second.image);
+                                        ++context.assembledTextureHits;
+                                        break;
+                                    }
                                 auto scratch = scratchTexture(texture);
                                 if (sources[i] == Source::Copy)
                                     copyRendered(command, texture, *scratch, [&](std::span<const std::uint8_t> bytes) {
@@ -2436,6 +2450,22 @@ void main() {
                                     uploadTexels(command, texture, scratch->image, segment.buffer, offset, true);
                                 }
                                 imageInfos[i].imageView = scratch->view;
+                                if (assembled) {
+                                    if (assembledTextures.size() >= 64) {
+                                        auto oldest = assembledTextures.begin();
+                                        for (auto it = assembledTextures.begin(); it != assembledTextures.end(); ++it)
+                                            if (it->second.used < oldest->second.used)
+                                                oldest = it;
+                                        assembledTextures.erase(oldest);
+                                    }
+                                    auto &entry = assembledTextures[*assembled];
+                                    entry.sources.clear();
+                                    if (texture.rendered)
+                                        entry.sources.push_back(texture.rendered);
+                                    entry.sources.insert(entry.sources.end(), texture.renderedLayers.begin(), texture.renderedLayers.end());
+                                    entry.image = scratch;
+                                    entry.used = ++assembledClock;
+                                }
                                 segment.retained.push_back(std::move(scratch));
                                 if (sources[i] == Source::Copy) {
                                     if (texture.rendered)
@@ -3177,6 +3207,29 @@ void main() {
                     return result;
                 }
 
+                // Shape plus (image, version) of every rendered source, or nothing when a layer comes
+                // from CPU bytes, whose buffers can change without a version.
+                static std::optional<std::vector<std::uint64_t>> assembledKey(const DrawResources::Texture &texture)
+                {
+                    std::vector<std::uint64_t> key{texture.width,
+                                                   texture.height,
+                                                   texture.layers,
+                                                   unsigned(texture.format),
+                                                   texture.levelCount(),
+                                                   texture.renderedLevels,
+                                                   unsigned(texture.array) | unsigned(texture.volume) << 1 | unsigned(texture.cube) << 2,
+                                                   unsigned(texture.components.r) | unsigned(texture.components.g) << 8 |
+                                                           unsigned(texture.components.b) << 16 | std::uint64_t(texture.components.a) << 24};
+                    if (texture.rendered)
+                        key.insert(key.end(), {reinterpret_cast<std::uintptr_t>(texture.rendered.get()), texture.rendered->version});
+                    for (const auto &layer: texture.renderedLayers) {
+                        if (!layer)
+                            return std::nullopt;
+                        key.insert(key.end(), {reinterpret_cast<std::uintptr_t>(layer.get()), layer->version});
+                    }
+                    return key;
+                }
+
                 std::shared_ptr<ScratchTexture> scratchTexture(const DrawResources::Texture &texture)
                 {
                     const std::array<std::uint64_t, 10> key{texture.width,
@@ -3442,6 +3495,19 @@ void main() {
                 std::map<std::pair<VkFormat, VkFormat>, VkRenderPass> passes;
                 std::map<std::tuple<VkRenderPass, VkImageView, VkImageView, unsigned, unsigned>, FramebufferEntry> framebuffers;
                 std::map<std::array<std::uint64_t, 10>, std::vector<std::shared_ptr<ScratchTexture>>> scratchTextures;
+                struct AssembledTexture {
+                        std::vector<std::weak_ptr<ColorImage>> sources; // expired: the key's addresses may be reused
+                        std::shared_ptr<ScratchTexture> image;
+                        std::uint64_t used{};
+                };
+                struct KeyWordsHash {
+                        std::size_t operator()(const std::vector<std::uint64_t> &words) const noexcept
+                        {
+                            return std::hash<std::string_view>{}({reinterpret_cast<const char *>(words.data()), words.size() * sizeof(words[0])});
+                        }
+                };
+                std::unordered_map<std::vector<std::uint64_t>, AssembledTexture, KeyWordsHash> assembledTextures;
+                std::uint64_t assembledClock{};
                 std::shared_ptr<VertexArena> vertexArena;
                 std::unordered_map<const void *, CachedVertices> vertexCache;
                 VkDeviceSize vertexCacheBytes{};
@@ -3504,6 +3570,7 @@ void main() {
     std::uint64_t VulkanRasterBackend::retainedTextureUploads() const noexcept { return m_impl->retainedTextures; }
     std::uint64_t VulkanRasterBackend::residentTextureCopies() const noexcept { return m_impl->context ? m_impl->context->residentTextureCopies : 0; }
     std::uint64_t VulkanRasterBackend::residentVertexHits() const noexcept { return m_impl->context ? m_impl->context->residentVertexHits : 0; }
+    std::uint64_t VulkanRasterBackend::assembledTextureHits() const noexcept { return m_impl->context ? m_impl->context->assembledTextureHits : 0; }
     std::uint64_t VulkanRasterBackend::directTextureBindings() const noexcept { return m_impl->context ? m_impl->context->directTextureBindings : 0; }
     std::uint64_t VulkanRasterBackend::directTextureBytes() const noexcept { return m_impl->context ? m_impl->context->directTextureBytes : 0; }
     std::uint64_t VulkanRasterBackend::targetUploadTransfers() const noexcept { return m_impl->context ? m_impl->context->targetUploadTransfers : 0; }
