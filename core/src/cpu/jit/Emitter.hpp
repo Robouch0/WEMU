@@ -145,6 +145,7 @@ namespace Core::Jit {
             // `replayOnCodeWrite`, a store that wrote decoded code replays the whole instruction in
             // the interpreter instead (for instructions that store more after this one).
             void load(unsigned bytes, bool signExtend = false);
+            void multiple(const EncodedInstruction &i, bool isStore); // lmw / stmw
             // ecx = (RA|0) + D or (RA|0) + RB; update forms always add RA.
             void effectiveAddress(const EncodedInstruction &i, bool indexed, bool update);
             void store(unsigned bytes, const std::function<void()> &tail = {}, bool replayOnCodeWrite = false);

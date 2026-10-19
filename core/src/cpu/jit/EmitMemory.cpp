@@ -5,10 +5,15 @@
 ** EmitMemory -- integer loads and stores
 */
 
+#include <cstddef>
+
 #include "Emitter.hpp"
+#include "cpu/memory/Memory.hpp"
 
 namespace Core::Jit {
     namespace {
+        constexpr std::int32_t minus(const std::uint32_t base) { return static_cast<std::int32_t>(0u - base); }
+
         struct Access {
                 unsigned bytes;
                 bool indexed, update, signExtend = false, byteReverse = false;
@@ -140,6 +145,59 @@ namespace Core::Jit {
         }
     }
 
+    // lmw / stmw: registers RT..r31 from or to consecutive words. A range wholly in main RAM (and,
+    // for stores, outside code and watched pages) or on the stack moves inline; anything else runs
+    // the interpreter's handler, which also covers faults part-way through.
+    void Emitter::multiple(const EncodedInstruction &i, const bool isStore)
+    {
+        const unsigned first = i.rt;
+        const unsigned bytes = (32 - first) * 4;
+        Xbyak::Label &body = newLabel();
+        Xbyak::Label &stack = newLabel();
+        Xbyak::Label &handler = newLabel();
+        Xbyak::Label &done = newLabel();
+        effectiveAddress(i, false, false);
+        lea(edx, ptr[rcx + minus(Memory::ApplicationCode)]);
+        cmp(edx, m_layout.ramBytes - bytes);
+        ja(stack, T_NEAR);
+        if (isStore) {
+            // At most 128 bytes: the first and last pages cover the range.
+            for (const unsigned end: {0u, bytes - 1}) {
+                lea(r8d, ptr[rdx + end]);
+                shr(r8d, Memory::kCodePageShift);
+                mov(r9d, r8d);
+                shr(r9d, 6);
+                mov(r9, qword[r14 + r9 * 8]);
+                bt(r9, r8);
+                jc(handler, T_NEAR);
+            }
+        }
+        lea(r8, ptr[r12 + rcx]);
+        L(body);
+        for (unsigned r = first, offset = 0; r < 32; ++r, offset += 4) {
+            if (isStore) {
+                mov(eax, gpr(r));
+                movbe(dword[r8 + offset], eax);
+            } else {
+                movbe(eax, dword[r8 + offset]);
+                mov(gpr(r), eax);
+            }
+        }
+        L(done);
+        cold([this, &stack, &body, &handler, &done, bytes, instr = m_current, pc = m_pc, index = m_index] {
+            L(stack);
+            lea(edx, ptr[rcx + minus(Memory::STACK_BASE)]);
+            cmp(edx, Memory::STACK_SIZE - bytes);
+            ja(handler, T_NEAR);
+            mov(r8, qword[r15 + offsetof(Context, stackHost)]);
+            add(r8, rdx);
+            jmp(body, T_NEAR);
+            L(handler);
+            calloutCall(instr, pc, index);
+            jmp(done, T_NEAR);
+        });
+    }
+
     bool Emitter::emitMemory(const EncodedInstruction &i, const InstructionID id)
     {
         Access a{};
@@ -151,6 +209,10 @@ namespace Core::Jit {
             mov(gpr(i.rt), eax);
             if (a.update)
                 mov(gpr(i.ra), ecx);
+            return true;
+        }
+        if ((id == E_LMW && (m_layout.nativeMask & FamilyLoad)) || (id == E_STMW && (m_layout.nativeMask & FamilyStore))) {
+            multiple(i, id == E_STMW);
             return true;
         }
         if ((m_layout.nativeMask & FamilyStore) && lookupStore(id, a)) {

@@ -124,6 +124,25 @@ TEST_F(X64JitMemoryTest, ZeroBaseRegisterUsesZero)
     }
 }
 
+TEST_F(X64JitMemoryTest, MultipleLoadsAndStoresMatchInterpreter)
+{
+    Random rng(24);
+    for (int round = 0; round < 64; ++round) {
+        for (unsigned i = 0; i < kDataBytes; i += 4)
+            cpu->m_memory.write<std::uint32_t>(kData + i, rng());
+        for (const unsigned op: {46u, 47u}) // lmw, stmw
+            for (unsigned kind = 0; kind < 5; ++kind) {
+                const std::uint32_t rt = rng() & 31, ra = 1 + rng() % 31;
+                const std::uint32_t word = dForm(op, rt, ra, rng() & 0xFFFC);
+                const std::uint32_t ea = kind == 1 ? kData + 0x1000 - 8 : target(rng, kind) & ~3u; // kind 1: across a page
+                expectSameBlock(std::array{word}, [&] {
+                    randomize(rng);
+                    cpu->m_gpr[ra] = ea - static_cast<std::uint32_t>(static_cast<std::int32_t>(static_cast<std::int16_t>(word & 0xFFFF)));
+                });
+            }
+    }
+}
+
 TEST_F(X64JitMemoryTest, WatchedPagesCountCompiledStores)
 {
     cpu->m_memory.watchWrites(kData + 0x2000, 0x1000);

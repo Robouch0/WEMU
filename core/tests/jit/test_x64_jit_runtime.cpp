@@ -186,7 +186,7 @@ TEST_F(X64JitTest, ImportCallsContinueInCompiledCode)
 TEST_F(X64JitTest, NativeFamiliesDoNotCallOut)
 {
     // One instruction of each native family, then a branch: none may fall back to its call-out.
-    const std::array<std::uint32_t, 12> words{
+    const std::array<std::uint32_t, 14> words{
             0x7CA32214, // add r5,r3,r4
             0x2C030000, // cmpwi r3,0
             0x7C6802A6, // mflr r3
@@ -198,6 +198,8 @@ TEST_F(X64JitTest, NativeFamiliesDoNotCallOut)
             0x1022182A, // ps_add f1,f2,f3
             0xE0240010, // psq_l f1,16(r4),0,0
             0x7C6B1B78, // mr r11,r3
+            0xBBC10008, // lmw r30,8(r1)
+            0xBFC10008, // stmw r30,8(r1)
             0x48000008, // b +8
     };
     load(words);
