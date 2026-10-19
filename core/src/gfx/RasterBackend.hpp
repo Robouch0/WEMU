@@ -132,6 +132,9 @@ namespace Core::Gfx {
                     std::span<const float> target; // canonical depth, including padding
                     unsigned width{}, height{}, pitch{};
                     std::shared_ptr<RasterReadback> rendered;
+                    // The surface was cleared to this stored value since `target` was written:
+                    // every element of the width x height area holds it, padding keeps `target`.
+                    std::optional<float> clear;
             } depth;
             enum class Topology { Triangles, Points };
             Topology topology{Topology::Triangles};

@@ -481,7 +481,7 @@ namespace Core::Gfx {
         return enabled;
     }
 
-    Gx2Replayer::DepthBacking *Gx2Replayer::depthBacking(const Surface &s, bool resolve) const
+    Gx2Replayer::DepthBacking *Gx2Replayer::depthBacking(const Surface &s, bool resolve, bool applyClear) const
     {
         DepthFormat format;
         if (s.format == 0x80E)
@@ -521,7 +521,7 @@ namespace Core::Gfx {
             found = m_depthBackings.emplace(key, std::move(backing)).first;
         }
         auto &backing = found->second;
-        if (backing.clear) {
+        if (backing.clear && applyClear) {
             if (backing.uniform != backing.clear) {
                 for (unsigned y = 0; y < s.height; ++y)
                     std::fill_n(backing.pixels.data() + std::size_t(y) * s.pitch, s.width, *backing.clear);
@@ -546,7 +546,8 @@ namespace Core::Gfx {
         const auto s = attachmentSurface(original);
         if (!(flags & 1))
             return;
-        if (auto *backing = depthBacking(s, false)) {
+        // A clear still pending is replaced, never written.
+        if (auto *backing = depthBacking(s, false, false)) {
             backing->pending.reset();
             backing->clear = quantizeDepth(depth, backing->format);
         }
@@ -2504,7 +2505,9 @@ namespace Core::Gfx {
             }
         }
         m_lastDrawColor = m_color;
-        auto *drawDepth = m_depthTest ? depthBacking(m_depth, false) : nullptr;
+        // A pending clear goes to native draws as a value (cleared on the GPU, not uploaded);
+        // CPU readers below apply it first (prepareSoftwareInputs).
+        auto *drawDepth = m_depthTest ? depthBacking(m_depth, false, false) : nullptr;
         // Software raster and copied-back native results write drawDepth->pixels during this call.
         struct DepthWrites {
                 DepthBacking *backing;
@@ -3218,7 +3221,7 @@ namespace Core::Gfx {
                 return;
             if (skipColorShader) {
                 resolveViewBacking(m_color);
-                if (drawDepth && drawDepth->pending)
+                if (drawDepth && (drawDepth->pending || drawDepth->clear))
                     depthBacking(m_depth);
                 softwareInputsReady = true;
                 return;
@@ -3239,7 +3242,7 @@ namespace Core::Gfx {
             if (pixelProgram)
                 for (const auto &surface: m_pixelTextures)
                     resolveViewBacking(surface);
-            if (drawDepth && drawDepth->pending)
+            if (drawDepth && (drawDepth->pending || drawDepth->clear))
                 depthBacking(m_depth);
             if (drawDepth && m_depthWrite)
                 for (unsigned i = 0; i < m_pixelTextures.size(); ++i)
@@ -4811,7 +4814,7 @@ namespace Core::Gfx {
                 draw.supersedesTarget = !m_nativeVerifyEvery;
                 if (drawDepth)
                     draw.depth = {true,          m_depthWrite,   m_depthCompare, drawDepth->format, drawDepth->pixels,
-                                  m_depth.width, m_depth.height, m_depth.pitch,  drawDepth->pending};
+                                  m_depth.width, m_depth.height, m_depth.pitch,  drawDepth->pending, drawDepth->clear};
                 static const bool deferReadback = [] {
                     const auto *value = std::getenv("WEMU_NATIVE_DEFER_READBACK");
                     return value && std::string_view(value) == "1";
@@ -5009,6 +5012,7 @@ namespace Core::Gfx {
                     // Backends may also return a resident copy of a depth surface they only read.
                     if (drawDepth && (m_depthWrite || result->depthReadback)) {
                         drawDepth->pending = std::move(result->depthReadback);
+                        drawDepth->clear.reset(); // the backend's version includes a pending clear
                         if (!drawDepth->pending)
                             std::copy(result->depth.begin(), result->depth.end(), drawDepth->pixels.begin());
                     }

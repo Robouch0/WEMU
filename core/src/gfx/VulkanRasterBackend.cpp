@@ -83,6 +83,15 @@ namespace Core::Gfx {
                 return region;
             return {{0, 0}, {draw.width, draw.height}};
         }
+        // Depth target values with a pending clear (RasterDraw::Depth::clear) written.
+        std::vector<float> clearedDepth(const RasterDraw::Depth &depth)
+        {
+            std::vector<float> values(depth.target.begin(), depth.target.end());
+            for (unsigned y = 0; y < depth.height; ++y)
+                std::fill_n(values.begin() + std::ptrdiff_t(std::size_t(y) * depth.pitch), depth.width, *depth.clear);
+            return values;
+        }
+
         bool overwritesTarget(const RasterDraw &draw)
         {
             static const bool enabled = [] {
@@ -334,7 +343,7 @@ namespace Core::Gfx {
                 bool discrete{}; // separate VRAM: host-visible memory sits across PCIe
                 std::uint64_t readbackTransfers{}, residentTextureCopies{}, directTextureBindings{}, directTextureBytes{}, residentVertexHits{},
                         assembledTextureHits{};
-                std::uint64_t targetUploadTransfers{}, targetCopyTransfers{}, fullOverwriteDraws{}, targetClears{};
+                std::uint64_t targetUploadTransfers{}, targetCopyTransfers{}, fullOverwriteDraws{}, targetClears{}, depthClears{};
                 std::uint64_t pipelineCreations{};
                 VkDescriptorSetLayout depthQuantizeSetLayout{};
                 VkPipelineLayout depthQuantizeLayout{};
@@ -2337,7 +2346,7 @@ void main() {
                         reserve(sizeof(compactAttributeDefaults));
                     if (colorUpload && !in.targetClear)
                         reserve(draw.target.size());
-                    if (depthUpload)
+                    if (depthUpload && !draw.depth.clear)
                         reserve(draw.depth.target.size_bytes());
                     static const bool directTextures = [] {
                         const auto *value = std::getenv("WEMU_NATIVE_DIRECT_TEXTURES");
@@ -2533,6 +2542,9 @@ void main() {
                             if (depthCopy) {
                                 copyImage(command, *in.depthSource, *depth, true);
                                 segment.retained.push_back(in.depthSource);
+                            } else if (draw.depth.clear) {
+                                clearDepthImage(command, *depth, *draw.depth.clear);
+                                ++context.depthClears;
                             } else {
                                 const auto offset = pushUpload(draw.depth.target.data(), draw.depth.target.size_bytes(), 0);
                                 uploadImage(command, *depth, segment.buffer, offset, draw.depth.pitch, true);
@@ -3074,6 +3086,15 @@ void main() {
                     std::copy(color.begin(), color.end(), value.float32);
                     const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
                     vkCmdClearColorImage(command, destination.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &value, 1, &range);
+                }
+
+                // The depth counterpart of clearImage(): a stored (quantized) value, exact in D32.
+                void clearDepthImage(VkCommandBuffer command, const ColorImage &destination, float depth)
+                {
+                    imageBarrier(command, destination.image, VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+                    const VkClearDepthStencilValue value{depth, 0};
+                    const VkImageSubresourceRange range{VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+                    vkCmdClearDepthStencilImage(command, destination.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &value, 1, &range);
                 }
 
                 // Tightly packed texels (DrawResources::Texture::copyTo) into every level and layer.
@@ -3639,6 +3660,7 @@ void main() {
     std::uint64_t VulkanRasterBackend::directTextureBytes() const noexcept { return m_impl->context ? m_impl->context->directTextureBytes : 0; }
     std::uint64_t VulkanRasterBackend::targetUploadTransfers() const noexcept { return m_impl->context ? m_impl->context->targetUploadTransfers : 0; }
     std::uint64_t VulkanRasterBackend::targetClears() const noexcept { return m_impl->context ? m_impl->context->targetClears : 0; }
+    std::uint64_t VulkanRasterBackend::depthClears() const noexcept { return m_impl->context ? m_impl->context->depthClears : 0; }
     std::uint64_t VulkanRasterBackend::mergedRenderPasses() const noexcept { return m_impl->direct ? m_impl->direct->passMerges() : 0; }
     std::uint64_t VulkanRasterBackend::targetCopyTransfers() const noexcept { return m_impl->context ? m_impl->context->targetCopyTransfers : 0; }
     std::uint64_t VulkanRasterBackend::fullOverwriteDraws() const noexcept { return m_impl->context ? m_impl->context->fullOverwriteDraws : 0; }
@@ -3748,6 +3770,8 @@ void main() {
             if (draw.depth.test && draw.depth.write) {
                 if (draw.depth.rendered)
                     result.depthReadback = draw.depth.rendered;
+                else if (draw.depth.clear)
+                    result.depth = clearedDepth(draw.depth);
                 else
                     result.depth.assign(draw.depth.target.begin(), draw.depth.target.end());
             }
@@ -4044,6 +4068,12 @@ void main() {
                 std::memcpy(resolvedDepth.data(), bytes.data(), bytes.size());
                 draw.depth.target = resolvedDepth;
             }
+        }
+        // Only direct draws clear their depth image on the GPU; the other paths upload values.
+        if (draw.depth.test && draw.depth.clear && !direct) {
+            resolvedDepth = clearedDepth(draw.depth);
+            draw.depth.target = resolvedDepth;
+            draw.depth.clear.reset();
         }
         std::shared_ptr<ColorImage> targetSource;
         std::shared_ptr<const NativeImage> targetSnapshot;

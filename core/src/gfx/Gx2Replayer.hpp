@@ -177,7 +177,8 @@ namespace Core::Gfx {
                     }
                     DepthFormat format{DepthFormat::Float32};
             };
-            DepthBacking *depthBacking(const Surface &s, bool resolve = true) const;
+            // applyClear = false leaves a pending clear in DepthBacking::clear (pixels are stale).
+            DepthBacking *depthBacking(const Surface &s, bool resolve = true, bool applyClear = true) const;
             // Current versions of an array view's layers when at least one was rendered as its own
             // surface (a pending GPU version); layers never rendered come from guest memory.
             std::vector<std::shared_ptr<RasterReadback>> renderedArrayLayers(const Surface &surface);

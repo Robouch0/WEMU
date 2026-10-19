@@ -4519,6 +4519,42 @@ TEST(VulkanDepthTest, DeferredClearTargetsAreClearedOnTheGpuAndKeepTheirPadding)
         }
 }
 
+TEST(VulkanDepthTest, PendingDepthClearsAreClearedOnTheGpuOrWrittenBeforeUpload)
+{
+    using namespace Core::Gfx;
+    if (!std::getenv("WEMU_TEST_VULKAN") || !SpirvCompiler::available())
+        GTEST_SKIP();
+    const auto shader = lowerFragmentShader(*decodeProgram({0, (CF_EXP_DONE << 23) | (1u << 21) | 0x688u}));
+    std::array<RasterDraw::Vertex, 6> vertices{{{0, 0, {}}, {4, 0, {}}, {0, 4, {}}, {4, 0, {}}, {4, 4, {}}, {0, 4, {}}}};
+    for (auto &vertex: vertices) {
+        vertex.z = .5f;
+        vertex.inputs[0] = {1, 0, 0, 1};
+    }
+    std::vector<std::uint8_t> color(4 * 2 * 4, 9);
+    // 4x2 depth with one padding element per row; its stale values only provide that padding.
+    std::vector<float> depth(5 * 2, .75f);
+    RasterDraw draw{shader, vertices, {}, {}, color, 4, 2, 4, {0, 0, 1, 1}, 15, {}};
+    draw.depth = {true, true, 7, DepthFormat::Float32, depth, 4, 2, 5, {}, .25f};
+    const auto expect = [](const std::vector<float> &values) {
+        ASSERT_EQ(values.size(), 10u);
+        for (unsigned y = 0; y < 2; ++y)
+            for (unsigned x = 0; x < 5; ++x)
+                EXPECT_EQ(values[y * 5 + x], x == 4 ? .75f : x == 0 && y == 0 ? .5f : .25f) << x << "," << y;
+    };
+    auto backend = std::make_unique<VulkanRasterBackend>(true, true);
+    auto deferred = backend->renderDeferred(draw);
+    ASSERT_TRUE(deferred && deferred->depthReadback) << backend->lastError();
+    EXPECT_EQ(backend->depthClears(), 1u);
+    deferred->resolveDepth();
+    expect(deferred->depth);
+    VulkanRasterBackend synchronous;
+    auto direct = synchronous.render(draw);
+    ASSERT_TRUE(direct) << synchronous.lastError();
+    direct->resolveDepth();
+    EXPECT_EQ(synchronous.depthClears(), 0u);
+    expect(direct->depth);
+}
+
 TEST(VulkanDepthTest, ConsecutiveDrawsIntoAResidentTargetShareOneRenderPass)
 {
     using namespace Core::Gfx;

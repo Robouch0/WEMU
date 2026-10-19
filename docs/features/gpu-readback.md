@@ -231,7 +231,10 @@ bytes are only produced if something reads the surface first. A clear also drops
 a pending native version instead of reading it back, since every element is
 replaced and row padding never comes from draws. A surface sampled while its
 clear is pending resolves it and keeps the CPU snapshot path (one shared upload
-per version).
+per version). Depth clears were already applied lazily to the CPU copy; a direct
+draw now receives a pending depth clear as a value and clears its new D32 image
+with `vkCmdClearDepthStencilImage`, while the other paths and every CPU reader
+write the value first.
 
 Draws are recorded into segment command buffers of 48 draws
 (`WEMU_NATIVE_SEGMENT_DRAWS=N`). Constants, vertices, indices, CPU target/depth
