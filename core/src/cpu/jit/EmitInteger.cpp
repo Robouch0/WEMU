@@ -330,7 +330,7 @@ namespace Core::Jit {
                 if (n) {
                     test(eax, (1u << n) - 1);
                     setnz(dl);
-                    sar(eax, n);
+                    sar(eax, static_cast<int>(n));
                     sets(cl);
                     and_(cl, dl);
                 }

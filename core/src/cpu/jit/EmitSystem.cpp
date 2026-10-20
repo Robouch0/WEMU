@@ -63,7 +63,7 @@ namespace Core::Jit {
             case E_MCRF: {
                 const unsigned from = (i.raw >> 18) & 7;
                 mov(ecx, cr());
-                shr(ecx, (7 - from) * 4);
+                shr(ecx, static_cast<int>((7 - from) * 4));
                 and_(ecx, 0xF);
                 setCrField((i.raw >> 23) & 7);
                 return true;

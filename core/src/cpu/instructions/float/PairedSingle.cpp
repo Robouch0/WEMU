@@ -264,11 +264,12 @@ namespace Core::Instruction {
     {
         static const auto table = [] {
             std::array<double, 65> powers{};
-            for (int e = -32; e <= 32; ++e)
-                powers[std::size_t(e + 32)] = std::ldexp(1.0, e);
+            for (std::size_t k = 0; k < powers.size(); ++k)
+                powers[k] = std::ldexp(1.0, static_cast<int>(k) - 32);
             return powers;
         }();
-        return table[std::size_t(exponent + 32)];
+        const int index = exponent + 32;
+        return table[static_cast<std::size_t>(index)];
     }
 
     static double dequant(Interpreter &cpu, std::uint32_t ea, std::uint32_t type, int scale)

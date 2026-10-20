@@ -862,8 +862,11 @@ namespace Core::Gfx {
         // Evicted snapshots no longer pin their decoded guest layers, whose addresses could be reused.
         if (guestLayers.empty())
             for (const auto &entry: m_retainedLayerSnapshots)
-                if (entry.surface == surface && entry.generation == generation && (bytes = entry.bytes.lock()))
-                    break;
+                if (entry.surface == surface && entry.generation == generation) {
+                    bytes = entry.bytes.lock();
+                    if (bytes)
+                        break;
+                }
         if (!bytes) {
             const auto rowBytes = std::size_t(surface.width) * elementBytes;
             auto packed = std::make_shared<std::vector<std::uint8_t>>(rowBytes * surface.height * surface.sliceCount);
@@ -1728,18 +1731,22 @@ namespace Core::Gfx {
     {
         if (!m_psShader)
             return m_fragmentShaderCache.hasUnconditionalColorOnlyEffects(psProgram());
-        if (!m_psShader->colorOnlyEffects)
-            m_psShader->colorOnlyEffects = m_fragmentShaderCache.hasUnconditionalColorOnlyEffects(m_psShader->words);
-        return *m_psShader->colorOnlyEffects;
+        if (const auto cached = m_psShader->colorOnlyEffects)
+            return *cached;
+        const bool effects = m_fragmentShaderCache.hasUnconditionalColorOnlyEffects(m_psShader->words);
+        m_psShader->colorOnlyEffects = effects;
+        return effects;
     }
 
     bool Gx2Replayer::rejectsEveryPixel()
     {
         if (!m_psShader)
             return LatteVsInterp::rejectsEveryPixel(*declaration(m_psShader));
-        if (!m_psShader->rejectsEveryPixel)
-            m_psShader->rejectsEveryPixel = LatteVsInterp::rejectsEveryPixel(*declaration(m_psShader));
-        return *m_psShader->rejectsEveryPixel;
+        if (const auto cached = m_psShader->rejectsEveryPixel)
+            return *cached;
+        const bool rejects = LatteVsInterp::rejectsEveryPixel(*declaration(m_psShader));
+        m_psShader->rejectsEveryPixel = rejects;
+        return rejects;
     }
 
     Gx2Replayer::Surface Gx2Replayer::parseSurface(const std::uint32_t addr)
@@ -1863,7 +1870,8 @@ namespace Core::Gfx {
             for (std::uint32_t y = 0; y < s.height; ++y)
                 padding.insert(padding.end(), backing.begin() + std::ptrdiff_t(y * pitchBytes + rowBytes),
                                backing.begin() + std::ptrdiff_t((y + 1) * pitchBytes));
-        const auto color = format == ColorFormat::RGBA8 ? std::array{element[0] / 255.f, element[1] / 255.f, element[2] / 255.f, element[3] / 255.f}
+        const auto color = format == ColorFormat::RGBA8 ? std::array{float(element[0]) / 255.f, float(element[1]) / 255.f, float(element[2]) / 255.f,
+                                                                     float(element[3]) / 255.f}
                                                         : readFloatColor(element.data(), format);
         m_pendingReadbacks[key] = std::make_shared<RasterReadback>(
                 backing.size(),
@@ -2156,26 +2164,26 @@ namespace Core::Gfx {
             const auto word = [&](unsigned c) -> std::uint32_t {
                 if (e.bytes == 4) {
                     std::uint32_t bits;
-                    std::memcpy(&bits, p + c * 4, 4);
+                    std::memcpy(&bits, p + std::size_t{c} * 4, 4);
                     return e.wordSwap ? std::byteswap(bits) : bits;
                 }
                 if (e.bytes == 2) {
                     std::uint16_t bits;
-                    std::memcpy(&bits, p + c * 2, 2);
+                    std::memcpy(&bits, p + std::size_t{c} * 2, 2);
                     return e.wordSwap ? std::byteswap(bits) : bits;
                 }
                 return p[c];
             };
             if (e.floating && e.bytes == 4) {
                 for (unsigned c = 0; c < e.components; c++) {
-                    const auto *order = &e.order[c * 4];
+                    const auto *order = &e.order[std::size_t{c} * 4];
                     value[c] = asFloat(e.wordLoad ? word(c)
                                                   : std::uint32_t(p[order[0]]) | std::uint32_t(p[order[1]]) << 8 | std::uint32_t(p[order[2]]) << 16 |
                                                             std::uint32_t(p[order[3]]) << 24);
                 }
             } else {
                 const auto convert = [&](std::uint32_t bits, unsigned width) -> float {
-                    const auto signBit = 1u << (width - 1);
+                    const auto signBit = 1u << ((width - 1) & 31);
                     const auto signedBits = std::int32_t(e.isSigned && (bits & signBit) && width < 32 ? bits | ~((signBit << 1) - 1) : bits);
                     if (e.integer && !e.scaled)
                         return asFloat(e.isSigned ? std::uint32_t(signedBits) : bits); // raw integer bits for integer shader inputs
@@ -4059,9 +4067,11 @@ namespace Core::Gfx {
                     if (sharedOutside)
                         return;
                     if (!outside) {
-                        for (unsigned k = 0; k < 3; ++k)
-                            if (!(prepared.corners[k] = projectedCorner(slots[k])))
+                        for (unsigned k = 0; k < 3; ++k) {
+                            prepared.corners[k] = projectedCorner(slots[k]);
+                            if (!prepared.corners[k])
                                 return;
+                        }
                         preparedTriangles.push_back(prepared);
                         return;
                     }
@@ -4282,6 +4292,9 @@ namespace Core::Gfx {
                 }
                 entry.vertices = directArrays =
                         std::make_shared<const DirectVertices>(DirectVertices{std::move(directAttributes), std::move(directIndices)});
+                // Moved from: the views below read directArrays instead.
+                directAttributes.clear();
+                directIndices.clear();
                 entry.validatedFrame = m_presentCount;
                 entry.used = ++m_directVertexClock;
                 if (const auto old = m_directVertexCache.find(directKey); old != m_directVertexCache.end()) {
@@ -4292,6 +4305,7 @@ namespace Core::Gfx {
                 if (m_directVertexBytes > budget) {
                     // Evict least recently used entries in one pass, down to three quarters.
                     std::vector<std::pair<std::uint64_t, std::uint64_t>> order;
+                    order.reserve(m_directVertexCache.size());
                     for (const auto &[key, cached]: m_directVertexCache)
                         order.emplace_back(cached.used, key);
                     std::ranges::sort(order);
@@ -5422,11 +5436,12 @@ namespace Core::Gfx {
                 const std::uint8_t *src = base + static_cast<std::size_t>(y) * s.pitch * 4;
                 std::uint8_t *dst = m_fb.data() + static_cast<std::size_t>(y) * kWidth * 4;
                 for (std::uint32_t x = 0; x < cols; x++) {
-                    const auto rgb = unitBytes(src + x * 4);
-                    dst[x * 4] = rgb[0];
-                    dst[x * 4 + 1] = rgb[1];
-                    dst[x * 4 + 2] = rgb[2];
-                    dst[x * 4 + 3] = 255;
+                    const std::size_t at = std::size_t{x} * 4;
+                    const auto rgb = unitBytes(src + at);
+                    dst[at] = rgb[0];
+                    dst[at + 1] = rgb[1];
+                    dst[at + 2] = rgb[2];
+                    dst[at + 3] = 255;
                 }
             }
             return;

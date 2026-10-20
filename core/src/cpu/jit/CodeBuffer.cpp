@@ -29,8 +29,8 @@ namespace Core::Jit {
                 for (const auto hint: {anchor - distance - bytes, anchor + distance}) {
                     if (hint > anchor + distance || hint < kStep) // wrapped below zero
                         continue;
-                    void *at = mmap(reinterpret_cast<void *>(hint), bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE,
-                                    -1, 0);
+                    void *const address = reinterpret_cast<void *>(hint); // NOLINT(performance-no-int-to-ptr)
+                    void *at = mmap(address, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
                     if (at != MAP_FAILED)
                         return at;
                 }
@@ -68,16 +68,16 @@ namespace Core::Jit {
     bool CodeBuffer::writable(const std::uint8_t *begin, const std::size_t bytes) noexcept
     {
         const std::size_t page = pageSize();
-        const auto first = reinterpret_cast<std::uintptr_t>(begin) & ~(page - 1);
-        const auto last = (reinterpret_cast<std::uintptr_t>(begin) + bytes + page - 1) & ~(page - 1);
-        return mprotect(reinterpret_cast<void *>(first), last - first, PROT_READ | PROT_WRITE) == 0;
+        const auto offset = reinterpret_cast<std::uintptr_t>(begin) & (page - 1);
+        const std::size_t length = (offset + bytes + page - 1) & ~(page - 1);
+        return mprotect(const_cast<std::uint8_t *>(begin) - offset, length, PROT_READ | PROT_WRITE) == 0;
     }
 
     bool CodeBuffer::executable(const std::uint8_t *begin, const std::size_t bytes) noexcept
     {
         const std::size_t page = pageSize();
-        const auto first = reinterpret_cast<std::uintptr_t>(begin) & ~(page - 1);
-        const auto last = (reinterpret_cast<std::uintptr_t>(begin) + bytes + page - 1) & ~(page - 1);
-        return mprotect(reinterpret_cast<void *>(first), last - first, PROT_READ | PROT_EXEC) == 0;
+        const auto offset = reinterpret_cast<std::uintptr_t>(begin) & (page - 1);
+        const std::size_t length = (offset + bytes + page - 1) & ~(page - 1);
+        return mprotect(const_cast<std::uint8_t *>(begin) - offset, length, PROT_READ | PROT_EXEC) == 0;
     }
 } // namespace Core::Jit

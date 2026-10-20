@@ -83,11 +83,11 @@ namespace Core::Gfx {
             return {{0, 0}, {draw.width, draw.height}};
         }
         // Depth target values with a pending clear (RasterDraw::Depth::clear) written.
-        std::vector<float> clearedDepth(const RasterDraw::Depth &depth)
+        std::vector<float> clearedDepth(const RasterDraw::Depth &depth, const float clear)
         {
             std::vector<float> values(depth.target.begin(), depth.target.end());
             for (unsigned y = 0; y < depth.height; ++y)
-                std::fill_n(values.begin() + std::ptrdiff_t(std::size_t(y) * depth.pitch), depth.width, *depth.clear);
+                std::fill_n(values.begin() + std::ptrdiff_t(std::size_t(y) * depth.pitch), depth.width, clear);
             return values;
         }
 
@@ -2272,6 +2272,8 @@ void main() {
                     try {
                         submit();
                     } catch (...) {
+                        // The failed segment was never queued; the drain below still waits for earlier work.
+                        segments[current].recording = false;
                     }
                     context.drainNoThrow();
                     for (auto &segment: segments) {
@@ -2324,7 +2326,7 @@ void main() {
                     const bool depthUpload = draw.depth.test && !in.depthSource;
 
                     // Classify textures before recording, so the whole draw fits in one segment.
-                    enum class Source { Shared, Direct, Copy, Private };
+                    enum class Source : std::uint8_t { Shared, Direct, Copy, Private };
                     std::vector<Source> sources(in.textures.size());
                     std::vector<std::shared_ptr<CachedTexture>> shared(in.textures.size());
                     VkDeviceSize need = 0;
@@ -2826,6 +2828,7 @@ void main() {
                             return true;
                         });
                         std::vector<std::pair<std::uint64_t, const void *>> order;
+                        order.reserve(vertexCache.size());
                         for (const auto &[owner, cached]: vertexCache)
                             order.emplace_back(cached.used, owner);
                         std::ranges::sort(order);
@@ -3755,7 +3758,7 @@ void main() {
             return reject("Invalid compact vertex attributes");
         const auto vertices = vertexCount(draw);
         const auto drawnVertices = draw.indices.empty() ? vertices : draw.indices.size();
-        if ((!draw.indices.empty() && (draw.topology != RasterDraw::Topology::Triangles || draw.indices.size() > 262144 * 3 ||
+        if ((!draw.indices.empty() && (draw.topology != RasterDraw::Topology::Triangles || draw.indices.size() > std::size_t{262144} * 3 ||
                                        std::any_of(draw.indices.begin(), draw.indices.end(), [&](auto i) { return i >= vertices; }))) ||
             (draw.topology == RasterDraw::Topology::Triangles && drawnVertices % 3) || vertices > 262144 || draw.constants.size() > 1024 ||
             draw.uniforms.size() != draw.shader.uniforms.size() * 4 || draw.uniforms.size() > 2048 ||
@@ -3792,7 +3795,7 @@ void main() {
                 if (draw.depth.rendered)
                     result.depthReadback = draw.depth.rendered;
                 else if (draw.depth.clear)
-                    result.depth = clearedDepth(draw.depth);
+                    result.depth = clearedDepth(draw.depth, *draw.depth.clear);
                 else
                     result.depth.assign(draw.depth.target.begin(), draw.depth.target.end());
             }
@@ -3926,7 +3929,7 @@ void main() {
             if (textureBytes > std::uint64_t{128} * 1024 * 1024)
                 return reject("Texture upload budget exceeded");
         }
-        constexpr auto vertexSource = R"(#version 450
+        static constexpr auto vertexSource = R"(#version 450
 layout(location=0) in vec2 position;
 layout(location=1) in vec4 attributes[16];
 layout(location=17) in vec2 depthAndW;
@@ -4099,7 +4102,7 @@ void main() {
         }
         // Only direct draws clear their depth image on the GPU; the other paths upload values.
         if (draw.depth.test && draw.depth.clear && !direct) {
-            resolvedDepth = clearedDepth(draw.depth);
+            resolvedDepth = clearedDepth(draw.depth, *draw.depth.clear);
             draw.depth.target = resolvedDepth;
             draw.depth.clear.reset();
         }

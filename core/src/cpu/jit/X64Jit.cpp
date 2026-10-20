@@ -32,7 +32,7 @@ namespace Core::Jit {
     namespace {
         constexpr std::size_t kCodeBytes = std::size_t{256} << 20;
         // Upper bound of one block's code (at most 64 instructions); a compile needs this much room.
-        constexpr std::size_t kBlockReserve = 64 * 1024;
+        constexpr std::size_t kBlockReserve = std::size_t{64} * 1024;
         constexpr std::size_t kStubReserve = 4096;
         constexpr std::size_t kBlockSlots = std::size_t{1} << 18;
         constexpr std::size_t kTableBytes = sizeof(TableEntry) << kTableBits;
@@ -131,7 +131,9 @@ namespace Core::Jit {
                 slots = reinterpret_cast<BlockSlot *>(buffer.data() + kTableBytes);
                 context.gprBase = reinterpret_cast<std::uint8_t *>(&cpu.m_gpr[0]);
                 const auto &ram = cpu.m_memory.getMemory();
-                context.ramBias = reinterpret_cast<std::uint8_t *>(reinterpret_cast<std::uintptr_t>(ram.data()) - Memory::ApplicationCode);
+                // The bias points before the RAM allocation, so it is formed as an integer.
+                const auto ramBias = reinterpret_cast<std::uintptr_t>(ram.data()) - Memory::ApplicationCode;
+                context.ramBias = reinterpret_cast<std::uint8_t *>(ramBias); // NOLINT(performance-no-int-to-ptr)
                 context.stackHost = cpu.m_memory.hostPtr(Memory::STACK_BASE, Memory::STACK_SIZE);
                 context.slowPages = cpu.m_memory.slowPages();
                 layout.cpu = offset(&cpu);

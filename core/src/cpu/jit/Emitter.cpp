@@ -71,19 +71,23 @@ namespace Core::Jit {
         {
             if (!std::as_const(*memory).hostPtr(ea, bytes))
                 return 2;
-            switch (bytes) {
-                case 1:
-                    memory->write<std::uint8_t>(ea, static_cast<std::uint8_t>(value));
-                    break;
-                case 2:
-                    memory->write<std::uint16_t>(ea, static_cast<std::uint16_t>(value));
-                    break;
-                case 4:
-                    memory->write<std::uint32_t>(ea, static_cast<std::uint32_t>(value));
-                    break;
-                default:
-                    memory->write<std::uint64_t>(ea, value);
-                    break;
+            try {
+                switch (bytes) {
+                    case 1:
+                        memory->write<std::uint8_t>(ea, static_cast<std::uint8_t>(value));
+                        break;
+                    case 2:
+                        memory->write<std::uint16_t>(ea, static_cast<std::uint16_t>(value));
+                        break;
+                    case 4:
+                        memory->write<std::uint32_t>(ea, static_cast<std::uint32_t>(value));
+                        break;
+                    default:
+                        memory->write<std::uint64_t>(ea, value);
+                        break;
+                }
+            } catch (...) { // only unmapped stores throw, and hostPtr rejected those above
+                return 2;
             }
             if (!memory->codeWritten())
                 return 0;
@@ -393,7 +397,7 @@ namespace Core::Jit {
     {
         const unsigned shift = (7 - field) * 4;
         if (shift)
-            shl(ecx, shift);
+            shl(ecx, static_cast<int>(shift));
         mov(edx, cr());
         and_(edx, ~(0xFu << shift));
         or_(edx, ecx);

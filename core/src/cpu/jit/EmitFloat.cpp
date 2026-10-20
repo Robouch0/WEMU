@@ -13,7 +13,7 @@ namespace Core::Jit {
         constexpr std::uint64_t kOne = 0x3FF0000000000000ull; // 1.0
         constexpr std::uint64_t kIntMax = 0x41DFFFFFFFC00000ull; // 2147483647.0
 
-        enum class Lane { Ps0, Ps1 };
+        enum class Lane : std::uint8_t { Ps0, Ps1 };
 
         // Paired-single arithmetic applied to both lanes (Interpreter pairLanes).
         constexpr bool pairedArithmetic(const InstructionID id)
