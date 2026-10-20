@@ -5447,12 +5447,14 @@ namespace Core::Gfx {
     {
         // The scan-out engine scales the source to the 854x480 panel (titles often render the
         // GamePad view at another size), so resample instead of cropping like the TV path.
-        m_drcFb.assign(static_cast<std::size_t>(kDrcWidth) * kDrcHeight * 4, 0);
-        for (std::size_t i = 3; i < m_drcFb.size(); i += 4)
-            m_drcFb[i] = 0xFF;
+        const auto blank = [&] {
+            m_drcFb.assign(static_cast<std::size_t>(kDrcWidth) * kDrcHeight * 4, 0);
+            for (std::size_t i = 3; i < m_drcFb.size(); i += 4)
+                m_drcFb[i] = 0xFF;
+        };
         const auto s = attachmentSurface(original);
         if (!s.imagePtr || !s.width || !s.height || !s.pitch)
-            return;
+            return blank();
         // Decoded like the TV copy: Pikmin 3 renders both screens in R11G11B10_FLOAT.
         const auto format = colorFormat(s.format);
         const std::size_t elementBytes = colorElementBytes(format);
@@ -5460,11 +5462,13 @@ namespace Core::Gfx {
         const std::uint8_t *base = backing ? backing->data() : nullptr;
         const std::size_t bytes = static_cast<std::size_t>(s.pitch) * s.height * elementBytes;
         if (backing && backing->size() < bytes)
-            return;
+            return blank();
         if (!base) {
             if (!m_mem || !(base = m_mem->hostPtr(s.imagePtr)) || !m_mem->hostPtr(s.imagePtr + bytes - 1))
-                return;
+                return blank();
         }
+        // Every panel pixel is written below.
+        m_drcFb.resize(static_cast<std::size_t>(kDrcWidth) * kDrcHeight * 4);
         const auto &unitBytes = packedFloatUnitBytes();
         // Source byte offset of each panel column, computed once instead of a division per pixel.
         std::array<std::size_t, kDrcWidth> columns;
@@ -5474,19 +5478,27 @@ namespace Core::Gfx {
             const std::uint32_t sy = static_cast<std::uint32_t>(std::uint64_t(y) * s.height / kDrcHeight);
             std::uint8_t *dst = m_drcFb.data() + static_cast<std::size_t>(y) * kDrcWidth * 4;
             const std::uint8_t *row = base + static_cast<std::size_t>(sy) * s.pitch * elementBytes;
-            for (std::uint32_t x = 0; x < kDrcWidth; x++) {
-                const std::uint8_t *src = row + columns[x];
-                if (format == ColorFormat::R11G11B10Float) {
-                    const auto rgb = unitBytes(src);
-                    std::memcpy(dst + x * 4, rgb.data(), 3);
-                } else if (format != ColorFormat::RGBA8) {
-                    const auto value = readFloatColor(src, format);
-                    for (unsigned c = 0; c < 3; ++c)
-                        dst[x * 4 + c] = byteFromUnit(value[c]);
-                } else
-                    std::memcpy(dst + x * 4, src, 3);
-                dst[x * 4 + 3] = 0xFF;
-            }
+            // One 32-bit store per pixel (RGB, alpha 255): byte stores read back as a word stalled
+            // store forwarding on every pixel.
+            const auto store = [&](std::uint32_t x, std::uint32_t r, std::uint32_t g, std::uint32_t b) {
+                const std::uint32_t pixel = r | (g << 8) | (b << 16) | 0xFF000000u;
+                std::memcpy(dst + x * 4, &pixel, 4);
+            };
+            if (format == ColorFormat::R11G11B10Float)
+                for (std::uint32_t x = 0; x < kDrcWidth; x++) {
+                    const auto rgb = unitBytes(row + columns[x]);
+                    store(x, rgb[0], rgb[1], rgb[2]);
+                }
+            else if (format != ColorFormat::RGBA8)
+                for (std::uint32_t x = 0; x < kDrcWidth; x++) {
+                    const auto value = readFloatColor(row + columns[x], format);
+                    store(x, byteFromUnit(value[0]), byteFromUnit(value[1]), byteFromUnit(value[2]));
+                }
+            else
+                for (std::uint32_t x = 0; x < kDrcWidth; x++) {
+                    const auto *src = row + columns[x];
+                    store(x, src[0], src[1], src[2]);
+                }
         }
     }
 
