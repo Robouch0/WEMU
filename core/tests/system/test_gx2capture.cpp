@@ -2535,7 +2535,8 @@ TEST_F(Gx2CaptureTest, IndependentColorAttachmentsReceiveDistinctBurstOutputs)
     using namespace Core::Gfx;
     constexpr unsigned VS = 0x28005000, PS = 0x28006000, VSP = 0x28007000, PSP = 0x28008000;
     constexpr unsigned FETCH = 0x28001000, ATTRS = 0x28003000, VERTS = 0x28010000;
-    constexpr unsigned COLOR = 0x28009000, SECOND = 0x2800A000, DEPTH = 0x2800B000;
+    constexpr unsigned COLOR = 0x28009000, SECOND = 0x2800A000, DEPTH = 0x2800B000, TEXTURE = 0x2800C000;
+    constexpr unsigned SAMPLING_PS = 0x2800D000, SAMPLING_PSP = 0x2800E000, COLOR_IMAGE = 0x28040000, SECOND_IMAGE = 0x28050000;
     const auto record = [&](const char *name, std::initializer_list<unsigned> args) {
         unsigned reg = 3;
         for (const auto arg: args)
@@ -2571,10 +2572,18 @@ TEST_F(Gx2CaptureTest, IndependentColorAttachmentsReceiveDistinctBurstOutputs)
         for (unsigned i = 0; i < words.size(); ++i)
             cpu->m_memory.write<unsigned>(ptr + i * 4, std::byteswap(words[i]));
     };
+    // The same outputs after an unused sample of unit 0 (TEX at word 24, ALU at word 6).
+    std::vector<unsigned> sampling{12, 1u << 23, 3, (8u << 26) | (7u << 18), 0, (0x28u << 23) | (1u << 21) | (1u << 17) | 0x688u};
+    sampling.insert(sampling.end(), pixel.begin() + 4, pixel.end());
+    sampling.resize(24);
+    sampling.insert(sampling.end(), {0x10u, 5u | (0x688u << 9) | 0xF0000000u, 1u << 23, 0u});
+    for (unsigned i = 0; i < 0x200; i += 4)
+        cpu->m_memory.write<unsigned>(SAMPLING_PS + i, 0);
     shader(VS, 0xD0, VSP, vertex);
     shader(PS, 0xA4, PSP, pixel);
-    surface(COLOR, 0x28040000, 256, 8, 8, 8, 1);
-    surface(SECOND, 0x28050000, 256, 8, 8, 8, 1);
+    shader(SAMPLING_PS, 0xA4, SAMPLING_PSP, sampling);
+    surface(COLOR, COLOR_IMAGE, 256, 8, 8, 8, 1);
+    surface(SECOND, SECOND_IMAGE, 256, 8, 8, 8, 1);
     for (const auto header: {COLOR, SECOND}) {
         cpu->m_memory.write<unsigned>(header + 0x74, 0);
         cpu->m_memory.write<unsigned>(header + 0x78, 0);
@@ -2583,8 +2592,12 @@ TEST_F(Gx2CaptureTest, IndependentColorAttachmentsReceiveDistinctBurstOutputs)
     surface(DEPTH, 0x28060000, 256, 8, 8, 8, 0);
     cpu->m_memory.write<unsigned>(DEPTH + 0x14, 0x80E);
     // A read-only depth test gives both separate passes the same coverage: no test, passing, failing.
-    for (unsigned depthMode: {0u, 1u, 2u}) {
+    // A bound texture overlapping an attachment only blocks the split when the shader samples it.
+    for (const auto [depthMode, overlap, sampled]: {std::tuple{0u, 0u, false}, {1u, 0u, false}, {2u, 0u, false}, {0u, COLOR_IMAGE, false},
+                                                    {0u, SECOND_IMAGE, false}, {0u, COLOR_IMAGE, true}}) {
     SCOPED_TRACE(depthMode);
+    SCOPED_TRACE(overlap);
+    SCOPED_TRACE(sampled);
     gx2Stream().clear();
     for (const auto header: {COLOR, SECOND}) {
         for (unsigned c = 1; c <= 4; ++c)
@@ -2609,7 +2622,13 @@ TEST_F(Gx2CaptureTest, IndependentColorAttachmentsReceiveDistinctBurstOutputs)
     record("GX2SetViewport", {});
     record("GX2SetFetchShader", {FETCH});
     record("GX2SetVertexShader", {VS});
-    record("GX2SetPixelShader", {PS});
+    record("GX2SetPixelShader", {sampled ? SAMPLING_PS : PS});
+    if (overlap) {
+        surface(TEXTURE, overlap, 256, 8, 8, 8, 1);
+        cpu->m_memory.write<unsigned>(TEXTURE + 0x78, 1);
+        cpu->m_memory.write<unsigned>(TEXTURE + 0x80, 1);
+        record("GX2SetPixelTexture", {TEXTURE, 0});
+    }
     record("GX2SetAttribBuffer", {0, 48, 16, VERTS});
     record("GX2DrawEx", {4, 3, 0, 1});
     record("GX2CopyColorBufferToScanBuffer", {COLOR, 1});
@@ -2623,6 +2642,12 @@ TEST_F(Gx2CaptureTest, IndependentColorAttachmentsReceiveDistinctBurstOutputs)
             replay.setRasterBackend(backend);
         replay.setNativeVerificationInterval(1);
         replay.replay(captured, &cpu->m_memory);
+        if (sampled) {
+            // The split is refused: the draw keeps the simultaneous (software) path.
+            if (native)
+                EXPECT_EQ(backend->completedDraws(), 0u);
+            continue;
+        }
         const bool drawn = depthMode != 2;
         EXPECT_EQ((std::array{replay.framebuffer()[0], replay.framebuffer()[1], replay.framebuffer()[2], replay.framebuffer()[3]}),
                   (drawn ? std::array<std::uint8_t, 4>{255, 0, 0, 255} : std::array<std::uint8_t, 4>{}));

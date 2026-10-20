@@ -2432,7 +2432,9 @@ namespace Core::Gfx {
         // Independent color attachments can use separate native passes while the
         // backend exposes one attachment. A read-only depth test gives every pass the
         // same coverage; depth writes, stencil and framebuffer feedback need a
-        // simultaneous MRT path, so retain fallback for those.
+        // simultaneous MRT path, so retain fallback for those. Only the pixel units the
+        // shader samples count as feedback: titles leave earlier draws' textures bound
+        // (Pikmin 3's light passes keep the array they render into on an unused unit).
         if (selectedColor < 0 && std::popcount(writableColors) > 1 && (!m_depthTest || !m_depthWrite) && !m_stencilTest && !m_multiWriteEnable &&
             !m_gpuRenderer) {
             bool independent = true;
@@ -2440,15 +2442,26 @@ namespace Core::Gfx {
                 return a.imagePtr && b.imagePtr && std::uint64_t(a.imagePtr) < std::uint64_t(b.imagePtr) + b.imageSize &&
                        std::uint64_t(b.imagePtr) < std::uint64_t(a.imagePtr) + a.imageSize;
             };
+            // Every pass's samples count against every attachment: a later pass must not read
+            // what an earlier one wrote.
+            std::vector<const Surface *> sampled;
             for (unsigned slot = 0; slot < 8 && independent; ++slot)
                 if (writableColors & (1u << slot)) {
-                    independent = bool(*fragmentShader({}, true, slot));
+                    const auto shader = fragmentShader({}, true, slot);
+                    independent = bool(*shader);
+                    for (const auto &binding: shader->textures)
+                        if (binding.resource < m_pixelTextures.size())
+                            sampled.push_back(&m_pixelTextures[binding.resource]);
+                }
+            for (unsigned slot = 0; slot < 8 && independent; ++slot)
+                if (writableColors & (1u << slot)) {
                     for (unsigned other = 0; other < slot; ++other)
                         if ((writableColors & (1u << other)) && aliases(m_colorBuffers[slot], m_colorBuffers[other]))
                             independent = false;
                     if (m_depthTest && aliases(m_colorBuffers[slot], m_depth))
                         independent = false;
-                    for (const auto &texture: m_pixelTextures) {
+                    for (const auto *surface: sampled) {
+                        const auto &texture = *surface;
                         independent &= !aliases(m_colorBuffers[slot], texture);
                         auto mips = texture;
                         mips.imagePtr = texture.mipImagePtr;
