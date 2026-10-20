@@ -86,8 +86,9 @@ jobs:
           restore-keys: |
             ${{ matrix.os }}-build-core-llvm-${{ matrix.llvm }}-
 
+      # The runner image also ships LLVM 18, whose CMake package would be found first: pin LLVM 19.
       - name: Configure core with CMake
-        run: cmake -S core -B core/build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=g++-14 -DWEMU_ENABLE_LLVM=${{ matrix.llvm }}
+        run: cmake -S core -B core/build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=g++-14 -DWEMU_ENABLE_LLVM=${{ matrix.llvm }} ${{ matrix.llvm == 'ON' && '-DLLVM_DIR=/usr/lib/llvm-19/lib/cmake/llvm' || '' }}
 
       - name: Build core
         run: cmake --build core/build --parallel $(nproc)
@@ -135,8 +136,9 @@ jobs:
             zlib1g-dev libsdl2-dev clang-tidy-19 llvm-19-dev libvulkan-dev vulkan-tools vulkan-validationlayers libglm-dev libglfw3-dev \
             glslang-tools spirv-tools
 
+      # LLVM_DIR pins LLVM 19 over the LLVM 18 package of the runner image.
       - name: Configure core (generate compile_commands.json)
-        run: cmake -S core -B core/build -DCMAKE_CXX_COMPILER=g++-14 -DWEMU_ENABLE_LLVM=ON -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+        run: cmake -S core -B core/build -DCMAKE_CXX_COMPILER=g++-14 -DWEMU_ENABLE_LLVM=ON -DLLVM_DIR=/usr/lib/llvm-19/lib/cmake/llvm -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
       # clang-tidy needs generated headers (e.g. moc, configure-time files)
       # to exist before it can analyze sources that include them.
