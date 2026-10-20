@@ -2664,6 +2664,97 @@ TEST_F(Gx2CaptureTest, IndependentColorAttachmentsReceiveDistinctBurstOutputs)
     }
 }
 
+TEST_F(Gx2CaptureTest, DisabledZClippingKeepsGeometryInFrontOfTheNearPlane)
+{
+    using namespace Core::Gfx;
+    constexpr unsigned VS = 0x28005000, PS = 0x28006000, VSP = 0x28007000, PSP = 0x28008000;
+    constexpr unsigned FETCH = 0x28001000, ATTRS = 0x28003000, VERTS = 0x28010000, COLOR = 0x28009000, DEPTH = 0x2800B000;
+    const auto record = [&](const char *name, std::initializer_list<unsigned> args) {
+        unsigned reg = 3;
+        for (const auto arg: args)
+            cpu->m_gpr[reg++] = arg;
+        call(name);
+    };
+    const std::array<unsigned, 8> attrs{0, 0, 0, 0x813, 0, 0, 0x00010203, 3};
+    for (unsigned i = 0; i < attrs.size(); ++i)
+        cpu->m_memory.write<unsigned>(ATTRS + i * 4, attrs[i]);
+    record("GX2InitFetchShaderEx", {FETCH, 0x28002000, 1, ATTRS, 0, 0});
+    // A full-target triangle at clip z = -3w: window depth -1, in front of the near plane.
+    const std::array<std::array<float, 4>, 3> vertices{{{-1, 1, -3, 1}, {3, 1, -3, 1}, {-1, -3, -3, 1}}};
+    for (unsigned v = 0; v < vertices.size(); ++v)
+        for (unsigned c = 0; c < 4; ++c)
+            cpu->m_memory.write<unsigned>(VERTS + v * 16 + c * 4, std::bit_cast<unsigned>(vertices[v][c]));
+    for (unsigned i = 0; i < 0x200; i += 4) {
+        cpu->m_memory.write<unsigned>(VS + i, 0);
+        cpu->m_memory.write<unsigned>(PS + i, 0);
+    }
+    cpu->m_memory.write<unsigned>(VS + 0xC, 1);
+    cpu->m_memory.write<unsigned>(VS + 0x10, 0xFFFFFF00);
+    cpu->m_memory.write<unsigned>(VS + 0x14, 0xFFFFFFFF);
+    cpu->m_memory.write<unsigned>(VS + 0x18, 0xFFFFFFFF);
+    const std::array<unsigned, 2> vertex{60u | (1u << 13) | (1u << 15), (0x28u << 23) | (1u << 21) | 0x688u};
+    std::vector<unsigned> pixel{2, (8u << 26) | (3u << 18), 0, (0x28u << 23) | (1u << 21) | 0x688u}; // R0 = red, exported
+    for (unsigned c = 0; c < 4; ++c) {
+        pixel.push_back((c == 0 || c == 3 ? 249u : 248u) | (c == 3 ? 1u << 31 : 0));
+        pixel.push_back(16u | (0x19u << 7) | (c << 29));
+    }
+    const auto shader = [&](unsigned header, unsigned offset, unsigned ptr, const auto &words) {
+        cpu->m_memory.write<unsigned>(header + offset, words.size() * 4);
+        cpu->m_memory.write<unsigned>(header + offset + 4, ptr);
+        for (unsigned i = 0; i < words.size(); ++i)
+            cpu->m_memory.write<unsigned>(ptr + i * 4, std::byteswap(words[i]));
+    };
+    shader(VS, 0xD0, VSP, vertex);
+    shader(PS, 0xA4, PSP, pixel);
+    surface(COLOR, 0x28040000, 256, 8, 8, 8, 1);
+    cpu->m_memory.write<unsigned>(COLOR + 0x74, 0);
+    cpu->m_memory.write<unsigned>(COLOR + 0x78, 0);
+    cpu->m_memory.write<unsigned>(COLOR + 0x7C, 1);
+    surface(DEPTH, 0x28060000, 256, 8, 8, 8, 0);
+    cpu->m_memory.write<unsigned>(DEPTH + 0x14, 0x80E);
+    gx2Stream().clear();
+    for (unsigned c = 1; c <= 4; ++c)
+        cpu->m_fpr[c] = 0;
+    record("GX2ClearColor", {COLOR});
+    record("GX2SetColorBuffer", {COLOR, 0});
+    record("GX2SetColorControl", {0xCC, 0, 0, 1});
+    record("GX2SetTargetChannelMasks", {15, 0, 0, 0, 0, 0, 0, 0});
+    cpu->m_fpr[1] = .25;
+    record("GX2ClearDepthStencilEx", {DEPTH, 0, 1});
+    record("GX2SetDepthBuffer", {DEPTH});
+    record("GX2SetDepthOnlyControl", {1, 1, 3}); // LEQUAL: the clamped depth 0 passes against 0.25
+    record("GX2SetRasterizerClipControl", {1, 0});
+    cpu->m_fpr[1] = cpu->m_fpr[2] = 0;
+    cpu->m_fpr[3] = cpu->m_fpr[4] = 8;
+    cpu->m_fpr[5] = 0;
+    cpu->m_fpr[6] = 1;
+    record("GX2SetViewport", {});
+    record("GX2SetFetchShader", {FETCH});
+    record("GX2SetVertexShader", {VS});
+    record("GX2SetPixelShader", {PS});
+    record("GX2SetAttribBuffer", {0, 48, 16, VERTS});
+    record("GX2DrawEx", {4, 3, 0, 1});
+    record("GX2CopyColorBufferToScanBuffer", {COLOR, 1});
+    const auto captured = gx2Stream();
+    for (bool native: {false, true}) {
+        if (native && !std::getenv("WEMU_TEST_VULKAN"))
+            continue;
+        SCOPED_TRACE(native);
+        Gx2Replayer replay;
+        auto backend = std::make_shared<VulkanRasterBackend>(true, true);
+        if (native)
+            replay.setRasterBackend(backend);
+        replay.setNativeVerificationInterval(1);
+        replay.replay(captured, &cpu->m_memory);
+        EXPECT_EQ((std::array{replay.framebuffer()[0], replay.framebuffer()[1], replay.framebuffer()[2], replay.framebuffer()[3]}),
+                  (std::array<std::uint8_t, 4>{255, 0, 0, 255}));
+        if (native) {
+            EXPECT_EQ(backend->completedDraws(), 1u) << backend->lastError();
+            EXPECT_EQ(replay.differingNativeDraws(), 0u);
+        }
+    }
+}
+
 TEST_F(Gx2CaptureTest, AttributeFetchesAreBoundedByElementStartNotByteExtent)
 {
     using namespace Core::Gfx;

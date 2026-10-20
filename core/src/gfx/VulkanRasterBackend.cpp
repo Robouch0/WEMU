@@ -208,9 +208,9 @@ namespace Core::Gfx {
             // UNORM writes are quantized in a GPU buffer pass after comparison.
             return VK_FORMAT_D32_SFLOAT;
         }
-        std::array<unsigned, 4> depthKey(const RasterDraw::Depth &depth)
+        std::array<unsigned, 5> depthKey(const RasterDraw::Depth &depth)
         {
-            return {depth.test ? unsigned(depth.format) + 1 : 0, unsigned(depth.test), unsigned(depth.write), depth.compare};
+            return {depth.test ? unsigned(depth.format) + 1 : 0, unsigned(depth.test), unsigned(depth.write), depth.compare, unsigned(depth.clamp)};
         }
         struct TextureMemoryUsage {
                 std::atomic<std::uint64_t> bytes{};
@@ -329,7 +329,7 @@ namespace Core::Gfx {
                         std::vector<std::uint32_t> bindings;
                         unsigned channelMask{};
                         std::array<unsigned, 11> blend{};
-                        std::array<unsigned, 4> depth{};
+                        std::array<unsigned, 5> depth{};
                         unsigned topology{}, colorFormat{}, cull{};
                         bool depthBias{};
                         unsigned attributeStride{}; // compact program inputs (0: full RasterDraw::Vertex)
@@ -356,7 +356,7 @@ namespace Core::Gfx {
                 VkPipelineLayout depthQuantizeLayout{};
                 VkPipeline depthQuantizePipeline{};
                 bool computeQueue{};
-                bool cubeArrays{}, biasClamp{}, blockTextures{};
+                bool cubeArrays{}, biasClamp{}, blockTextures{}, depthClamp{};
                 unsigned timestampBits{};
                 float timestampPeriod{};
                 std::map<PipelineKey, PipelineBundle> pipelines;
@@ -493,6 +493,7 @@ namespace Core::Gfx {
                     raster.frontFace = draw.frontFaceClockwise ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE;
                     raster.lineWidth = 1;
                     raster.depthBiasEnable = draw.depthBias.enabled && draw.depth.format == DepthFormat::Float32;
+                    raster.depthClampEnable = draw.depth.clamp;
                     VkPipelineMultisampleStateCreateInfo samples{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
                     samples.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
                     VkPipelineColorBlendAttachmentState blend{};
@@ -637,10 +638,12 @@ namespace Core::Gfx {
                     cubeArrays = features.imageCubeArray;
                     biasClamp = features.depthBiasClamp;
                     blockTextures = features.textureCompressionBC;
+                    depthClamp = features.depthClamp;
                     VkPhysicalDeviceFeatures enabled{};
                     enabled.imageCubeArray = features.imageCubeArray;
                     enabled.depthBiasClamp = features.depthBiasClamp;
                     enabled.textureCompressionBC = features.textureCompressionBC;
+                    enabled.depthClamp = features.depthClamp;
                     di.pEnabledFeatures = &enabled;
                     check(vkCreateDevice(physical, &di, nullptr, &device), "create device");
                     vkGetDeviceQueue(device, family, 0, &queue);
@@ -3752,7 +3755,7 @@ void main() {
             return reject("Invalid vertex parameter mapping");
         for (const auto &vertex: draw.vertices)
             if (!std::isfinite(vertex.x) || !std::isfinite(vertex.y) || !std::isfinite(vertex.reciprocalW) || vertex.reciprocalW <= 0.f ||
-                (draw.depth.test && (!std::isfinite(vertex.z) || vertex.z < 0.f || vertex.z > 1.f)))
+                (draw.depth.test && (!std::isfinite(vertex.z) || (!draw.depth.clamp && (vertex.z < 0.f || vertex.z > 1.f)))))
                 return reject("Nonfinite vertex position");
         if (draw.renderedTarget && draw.renderedTarget->size() != draw.target.size())
             return reject("Invalid rendered target size");
@@ -4038,6 +4041,8 @@ void main() {
             (!std::isfinite(draw.depthBias.constant) || !std::isfinite(draw.depthBias.slope) || !std::isfinite(draw.depthBias.clamp) ||
              (draw.depth.format == DepthFormat::Float32 && draw.depthBias.clamp != 0 && !m_impl->context->biasClamp)))
             return reject("Unsupported polygon depth bias");
+        if (draw.depth.clamp && !m_impl->context->depthClamp)
+            return reject("Device lacks depth clamping support");
         if (!m_impl->context->cubeArrays && std::any_of(draw.textures.begin(), draw.textures.end(),
                                                         [](const auto &texture) { return texture.binding.type == Latte::TextureType::Cube; }))
             return reject("Device lacks cube array sampling support");

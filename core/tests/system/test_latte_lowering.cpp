@@ -3944,6 +3944,33 @@ TEST(VulkanRasterBackendTest, IndependentLiveColorAndDepthVersionsStayResidentUn
     }
 }
 
+TEST(VulkanRasterBackendTest, DisabledZClippingClampsWindowDepthInsteadOfClipping)
+{
+    using namespace Core::Gfx;
+    if (!std::getenv("WEMU_TEST_VULKAN") || !SpirvCompiler::available())
+        GTEST_SKIP();
+    const auto shader = lowerFragmentShader(*decodeProgram({0, (CF_EXP_DONE << 23) | (1u << 21) | 0x688u}));
+    ASSERT_TRUE(shader) << shader.error;
+    // Window depth runs from -0.5 at x = 0 to 1.5 at x = 8: pixel centers interpolate -0.375, -0.125, 0.125, 0.375.
+    std::array<RasterDraw::Vertex, 3> vertices{{{0, 0, {}}, {8, 0, {}}, {0, 8, {}}}};
+    vertices[0].z = vertices[2].z = -.5f;
+    vertices[1].z = 1.5f;
+    std::vector<std::uint8_t> target(4 * 4 * 4, 19);
+    std::vector<float> depth(4 * 4, .9f);
+    RasterDraw draw{shader, vertices, {}, {}, target, 4, 4, 4, {0, 0, 4, 4}, 15, {}};
+    draw.depth = {true, true, 7, DepthFormat::Float32, depth, 4, 4, 4, {}};
+    VulkanRasterBackend backend(true, true);
+    // With Z clipping the GPU would clip what the reference clamps: those draws stay rejected.
+    EXPECT_FALSE(backend.renderDeferred(draw));
+    draw.depth.clamp = true;
+    auto result = backend.renderDeferred(draw);
+    ASSERT_TRUE(result) << backend.lastError();
+    result->resolveDepth();
+    for (unsigned y = 0; y < 4; ++y)
+        for (unsigned x = 0; x < 4; ++x)
+            EXPECT_NEAR(result->depth[y * 4 + x], std::clamp(-.5f + 2.f * (float(x) + .5f) / 8.f, 0.f, 1.f), 1e-6f) << x << ',' << y;
+}
+
 TEST(VulkanRasterBackendTest, LiveVersionRotationRemainsBoundedAndDiscardedTicketsReuseWithoutReadback)
 {
     using namespace Core::Gfx;

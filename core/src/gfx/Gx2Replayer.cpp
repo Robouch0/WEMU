@@ -4850,6 +4850,7 @@ namespace Core::Gfx {
                 if (drawDepth)
                     draw.depth = {true,          m_depthWrite,   m_depthCompare, drawDepth->format, drawDepth->pixels,
                                   m_depth.width, m_depth.height, m_depth.pitch,  drawDepth->pending, drawDepth->clear};
+                draw.depth.clamp = !m_zClipEnabled;
                 static const bool deferReadback = [] {
                     const auto *value = std::getenv("WEMU_NATIVE_DEFER_READBACK");
                     return value && std::string_view(value) == "1";

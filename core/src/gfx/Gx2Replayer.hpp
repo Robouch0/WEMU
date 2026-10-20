@@ -408,7 +408,7 @@ namespace Core::Gfx {
             bool m_multiWriteEnable{};
             unsigned m_polygonControl{};
             std::array<float, 5> m_polygonOffset{};
-            bool m_rasterizerEnabled{true}, m_zClipEnabled{}, m_halfZ{};
+            bool m_rasterizerEnabled{true}, m_zClipEnabled{true}, m_halfZ{}; // GX2Init enables Z clipping
             // Vertex-shader uniform registers (GX2SetVertexUniformReg). MK8's UI places its unit
             // quads with a matrix in c0..c3; m_regsFresh marks regs written since the last draw.
             float m_vsRegs[256]{};
@@ -481,7 +481,7 @@ namespace Core::Gfx {
                     bool multiWriteEnable{};
                     unsigned polygonControl{};
                     std::array<float, 5> polygonOffset{};
-                    bool rasterizerEnabled{true}, zClipEnabled{}, halfZ{};
+                    bool rasterizerEnabled{true}, zClipEnabled{true}, halfZ{};
                     std::array<float, 256> vsRegs{}, psRegs{};
                     std::shared_ptr<ShaderProgram> vsShader, psShader;
                     std::vector<std::uint32_t> fetchLayout;

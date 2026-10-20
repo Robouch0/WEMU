@@ -135,6 +135,9 @@ namespace Core::Gfx {
                     // The surface was cleared to this stored value since `target` was written:
                     // every element of the width x height area holds it, padding keeps `target`.
                     std::optional<float> clear;
+                    // The guest disabled Z clipping: window depth outside [0, 1] is clamped per
+                    // fragment, as the reference rasterizer does, instead of clipping the primitive.
+                    bool clamp{};
             } depth;
             enum class Topology { Triangles, Points };
             Topology topology{Topology::Triangles};
