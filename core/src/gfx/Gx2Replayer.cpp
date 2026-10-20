@@ -678,15 +678,15 @@ namespace Core::Gfx {
             return {};
         const auto fmt = original.format & 0x3F;
         const bool compressed = fmt >= 0x31 && fmt <= 0x35;
-        if (!compressed && fmt != 1 && fmt != 5 && fmt != 7 && fmt != 8 && fmt != 0xE && fmt != 0x11 && fmt != 0x16 && fmt != 0x1A &&
-            fmt != 0x22 && original.format != 0x820 && original.format != 0x823)
+        if (!compressed && fmt != 1 && fmt != 5 && fmt != 7 && fmt != 8 && fmt != 0xE && fmt != 0x11 && fmt != 0x16 && fmt != 0x1A && fmt != 0x22 &&
+            original.format != 0x820 && original.format != 0x823)
             return {};
-        const unsigned bytes = compressed                         ? (fmt == 0x31 || fmt == 0x34 ? 8 : 16)
+        const unsigned bytes = compressed                                ? (fmt == 0x31 || fmt == 0x34 ? 8 : 16)
                                : original.format == 0x823 || fmt == 0x22 ? 16
-                               : original.format == 0x820         ? 8
-                               : fmt == 1                         ? 1
-                               : fmt == 5 || fmt == 7 || fmt == 8 ? 2
-                                                                  : 4;
+                               : original.format == 0x820                ? 8
+                               : fmt == 1                                ? 1
+                               : fmt == 5 || fmt == 7 || fmt == 8        ? 2
+                                                                         : 4;
         const unsigned width = compressed ? (original.width + 3) / 4 : original.width;
         unsigned height = compressed ? (original.height + 3) / 4 : original.height;
         unsigned pitchAlign = 1, heightAlign = 1;
@@ -816,8 +816,8 @@ namespace Core::Gfx {
         // Rendered RGBA8/HDR layers that software draws left on the CPU (MK8 writes its 1280x720 HDR
         // array with multi-target draws). Decoding them through the sampler cost ~140 ms per frame.
         const auto elementBytes = colorElementBytes(colorFormat(surface.format));
-        if (surface.dimension != 5 || !surface.sliceCount || surface.sliceCount > 256 || !surface.width || !surface.height ||
-            surface.format == 5 || surface.format == 0x11 || surface.format == 0x80E)
+        if (surface.dimension != 5 || !surface.sliceCount || surface.sliceCount > 256 || !surface.width || !surface.height || surface.format == 5 ||
+            surface.format == 0x11 || surface.format == 0x80E)
             return {};
         std::vector<const std::vector<std::uint8_t> *> backings;
         std::vector<unsigned> pitches;
@@ -1872,7 +1872,8 @@ namespace Core::Gfx {
                     fill(pixels.data());
                     if (!padding.empty())
                         for (std::uint32_t y = 0; y < height; ++y)
-                            std::memcpy(pixels.data() + y * pitchBytes + rowBytes, padding.data() + y * (pitchBytes - rowBytes), pitchBytes - rowBytes);
+                            std::memcpy(pixels.data() + y * pitchBytes + rowBytes, padding.data() + y * (pitchBytes - rowBytes),
+                                        pitchBytes - rowBytes);
                     return pixels;
                 },
                 std::make_shared<const ClearedImage>(color));
@@ -2604,9 +2605,13 @@ namespace Core::Gfx {
                         idx[i] = read(indices + std::size_t(i) * indexBytes) + cmd.gpr[4]; // base vertex
                 };
                 if (type == 1)
-                    decode([](const std::uint8_t *p) { return std::uint32_t(p[0]) | std::uint32_t(p[1]) << 8 | std::uint32_t(p[2]) << 16 | std::uint32_t(p[3]) << 24; });
+                    decode([](const std::uint8_t *p) {
+                        return std::uint32_t(p[0]) | std::uint32_t(p[1]) << 8 | std::uint32_t(p[2]) << 16 | std::uint32_t(p[3]) << 24;
+                    });
                 else if (type == 9)
-                    decode([](const std::uint8_t *p) { return std::uint32_t(p[0]) << 24 | std::uint32_t(p[1]) << 16 | std::uint32_t(p[2]) << 8 | p[3]; });
+                    decode([](const std::uint8_t *p) {
+                        return std::uint32_t(p[0]) << 24 | std::uint32_t(p[1]) << 16 | std::uint32_t(p[2]) << 8 | p[3];
+                    });
                 else if (type == 0)
                     decode([](const std::uint8_t *p) { return std::uint32_t(p[0]) | std::uint32_t(p[1]) << 8; });
                 else
@@ -3179,16 +3184,15 @@ namespace Core::Gfx {
         // effects when color writes are disabled. Keep geometry/depth execution,
         // but avoid texture reads and shader work whose results cannot be stored.
         const bool skipColorShader = pixelProgram && writableColors == 0 && !m_multiWriteEnable &&
-                                     (!m_colorWriteEnable || !m_channelMask[m_colorTarget & 7]) &&
-                                     colorOnlyEffects();
+                                     (!m_colorWriteEnable || !m_channelMask[m_colorTarget & 7]) && colorOnlyEffects();
         const bool pixelAlwaysRejected = pixelProgram && !skipColorShader && rejectsEveryPixel();
         // Rejected coverage has no shader side effects in the translated subset.
         // Depth exports must execute before comparison; unsupported shaders retain
         // the late test until their effects are understood.
         const auto depthShader = drawDepth && pixelProgram && m_depthCompare != 7 ? colorShader : nullptr;
-        const bool earlyDepth = drawDepth && m_depthCompare != 7 &&
-                                (skipColorShader || (depthShader && *depthShader && !depthShader->writesDepth) ||
-                                 (pixelProgram && colorOnlyEffects()));
+        const bool earlyDepth =
+                drawDepth && m_depthCompare != 7 &&
+                (skipColorShader || (depthShader && *depthShader && !depthShader->writesDepth) || (pixelProgram && colorOnlyEffects()));
         std::optional<std::array<float, 2>> depthBounds;
         const auto rejectConstantDepth = [&](float incoming) {
             if (!earlyDepth)
@@ -3952,8 +3956,8 @@ namespace Core::Gfx {
         // directly in the backend layout. Reference corners (~600 bytes each) are assembled only
         // if the draw falls back to software. Verification compares against those corners.
         static const bool verifyEnvironmentSet = std::getenv("WEMU_NATIVE_VERIFY_EVERY") != nullptr;
-        const bool directVertices = collectBackend && nativeVertexExecution && mode != 1 &&
-                                    !(m_nativeVerifyEvery ? *m_nativeVerifyEvery != 0 : verifyEnvironmentSet);
+        const bool directVertices =
+                collectBackend && nativeVertexExecution && mode != 1 && !(m_nativeVerifyEvery ? *m_nativeVerifyEvery != 0 : verifyEnvironmentSet);
         std::vector<RasterVertex> corners;
         std::vector<std::uint8_t> cornerState;
         std::uint32_t cornerBase = 0;
@@ -4038,7 +4042,8 @@ namespace Core::Gfx {
                 if (collectBackend) {
                     // Fast paths of clipTriangle that keep the corners as they are or only project them.
                     PreparedTriangle prepared{{&corners[slots[0]], &corners[slots[1]], &corners[slots[2]]}};
-                    const bool clipped = std::all_of(std::begin(slots), std::end(slots), [&](auto slot) { return corners[slot].clipPosition.has_value(); });
+                    const bool clipped =
+                            std::all_of(std::begin(slots), std::end(slots), [&](auto slot) { return corners[slot].clipPosition.has_value(); });
                     if (nativeVertexExecution || !clipped) {
                         preparedTriangles.push_back(prepared);
                         return;
@@ -4359,10 +4364,11 @@ namespace Core::Gfx {
                     // Explicit LODs of a single-level view always select that level.
                     if (auto layers = renderedArrayLayers(surface); !layers.empty()) {
                         const bool depthLayers = surface.format == 0x80E || surface.format == 5 || surface.format == 0x11;
-                        textures.push_back({binding, surface.width, surface.height, boundSamplers[binding.sampler], [&, surface](unsigned x, unsigned y) {
-                                                return sampleTexture(surface, TextureSampler{}, (float(x) + 0.5f) / float(surface.width),
-                                                                     (float(y) + 0.5f) / float(surface.height), 0, nullptr);
-                                            }});
+                        textures.push_back(
+                                {binding, surface.width, surface.height, boundSamplers[binding.sampler], [&, surface](unsigned x, unsigned y) {
+                                     return sampleTexture(surface, TextureSampler{}, (float(x) + 0.5f) / float(surface.width),
+                                                          (float(y) + 0.5f) / float(surface.height), 0, nullptr);
+                                 }});
                         textures.back().renderedLayers = std::move(layers);
                         textures.back().layers = surface.sliceCount;
                         textures.back().unorm8Pitch = surface.pitch;
@@ -4374,10 +4380,11 @@ namespace Core::Gfx {
                         continue;
                     }
                     if (const auto layers = layerSnapshot(surface)) {
-                        textures.push_back({binding, surface.width, surface.height, boundSamplers[binding.sampler], [&, surface](unsigned x, unsigned y) {
-                                                return sampleTexture(surface, TextureSampler{}, (float(x) + 0.5f) / float(surface.width),
-                                                                     (float(y) + 0.5f) / float(surface.height), 0, nullptr);
-                                            }});
+                        textures.push_back(
+                                {binding, surface.width, surface.height, boundSamplers[binding.sampler], [&, surface](unsigned x, unsigned y) {
+                                     return sampleTexture(surface, TextureSampler{}, (float(x) + 0.5f) / float(surface.width),
+                                                          (float(y) + 0.5f) / float(surface.height), 0, nullptr);
+                                 }});
                         auto &texture = textures.back();
                         if (surface.format == 0x816) {
                             texture.r11g11b10Bytes = *layers;
@@ -4405,12 +4412,13 @@ namespace Core::Gfx {
                                                             : 1u;
                     // A single-level 2D view keeps the ordinary rendered-texture path below.
                     if (auto subresources = surface.dimension == 1 && levels == 1 ? decltype(renderedSubresources(surface, levels)){}
-                                                                                   : renderedSubresources(surface, levels);
+                                                                                  : renderedSubresources(surface, levels);
                         !subresources.empty()) {
-                        textures.push_back({binding, surface.width, surface.height, boundSamplers[binding.sampler], [&, surface](unsigned x, unsigned y) {
-                                                return sampleTexture(surface, TextureSampler{}, (float(x) + 0.5f) / float(surface.width),
-                                                                     (float(y) + 0.5f) / float(surface.height), 0, nullptr);
-                                            }});
+                        textures.push_back(
+                                {binding, surface.width, surface.height, boundSamplers[binding.sampler], [&, surface](unsigned x, unsigned y) {
+                                     return sampleTexture(surface, TextureSampler{}, (float(x) + 0.5f) / float(surface.width),
+                                                          (float(y) + 0.5f) / float(surface.height), 0, nullptr);
+                                 }});
                         auto &texture = textures.back();
                         texture.renderedLayers = std::move(subresources);
                         texture.renderedLevels = levels;
@@ -4890,7 +4898,7 @@ namespace Core::Gfx {
                 // The result replaces m_pendingReadbacks for m_color; verification re-reads the old version.
                 draw.supersedesTarget = !m_nativeVerifyEvery;
                 if (drawDepth)
-                    draw.depth = {true,          m_depthWrite,   m_depthCompare, drawDepth->format, drawDepth->pixels,
+                    draw.depth = {true,          m_depthWrite,   m_depthCompare, drawDepth->format,  drawDepth->pixels,
                                   m_depth.width, m_depth.height, m_depth.pitch,  drawDepth->pending, drawDepth->clear};
                 draw.depth.clamp = !m_zClipEnabled;
                 static const bool deferReadback = [] {

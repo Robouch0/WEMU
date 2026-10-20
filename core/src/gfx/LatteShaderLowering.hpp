@@ -35,7 +35,7 @@ namespace Core::Gfx::Latte {
             bool exportsColor{true};
             bool writesDepth{};
             bool alwaysWritesColor{}; // Proven unconditional export, with no lane-mask changes, jumps or kills.
-            bool kills{};             // KILL* instructions can discard the pixel.
+            bool kills{}; // KILL* instructions can discard the pixel.
             bool requiresOnlyColorZero{}; // Other direct color exports were proven disabled by draw state.
             struct UniformReference {
                     unsigned bank{}, index{};

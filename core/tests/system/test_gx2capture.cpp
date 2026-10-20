@@ -2593,74 +2593,78 @@ TEST_F(Gx2CaptureTest, IndependentColorAttachmentsReceiveDistinctBurstOutputs)
     cpu->m_memory.write<unsigned>(DEPTH + 0x14, 0x80E);
     // A read-only depth test gives both separate passes the same coverage: no test, passing, failing.
     // A bound texture overlapping an attachment only blocks the split when the shader samples it.
-    for (const auto [depthMode, overlap, sampled]: {std::tuple{0u, 0u, false}, {1u, 0u, false}, {2u, 0u, false}, {0u, COLOR_IMAGE, false},
-                                                    {0u, SECOND_IMAGE, false}, {0u, COLOR_IMAGE, true}}) {
-    SCOPED_TRACE(depthMode);
-    SCOPED_TRACE(overlap);
-    SCOPED_TRACE(sampled);
-    gx2Stream().clear();
-    for (const auto header: {COLOR, SECOND}) {
-        for (unsigned c = 1; c <= 4; ++c)
-            cpu->m_fpr[c] = 0;
-        record("GX2ClearColor", {header});
-    }
-    record("GX2SetColorBuffer", {COLOR, 0});
-    record("GX2SetColorBuffer", {SECOND, 1});
-    record("GX2SetColorControl", {0xCC, 0, 0, 1});
-    record("GX2SetTargetChannelMasks", {15, 15, 0, 0, 0, 0, 0, 0});
-    if (depthMode) {
-        cpu->m_fpr[1] = depthMode == 1 ? 1. : .25; // geometry lies at window depth 0.5
-        record("GX2ClearDepthStencilEx", {DEPTH, 0, 1});
-        record("GX2SetDepthBuffer", {DEPTH});
-        record("GX2SetDepthOnlyControl", {1, 0, depthMode == 1 ? 3u : 1u}); // LEQUAL passes, LESS fails
-    } else
-        record("GX2SetDepthOnlyControl", {0, 0, 1});
-    cpu->m_fpr[1] = cpu->m_fpr[2] = 0;
-    cpu->m_fpr[3] = cpu->m_fpr[4] = 8;
-    cpu->m_fpr[5] = 0;
-    cpu->m_fpr[6] = 1;
-    record("GX2SetViewport", {});
-    record("GX2SetFetchShader", {FETCH});
-    record("GX2SetVertexShader", {VS});
-    record("GX2SetPixelShader", {sampled ? SAMPLING_PS : PS});
-    if (overlap) {
-        surface(TEXTURE, overlap, 256, 8, 8, 8, 1);
-        cpu->m_memory.write<unsigned>(TEXTURE + 0x78, 1);
-        cpu->m_memory.write<unsigned>(TEXTURE + 0x80, 1);
-        record("GX2SetPixelTexture", {TEXTURE, 0});
-    }
-    record("GX2SetAttribBuffer", {0, 48, 16, VERTS});
-    record("GX2DrawEx", {4, 3, 0, 1});
-    record("GX2CopyColorBufferToScanBuffer", {COLOR, 1});
-    const auto captured = gx2Stream();
-    for (bool native: {false, true}) {
-        if (native && !std::getenv("WEMU_TEST_VULKAN"))
-            continue;
-        Gx2Replayer replay;
-        auto backend = std::make_shared<VulkanRasterBackend>(true, true);
-        if (native)
-            replay.setRasterBackend(backend);
-        replay.setNativeVerificationInterval(1);
-        replay.replay(captured, &cpu->m_memory);
-        if (sampled) {
-            // The split is refused: the draw keeps the simultaneous (software) path.
-            if (native)
-                EXPECT_EQ(backend->completedDraws(), 0u);
-            continue;
-        }
-        const bool drawn = depthMode != 2;
-        EXPECT_EQ((std::array{replay.framebuffer()[0], replay.framebuffer()[1], replay.framebuffer()[2], replay.framebuffer()[3]}),
-                  (drawn ? std::array<std::uint8_t, 4>{255, 0, 0, 255} : std::array<std::uint8_t, 4>{}));
-        if (native) {
-            EXPECT_EQ(backend->completedDraws(), 2u) << backend->lastError();
-            EXPECT_EQ(replay.differingNativeDraws(), 0u);
-        }
+    for (const auto [depthMode, overlap, sampled]: {std::tuple{0u, 0u, false},
+                                                    {1u, 0u, false},
+                                                    {2u, 0u, false},
+                                                    {0u, COLOR_IMAGE, false},
+                                                    {0u, SECOND_IMAGE, false},
+                                                    {0u, COLOR_IMAGE, true}}) {
+        SCOPED_TRACE(depthMode);
+        SCOPED_TRACE(overlap);
+        SCOPED_TRACE(sampled);
         gx2Stream().clear();
-        record("GX2CopyColorBufferToScanBuffer", {SECOND, 1});
-        replay.replay(gx2Stream(), &cpu->m_memory);
-        EXPECT_EQ((std::array{replay.framebuffer()[0], replay.framebuffer()[1], replay.framebuffer()[2], replay.framebuffer()[3]}),
-                  (drawn ? std::array<std::uint8_t, 4>{0, 255, 0, 255} : std::array<std::uint8_t, 4>{}));
-    }
+        for (const auto header: {COLOR, SECOND}) {
+            for (unsigned c = 1; c <= 4; ++c)
+                cpu->m_fpr[c] = 0;
+            record("GX2ClearColor", {header});
+        }
+        record("GX2SetColorBuffer", {COLOR, 0});
+        record("GX2SetColorBuffer", {SECOND, 1});
+        record("GX2SetColorControl", {0xCC, 0, 0, 1});
+        record("GX2SetTargetChannelMasks", {15, 15, 0, 0, 0, 0, 0, 0});
+        if (depthMode) {
+            cpu->m_fpr[1] = depthMode == 1 ? 1. : .25; // geometry lies at window depth 0.5
+            record("GX2ClearDepthStencilEx", {DEPTH, 0, 1});
+            record("GX2SetDepthBuffer", {DEPTH});
+            record("GX2SetDepthOnlyControl", {1, 0, depthMode == 1 ? 3u : 1u}); // LEQUAL passes, LESS fails
+        } else
+            record("GX2SetDepthOnlyControl", {0, 0, 1});
+        cpu->m_fpr[1] = cpu->m_fpr[2] = 0;
+        cpu->m_fpr[3] = cpu->m_fpr[4] = 8;
+        cpu->m_fpr[5] = 0;
+        cpu->m_fpr[6] = 1;
+        record("GX2SetViewport", {});
+        record("GX2SetFetchShader", {FETCH});
+        record("GX2SetVertexShader", {VS});
+        record("GX2SetPixelShader", {sampled ? SAMPLING_PS : PS});
+        if (overlap) {
+            surface(TEXTURE, overlap, 256, 8, 8, 8, 1);
+            cpu->m_memory.write<unsigned>(TEXTURE + 0x78, 1);
+            cpu->m_memory.write<unsigned>(TEXTURE + 0x80, 1);
+            record("GX2SetPixelTexture", {TEXTURE, 0});
+        }
+        record("GX2SetAttribBuffer", {0, 48, 16, VERTS});
+        record("GX2DrawEx", {4, 3, 0, 1});
+        record("GX2CopyColorBufferToScanBuffer", {COLOR, 1});
+        const auto captured = gx2Stream();
+        for (bool native: {false, true}) {
+            if (native && !std::getenv("WEMU_TEST_VULKAN"))
+                continue;
+            Gx2Replayer replay;
+            auto backend = std::make_shared<VulkanRasterBackend>(true, true);
+            if (native)
+                replay.setRasterBackend(backend);
+            replay.setNativeVerificationInterval(1);
+            replay.replay(captured, &cpu->m_memory);
+            if (sampled) {
+                // The split is refused: the draw keeps the simultaneous (software) path.
+                if (native)
+                    EXPECT_EQ(backend->completedDraws(), 0u);
+                continue;
+            }
+            const bool drawn = depthMode != 2;
+            EXPECT_EQ((std::array{replay.framebuffer()[0], replay.framebuffer()[1], replay.framebuffer()[2], replay.framebuffer()[3]}),
+                      (drawn ? std::array<std::uint8_t, 4>{255, 0, 0, 255} : std::array<std::uint8_t, 4>{}));
+            if (native) {
+                EXPECT_EQ(backend->completedDraws(), 2u) << backend->lastError();
+                EXPECT_EQ(replay.differingNativeDraws(), 0u);
+            }
+            gx2Stream().clear();
+            record("GX2CopyColorBufferToScanBuffer", {SECOND, 1});
+            replay.replay(gx2Stream(), &cpu->m_memory);
+            EXPECT_EQ((std::array{replay.framebuffer()[0], replay.framebuffer()[1], replay.framebuffer()[2], replay.framebuffer()[3]}),
+                      (drawn ? std::array<std::uint8_t, 4>{0, 255, 0, 255} : std::array<std::uint8_t, 4>{}));
+        }
     }
 }
 

@@ -516,7 +516,8 @@ namespace Core::Gfx::Latte {
                 body += vertexStage ? std::format("r[{}]=attributes[{}];\n", i + 1, i) : std::format("r[{}]=inputs[{}];\n", i, i);
             if (vertexStage)
                 body += "vec4 position=vec4(0.0,0.0,0.0,1.0); vec4 parameters[32]; for(int i=0;i<32;++i) parameters[i]=vec4(0.0);\n";
-            body += "vec4 pv=vec4(0.0); float ps=0.0;\nbool pred=true,laneActive=true,wroteOutput=false,killed=false; bool activeStack[32]; uint pc=0u;\n";
+            body += "vec4 pv=vec4(0.0); float ps=0.0;\nbool pred=true,laneActive=true,wroteOutput=false,killed=false; bool activeStack[32]; uint "
+                    "pc=0u;\n";
             bool exported = false, terminated = false, ignoredColorExports = false;
             bool terminalUnconditionalColor = false;
             bool varyingWholeQuadUsed = false, implicitSamples = false;
@@ -1063,14 +1064,15 @@ namespace Core::Gfx::Latte {
                 const auto end = result.source.find("float arrayLayerReference");
                 result.source.replace(
                         0, end,
-                        std::format("#version 450\nlayout(location=1) in vec4 attributes[16];\nlayout(location=0) out vec4 inputs[16];\n"
-                                    "layout(location=16) noperspective out float windowDepth;\n"
-                                    "invariant gl_Position; precise gl_Position; precise windowDepth;\n"
-                                    "layout(set=0,binding=17,std140) uniform Constants {{ vec4 c[256]; vec4 borders[16]; vec4 sampling[16]; "
-                                    "vec4 k[{}]; }} u;\n"
-                                    "layout(push_constant) uniform Viewport {{ vec2 scale; float depthEnabled; float unused; vec4 window; vec2 depth; "
-                                    "layout(offset=48) ivec4 inputParams[4]; }} viewport;\n",
-                                    kUniformVectors));
+                        std::format(
+                                "#version 450\nlayout(location=1) in vec4 attributes[16];\nlayout(location=0) out vec4 inputs[16];\n"
+                                "layout(location=16) noperspective out float windowDepth;\n"
+                                "invariant gl_Position; precise gl_Position; precise windowDepth;\n"
+                                "layout(set=0,binding=17,std140) uniform Constants {{ vec4 c[256]; vec4 borders[16]; vec4 sampling[16]; "
+                                "vec4 k[{}]; }} u;\n"
+                                "layout(push_constant) uniform Viewport {{ vec2 scale; float depthEnabled; float unused; vec4 window; vec2 depth; "
+                                "layout(offset=48) ivec4 inputParams[4]; }} viewport;\n",
+                                kUniformVectors));
             } else if (!result.uniforms.empty()) {
                 const auto end = result.source.find(" } u;");
                 result.source.insert(end, std::format(" vec4 k[{}];", kUniformVectors));

@@ -433,8 +433,8 @@ namespace Core::Gfx {
             [[nodiscard]] const std::vector<std::uint32_t> &vsProgram() const { return programWords(m_vsShader); }
             [[nodiscard]] const std::vector<std::uint32_t> &psProgram() const { return programWords(m_psShader); }
             [[nodiscard]] static std::shared_ptr<const Latte::Program> declaration(const std::shared_ptr<ShaderProgram> &program);
-            [[nodiscard]] std::shared_ptr<const Latte::FragmentShader> fragmentShader(std::span<const Latte::TextureType> resourceTypes, bool onlyColorZero,
-                                                                                     unsigned colorExport);
+            [[nodiscard]] std::shared_ptr<const Latte::FragmentShader> fragmentShader(std::span<const Latte::TextureType> resourceTypes,
+                                                                                      bool onlyColorZero, unsigned colorExport);
             [[nodiscard]] std::shared_ptr<const Latte::VertexShader> vertexShader(unsigned bufferWindow = 0);
             [[nodiscard]] bool colorOnlyEffects();
             [[nodiscard]] bool rejectsEveryPixel();

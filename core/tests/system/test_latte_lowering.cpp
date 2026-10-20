@@ -823,8 +823,8 @@ TEST(VulkanRasterBackendTest, ArrayDepthCompareSelectsLayerAndAppliesSamplerFunc
 {
     using namespace Core::Gfx;
     // SAMPLE_C with x,y,layer,reference in r0.xyzw (cascaded shadow maps).
-    const auto program = decodeProgram({2, 1u << 23, 0, (0x28u << 23) | (1u << 21) | 0x688u, 0x18u, 0x30000000u | (0x688u << 9),
-                                        (1u << 23) | (2u << 26) | (3u << 29), 0});
+    const auto program = decodeProgram(
+            {2, 1u << 23, 0, (0x28u << 23) | (1u << 21) | 0x688u, 0x18u, 0x30000000u | (0x688u << 9), (1u << 23) | (2u << 26) | (3u << 29), 0});
     const std::array types{TextureType::TwoDArray};
     const auto shader = lowerFragmentShader(*program, types);
     ASSERT_TRUE(shader) << shader.error;
@@ -861,9 +861,9 @@ TEST(VulkanRasterBackendTest, KillInstructionsDiscardMatchingPixelsAndPreserveTh
     using namespace Core::Gfx;
     using namespace Latte;
     // Positive floats order like their integer bits, so one set of cases covers every form.
-    for (unsigned op: {unsigned(OP2_KILLE), unsigned(OP2_KILLGT), unsigned(OP2_KILLGE), unsigned(OP2_KILLNE), unsigned(OP2_KILLGT_UINT),
-                       unsigned(OP2_KILLGE_UINT), unsigned(OP2_KILLE_INT), unsigned(OP2_KILLGT_INT), unsigned(OP2_KILLGE_INT),
-                       unsigned(OP2_KILLNE_INT)}) {
+    for (unsigned op:
+         {unsigned(OP2_KILLE), unsigned(OP2_KILLGT), unsigned(OP2_KILLGE), unsigned(OP2_KILLNE), unsigned(OP2_KILLGT_UINT), unsigned(OP2_KILLGE_UINT),
+          unsigned(OP2_KILLE_INT), unsigned(OP2_KILLGT_INT), unsigned(OP2_KILLGE_INT), unsigned(OP2_KILLNE_INT)}) {
         SCOPED_TRACE(op);
         // KILLxx R0.x, R0.y (no register write), then export R0 as color.
         const auto program = decodeProgram({2, 8u << 26, 0, (CF_EXP_DONE << 23) | (1u << 21) | 0x688u, (1u << 31) | (1u << 23), op << 7});
@@ -914,7 +914,8 @@ TEST(VulkanRasterBackendTest, KillInstructionsDiscardMatchingPixelsAndPreserveTh
                     EXPECT_NEAR(result->rgba[pixel * 4 + c], expected[c], 1) << a << "," << b << " pixel " << pixel;
         }
     }
-    EXPECT_FALSE(lowerVertexShader(*decodeProgram({2, 8u << 26, 0, (CF_EXP_DONE << 23) | (1u << 21) | (60u) | (1u << 13), (1u << 31), OP2_KILLGT << 7})));
+    EXPECT_FALSE(
+            lowerVertexShader(*decodeProgram({2, 8u << 26, 0, (CF_EXP_DONE << 23) | (1u << 21) | (60u) | (1u << 13), (1u << 31), OP2_KILLGT << 7})));
 }
 
 TEST(VulkanRasterBackendTest, RenderedMipLevelsStayOnTheGpuAndSelectTheirLod)
@@ -955,7 +956,7 @@ TEST(VulkanRasterBackendTest, RenderedMipLevelsStayOnTheGpuAndSelectTheirLod)
     texture.unorm8Map = 0x00010203;
     texture.sourceMipCount = 2;
     texture.sampler.regs[0] = 2u | (2u << 3) | (1u << 17); // clamp, point filters, point mip selection
-    texture.sampler.regs[1] = 64u << 10;                    // LOD range [0, 1]
+    texture.sampler.regs[1] = 64u << 10; // LOD range [0, 1]
     std::array<RasterDraw::Vertex, 3> vertices{{{0, 0, {}}, {8, 0, {}}, {0, 8, {}}}};
     std::vector<std::uint8_t> target(4 * 4 * 4);
     RasterDraw draw{shader, vertices, {}, {&texture, 1}, target, 4, 4, 4, {0, 0, 4, 4}, 15, {}};
@@ -2523,8 +2524,8 @@ TEST(LatteLoweringTest, LodQueryReturnsTheUnclampedLevelOfDetailInX)
     };
     // Cube coordinates stay inside face 4 (+Z): s and t within [1, 2].
     for (const auto &[type, view, offset, scales]: {Case{TextureType::TwoD, VK_IMAGE_VIEW_TYPE_2D, {}, {.25f, 1.f, 8.f}},
-                                                   Case{TextureType::Cube, VK_IMAGE_VIEW_TYPE_CUBE_ARRAY, {1.5f, 1.5f, 4.f, 0.f}, {.125f, .5f}},
-                                                   Case{TextureType::ThreeD, VK_IMAGE_VIEW_TYPE_3D, {0.f, 0.f, .5f, 0.f}, {.25f, 8.f}}}) {
+                                                    Case{TextureType::Cube, VK_IMAGE_VIEW_TYPE_CUBE_ARRAY, {1.5f, 1.5f, 4.f, 0.f}, {.125f, .5f}},
+                                                    Case{TextureType::ThreeD, VK_IMAGE_VIEW_TYPE_3D, {0.f, 0.f, .5f, 0.f}, {.25f, 8.f}}}) {
         SCOPED_TRACE(int(type));
         const std::array types{type};
         const auto fragment = lowerFragmentShader(*program, types);
@@ -4662,8 +4663,9 @@ TEST(VulkanDepthTest, DeferredClearTargetsAreClearedOnTheGpuAndKeepTheirPadding)
     for (unsigned y = 0; y < 2; ++y)
         for (unsigned x = 0; x < 4; ++x) {
             const auto *pixel = result->rgba.data() + (y * 4 + x) * 4;
-            const std::array<std::uint8_t, 4> expected =
-                    x == 3 ? std::array<std::uint8_t, 4>{29, 29, 29, 29} : x == 0 && y == 0 ? std::array<std::uint8_t, 4>{255, 0, 0, 255} : cleared;
+            const std::array<std::uint8_t, 4> expected = x == 3             ? std::array<std::uint8_t, 4>{29, 29, 29, 29}
+                                                         : x == 0 && y == 0 ? std::array<std::uint8_t, 4>{255, 0, 0, 255}
+                                                                            : cleared;
             EXPECT_EQ((std::array{pixel[0], pixel[1], pixel[2], pixel[3]}), expected) << x << "," << y;
         }
 }

@@ -599,16 +599,36 @@ namespace Core::Gfx {
                                     const auto ia = std::int32_t(asU32(a)), ib = std::int32_t(asU32(b));
                                     bool condition{};
                                     switch (in.op) {
-                                        case OP2_KILLE: condition = a == b; break;
-                                        case OP2_KILLGT: condition = a > b; break;
-                                        case OP2_KILLGE: condition = a >= b; break;
-                                        case OP2_KILLNE: condition = a != b; break;
-                                        case OP2_KILLGT_UINT: condition = asU32(a) > asU32(b); break;
-                                        case OP2_KILLGE_UINT: condition = asU32(a) >= asU32(b); break;
-                                        case OP2_KILLE_INT: condition = ia == ib; break;
-                                        case OP2_KILLGT_INT: condition = ia > ib; break;
-                                        case OP2_KILLGE_INT: condition = ia >= ib; break;
-                                        default: condition = ia != ib; break;
+                                        case OP2_KILLE:
+                                            condition = a == b;
+                                            break;
+                                        case OP2_KILLGT:
+                                            condition = a > b;
+                                            break;
+                                        case OP2_KILLGE:
+                                            condition = a >= b;
+                                            break;
+                                        case OP2_KILLNE:
+                                            condition = a != b;
+                                            break;
+                                        case OP2_KILLGT_UINT:
+                                            condition = asU32(a) > asU32(b);
+                                            break;
+                                        case OP2_KILLGE_UINT:
+                                            condition = asU32(a) >= asU32(b);
+                                            break;
+                                        case OP2_KILLE_INT:
+                                            condition = ia == ib;
+                                            break;
+                                        case OP2_KILLGT_INT:
+                                            condition = ia > ib;
+                                            break;
+                                        case OP2_KILLGE_INT:
+                                            condition = ia >= ib;
+                                            break;
+                                        default:
+                                            condition = ia != ib;
+                                            break;
                                     }
                                     killed |= condition;
                                     // Integer forms return integer one/zero, like SETxx_INT.
@@ -812,9 +832,14 @@ namespace Core::Gfx {
                         const auto bits = (t2 >> shift) & 31u;
                         return float(std::int32_t(bits << 27) >> 27) * .5f;
                     };
-                    if (pixelStage && !gather && textureFetch
-                                ? !textureFetch({resource, sampler, coords, cubeIndices[resource], op == 0x11, {texelOffset(0), texelOffset(5), texelOffset(10)}}, rgba)
-                                : !fetch(resource, sampler, coords, rgba))
+                    if (pixelStage && !gather && textureFetch ? !textureFetch({resource,
+                                                                               sampler,
+                                                                               coords,
+                                                                               cubeIndices[resource],
+                                                                               op == 0x11,
+                                                                               {texelOffset(0), texelOffset(5), texelOffset(10)}},
+                                                                              rgba)
+                                                              : !fetch(resource, sampler, coords, rgba))
                         return {};
                     for (unsigned c = 0; c < 4; c++) {
                         const auto select = (t1 >> (9 + c * 3)) & 7;
