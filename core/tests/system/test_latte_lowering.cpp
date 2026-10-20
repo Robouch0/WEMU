@@ -2490,16 +2490,11 @@ TEST(LatteLoweringTest, GatherFootprintMatchesVulkan)
     }
 }
 
-TEST(LatteLoweringTest, LodQueryReturnsTheUnclampedLevelOfDetailInX)
-{
-    // GET_COMP_TEX_LOD (TEX op 0x06) of r0.xyz into r0, exported.
-    const std::vector<std::uint32_t> words{2, 1u << 23, 0, (0x28u << 23) | (1u << 21) | 0x688u, 0x06u, 0xF0000000u | (0x688u << 9),
-                                           (1u << 23) | (2u << 26), 0};
-    const auto program = decodeProgram(words);
-    // Coordinates move by scale/2 per pixel of the 4x4 target (r0 = offset + position * scale): with 2x2 texels,
-    // 2x2 cube faces addressed by (s, t, face) or a 2x2x2 volume, the LOD is log2(scale).
-    FragmentShader vertex;
-    vertex.source = R"(#version 450
+namespace {
+    // Coordinates move by scale/2 per pixel of the 4x4 probe target (r0 = offset + position * scale, with
+    // scale in value[0].x and the offset in value[1]): with 2x2 texels, 2x2 cube faces addressed by
+    // (s, t, face) or a 2x2x2 volume, the LOD is log2(scale).
+    constexpr auto lodProbeVertexSource = R"(#version 450
 layout(push_constant) uniform Parameters { vec4 value[4]; } p;
 layout(location=0) out vec4 inputs[16];
 void main() {
@@ -2509,6 +2504,17 @@ void main() {
     inputs[0]=vec4(p.value[1].xy+positions[gl_VertexIndex]*p.value[0].x,p.value[1].z,0.0);
 }
 )";
+    // GET_COMP_TEX_LOD (TEX op 0x06) of r0.xyz into r0.
+    constexpr std::array<std::uint32_t, 4> lodQueryInstruction{0x06u, 0xF0000000u | (0x688u << 9), (1u << 23) | (2u << 26), 0};
+} // namespace
+
+TEST(LatteLoweringTest, LodQueryReturnsTheUnclampedLevelOfDetailInX)
+{
+    std::vector<std::uint32_t> words{2, 1u << 23, 0, (0x28u << 23) | (1u << 21) | 0x688u};
+    words.insert(words.end(), lodQueryInstruction.begin(), lodQueryInstruction.end());
+    const auto program = decodeProgram(words);
+    FragmentShader vertex;
+    vertex.source = lodProbeVertexSource;
     struct Case {
             TextureType type;
             VkImageViewType view;
@@ -2544,6 +2550,45 @@ void main() {
                 EXPECT_EQ(pixel[3], 0.f);
             }
         }
+    }
+}
+
+TEST(LatteLoweringTest, LodQueryFollowsAClosedConditionalRegionButNotAnOpenOne)
+{
+    // r0.x > r1.x (0) under ALU_PUSH_BEFORE masks lanes; ALU_POP_AFTER writes r4 under that mask, then pops.
+    const std::array<std::uint32_t, 4> masked{0x80000000u | (1u << 13), (OP2_PRED_SETGT << 7) | 12u, 0x80000000u | SRC_1,
+                                              (OP2_MOV << 7) | 16u | (4u << 21)};
+    // PUSH, JUMP past the region, POP_AFTER, TEX (query), EXPORT r0.
+    std::vector<std::uint32_t> closed{5, 9u << 26, 3, (0x0Au << 23) | 1u, 6, 10u << 26, 8, 1u << 23, 0, (CF_EXP_DONE << 23) | (1u << 21) | 0x688u};
+    closed.insert(closed.end(), masked.begin(), masked.end());
+    closed.resize(16);
+    closed.insert(closed.end(), lodQueryInstruction.begin(), lodQueryInstruction.end());
+    // PUSH, TEX (query inside the region), POP_AFTER, EXPORT r0.
+    std::vector<std::uint32_t> open{5, 9u << 26, 8, 1u << 23, 6, 10u << 26, 0, (CF_EXP_DONE << 23) | (1u << 21) | 0x688u, 0, 0};
+    open.insert(open.end(), masked.begin(), masked.end());
+    open.resize(16);
+    open.insert(open.end(), lodQueryInstruction.begin(), lodQueryInstruction.end());
+    const auto inside = lowerFragmentShader(*decodeProgram(open));
+    EXPECT_FALSE(inside);
+    EXPECT_NE(inside.error.find("varying execute mask"), std::string::npos) << inside.error;
+    const auto fragment = lowerFragmentShader(*decodeProgram(closed));
+    ASSERT_TRUE(fragment) << fragment.error;
+    if (!std::getenv("WEMU_TEST_VULKAN"))
+        GTEST_SKIP() << "Set WEMU_TEST_VULKAN=1";
+    FragmentShader vertex;
+    vertex.source = lodProbeVertexSource;
+    std::vector<std::uint32_t> vs, ps;
+    ASSERT_NO_FATAL_FAILURE(validateSpirv(vertex, &vs, "vert"));
+    ASSERT_NO_FATAL_FAILURE(validateSpirv(fragment, &ps));
+    // r0.x changes sign across the target, so the mask differs inside quads before the query.
+    for (const float scale: {1.f, 8.f}) {
+        SCOPED_TRACE(scale);
+        VulkanFragmentProbe probe;
+        probe.initialize(vs, ps, {}, {{1, {}, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_FILTER_LINEAR}});
+        VulkanFragmentProbe::Inputs inputs{};
+        inputs[0] = {scale, 0, 0, 0};
+        for (const auto &pixel: probe.draw(inputs))
+            EXPECT_NEAR(pixel[0], std::log2(scale), 1.f / 64);
     }
 }
 

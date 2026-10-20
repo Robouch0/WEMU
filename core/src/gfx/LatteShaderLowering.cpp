@@ -814,11 +814,15 @@ namespace Core::Gfx::Latte {
                         if (lodQuery) {
                             // x: the computed LOD relative to the base level, before clamping; y: the
                             // level it selects (GLSL's textureQueryLod returns them in the other order).
-                            // Implicit derivatives need every lane of the quad to have run the same
-                            // code: only an unmasked clause in uniform control flow qualifies. Cube
-                            // faces are addressed by (s, t, face) like samples: the direction rebuilt
-                            // with a unit major axis has face-coordinate derivatives equal to s and t's.
-                            if (depth || !allActive || !maskUniform || varyingControlSeen || !jumpTargets.empty())
+                            // Implicit derivatives need the whole quad to reach the query: every lane
+                            // active (no open stack region or root mask update) and no forward jump
+                            // pending past this clause. Registers written under an earlier mask differ
+                            // per lane exactly as on the GPU, whose derivatives read all four lanes.
+                            // Cube faces are addressed by (s, t, face) like samples: the direction
+                            // rebuilt with a unit major axis has face-coordinate derivatives equal to
+                            // s and t's.
+                            if (depth || !allActive ||
+                                std::any_of(jumpTargets.begin(), jumpTargets.end(), [&](const auto &target) { return target.first > cf / 2; }))
                                 throw std::runtime_error("LOD query under a varying execute mask");
                             const auto point = cube     ? std::format("cubeDirectionReference(vec3({},{}))", planar, select(reg, (t2 >> 26) & 7))
                                                : volume ? std::format("vec3({})", coords)
