@@ -5423,12 +5423,16 @@ namespace Core::Gfx {
                 return;
         }
         const auto &unitBytes = packedFloatUnitBytes();
+        // Source byte offset of each panel column, computed once instead of a division per pixel.
+        std::array<std::size_t, kDrcWidth> columns;
+        for (std::uint32_t x = 0; x < kDrcWidth; x++)
+            columns[x] = static_cast<std::size_t>(std::uint64_t(x) * s.width / kDrcWidth) * elementBytes;
         for (std::uint32_t y = 0; y < kDrcHeight; y++) {
             const std::uint32_t sy = static_cast<std::uint32_t>(std::uint64_t(y) * s.height / kDrcHeight);
             std::uint8_t *dst = m_drcFb.data() + static_cast<std::size_t>(y) * kDrcWidth * 4;
+            const std::uint8_t *row = base + static_cast<std::size_t>(sy) * s.pitch * elementBytes;
             for (std::uint32_t x = 0; x < kDrcWidth; x++) {
-                const std::uint32_t sx = static_cast<std::uint32_t>(std::uint64_t(x) * s.width / kDrcWidth);
-                const std::uint8_t *src = base + (static_cast<std::size_t>(sy) * s.pitch + sx) * elementBytes;
+                const std::uint8_t *src = row + columns[x];
                 if (format == ColorFormat::R11G11B10Float) {
                     const auto rgb = unitBytes(src);
                     std::memcpy(dst + x * 4, rgb.data(), 3);
