@@ -1,4 +1,5 @@
 #include <bit>
+
 #include "TestFixture.hpp"
 #include "cpu/interpreter/SyscallHandler.hpp"
 #include "cpu/memory/Memory.hpp"

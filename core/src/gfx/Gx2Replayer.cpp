@@ -5464,7 +5464,10 @@ namespace Core::Gfx {
         if (backing && backing->size() < bytes)
             return blank();
         if (!base) {
-            if (!m_mem || !(base = m_mem->hostPtr(s.imagePtr)) || !m_mem->hostPtr(s.imagePtr + bytes - 1))
+            if (!m_mem)
+                return blank();
+            base = m_mem->hostPtr(s.imagePtr);
+            if (!base || !m_mem->hostPtr(s.imagePtr + bytes - 1))
                 return blank();
         }
         // Every panel pixel is written below.
@@ -5482,7 +5485,7 @@ namespace Core::Gfx {
             // store forwarding on every pixel.
             const auto store = [&](std::uint32_t x, std::uint32_t r, std::uint32_t g, std::uint32_t b) {
                 const std::uint32_t pixel = r | (g << 8) | (b << 16) | 0xFF000000u;
-                std::memcpy(dst + x * 4, &pixel, 4);
+                std::memcpy(dst + static_cast<std::size_t>(x) * 4, &pixel, 4);
             };
             if (format == ColorFormat::R11G11B10Float)
                 for (std::uint32_t x = 0; x < kDrcWidth; x++) {
