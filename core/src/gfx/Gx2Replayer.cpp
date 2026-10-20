@@ -2101,6 +2101,10 @@ namespace Core::Gfx {
                 e.fails |= swapped >= extent;
                 e.order[byteIndex] = std::uint8_t(swapped);
             }
+            e.wordSwap = (endian == 2 && bytes == 4) || (endian == 1 && bytes == 2);
+            e.wordLoad = endian == 0 || e.wordSwap;
+            for (unsigned c = 0; c < 4; ++c)
+                e.select[c] = std::uint8_t((e.mask >> (24 - c * 8)) & 7);
             // Per-instance elements always read the first element.
             e.stride = m_fetchLayout[i + 4] == 1 ? 0 : binding.stride;
             e.offset = m_fetchLayout[i + 2];
@@ -2147,11 +2151,26 @@ namespace Core::Gfx {
                     return false;
             }
             std::array<float, 4> value{0, 0, 0, 1};
+            // Component c's bits, as the byte-order loop below assembles them.
+            const auto word = [&](unsigned c) -> std::uint32_t {
+                if (e.bytes == 4) {
+                    std::uint32_t bits;
+                    std::memcpy(&bits, p + c * 4, 4);
+                    return e.wordSwap ? std::byteswap(bits) : bits;
+                }
+                if (e.bytes == 2) {
+                    std::uint16_t bits;
+                    std::memcpy(&bits, p + c * 2, 2);
+                    return e.wordSwap ? std::byteswap(bits) : bits;
+                }
+                return p[c];
+            };
             if (e.floating && e.bytes == 4) {
                 for (unsigned c = 0; c < e.components; c++) {
                     const auto *order = &e.order[c * 4];
-                    value[c] = asFloat(std::uint32_t(p[order[0]]) | std::uint32_t(p[order[1]]) << 8 | std::uint32_t(p[order[2]]) << 16 |
-                                       std::uint32_t(p[order[3]]) << 24);
+                    value[c] = asFloat(e.wordLoad ? word(c)
+                                                  : std::uint32_t(p[order[0]]) | std::uint32_t(p[order[1]]) << 8 | std::uint32_t(p[order[2]]) << 16 |
+                                                            std::uint32_t(p[order[3]]) << 24);
                 }
             } else {
                 const auto convert = [&](std::uint32_t bits, unsigned width) -> float {
@@ -2177,8 +2196,11 @@ namespace Core::Gfx {
                 };
                 for (unsigned c = 0; c < e.components; c++) {
                     std::uint32_t bits = 0;
-                    for (unsigned b = 0; b < e.bytes; b++)
-                        bits |= std::uint32_t(p[e.order[c * e.bytes + b]]) << (b * 8);
+                    if (e.wordLoad)
+                        bits = word(c);
+                    else
+                        for (unsigned b = 0; b < e.bytes; b++)
+                            bits |= std::uint32_t(p[e.order[c * e.bytes + b]]) << (b * 8);
                     if (e.packed1010102) {
                         for (unsigned k = 0; k < 3; ++k) {
                             const auto field = (bits >> (k * 10)) & 0x3FF;
@@ -2193,7 +2215,7 @@ namespace Core::Gfx {
             }
             auto &a = out[e.out];
             for (unsigned c = 0; c < 4; c++) {
-                const auto select = (e.mask >> (24 - c * 8)) & 7;
+                const auto select = e.select[c];
                 if (select < 4)
                     a[c] = value[select];
                 else if (select == 4 || select == 5)

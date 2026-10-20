@@ -196,6 +196,10 @@ namespace Core::Gfx {
                             std::uint8_t components{}, bytes{};
                             bool fails{}, floating{}, packed1010102{}, integer{}, isSigned{}, scaled{};
                             std::array<std::uint8_t, 16> order{}; // source byte of each little-endian byte
+                            // Each component is one word read as is or byte-reversed (every endian
+                            // swap whose unit is the component size), so it loads without `order`.
+                            bool wordLoad{}, wordSwap{};
+                            std::array<std::uint8_t, 4> select{}; // mask: component 0-3, 4 zero, 5 one, else keep
                             const std::uint8_t *host{}; // set when every in-bounds element is resident
                             std::uint64_t count{}; // vertices whose element starts in the buffer
                     };
