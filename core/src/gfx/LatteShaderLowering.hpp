@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <map>
 #include <memory>
 #include <span>
 #include <string>
@@ -52,6 +53,13 @@ namespace Core::Gfx::Latte {
             explicit operator bool() const { return error.empty() && !source.empty(); }
     };
 
+    // u.k holds the uniform vectors a program reads after c[256], borders[16] and sampling[16]:
+    // kcache references first (at most 512), then one window per dynamically indexed vertex
+    // uniform block. The windows share what the references leave of 512 vectors unless the
+    // replayer asks for windows sized for its blocks.
+    constexpr unsigned kUniformVectors = 2048;
+    constexpr std::size_t kStageConstantFloats = (256 + 16 + 16 + kUniformVectors) * 4;
+
     // Initial reference-compatible subset, not a hardware-complete shader compiler.
     // ABI: locations 0..15 = interpolated inputs; set 0 binding 0 = 256 vec4 constants
     // (unused slots zero-filled); remaining bindings are normalized sampler2D or
@@ -67,13 +75,15 @@ namespace Core::Gfx::Latte {
     FragmentShader lowerFragmentShader(const Program &program, std::span<const TextureType> resourceTypes = {}, bool onlyColorZero = false,
                                        unsigned colorExport = 0);
     struct VertexShader : FragmentShader {};
-    VertexShader lowerVertexShader(const Program &program, std::span<const TextureType> resourceTypes = {});
+    // bufferWindow: vectors per dynamically indexed uniform block (0: the shared default budget).
+    VertexShader lowerVertexShader(const Program &program, std::span<const TextureType> resourceTypes = {}, unsigned bufferWindow = 0);
     class VertexShaderCache {
         public:
-            std::shared_ptr<const VertexShader> get(const std::vector<std::uint32_t> &words);
+            std::shared_ptr<const VertexShader> get(const std::vector<std::uint32_t> &words, unsigned bufferWindow = 0);
 
         private:
             std::unordered_map<std::vector<std::uint32_t>, std::shared_ptr<const VertexShader>, ProgramWordsHash, ProgramWordsEqual> m_entries;
+            std::map<std::pair<unsigned, std::vector<std::uint32_t>>, std::shared_ptr<const VertexShader>> m_windowed;
     };
 
     // Replayer-owned, single-threaded cache. Exact keys include resource specialization.

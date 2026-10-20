@@ -501,7 +501,7 @@ namespace Core::Gfx::Latte {
     } // namespace
 
     static FragmentShader lowerShader(const Program &program, std::span<const TextureType> resourceTypes, bool vertexStage,
-                                      bool onlyColorZero = false, unsigned colorExport = 0)
+                                      bool onlyColorZero = false, unsigned colorExport = 0, unsigned bufferWindow = 0)
     {
         FragmentShader result;
         result.exportsColor = false;
@@ -1030,8 +1030,8 @@ namespace Core::Gfx::Latte {
             // Replay proves each bound block fits before native dispatch; larger
             // blocks retain reference execution rather than truncating a palette.
             if (!uniformBuffers.empty()) {
-                const auto capacity = unsigned((512 - result.uniforms.size()) / uniformBuffers.size());
-                if (!capacity)
+                const auto capacity = bufferWindow ? bufferWindow : unsigned((512 - result.uniforms.size()) / uniformBuffers.size());
+                if (!capacity || result.uniforms.size() + std::size_t(capacity) * uniformBuffers.size() > kUniformVectors)
                     throw std::runtime_error("dynamic uniform buffer budget exceeded");
                 for (const auto bank: uniformBuffers) {
                     result.uniformBuffers.push_back({bank, unsigned(result.uniforms.size()), capacity});
@@ -1063,15 +1063,17 @@ namespace Core::Gfx::Latte {
                 const auto end = result.source.find("float arrayLayerReference");
                 result.source.replace(
                         0, end,
-                        "#version 450\nlayout(location=1) in vec4 attributes[16];\nlayout(location=0) out vec4 inputs[16];\n"
-                        "layout(location=16) noperspective out float windowDepth;\n"
-                        "invariant gl_Position; precise gl_Position; precise windowDepth;\n"
-                        "layout(set=0,binding=17,std140) uniform Constants { vec4 c[256]; vec4 borders[16]; vec4 sampling[16]; vec4 k[512]; } u;\n"
-                        "layout(push_constant) uniform Viewport { vec2 scale; float depthEnabled; float unused; vec4 window; vec2 depth; "
-                        "layout(offset=48) ivec4 inputParams[4]; } viewport;\n");
+                        std::format("#version 450\nlayout(location=1) in vec4 attributes[16];\nlayout(location=0) out vec4 inputs[16];\n"
+                                    "layout(location=16) noperspective out float windowDepth;\n"
+                                    "invariant gl_Position; precise gl_Position; precise windowDepth;\n"
+                                    "layout(set=0,binding=17,std140) uniform Constants {{ vec4 c[256]; vec4 borders[16]; vec4 sampling[16]; "
+                                    "vec4 k[{}]; }} u;\n"
+                                    "layout(push_constant) uniform Viewport {{ vec2 scale; float depthEnabled; float unused; vec4 window; vec2 depth; "
+                                    "layout(offset=48) ivec4 inputParams[4]; }} viewport;\n",
+                                    kUniformVectors));
             } else if (!result.uniforms.empty()) {
                 const auto end = result.source.find(" } u;");
-                result.source.insert(end, " vec4 k[512];");
+                result.source.insert(end, std::format(" vec4 k[{}];", kUniformVectors));
             }
             result.source += R"(
 // R700 truncates finite values and retains the low integer bits. Decode the
@@ -1241,14 +1243,21 @@ vec3 cubeDirectionReference(vec3 coord) {
             m_colorOnlyEffects.emplace(words, safe);
         return safe;
     }
-    VertexShader lowerVertexShader(const Program &program, std::span<const TextureType> resourceTypes)
+    VertexShader lowerVertexShader(const Program &program, std::span<const TextureType> resourceTypes, unsigned bufferWindow)
     {
         VertexShader shader;
-        static_cast<FragmentShader &>(shader) = lowerShader(program, resourceTypes, true);
+        static_cast<FragmentShader &>(shader) = lowerShader(program, resourceTypes, true, false, 0, bufferWindow);
         return shader;
     }
-    std::shared_ptr<const VertexShader> VertexShaderCache::get(const std::vector<std::uint32_t> &words)
+    std::shared_ptr<const VertexShader> VertexShaderCache::get(const std::vector<std::uint32_t> &words, unsigned bufferWindow)
     {
+        if (bufferWindow) {
+            // Rare: only programs whose blocks outgrow the default budget, a few window sizes each.
+            auto &shader = m_windowed[{bufferWindow, words}];
+            if (!shader)
+                shader = std::make_shared<const VertexShader>(lowerVertexShader(*decodeProgram(words), {}, bufferWindow));
+            return shader;
+        }
         if (const auto it = m_entries.find(words); it != m_entries.end())
             return it->second;
         auto shader = std::make_shared<const VertexShader>(lowerVertexShader(*decodeProgram(words)));

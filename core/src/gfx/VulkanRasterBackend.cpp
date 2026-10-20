@@ -905,8 +905,8 @@ void main() {
 
                 // Only the first constantFloats/vertexConstantFloats values are defined and read by
                 // the bundle's shaders; the rest of each uniform buffer is never accessed.
-                void initialize(const SpirvModule &vertex, const SpirvModule &fragment, const std::array<float, 3200> &constants,
-                                const std::array<float, 3200> &vertexConstants, std::size_t constantFloats, std::size_t vertexConstantFloats,
+                void initialize(const SpirvModule &vertex, const SpirvModule &fragment, const std::array<float, Latte::kStageConstantFloats> &constants,
+                                const std::array<float, Latte::kStageConstantFloats> &vertexConstants, std::size_t constantFloats, std::size_t vertexConstantFloats,
                                 const std::vector<Texture> &textures, const RasterDraw &draw, const std::shared_ptr<ColorImage> &targetSource,
                                 const std::shared_ptr<ColorImage> &depthSource, bool overwriteTarget)
                 {
@@ -1669,7 +1669,7 @@ void main() {
                     return result;
                 }
 
-                bool refresh(const std::array<float, 3200> &constants, const std::array<float, 3200> &vertexConstants, std::size_t constantFloats,
+                bool refresh(const std::array<float, Latte::kStageConstantFloats> &constants, const std::array<float, Latte::kStageConstantFloats> &vertexConstants, std::size_t constantFloats,
                              std::size_t vertexConstantFloats, const std::vector<Texture> &textures, const RasterDraw &draw, bool retainTextures,
                              const std::shared_ptr<ColorImage> &targetSource, const std::shared_ptr<ColorImage> &depthSource)
                 {
@@ -2235,7 +2235,7 @@ void main() {
                 struct Inputs {
                         const RasterDraw &draw;
                         const SpirvModule &vertex, &fragment;
-                        const std::array<float, 3200> &constants, &vertexConstants;
+                        const std::array<float, Latte::kStageConstantFloats> &constants, &vertexConstants;
                         std::size_t constantFloats{}, vertexConstantFloats{};
                         const std::vector<DrawResources::Texture> &textures;
                         std::shared_ptr<ColorImage> targetSource;
@@ -4324,14 +4324,14 @@ void main() {
         }
         // Layout: registers [0, 1024), sampler borders and modes [1024, 1152), static uniform-block
         // references from 1152. Values past the references are never read, so they stay unset.
-        std::array<float, 3200> constants, vertexConstants;
+        std::array<float, Latte::kStageConstantFloats> constants, vertexConstants;
         const auto constantFloats = std::min<std::size_t>(constants.size(), std::max(draw.constants.size(), 1152 + draw.uniforms.size()));
         const auto vertexConstantFloats =
                 draw.vertexStage.shader ? std::min<std::size_t>(vertexConstants.size(),
                                                                 std::max(draw.vertexStage.constants.size(), 1152 + draw.vertexStage.uniforms.size()))
                                         : 0;
         // Registers a program never reads stay unset too: most titles read uniform blocks.
-        const auto stageConstants = [](std::array<float, 3200> &values, std::size_t floats, std::span<const float> registers, unsigned used,
+        const auto stageConstants = [](std::array<float, Latte::kStageConstantFloats> &values, std::size_t floats, std::span<const float> registers, unsigned used,
                                        std::span<const float> uniforms) {
             const auto copied = std::min<std::size_t>(registers.size(), std::size_t(used) * 4);
             std::copy_n(registers.begin(), copied, values.begin());

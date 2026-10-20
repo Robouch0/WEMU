@@ -101,6 +101,48 @@ TEST(LatteBufferTest, IndexedPaletteFetchMatchesNativeVertexExecution)
     }
 }
 
+TEST(LatteBufferTest, SizedWindowsReachPaletteRowsBeyondTheDefaultBudget)
+{
+    const auto program = Latte::decodeProgram(paletteProgram());
+    const auto shared = Latte::lowerVertexShader(*program);
+    ASSERT_TRUE(shared) << shared.error;
+    ASSERT_EQ(shared.uniformBuffers.size(), 1u);
+    EXPECT_LT(shared.uniformBuffers[0].count, 610u);
+    EXPECT_FALSE(Latte::lowerVertexShader(*program, {}, Latte::kUniformVectors + 64));
+    auto shader = std::make_shared<const Latte::VertexShader>(Latte::lowerVertexShader(*program, {}, 640));
+    ASSERT_TRUE(*shader) << shader->error;
+    ASSERT_EQ(shader->uniformBuffers.size(), 1u);
+    EXPECT_EQ(shader->uniformBuffers[0].count, 640u);
+    if (!std::getenv("WEMU_TEST_VULKAN"))
+        GTEST_SKIP() << "Set WEMU_TEST_VULKAN=1";
+    // The program reads palette row 3 * index: indices 200..203 select rows 600..609.
+    std::array<std::array<float, 4>, 640> palette{};
+    for (unsigned index = 0; index < 4; ++index)
+        palette[(200 + index) * 3] = {-.75f + float(index) * .5f, 0, .25f, 1};
+    std::array<RasterDraw::Vertex, 4> vertices{};
+    for (unsigned index = 0; index < 4; ++index)
+        vertices[index].inputs[0][0] = std::bit_cast<float>(200 + index);
+    std::vector<float> uniforms;
+    for (const auto &ref: shader->uniforms)
+        for (unsigned channel = 0; channel < 4; ++channel)
+            uniforms.push_back(ref.bank == 1 && ref.index < palette.size() ? palette[ref.index][channel] : 0.f);
+    const auto fragment = Latte::lowerFragmentShader(*Latte::decodeProgram({0, (Latte::CF_EXP_DONE << 23) | (1u << 21) | 0x688u}));
+    std::vector<std::uint8_t> target(4 * 16);
+    RasterDraw draw{fragment, vertices, {}, {}, target, 4, 1, 4, {0, 0, 4, 1}, 15, {}};
+    draw.colorFormat = ColorFormat::RGBA32Float;
+    draw.topology = RasterDraw::Topology::Points;
+    draw.vertexStage.shader = shader;
+    draw.vertexStage.uniforms = uniforms;
+    draw.vertexStage.inputCount = 1;
+    draw.vertexStage.inputParams[0] = 0;
+    draw.vertexStage.viewport = {0, 0, 4, 1, 0, 1};
+    VulkanRasterBackend backend;
+    const auto result = backend.render(draw);
+    ASSERT_TRUE(result) << backend.lastError();
+    for (unsigned index = 0; index < 4; ++index)
+        EXPECT_EQ(readFloatColor(result->rgba.data() + index * 16), palette[(200 + index) * 3]) << index;
+}
+
 TEST(LatteBufferTest, UniformFetchRejectsUnsupportedFlagsAndPreservesMaskedChannels)
 {
     auto words = paletteProgram();

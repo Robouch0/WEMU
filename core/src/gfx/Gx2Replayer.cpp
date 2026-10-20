@@ -1709,10 +1709,16 @@ namespace Core::Gfx {
         return shader;
     }
 
-    std::shared_ptr<const Latte::VertexShader> Gx2Replayer::vertexShader()
+    std::shared_ptr<const Latte::VertexShader> Gx2Replayer::vertexShader(const unsigned bufferWindow)
     {
         if (!m_vsShader)
-            return m_vertexShaderCache.get(vsProgram());
+            return m_vertexShaderCache.get(vsProgram(), bufferWindow);
+        if (bufferWindow) {
+            auto &shader = m_vsShader->windowedVertexShaders[bufferWindow];
+            if (!shader)
+                shader = m_vertexShaderCache.get(m_vsShader->words, bufferWindow);
+            return shader;
+        }
         if (!m_vsShader->vertexShader)
             m_vsShader->vertexShader = m_vertexShaderCache.get(m_vsShader->words);
         return m_vsShader->vertexShader;
@@ -3568,13 +3574,27 @@ namespace Core::Gfx {
         }();
         if (collectBackend && (mode == 1 || mode == 4 || mode == 0x13) && gpuVertexEnabled && m_rasterBackend->supportsVertexStage() &&
             !m_fetchLayout.empty()) {
-            const auto candidate = vertexShader();
+            auto candidate = vertexShader();
             // The current Vulkan vertex payload contains sixteen attributes.
             // Wider fetch inputs must use the complete reference register file.
             const bool inputsSupported = m_vertexInputCount <= 16;
-            const bool buffersSupported = std::all_of(candidate->uniformBuffers.begin(), candidate->uniformBuffers.end(), [&](const auto &buffer) {
-                return buffer.bank < m_vsBlocks.size() && m_vsBlocks[buffer.bank].size() <= std::size_t(buffer.count) * 4;
-            });
+            const auto blocksFit = [&](const Latte::VertexShader &shader) {
+                return std::all_of(shader.uniformBuffers.begin(), shader.uniformBuffers.end(), [&](const auto &buffer) {
+                    return buffer.bank < m_vsBlocks.size() && m_vsBlocks[buffer.bank].size() <= std::size_t(buffer.count) * 4;
+                });
+            };
+            if (*candidate && !blocksFit(*candidate)) {
+                // Blocks larger than the default windows (Pikmin 3's shadow casters index two
+                // 544-vector palettes) get a lowering with windows sized for them, in steps of 64.
+                std::size_t largest = 0;
+                for (const auto &buffer: candidate->uniformBuffers)
+                    if (buffer.bank < m_vsBlocks.size())
+                        largest = std::max(largest, (m_vsBlocks[buffer.bank].size() + 3) / 4);
+                if (largest <= Latte::kUniformVectors)
+                    if (const auto windowed = vertexShader(unsigned((largest + 63) / 64 * 64)); *windowed)
+                        candidate = windowed;
+            }
+            const bool buffersSupported = blocksFit(*candidate);
             const bool resourcesSupported = std::all_of(candidate->textures.begin(), candidate->textures.end(), [&](const auto &binding) {
                 if (binding.resource >= m_vertexTextures.size() || binding.sampler >= m_vertexSamplers.size())
                     return false;
