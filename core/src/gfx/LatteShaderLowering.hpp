@@ -1,10 +1,11 @@
 #pragma once
 
+#include <algorithm>
 #include <map>
 #include <memory>
 #include <span>
 #include <string>
-#include <tuple>
+#include <unordered_map>
 
 #include "gfx/LatteProgram.hpp"
 
@@ -21,6 +22,9 @@ namespace Core::Gfx::Latte {
 
     struct FragmentShader {
             std::string source;
+            // Hash of `source`, computed once by lowering (zero for hand-written shaders): lets the
+            // backend find compiled modules without hashing the whole GLSL text on every draw.
+            std::uint64_t sourceHash{};
             std::string error;
             std::vector<TextureBinding> textures;
             bool requiresBaseLevelOnly{};
@@ -30,7 +34,8 @@ namespace Core::Gfx::Latte {
             bool usesGather{};
             bool exportsColor{true};
             bool writesDepth{};
-            bool alwaysWritesColor{}; // Proven unconditional export, with no lane-mask changes or jumps.
+            bool alwaysWritesColor{}; // Proven unconditional export, with no lane-mask changes, jumps or kills.
+            bool kills{}; // KILL* instructions can discard the pixel.
             bool requiresOnlyColorZero{}; // Other direct color exports were proven disabled by draw state.
             struct UniformReference {
                     unsigned bank{}, index{};
@@ -42,8 +47,18 @@ namespace Core::Gfx::Latte {
             };
             std::vector<UniformBuffer> uniformBuffers;
             unsigned parameterMask{};
+            // Constant registers u.c[0, constantRegisters) the program may read; hand-written
+            // shaders keep the whole file.
+            unsigned constantRegisters{256};
             explicit operator bool() const { return error.empty() && !source.empty(); }
     };
+
+    // u.k holds the uniform vectors a program reads after c[256], borders[16] and sampling[16]:
+    // kcache references first (at most 512), then one window per dynamically indexed vertex
+    // uniform block. The windows share what the references leave of 512 vectors unless the
+    // replayer asks for windows sized for its blocks.
+    constexpr unsigned kUniformVectors = 2048;
+    constexpr std::size_t kStageConstantFloats = (256 + 16 + 16 + kUniformVectors) * 4;
 
     // Initial reference-compatible subset, not a hardware-complete shader compiler.
     // ABI: locations 0..15 = interpolated inputs; set 0 binding 0 = 256 vec4 constants
@@ -60,13 +75,15 @@ namespace Core::Gfx::Latte {
     FragmentShader lowerFragmentShader(const Program &program, std::span<const TextureType> resourceTypes = {}, bool onlyColorZero = false,
                                        unsigned colorExport = 0);
     struct VertexShader : FragmentShader {};
-    VertexShader lowerVertexShader(const Program &program, std::span<const TextureType> resourceTypes = {});
+    // bufferWindow: vectors per dynamically indexed uniform block (0: the shared default budget).
+    VertexShader lowerVertexShader(const Program &program, std::span<const TextureType> resourceTypes = {}, unsigned bufferWindow = 0);
     class VertexShaderCache {
         public:
-            std::shared_ptr<const VertexShader> get(const std::vector<std::uint32_t> &words);
+            std::shared_ptr<const VertexShader> get(const std::vector<std::uint32_t> &words, unsigned bufferWindow = 0);
 
         private:
-            std::map<std::vector<std::uint32_t>, std::shared_ptr<const VertexShader>> m_entries;
+            std::unordered_map<std::vector<std::uint32_t>, std::shared_ptr<const VertexShader>, ProgramWordsHash, ProgramWordsEqual> m_entries;
+            std::map<std::pair<unsigned, std::vector<std::uint32_t>>, std::shared_ptr<const VertexShader>> m_windowed;
     };
 
     // Replayer-owned, single-threaded cache. Exact keys include resource specialization.
@@ -84,9 +101,39 @@ namespace Core::Gfx::Latte {
             std::size_t misses() const { return m_misses; }
 
         private:
-            using Key = std::tuple<std::vector<std::uint32_t>, std::vector<TextureType>, bool, unsigned>;
-            std::map<Key, std::shared_ptr<const FragmentShader>> m_entries;
-            std::map<std::vector<std::uint32_t>, bool> m_colorOnlyEffects;
+            struct KeyView {
+                    std::span<const std::uint32_t> words;
+                    std::span<const TextureType> resourceTypes;
+                    bool onlyColorZero{};
+                    unsigned colorExport{};
+            };
+            struct Key {
+                    std::vector<std::uint32_t> words;
+                    std::vector<TextureType> resourceTypes;
+                    bool onlyColorZero{};
+                    unsigned colorExport{};
+                    operator KeyView() const { return {words, resourceTypes, onlyColorZero, colorExport}; }
+            };
+            struct KeyHash {
+                    using is_transparent = void;
+                    std::size_t operator()(const KeyView &key) const noexcept
+                    {
+                        auto hash = ProgramWordsHash{}(key.words);
+                        for (const auto type: key.resourceTypes)
+                            hash = hash * 31 + std::size_t(type);
+                        return hash ^ (std::size_t(key.onlyColorZero) << 8) ^ (std::size_t(key.colorExport) << 16);
+                    }
+            };
+            struct KeyEqual {
+                    using is_transparent = void;
+                    bool operator()(const KeyView &a, const KeyView &b) const noexcept
+                    {
+                        return a.onlyColorZero == b.onlyColorZero && a.colorExport == b.colorExport && std::ranges::equal(a.words, b.words) &&
+                               std::ranges::equal(a.resourceTypes, b.resourceTypes);
+                    }
+            };
+            std::unordered_map<Key, std::shared_ptr<const FragmentShader>, KeyHash, KeyEqual> m_entries;
+            std::unordered_map<std::vector<std::uint32_t>, bool, ProgramWordsHash, ProgramWordsEqual> m_colorOnlyEffects;
             std::size_t m_bytes{}, m_hits{}, m_misses{};
     };
 

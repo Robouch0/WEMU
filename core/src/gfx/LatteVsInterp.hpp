@@ -65,6 +65,8 @@ namespace Core::Gfx {
                     std::array<float, 4> coords{};
                     float cubeIndex{};
                     bool explicitLod{}; // SAMPLE_L takes its LOD from coords.w.
+                    // TEX word 2 texel offsets (5-bit signed, one fraction bit), already in texels.
+                    std::array<float, 3> offset{};
             };
             using TextureFetch = std::function<bool(const TextureRequest &, std::array<float, 4> &)>;
 

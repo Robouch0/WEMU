@@ -58,6 +58,9 @@ class EmulatorLauncher : public QObject {
         void setRemoteButtons(quint32 buttons);
         void setRemoteGamepad(const Core::Gfx::GamepadState &state);
         void setDrcStreaming(bool enabled);
+        // Host controllers, already mapped to VPAD bits and sticks by the active input profile: merged
+        // with the keyboard and the phone. Buttons held when launching or pausing wait for a release.
+        void setControllerInput(quint32 buttons, const std::array<float, 2> &leftStick, const std::array<float, 2> &rightStick);
     signals:
         void runningChanged();
         void stateChanged(bool running);
@@ -95,8 +98,9 @@ class EmulatorLauncher : public QObject {
                 double presentFps{}, movieFps{};
         };
         std::deque<PendingFrame> m_frames;
-        quint32 m_buttons{}, m_remoteButtons{};
+        quint32 m_buttons{}, m_remoteButtons{}, m_controllerButtons{}, m_suppressedControllerButtons{};
         Core::Gfx::GamepadState m_remoteGamepad;
+        std::array<float, 2> m_controllerLeftStick{}, m_controllerRightStick{};
         bool m_gamepadDirty{}, m_drcStreaming{};
         QTimer m_gamepadTimer;
         QSet<int> m_heldKeys, m_suppressedKeys;

@@ -1,8 +1,10 @@
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <memory>
 #include <span>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -37,9 +39,18 @@ namespace Core::Gfx::Latte {
             std::uint32_t sel, chan;
             bool rel, neg, abs;
     };
-    // ALU special source selectors. LLVM's R600 register table names 250 as ONE_INT; it must
-    // be represented as integer bits when supplied to *_INT operations.
-    enum : std::uint32_t { SRC_0 = 248, SRC_1 = 249, SRC_1_INT = 250, SRC_HALF = 252, SRC_LITERAL = 253, SRC_PV = 254, SRC_PS = 255 };
+    // ALU special source selectors. LLVM's R600 register table names 250 as ONE_INT and 251 as
+    // MINUS_ONE_INT; they must be represented as integer bits when supplied to *_INT operations.
+    enum : std::uint32_t {
+        SRC_0 = 248,
+        SRC_1 = 249,
+        SRC_1_INT = 250,
+        SRC_M_1_INT = 251,
+        SRC_HALF = 252,
+        SRC_LITERAL = 253,
+        SRC_PV = 254,
+        SRC_PS = 255
+    };
 
     enum Op2 : std::uint32_t {
         OP2_ADD = 0x00,
@@ -74,6 +85,10 @@ namespace Core::Gfx::Latte {
         OP2_PRED_SETGT_PUSH = 0x29,
         OP2_PRED_SETGE_PUSH = 0x2A,
         OP2_PRED_SETNE_PUSH = 0x2B,
+        OP2_KILLE = 0x2C,
+        OP2_KILLGT = 0x2D,
+        OP2_KILLGE = 0x2E,
+        OP2_KILLNE = 0x2F,
         OP2_AND_INT = 0x30,
         OP2_OR_INT = 0x31,
         OP2_XOR_INT = 0x32,
@@ -83,10 +98,16 @@ namespace Core::Gfx::Latte {
         OP2_SETGT_INT = 0x3B,
         OP2_SETGE_INT = 0x3C,
         OP2_SETNE_INT = 0x3D,
+        OP2_KILLGT_UINT = 0x40,
+        OP2_KILLGE_UINT = 0x41,
         OP2_PRED_SETE_INT = 0x42,
         OP2_PRED_SETGT_INT = 0x43,
         OP2_PRED_SETGE_INT = 0x44,
         OP2_PRED_SETNE_INT = 0x45,
+        OP2_KILLE_INT = 0x46,
+        OP2_KILLGT_INT = 0x47,
+        OP2_KILLGE_INT = 0x48,
+        OP2_KILLNE_INT = 0x49,
         OP2_DOT4 = 0x50,
         OP2_DOT4_IEEE = 0x51,
         OP2_CUBE = 0x52,
@@ -142,6 +163,11 @@ namespace Core::Gfx::Latte {
             {
                 return !op3 && ((op >= OP2_PRED_SETE && op <= OP2_PRED_SETNE_PUSH) || (op >= OP2_PRED_SETE_INT && op <= OP2_PRED_SETNE_INT));
             }
+            [[nodiscard]] bool isKill() const
+            {
+                return !op3 && ((op >= OP2_KILLE && op <= OP2_KILLNE) || op == OP2_KILLGT_UINT || op == OP2_KILLGE_UINT ||
+                                (op >= OP2_KILLE_INT && op <= OP2_KILLNE_INT));
+            }
             [[nodiscard]] bool isAddressWrite() const { return !op3 && (op == OP2_MOVA || op == OP2_MOVA_FLOOR || op == OP2_MOVA_INT); }
     };
 
@@ -163,4 +189,17 @@ namespace Core::Gfx::Latte {
     // No cache or execution state: callers own caching and capability validation.
     std::shared_ptr<const Program> decodeProgram(const std::vector<std::uint32_t> &words);
 
+    // Program words hashed as bytes, so caches keyed by programs hash once and compare once
+    // without copying the program into a key.
+    struct ProgramWordsHash {
+            using is_transparent = void;
+            std::size_t operator()(std::span<const std::uint32_t> words) const noexcept
+            {
+                return std::hash<std::string_view>{}({reinterpret_cast<const char *>(words.data()), words.size_bytes()});
+            }
+    };
+    struct ProgramWordsEqual {
+            using is_transparent = void;
+            bool operator()(std::span<const std::uint32_t> a, std::span<const std::uint32_t> b) const noexcept { return std::ranges::equal(a, b); }
+    };
 } // namespace Core::Gfx::Latte

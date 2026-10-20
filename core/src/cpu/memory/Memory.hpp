@@ -3,18 +3,25 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <bit>
 #include <cinttypes>
 #include <cstring>
 #include <format>
 #include <iomanip>
 #include <iostream>
+#include <memory>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
 #include <vector>
 
 #include "exception/Exception.hpp"
+
+#ifdef __linux__
+    #include <sys/mman.h>
+#endif
 
 namespace Core {
 
@@ -51,10 +58,17 @@ namespace Core {
             explicit Memory(const std::size_t &size = ApplicationMemoryEnd - ApplicationCode) :
                 m_memory(), m_virtAddress(ApplicationCode), m_memSize(size)
             {
+                // Guest code walks pointers across hundreds of MB: back RAM with transparent huge
+                // pages (requested before the zero fill touches it) to spare TLB misses.
+                m_memory.reserve(size);
+                adviseHugePages(m_memory.data(), size);
                 m_memory.resize(size);
                 m_stack.resize(STACK_SIZE);
                 m_dimport.resize(DIMPORT_SIZE);
                 m_lockedCache.resize(LOCKED_CACHE_SIZE * LOCKED_CACHE_BASES.size());
+                m_codePages.resize((size >> kCodePageShift) / 64 + 1, 0);
+                m_tracking = std::make_unique<WriteTracking>(m_codePages.size(), (size >> kCodePageShift) + 1);
+                m_slowPages = m_tracking->slowPages.data();
             }
 
             // Guest RAM has one owner. Transfer its buffers without copying or reallocating them.
@@ -95,9 +109,24 @@ namespace Core {
                 return nullptr;
             }
 
+            // A writable view may be used to replace decoded code (HLE memcpy, DMA), so it ends the
+            // current code epoch when the range touches a code page.
             [[nodiscard]] std::uint8_t *hostPtr(const std::uint32_t address, const std::size_t bytes = 1) noexcept
             {
-                return const_cast<std::uint8_t *>(std::as_const(*this).hostPtr(address, bytes));
+                auto *ptr = const_cast<std::uint8_t *>(std::as_const(*this).hostPtr(address, bytes));
+                const std::size_t offset = static_cast<std::size_t>(address) - m_virtAddress;
+                if (ptr && address >= m_virtAddress && offset < m_memory.size()) {
+                    bool code = false;
+                    for (std::size_t page = offset >> kCodePageShift, last = (offset + bytes - 1) >> kCodePageShift; page <= last; ++page) {
+                        code |= m_codePages[page / 64] >> (page % 64) & 1;
+                        // The caller writes through the view now; count it before the bytes change.
+                        if (isWatchedPage(page))
+                            m_tracking->pageWrites[page].fetch_add(1, std::memory_order_acq_rel);
+                    }
+                    if (code)
+                        ++m_codeEpoch;
+                }
+                return ptr;
             }
 
             template<typename T>
@@ -115,12 +144,90 @@ namespace Core {
             template<typename T>
             void write(const std::uint32_t address, const T value)
             {
+                const auto swapped = std::byteswap(value);
+                // Main RAM fast path, with a page check so the interpreter can leave a decoded block
+                // as soon as a store touches a page holding decoded code (see markCodePage).
+                const std::size_t offset = static_cast<std::size_t>(address) - m_virtAddress;
+                if (address >= m_virtAddress && offset < m_memory.size() && sizeof(T) <= m_memory.size() - offset) {
+                    if (isSlowPage(offset) || isSlowPage(offset + sizeof(T) - 1)) [[unlikely]] {
+                        std::memcpy(m_memory.data() + offset, &swapped, sizeof(T));
+                        noteStore(offset, sizeof(T));
+                        return;
+                    }
+                    std::memcpy(m_memory.data() + offset, &swapped, sizeof(T));
+                    return;
+                }
                 auto *ptr = hostPtr(address, sizeof(T));
                 if (ptr == nullptr)
                     throw MemoryException(std::format("Unmapped write<{}> @ 0x{:08X}", sizeof(T), address));
-                const auto swapped = std::byteswap(value);
                 std::memcpy(ptr, &swapped, sizeof(T));
             }
+
+            // Pages of main RAM that hold decoded (cached) guest code, by memory-relative offset.
+            // Memory::write raises codeWritten() when it stores into one of them. Both it and the
+            // writable hostPtr() view advance codeEpoch(), so decoded blocks validated in the
+            // current epoch need no word comparison. Loader views (allocate/getMemory) precede
+            // decoding.
+            static constexpr unsigned kCodePageShift = 12;
+            void markCodePage(const std::size_t offset)
+            {
+                const std::size_t page = offset >> kCodePageShift;
+                if (page / 64 < m_codePages.size()) {
+                    m_codePages[page / 64] |= std::uint64_t{1} << (page % 64);
+                    m_slowPages[page / 64].fetch_or(std::uint64_t{1} << (page % 64), std::memory_order_relaxed);
+                }
+            }
+            [[nodiscard]] bool isCodePage(const std::size_t offset) const noexcept
+            {
+                // Callers pass offsets inside main RAM, which the bitmap covers completely.
+                const std::size_t page = offset >> kCodePageShift;
+                return m_codePages[page / 64] >> (page % 64) & 1;
+            }
+            void clearCodePages() noexcept
+            {
+                std::fill(m_codePages.begin(), m_codePages.end(), 0);
+                for (std::size_t i = 0; i < m_codePages.size(); ++i)
+                    m_slowPages[i].store(m_tracking->watchedPages[i].load(std::memory_order_relaxed), std::memory_order_relaxed);
+                ++m_codeEpoch;
+            }
+            // Write tracking for host caches of guest data (decoded textures, converted vertex
+            // arrays). watchWrites() arms the main-RAM pages of a range for good; every later store
+            // into them through write() or a writable hostPtr() advances writeGeneration(). Stores
+            // that bypass Memory (native code) make it report nothing while setUntrackedStores is set,
+            // so callers compare bytes instead.
+            void watchWrites(const std::uint32_t address, const std::size_t bytes) const noexcept
+            {
+                const auto pages = mainPages(address, bytes);
+                if (!pages)
+                    return;
+                for (auto page = pages->first; page <= pages->second; ++page) {
+                    const auto bit = std::uint64_t{1} << (page % 64);
+                    if (!(m_tracking->watchedPages[page / 64].load(std::memory_order_relaxed) & bit)) {
+                        m_tracking->watchedPages[page / 64].fetch_or(bit, std::memory_order_relaxed);
+                        m_slowPages[page / 64].fetch_or(bit, std::memory_order_seq_cst);
+                    }
+                }
+            }
+            [[nodiscard]] std::optional<std::uint64_t> writeGeneration(const std::uint32_t address, const std::size_t bytes) const noexcept
+            {
+                const auto pages = mainPages(address, bytes);
+                if (!pages || m_tracking->untracked.load(std::memory_order_relaxed))
+                    return std::nullopt;
+                std::uint64_t generation = 0;
+                for (auto page = pages->first; page <= pages->second; ++page) {
+                    if (!isWatchedPage(page))
+                        return std::nullopt;
+                    generation += m_tracking->pageWrites[page].load(std::memory_order_acquire);
+                }
+                return generation;
+            }
+            void setUntrackedStores(const bool untracked) noexcept { m_tracking->untracked.store(untracked, std::memory_order_relaxed); }
+            // One bit per main-RAM page holding decoded code or watched data. Generated code stores
+            // directly only into clear pages and sends the others through write().
+            [[nodiscard]] const std::atomic<std::uint64_t> *slowPages() const noexcept { return m_slowPages; }
+            [[nodiscard]] bool codeWritten() const noexcept { return m_codeWritten; }
+            [[nodiscard]] std::uint64_t codeEpoch() const noexcept { return m_codeEpoch; }
+            void clearCodeWritten() noexcept { m_codeWritten = false; }
 
             [[nodiscard]] std::uint32_t heapAllocate(const std::uint32_t size, std::uint32_t align)
             {
@@ -151,10 +258,65 @@ namespace Core {
             }
 
         private:
+            static void adviseHugePages(void *data, const std::size_t bytes) noexcept
+            {
+#ifdef __linux__
+                constexpr std::uintptr_t kHugePage = std::uintptr_t{1} << 21;
+                const auto first = (reinterpret_cast<std::uintptr_t>(data) + kHugePage - 1) & ~(kHugePage - 1);
+                const auto last = (reinterpret_cast<std::uintptr_t>(data) + bytes) & ~(kHugePage - 1);
+                if (last > first)
+                    madvise(reinterpret_cast<void *>(first), last - first, MADV_HUGEPAGE);
+#else
+                (void) data;
+                (void) bytes;
+#endif
+            }
+
+            struct WriteTracking {
+                    WriteTracking(std::size_t words, std::size_t pages) : slowPages(words), watchedPages(words), pageWrites(pages) {}
+                    std::vector<std::atomic<std::uint64_t>> slowPages; // code or watched: stores take the slow path
+                    std::vector<std::atomic<std::uint64_t>> watchedPages;
+                    std::vector<std::atomic<std::uint32_t>> pageWrites;
+                    std::atomic<bool> untracked{false};
+            };
+            [[nodiscard]] bool isSlowPage(const std::size_t offset) const noexcept
+            {
+                const std::size_t page = offset >> kCodePageShift;
+                return m_slowPages[page / 64].load(std::memory_order_relaxed) >> (page % 64) & 1;
+            }
+            [[nodiscard]] bool isWatchedPage(const std::size_t page) const noexcept
+            {
+                return m_tracking->watchedPages[page / 64].load(std::memory_order_relaxed) >> (page % 64) & 1;
+            }
+            void noteStore(const std::size_t offset, const std::size_t bytes) noexcept
+            {
+                for (std::size_t page = offset >> kCodePageShift, last = (offset + bytes - 1) >> kCodePageShift; page <= last; ++page) {
+                    if (m_codePages[page / 64] >> (page % 64) & 1) {
+                        m_codeWritten = true;
+                        ++m_codeEpoch;
+                    }
+                    if (isWatchedPage(page))
+                        m_tracking->pageWrites[page].fetch_add(1, std::memory_order_acq_rel);
+                }
+            }
+            [[nodiscard]] std::optional<std::pair<std::size_t, std::size_t>> mainPages(const std::uint32_t address,
+                                                                                       const std::size_t bytes) const noexcept
+            {
+                const std::size_t offset = static_cast<std::size_t>(address) - m_virtAddress;
+                if (!bytes || address < m_virtAddress || offset >= m_memory.size() || bytes > m_memory.size() - offset)
+                    return std::nullopt;
+                return std::pair{offset >> kCodePageShift, (offset + bytes - 1) >> kCodePageShift};
+            }
+
             std::vector<char> m_memory;
             std::vector<char> m_stack;
             std::vector<char> m_dimport;
             std::vector<char> m_lockedCache;
+            std::vector<std::uint64_t> m_codePages;
+            std::unique_ptr<WriteTracking> m_tracking;
+            std::atomic<std::uint64_t> *m_slowPages{};
+            bool m_codeWritten{false};
+            std::uint64_t m_codeEpoch{1}; // blocks start at epoch 0, i.e. unvalidated
             std::size_t m_heapPtr = HEAP_BASE;
             std::size_t m_virtAddress;
             std::size_t m_memSize;

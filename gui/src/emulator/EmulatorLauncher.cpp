@@ -14,6 +14,7 @@
 #include <QUrl>
 #include <QUuid>
 
+#include "ControllerMapping.hpp"
 #include "LaunchEnvironment.hpp"
 #include "LocaleSettings.hpp"
 #include "SessionFrame.hpp"
@@ -155,6 +156,7 @@ void EmulatorLauncher::launch(const QString &rpxPath, const QString &title, cons
     m_title = title;
     m_rpxPath = rpxPath;
     m_showFps = false;
+    m_suppressedControllerButtons = m_controllerButtons;
     if (!QFileInfo(rpxPath).isFile() || !QDir(contentPath).exists()) {
         setError("Game files are missing. Refresh the library.");
         return;
@@ -381,6 +383,7 @@ void EmulatorLauncher::togglePause()
         return;
     }
     m_suppressedKeys.unite(m_heldKeys);
+    m_suppressedControllerButtons |= m_controllerButtons;
     m_pausePending = true;
     m_buttons = 0;
     sendCommand(4, 0);
@@ -393,6 +396,7 @@ void EmulatorLauncher::resume()
     if (!m_paused || m_pausePending || m_stopping)
         return;
     m_suppressedKeys.unite(m_heldKeys);
+    m_suppressedControllerButtons |= m_controllerButtons;
     m_pausePending = true;
     sendCommand(2);
     emit sessionChanged();
@@ -424,16 +428,42 @@ void EmulatorLauncher::setRemoteGamepad(const Core::Gfx::GamepadState &state)
         m_gamepadTimer.start();
 }
 
+void EmulatorLauncher::setControllerInput(quint32 buttons, const std::array<float, 2> &leftStick, const std::array<float, 2> &rightStick)
+{
+    // A press that pauses or resumes (the menu's A) must not reach the game afterwards.
+    if (m_paused || m_pausePending)
+        m_suppressedControllerButtons |= buttons;
+    m_suppressedControllerButtons &= buttons;
+    if (leftStick != m_controllerLeftStick || rightStick != m_controllerRightStick) {
+        m_controllerLeftStick = leftStick;
+        m_controllerRightStick = rightStick;
+        m_gamepadDirty = true;
+        if (!m_gamepadTimer.isActive())
+            m_gamepadTimer.start();
+    }
+    if (buttons != m_controllerButtons) {
+        m_controllerButtons = buttons;
+        sendButtons();
+    }
+}
+
 void EmulatorLauncher::sendGamepad()
 {
     if (!m_socket || !m_connected || !m_gamepadDirty)
         return;
     m_gamepadDirty = false;
+    // Touch and motion come from the phone only.
+    auto gamepad = m_remoteGamepad;
+    gamepad.leftStick = ControllerMapping::stronger(m_remoteGamepad.leftStick, m_controllerLeftStick);
+    gamepad.rightStick = ControllerMapping::stronger(m_remoteGamepad.rightStick, m_controllerRightStick);
+    if (qEnvironmentVariableIntValue("QT_WEMU_INPUT_TRACE") == 1)
+        qInfo("[SESSION_GAMEPAD] left=%.2f,%.2f right=%.2f,%.2f touched=%d", gamepad.leftStick[0], gamepad.leftStick[1], gamepad.rightStick[0],
+              gamepad.rightStick[1], int(gamepad.touched));
     QByteArray body;
     QDataStream stream(&body, QIODevice::WriteOnly);
     WemuSession::configure(stream);
     stream << quint32(WemuSession::Type::Gamepad);
-    WemuSession::writeGamepad(stream, m_remoteGamepad);
+    WemuSession::writeGamepad(stream, gamepad);
     m_socket->write(WemuSession::packet(body));
     m_socket->flush();
 }
@@ -454,6 +484,7 @@ void EmulatorLauncher::sendButtons()
             if (!m_suppressedKeys.contains(key))
                 buttons |= buttonForKey(key);
         buttons |= m_remoteButtons;
+        buttons |= m_controllerButtons & ~m_suppressedControllerButtons;
     }
     if (buttons != m_buttons) {
         m_buttons = buttons;

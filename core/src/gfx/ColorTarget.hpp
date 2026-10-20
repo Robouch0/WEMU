@@ -10,6 +10,8 @@
 namespace Core::Gfx {
     enum class ColorFormat { RGBA8, RGBA32Float, R11G11B10Float };
     constexpr unsigned colorElementBytes(ColorFormat format) { return format == ColorFormat::RGBA32Float ? 16u : 4u; }
+    // 0x820 (R16G16B16A16_FLOAT) stays RGBA8: MK8 renders its environment probe in that format, and
+    // keeping its HDR range overexposed every reflection compared with the console's output.
     constexpr ColorFormat colorFormat(unsigned gx2Format)
     {
         return gx2Format == 0x823 ? ColorFormat::RGBA32Float : gx2Format == 0x816 ? ColorFormat::R11G11B10Float : ColorFormat::RGBA8;
@@ -46,6 +48,32 @@ namespace Core::Gfx {
         const auto rounded = (fraction + (1u << (shift - 1)) - 1 + ((fraction >> shift) & 1)) >> shift;
         // A fraction carry also carries into the exponent (including infinity).
         return (unsigned(exponent) << fractionBits) + rounded;
+    }
+    // Display bytes of packed R11G11B10 elements (the clamped value rounded half away from zero, as
+    // every scan-out copy rounds). Each channel depends only on its own bits, so the float decode
+    // and rounding of a full-screen copy become two small tables built once.
+    struct PackedFloatUnitBytes {
+            std::array<std::uint8_t, 2048> eleven; // R and G: six fraction bits
+            std::array<std::uint8_t, 1024> ten; // B: five fraction bits
+            std::array<std::uint8_t, 3> operator()(const std::uint8_t *bytes) const
+            {
+                const auto bits =
+                        std::uint32_t(bytes[0]) | (std::uint32_t(bytes[1]) << 8) | (std::uint32_t(bytes[2]) << 16) | (std::uint32_t(bytes[3]) << 24);
+                return {eleven[bits & 0x7FF], eleven[(bits >> 11) & 0x7FF], ten[bits >> 22]};
+            }
+    };
+    inline std::uint8_t unitByte(double value) { return static_cast<std::uint8_t>(std::lround(std::clamp(value, 0.0, 1.0) * 255.0)); }
+    inline const PackedFloatUnitBytes &packedFloatUnitBytes()
+    {
+        static const PackedFloatUnitBytes tables = [] {
+            PackedFloatUnitBytes result;
+            for (unsigned bits = 0; bits < result.eleven.size(); ++bits)
+                result.eleven[bits] = unitByte(decodeUnsignedFloat(bits, 6));
+            for (unsigned bits = 0; bits < result.ten.size(); ++bits)
+                result.ten[bits] = unitByte(decodeUnsignedFloat(bits, 5));
+            return result;
+        }();
+        return tables;
     }
     inline std::array<float, 4> readFloatColor(const std::uint8_t *bytes, ColorFormat format = ColorFormat::RGBA32Float)
     {

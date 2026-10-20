@@ -14,10 +14,13 @@ to RGBA8; intermediate targets retain their float precision. The Vulkan image
 format, transfers, preserved row padding, pipeline cache keys and versioned
 readback tickets all carry the target format.
 
-Device-only transfer buffers prefer local GPU memory. Image allocations retain
-the existing compatible-memory selection: forcing local images improved GPU
-raster time but regressed total frame delivery with the current CPU consumers.
-`WEMU_NATIVE_DEVICE_LOCAL_IMAGES=1` enables that diagnostic comparison. Upload
+Device-only transfer buffers prefer local GPU memory. On a discrete GPU, images
+also prefer local memory: the first compatible type is system memory there, so
+rendering and sampling crossed PCIe (MK8's character select spent ~75 ms per
+frame waiting on fences on an RTX 3060 Laptop GPU, ~1 ms with local images).
+Integrated GPUs retain the compatible-memory selection, where forcing local
+images improved GPU raster time but regressed total frame delivery.
+`WEMU_NATIVE_DEVICE_LOCAL_IMAGES=0/1` overrides the choice. Upload
 and readback buffers keep host access. An LRU resource cache, limited to 64
 bundles with a 768 MiB estimated eviction threshold, retains hot draws when new variants
 arrive instead of rebuilding the entire cache.
@@ -101,12 +104,14 @@ These operations allow eligible vertex-texture shaders to remain on Vulkan.
 Unsupported instructions/resources continue to fall back; ordinary small
 triangle vertex passes retain the existing eligibility policy.
 
-`WEMU_NATIVE_TRIANGLE_VERTEX=1` enables broader ordinary-triangle vertex execution
-for validation/profiling. It is disabled by default: commercial-scene comparison
-found color differences beyond the established one-level tolerance, despite no
-Vulkan synchronization errors. Point batches and eligible vertex-texture shaders
-keep their established default eligibility. Pixel fidelity must be resolved
-before broader triangle execution is promoted.
+Ordinary triangle draws also execute eligible vertex programs on Vulkan by
+default; `WEMU_NATIVE_TRIANGLE_VERTEX=0` restores reference vertex execution for
+them. Interpreting vertex programs on the replay thread took about 60% of its
+time in MK8's race and most of the character select's 17 ms replay. Compared with
+reference execution, MK8's menus differ only at triangle edges and in rounding:
+in the kart select, 498 of 921600 pixels differ by more than 2% and none by more
+than 10%. The host rasterizer clips and applies its own coverage rules instead of
+the replayer's CPU clipping and sub-half-pixel culling.
 
 ## Stack-pop control flow
 

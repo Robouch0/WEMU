@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <format>
@@ -31,6 +32,9 @@
 
 #ifdef WEMU_HAS_LLVM
     #include "cpu/recompiler/LlvmBackend.hpp"
+#endif
+#ifdef WEMU_HAS_X64_JIT
+    #include "cpu/jit/X64Jit.hpp"
 #endif
 
 namespace Core {
@@ -103,7 +107,7 @@ namespace Core {
                 m_h264.reset();
                 m_mvPlayer.reset();
                 m_lockedCache = {};
-                m_blockCache.clear();
+                clearBlockCache();
                 m_observedPcs.clear();
                 m_failed = false;
                 m_pc = 0;
@@ -172,6 +176,23 @@ namespace Core {
             std::unordered_map<std::uint32_t, HookFn> m_hooks; // PPC addr → intercept fn
             std::uint32_t m_hooks_min{0xFFFFFFFFu}; // Opt C: hook address range
             std::uint32_t m_hooks_max{0u};
+            // Hooks are spread over the whole code range, so most blocks would otherwise look their PC
+            // up in m_hooks. One bit per (address >> 2) & 0xFFFF screens them first; it is rebuilt
+            // whenever the hook count changes (HLE may add hooks while the guest runs).
+            [[nodiscard]] bool hooked(const std::uint32_t ppc)
+            {
+                if (ppc < m_hooks_min || ppc > m_hooks_max)
+                    return false;
+                if (m_hookFilterCount != m_hooks.size()) {
+                    m_hookFilter.fill(0);
+                    for (const auto &[address, hook]: m_hooks)
+                        m_hookFilter[(address >> 2 & 0xFFFF) / 64] |= std::uint64_t{1} << (address >> 2 & 63);
+                    m_hookFilterCount = m_hooks.size();
+                }
+                return (m_hookFilter[(ppc >> 2 & 0xFFFF) / 64] >> (ppc >> 2 & 63) & 1) && m_hooks.contains(ppc);
+            }
+            std::array<std::uint64_t, 1024> m_hookFilter{};
+            std::size_t m_hookFilterCount{~std::size_t{0}};
 
             Core::Binary m_binary;
             // Data accesses, instruction fetch, and diagnostics share the binary's owned RAM.
@@ -238,9 +259,24 @@ namespace Core {
             struct DecodedInstr {
                     RawHandler fn;
                     EncodedInstruction instr;
+                    bool store{false}; // may write guest memory: leave the block if it hit decoded code
+                    InstructionID id{};
             };
             struct Block {
                     std::vector<DecodedInstr> instrs; // straight-line run, terminator (branch) last
+                    // Guest-order words of every validated instruction (instrs plus native lookahead),
+                    // compared against live memory with one memcmp on each dispatch.
+                    std::vector<std::uint32_t> guestWords;
+                    bool stores{false}; // any instruction may write guest memory (spin detection)
+                    mutable std::uint64_t validatedEpoch{0}; // Memory::codeEpoch() of the last word comparison
+                    // Successor chaining: the blocks most recently dispatched after this one, so the
+                    // common path skips the lookup table. Entries hold for one m_blockGeneration.
+                    struct Successor {
+                            std::uint32_t pc{~0u};
+                            const Block *block{nullptr};
+                            std::uint64_t generation{};
+                    };
+                    mutable std::array<Successor, 2> successors{};
 #ifdef WEMU_HAS_LLVM
                     std::vector<std::uint32_t> nativeWords; // supported prefix, empty when not eligible
                     mutable Ppc::NativeBinding nativeCode; // Cache invalidation expires this binding.
@@ -250,6 +286,28 @@ namespace Core {
 #endif
             };
             std::unordered_map<std::uint32_t, Block> m_blockCache; // keyed by memory-relative PC
+            std::uint64_t m_blockGeneration{1}; // advanced whenever a cached block is destroyed
+            // Direct-mapped front of m_blockCache (map nodes are stable). Every erase/clear of the
+            // map goes through getBlock()'s replacement or clearBlockCache() so no slot outlives its block.
+            struct BlockLookup {
+                    std::uint32_t pc{~0u};
+                    Block *block{nullptr};
+            };
+            static constexpr std::uint32_t kBlockLookupSize = 1u << 16;
+            std::vector<BlockLookup> m_blockLookup{kBlockLookupSize};
+            static constexpr std::uint32_t blockLookupSlot(std::uint32_t pc) noexcept { return (pc >> 2) & (kBlockLookupSize - 1); }
+            void clearBlockCache()
+            {
+                ++m_blockGeneration;
+                m_blockCache.clear();
+                std::fill(m_blockLookup.begin(), m_blockLookup.end(), BlockLookup{});
+                m_memory.clearCodePages();
+#ifdef WEMU_HAS_X64_JIT
+                // Compiled code relies on the code-page marks that were just cleared.
+                if (m_x64Jit)
+                    m_x64Jit->flush();
+#endif
+            }
             std::vector<std::uint32_t> m_observedPcs; // absolute guest PCs that must reach the diagnostic dispatch
             bool m_jitEnabled{false};
             std::uint64_t m_retired{0}; // total instructions retired (WEMU_IPS throughput reporting)
@@ -259,9 +317,23 @@ namespace Core {
             const Block &getBlock(Utils::BeDecoder &decoder, std::uint32_t startPc, bool nativeLookahead = false);
             // Execute a whole block; returns the number of instructions retired (for slice accounting).
             std::uint32_t runBlock(const Block &block, std::size_t first = 0);
+            // Reports a guest exception raised by the block instruction at m_pc. Returns true when it
+            // killed the current thread or stopped the interpreter, so the block must not continue.
+            bool handleBlockException(const Core::Exception &e);
+#ifdef WEMU_HAS_X64_JIT
+            std::unique_ptr<Jit::X64Jit> m_x64Jit; // WEMU_X64_JIT=1: compiled blocks
+#endif
 
             // Import sentinel (st_value >= 0xC0000000) -> symbol name, for BCTR HLE dispatch.
             std::unordered_map<std::uint32_t, const std::string *> m_importBySentinel{};
+
+            // HLE handler registered for a symbol name (sc, bctr to an import), or nullptr. Names
+            // live in m_binary.symbols, so lookups in the string-keyed syscall table are cached by
+            // name address until a registration changes the table.
+            using SyscallFn = void (*)(Interpreter &);
+            [[nodiscard]] SyscallFn syscallFor(const std::string &name);
+            std::unordered_map<const std::string *, SyscallFn> m_syscallCache;
+            std::uint64_t m_syscallCacheVersion{~std::uint64_t{0}};
     };
 
 

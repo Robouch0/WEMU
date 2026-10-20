@@ -9,6 +9,7 @@
 #include <cstring>
 #include <deque>
 #include <unordered_map>
+#include <utility>
 
 #include "cpu/interpreter/Interpreter.hpp"
 #include "cpu/interpreter/SyscallHandler.hpp"
@@ -63,13 +64,23 @@ namespace {
         return *cpu.m_h264;
     }
 
-    std::uint8_t *range(Core::Interpreter &cpu, std::uint32_t address, std::size_t length)
+    // Checks and reads go through the read-only view: a writable one ends the code epoch when it
+    // touches code, and the output callback is guest code. Pikmin 3's opening movie made the JIT
+    // unlink and revalidate every compiled block for each decoded frame.
+    const std::uint8_t *readable(Core::Interpreter &cpu, std::uint32_t address, std::size_t length)
     {
         if (!address || !length || length > UINT32_MAX || std::uint64_t(address) + length > UINT32_MAX)
             return nullptr;
-        auto *start = cpu.m_memory.hostPtr(address);
-        auto *end = cpu.m_memory.hostPtr(address + static_cast<std::uint32_t>(length) - 1);
+        const auto &memory = std::as_const(cpu.m_memory);
+        const auto *start = memory.hostPtr(address);
+        const auto *end = memory.hostPtr(address + static_cast<std::uint32_t>(length) - 1);
         return start && end && reinterpret_cast<std::uintptr_t>(end) - reinterpret_cast<std::uintptr_t>(start) == length - 1 ? start : nullptr;
+    }
+
+    // Bytes the HLE stores: write tracking sees the whole range.
+    std::uint8_t *range(Core::Interpreter &cpu, std::uint32_t address, std::size_t length)
+    {
+        return readable(cpu, address, length) ? cpu.m_memory.hostPtr(address, length) : nullptr;
     }
 
     Core::H264::Session *session(Core::Interpreter &cpu)
@@ -92,12 +103,12 @@ namespace {
         }
     }
 
-    std::uint32_t checkMemory(Core::Interpreter &cpu) { return range(cpu, cpu.m_gpr[3], cpu.m_gpr[4]) ? 0 : 1; }
+    std::uint32_t checkMemory(Core::Interpreter &cpu) { return readable(cpu, cpu.m_gpr[3], cpu.m_gpr[4]) ? 0 : 1; }
 
     std::uint32_t init(Core::Interpreter &cpu)
     {
         const auto size = cpu.m_gpr[3], memory = cpu.m_gpr[4];
-        if (size < 256 || !range(cpu, memory, size))
+        if (size < 256 || !readable(cpu, memory, size))
             return invalidParameter;
         state(cpu).sessions[memory] = Core::H264::Session{};
         std::memset(range(cpu, memory, 256), 0, 256);
@@ -161,7 +172,7 @@ namespace {
         if constexpr (Kind == 2)
             s->outputPerFrame = value != 0;
         if constexpr (Kind == 3) {
-            if (!range(cpu, value, 4))
+            if (!readable(cpu, value, 4))
                 return invalidParameter;
             s->user = cpu.m_memory.read<std::uint32_t>(value);
         }
@@ -179,9 +190,9 @@ namespace {
         else if (kind == 0x70000001)
             s->user = value;
         else if (kind == 0x20000002) {
-            if (!range(cpu, value, 1))
+            if (!readable(cpu, value, 1))
                 return invalidParameter;
-            s->outputPerFrame = *range(cpu, value, 1) != 0;
+            s->outputPerFrame = *readable(cpu, value, 1) != 0;
         } else
             return invalidParameter;
         return 0;
@@ -190,7 +201,7 @@ namespace {
     std::uint32_t setBitstream(Core::Interpreter &cpu)
     {
         auto *s = session(cpu);
-        if (!s || !s->begun || !range(cpu, cpu.m_gpr[4], cpu.m_gpr[5]))
+        if (!s || !s->begun || !readable(cpu, cpu.m_gpr[4], cpu.m_gpr[5]))
             return invalidParameter;
         s->bitstream = cpu.m_gpr[4];
         s->length = cpu.m_gpr[5];
@@ -209,10 +220,10 @@ namespace {
         if (oldStack < bytes)
             return invalidParameter;
         const auto stack = (oldStack - bytes) & ~15u;
-        if (s.callback && (!range(cpu, stack, bytes) || !range(cpu, s.callback, 4)))
+        if (s.callback && (!readable(cpu, stack, bytes) || !readable(cpu, s.callback, 4)))
             return invalidParameter;
         for (std::size_t i = 0; i < count; ++i)
-            if (!range(cpu, s.pending[i].guestBuffer, s.pending[i].nv12.size()))
+            if (!readable(cpu, s.pending[i].guestBuffer, s.pending[i].nv12.size()))
                 return invalidParameter;
 
         // Leave the linkage and argument-save area available to the guest callee.
@@ -279,9 +290,9 @@ namespace {
     std::uint32_t execute(Core::Interpreter &cpu)
     {
         auto *s = session(cpu);
-        if (!s || !s->begun || !s->length || !range(cpu, cpu.m_gpr[4], 1))
+        if (!s || !s->begun || !s->length || !readable(cpu, cpu.m_gpr[4], 1))
             return invalidParameter;
-        const auto *input = range(cpu, s->bitstream, s->length);
+        const auto *input = readable(cpu, s->bitstream, s->length);
         if (!input)
             return invalidParameter;
         if (s->recovering) {
@@ -342,10 +353,10 @@ namespace {
     std::uint32_t getImageSize(Core::Interpreter &cpu)
     {
         const auto source = cpu.m_gpr[3], size = cpu.m_gpr[4], offset = cpu.m_gpr[5];
-        if (offset >= size || !range(cpu, source, size) || !range(cpu, cpu.m_gpr[6], 4) || !range(cpu, cpu.m_gpr[7], 4))
+        if (offset >= size || !readable(cpu, source, size) || !readable(cpu, cpu.m_gpr[6], 4) || !readable(cpu, cpu.m_gpr[7], 4))
             return invalidParameter;
         std::uint32_t width{}, height{};
-        if (!Core::Video::H264Decoder::imageSize({range(cpu, source + offset, size - offset), size - offset}, width, height))
+        if (!Core::Video::H264Decoder::imageSize({readable(cpu, source + offset, size - offset), size - offset}, width, height))
             return badStream;
         cpu.m_memory.write<std::uint32_t>(cpu.m_gpr[6], width);
         cpu.m_memory.write<std::uint32_t>(cpu.m_gpr[7], height);

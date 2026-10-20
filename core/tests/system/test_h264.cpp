@@ -126,6 +126,9 @@ TEST_F(H264Test, GuestDecoderOutputsNv12AndReturnsSynchronouslyToCaller)
     };
     EXPECT_EQ(call("H264DECInitParam", {256, context}), 0u);
     EXPECT_EQ(call("H264DECSetParam_FPTR_OUTPUT", {context, callback}), 0u);
+    // The callback is decoded guest code: delivering frames must not end the code epoch.
+    cpu->m_memory.markCodePage(callback - 0x02000000);
+    const auto codeEpoch = cpu->m_memory.codeEpoch();
     cpu->m_memory.write<std::uint32_t>(inputAddress, 0x12345678);
     EXPECT_EQ(call("H264DECSetParam_USER_MEMORY", {context, inputAddress}), 0u);
     EXPECT_EQ(call("H264DECOpen", {context}), 0u);
@@ -191,6 +194,7 @@ TEST_F(H264Test, GuestDecoderOutputsNv12AndReturnsSynchronouslyToCaller)
     ASSERT_TRUE(cpu->m_hle_redirected);
     inspectCallback(0);
     EXPECT_EQ(displayed, (std::vector<unsigned>{0, 2, 3, 1, 5, 6, 4}));
+    EXPECT_EQ(cpu->m_memory.codeEpoch(), codeEpoch);
     EXPECT_EQ(call("H264DECExecute", {context, 0x28000000}), 0x1010000u);
     EXPECT_EQ(call("H264DECBegin", {context}), 0u);
     std::memcpy(cpu->m_memory.hostPtr(inputAddress), input[1].data(), input[1].size());

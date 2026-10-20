@@ -11,8 +11,11 @@
 #include <bitset>
 #include <chrono>
 #include <cstdlib>
+#include <cstring>
 #include <utility>
 
+#include "cpu/interpreter/SyscallHandler.hpp"
+#include "cpu/types/InstructionTraits.hpp"
 #include "gfx/Renderer.hpp"
 #include "hle/AsyncCallbacks.hpp"
 #include "hle/Ax.hpp"
@@ -109,7 +112,7 @@ void Core::Interpreter::run()
     const bool haveWatchPcs = !Diag::watchPcs().empty();
     if (m_observedPcs != Diag::watchPcs()) {
         m_observedPcs = Diag::watchPcs();
-        m_blockCache.clear();
+        clearBlockCache();
     }
     const bool haveWatchWords = !Diag::watchWords().empty();
     const bool haveWatchCstrs = Diag::hasWatchCstrs();
@@ -138,6 +141,10 @@ void Core::Interpreter::run()
                              !haveOrderFix && !haveResourceLookupTrace && !haveReadinessTrace && !haveItemResourceTrace && !haveFlvcNullTrace &&
                              !haveMk8UiArrayZeroFill && !haveMk8WorkQueueTrace && !haveSeadHeapTrace && !haveSeadHeapContextTrace &&
                              !haveDriveMenuExperiment;
+    const bool x64Requested = [] {
+        const char *e = std::getenv("WEMU_X64_JIT");
+        return e && e[0] == '1';
+    }();
 #ifdef WEMU_HAS_LLVM
     const bool profileNative = [] {
         const auto *value = std::getenv("WEMU_NATIVE_PROFILE");
@@ -152,13 +159,15 @@ void Core::Interpreter::run()
     nativeState.regions[1] = {m_memory.hostPtr(Memory::STACK_BASE, Memory::STACK_SIZE), Memory::STACK_SIZE, Memory::STACK_BASE};
     nativeState.regions[2] = {m_memory.hostPtr(Memory::DIMPORT_BASE, Memory::DIMPORT_SIZE), Memory::DIMPORT_SIZE, Memory::DIMPORT_BASE};
     std::unique_ptr<Ppc::Dispatcher> native;
-    if (const char *enabled = std::getenv("WEMU_NATIVE_CPU"); enabled && enabled[0] == '1' && jitFastPath) {
+    if (const char *enabled = std::getenv("WEMU_NATIVE_CPU"); enabled && enabled[0] == '1' && jitFastPath && !x64Requested) {
         try {
             const char *cache = std::getenv("WEMU_NATIVE_CACHE_DIR");
             Profile::Scope compiling(Profile::Stage::Compile);
             // Decoded versions count hotness before cache admission, so cold
             // prefixes cannot evict compiled code or repeatedly link objects.
             native = std::make_unique<Ppc::Dispatcher>(16384, 1, cache ? cache : "", 4);
+            // Native stores bypass Memory, so its write generations cannot vouch for guest bytes.
+            m_memory.setUntrackedStores(true);
             Utils::Log::error("[NATIVECPU] enabled: supported hot prefixes with interpreter fallback");
             if (cache && *cache)
                 Utils::Log::error("[NATIVECPU] private object cache enabled={}", native->cacheEnabled());
@@ -169,8 +178,14 @@ void Core::Interpreter::run()
 #endif
     // WEMU_IPS=1: report interpreter throughput (instructions/sec) periodically. Works with the JIT
     // fast path (unlike WEMU_HEARTBEAT, which disables it), so it can measure the JIT's real gain.
+    const bool profileX64 = [] {
+        const char *e = std::getenv("WEMU_JIT_PROFILE");
+        return e && e[0] == '1';
+    }();
     const bool reportIps = [&]() {
         const char *e = std::getenv("WEMU_IPS");
+        if (profileX64)
+            return true;
 #ifdef WEMU_HAS_LLVM
         if (profileNative)
             return true;
@@ -185,6 +200,7 @@ void Core::Interpreter::run()
     auto threadDumpMark = ipsMark;
     std::uint64_t ipsLast = 0;
     constexpr std::uint32_t kDriveMenuInlineSentinel = 0x0FFFFFECu;
+    constexpr std::uint32_t kSentinelLow = 0x0FFFFFE0u;
     struct InlineDriveMenuCall {
             bool active{false};
             std::uint32_t phase{0};
@@ -265,7 +281,89 @@ void Core::Interpreter::run()
                                  (unsigned long long) v[i].first, 100.0 * double(v[i].first) / double(total ? total : 1));
             }
     } hotDump{hotBlockCounts}; // TEMP-HOTBLOCKS
+    static const std::uint32_t driveMenuTask = []() -> std::uint32_t {
+        const char *e = std::getenv("WEMU_DRIVE_MENU");
+        return e ? static_cast<std::uint32_t>(std::strtoul(e, nullptr, 16)) : 0;
+    }();
+    static std::uint32_t driveMenuCalls = 0;
+    static const bool drainDriveMenuActive = [] {
+        const char *e = std::getenv("WEMU_DRAIN_ACTIVE");
+        return e && e[0] == '1';
+    }();
+    static const bool drainDriveMenuScheduled = [] {
+        const char *e = std::getenv("WEMU_DRAIN_SCHEDULED");
+        return e && e[0] == '1';
+    }();
+    static const bool inlineDriveMenuScene = [] {
+        const char *e = std::getenv("WEMU_INLINE_SCENE");
+        return e && e[0] == '1';
+    }();
+    static const std::uint32_t forcedDriveMenuTask0 = []() -> std::uint32_t {
+        const char *e = std::getenv("WEMU_FORCE_TASK0");
+        return e ? static_cast<std::uint32_t>(std::strtoul(e, nullptr, 16)) : 0xFFFFFFFFu;
+    }();
+    const bool haveFlvcSkip = [] {
+        const char *e = std::getenv("WEMU_FLVC_SKIP_NULL_TARGET");
+        return e && e[0] == '1';
+    }();
+    // One branch per dispatch instead of one per diagnostic when none is configured.
+    const bool havePcDiagnostics = haveWatchPcs || haveWatchWords || haveWatchCstrs || haveWatchRegs || haveCountPcs || haveHeartbeat ||
+                                   haveResourceLookupTrace || haveReadinessTrace || haveItemResourceTrace || haveFlvcNullTrace ||
+                                   haveMk8UiArrayZeroFill || haveMk8WorkQueueTrace || haveSeadHeapTrace || haveSeadHeapContextTrace || haveFlvcSkip ||
+                                   haveOrderFix || driveMenuTask;
+#ifdef WEMU_HAS_X64_JIT
+    // Compiled blocks chain without passing through this loop, so per-dispatch PC diagnostics
+    // keep the interpreter.
+    m_x64Jit.reset();
+    if (x64Requested && jitFastPath && !havePcDiagnostics && !hotBlocks) {
+        m_x64Jit = Jit::X64Jit::create(*this, profileX64);
+        Utils::Log::error("[X64JIT] {}", m_x64Jit ? "enabled" : "unavailable on this host; using the interpreter");
+    }
+#endif
     std::uint64_t schedulerClockRetired = m_retired;
+    // A thread that retires thousands of instructions without a single store is polling memory
+    // that another core writes (job counters, completion flags). On hardware that core runs in
+    // parallel; here it only advances once the poller leaves the host thread, so hand the slice
+    // to other cores early instead of spinning it out. Switching at a block boundary is the same
+    // operation as the periodic timeslice preemption. WEMU_SPIN_YIELD=0 disables it.
+    constexpr std::uint64_t kSpinYieldInstructions = 2048;
+    const bool spinYield = [] {
+        const char *e = std::getenv("WEMU_SPIN_YIELD");
+        return !e || e[0] != '0';
+    }();
+    std::uint64_t lastStoreRetired = m_retired;
+#ifdef WEMU_HAS_X64_JIT
+    if (m_x64Jit)
+        m_x64Jit->setSpinThreshold(spinYield ? kSpinYieldInstructions : ~std::uint64_t{0});
+#endif
+    const auto noteBlockRetired = [&](const bool stores) {
+        if (stores) {
+            lastStoreRetired = m_retired;
+        } else if (m_retired - lastStoreRetired >= kSpinYieldInstructions && spinYield) {
+            lastStoreRetired = m_retired;
+            if (!m_interruptsDisabled)
+                m_scheduler.preempt(*this);
+        }
+    };
+    // Resolves m_pc through the previous block's successors, falling back to getBlock(). The
+    // previous block is only trusted within the generation it was dispatched in.
+    const Block *previousBlock = nullptr;
+    std::uint64_t previousGeneration = 0;
+    [[maybe_unused]] const auto chainedBlock = [&](Utils::BeDecoder &decoder) -> const Block & {
+        const Block *previous = previousGeneration == m_blockGeneration ? previousBlock : nullptr;
+        if (previous)
+            for (const auto &next: previous->successors)
+                if (next.pc == m_pc && next.generation == m_blockGeneration && next.block->validatedEpoch == m_memory.codeEpoch())
+                    return *(previousBlock = next.block);
+        const Block &block = getBlock(decoder, m_pc);
+        if (previous && previousGeneration == m_blockGeneration) {
+            previous->successors[1] = previous->successors[0];
+            previous->successors[0] = {m_pc, &block, m_blockGeneration};
+        }
+        previousBlock = &block;
+        previousGeneration = m_blockGeneration;
+        return block;
+    };
     while (m_running) {
         if (m_retired >= nextServiceTickAt) {
             // Desktop events must not depend on the guest calling VPADRead or WHBProc.
@@ -302,6 +400,13 @@ void Core::Interpreter::run()
                 if (reportIps && secs >= 2.0) {
                     Utils::Log::error("[IPS] {:.1f}M instr/sec ({} blocks cached)", static_cast<double>(m_retired - ipsLast) / secs / 1e6,
                                       m_blockCache.size());
+#ifdef WEMU_HAS_X64_JIT
+                    if (m_x64Jit && profileX64) {
+                        if (m_renderer)
+                            Utils::Log::error("[X64JIT] presents={}", m_renderer->guest_present_count());
+                        m_x64Jit->report();
+                    }
+#endif
 #ifdef WEMU_HAS_LLVM
                     if (profileNative) {
                         for (unsigned i = 0; i < prefixCounts.size(); ++i)
@@ -340,162 +445,197 @@ void Core::Interpreter::run()
             }
         }
         ppc_pc = m_pc + Core::Memory::MemoryMap::ApplicationCode;
-        if (ppc_pc == Core::H264::callbackSentinel) {
-            Core::H264::onCallbackReturn(*this);
-            continue;
-        }
-        // The AX callback thread finished one frame callback: run the next or park it.
-        if (ppc_pc == Core::AX_FRAME_SENTINEL) {
-            Core::Ax::OnSentinelReturn(*this);
-            continue;
-        }
-        // The async-callback pump finished one deferred call: run the next or park it.
-        if (ppc_pc == Core::ASYNC_CB_SENTINEL) {
-            Core::Async::OnSentinelReturn(*this);
-            continue;
-        }
-        // WEMU_INLINE_SCENE=1: run the MK8 drive-menu diagnostic callbacks on the current guest
-        // thread instead of the synthetic nnAsync thread. Scene construction handlers touch
-        // per-thread/global context that is not valid on nnAsync; this trampoline preserves the
-        // interrupted thread's registers and resumes at the original PC after the injected call(s).
-        if (ppc_pc == kDriveMenuInlineSentinel && inlineDriveMenuCall.active) {
-            if (inlineDriveMenuCall.phase == 1 && inlineDriveMenuCall.drainFunc) {
+        // Every return sentinel lies in [kSentinelLow, ApplicationData) and nothing valid lives
+        // below the code base, so ordinary code addresses skip all of these checks at once.
+        static_assert(Core::H264::callbackSentinel >= kSentinelLow && kDriveMenuInlineSentinel >= kSentinelLow &&
+                      Core::ASYNC_CB_SENTINEL >= kSentinelLow && Core::AX_FRAME_SENTINEL >= kSentinelLow &&
+                      Core::RETURN_SENTINEL < Core::Memory::MemoryMap::ApplicationData);
+        if (ppc_pc - Core::Memory::MemoryMap::ApplicationCode >= kSentinelLow - Core::Memory::MemoryMap::ApplicationCode) [[unlikely]] {
+            if (ppc_pc == Core::H264::callbackSentinel) {
+                Core::H264::onCallbackReturn(*this);
+                continue;
+            }
+            // The AX callback thread finished one frame callback: run the next or park it.
+            if (ppc_pc == Core::AX_FRAME_SENTINEL) {
+                Core::Ax::OnSentinelReturn(*this);
+                continue;
+            }
+            // The async-callback pump finished one deferred call: run the next or park it.
+            if (ppc_pc == Core::ASYNC_CB_SENTINEL) {
+                Core::Async::OnSentinelReturn(*this);
+                continue;
+            }
+            // WEMU_INLINE_SCENE=1: run the MK8 drive-menu diagnostic callbacks on the current guest
+            // thread instead of the synthetic nnAsync thread. Scene construction handlers touch
+            // per-thread/global context that is not valid on nnAsync; this trampoline preserves the
+            // interrupted thread's registers and resumes at the original PC after the injected call(s).
+            if (ppc_pc == kDriveMenuInlineSentinel && inlineDriveMenuCall.active) {
+                if (inlineDriveMenuCall.phase == 1 && inlineDriveMenuCall.drainFunc) {
+                    restoreInlineDriveMenuState();
+                    inlineDriveMenuCall.phase = 2;
+                    m_pc = inlineDriveMenuCall.drainFunc - Core::Memory::MemoryMap::ApplicationCode;
+                    m_nextPc = m_pc;
+                    m_lr = kDriveMenuInlineSentinel - Core::Memory::MemoryMap::ApplicationCode;
+                    m_gpr[3] = inlineDriveMenuCall.task;
+                    continue;
+                }
+                const std::uint32_t returnPc = inlineDriveMenuCall.returnPc;
                 restoreInlineDriveMenuState();
-                inlineDriveMenuCall.phase = 2;
-                m_pc = inlineDriveMenuCall.drainFunc - Core::Memory::MemoryMap::ApplicationCode;
+                inlineDriveMenuCall.active = false;
+                m_pc = returnPc - Core::Memory::MemoryMap::ApplicationCode;
                 m_nextPc = m_pc;
-                m_lr = kDriveMenuInlineSentinel - Core::Memory::MemoryMap::ApplicationCode;
-                m_gpr[3] = inlineDriveMenuCall.task;
                 continue;
             }
-            const std::uint32_t returnPc = inlineDriveMenuCall.returnPc;
-            restoreInlineDriveMenuState();
-            inlineDriveMenuCall.active = false;
-            m_pc = returnPc - Core::Memory::MemoryMap::ApplicationCode;
-            m_nextPc = m_pc;
-            continue;
-        }
-        // A thread (or the main thread) returned to the trampoline address seeded in LR: it has
-        // finished. Switch to another runnable thread, or stop if this was the last one.
-        if (ppc_pc == Core::RETURN_SENTINEL) {
-            if (m_scheduler.exitCurrent(*this)) {
-                Utils::Log::debug("[EMU] thread finished; switched to next runnable thread.");
-                continue;
+            // A thread (or the main thread) returned to the trampoline address seeded in LR: it has
+            // finished. Switch to another runnable thread, or stop if this was the last one.
+            if (ppc_pc == Core::RETURN_SENTINEL) {
+                if (m_scheduler.exitCurrent(*this)) {
+                    Utils::Log::debug("[EMU] thread finished; switched to next runnable thread.");
+                    continue;
+                }
+                Utils::Log::info("[EMU] All threads finished; stopping.");
+                break;
             }
-            Utils::Log::info("[EMU] All threads finished; stopping.");
-            break;
-        }
-        // Guard against execution running off the rails into low/zeroed memory (e.g. a branch to a
-        // null pointer). Nothing valid lives below the code base, so stop instead of spinning
-        // through illegal zero instructions forever.
-        if (ppc_pc < Core::Memory::MemoryMap::ApplicationCode) {
-            Utils::Log::error("[EMU] PC ran off into invalid memory (0x{:08X}); halting. last PC=0x{:08X}", ppc_pc, lastPpc);
-            Diag::dumpCrashContext(*this, lastPpc, "PC ran off into invalid memory");
-            m_failed = true;
-            break;
+            // Guard against execution running off the rails into low/zeroed memory (e.g. a branch to a
+            // null pointer). Nothing valid lives below the code base, so stop instead of spinning
+            // through illegal zero instructions forever.
+            if (ppc_pc < Core::Memory::MemoryMap::ApplicationCode) {
+                Utils::Log::error("[EMU] PC ran off into invalid memory (0x{:08X}); halting. last PC=0x{:08X}", ppc_pc, lastPpc);
+                Diag::dumpCrashContext(*this, lastPpc, "PC ran off into invalid memory");
+                m_failed = true;
+                break;
+            }
         }
         lastPpc = ppc_pc;
-        if (haveWatchPcs && std::ranges::find(Diag::watchPcs(), ppc_pc) != Diag::watchPcs().end())
-            Diag::noteWatchHit(*this, ppc_pc);
-        if (haveWatchWords)
-            Diag::pollWatchWords(*this, ppc_pc);
-        if (haveWatchCstrs)
-            Diag::noteWatchCstrs(*this, ppc_pc);
-        if (haveWatchRegs)
-            Diag::noteWatchRegs(*this, ppc_pc);
-        if (haveCountPcs && std::ranges::find(Diag::countPcs(), ppc_pc) != Diag::countPcs().end())
-            Diag::notePcCount(ppc_pc);
-        if (haveHeartbeat)
-            Diag::pollHeartbeat(*this, ppc_pc);
-        if (haveResourceLookupTrace)
-            Diag::noteResourceLookup(*this, ppc_pc);
-        if (haveReadinessTrace)
-            Diag::noteReadinessGate(*this, ppc_pc);
-        if (haveItemResourceTrace)
-            Diag::noteItemResourceTrace(*this, ppc_pc);
-        if (haveFlvcNullTrace)
-            Diag::noteFlvcNullTrace(*this, ppc_pc);
-        if (haveMk8UiArrayZeroFill)
-            Diag::zeroMk8UiArrayAlloc(*this, ppc_pc);
-        if (haveMk8WorkQueueTrace)
-            Diag::noteMk8WorkQueueTrace(*this, ppc_pc);
-        if (haveSeadHeapTrace)
-            Diag::noteSeadHeapTrace(*this, ppc_pc);
-        if (haveSeadHeapContextTrace)
-            Diag::noteSeadHeapContextTrace(*this, ppc_pc);
-        if (Diag::skipNullFlvcTarget(*this, ppc_pc))
-            continue;
-        // EXPERIMENT (WEMU_ORDER_FIX=1, default off): skip MK8's title sequence calc while its
-        // decision input is still stale, so the game retries it on a later frame. Unlike m_hooks
-        // this is conditional per call, which is the whole point -- see Diag::deferTitleSeqCalc.
-        if (haveOrderFix && Diag::deferTitleSeqCalc(*this, ppc_pc)) {
-            m_pc = m_lr;
-            continue;
-        }
-        // WEMU_DRIVE_MENU is an MK8-only diagnostic experiment.  Its title forward
-        // edge is stored in staleSlot+0x147 and otherwise reaches the driver before
-        // the post-present probe can hold it.
-        static const std::uint32_t driveMenuTask = []() -> std::uint32_t {
-            const char *e = std::getenv("WEMU_DRIVE_MENU");
-            return e ? static_cast<std::uint32_t>(std::strtoul(e, nullptr, 16)) : 0;
-        }();
-        static std::uint32_t driveMenuCalls = 0;
-        static const bool drainDriveMenuActive = [] {
-            const char *e = std::getenv("WEMU_DRAIN_ACTIVE");
-            return e && e[0] == '1';
-        }();
-        static const bool drainDriveMenuScheduled = [] {
-            const char *e = std::getenv("WEMU_DRAIN_SCHEDULED");
-            return e && e[0] == '1';
-        }();
-        static const bool inlineDriveMenuScene = [] {
-            const char *e = std::getenv("WEMU_INLINE_SCENE");
-            return e && e[0] == '1';
-        }();
-        static const std::uint32_t forcedDriveMenuTask0 = []() -> std::uint32_t {
-            const char *e = std::getenv("WEMU_FORCE_TASK0");
-            return e ? static_cast<std::uint32_t>(std::strtoul(e, nullptr, 16)) : 0xFFFFFFFFu;
-        }();
-        if (driveMenuTask && ppc_pc == 0x024D6430) {
-            try {
-                const std::uint32_t incoming = driveMenuTask + 0xDC;
-                if (m_memory.read<std::uint32_t>(incoming + 0x34) == 0) {
-                    const std::uint32_t staleSlot = m_memory.read<std::uint32_t>(0x101D6944);
-                    if (staleSlot)
-                        m_memory.write<std::uint8_t>(staleSlot + 0x147, 0);
-                    if (m_gpr[3])
-                        m_memory.write<std::uint8_t>(m_gpr[3] + 0x143, 0);
-                    if (++driveMenuCalls % 60 == 0) {
-                        if (inlineDriveMenuScene) {
-                            const std::uint32_t drainFunc = drainDriveMenuScheduled ? 0x0253A4F8 : (drainDriveMenuActive ? 0x0253A3C4 : 0);
-                            startInlineDriveMenuCall(0x025467D0, driveMenuTask, ppc_pc, drainFunc, forcedDriveMenuTask0);
-                            continue;
-                        } else {
-                            Core::Async::enqueue(0x025467D0, driveMenuTask);
-                            if (drainDriveMenuActive)
-                                Core::Async::enqueue(0x0253A3C4, driveMenuTask);
-                        }
-                    }
-                }
-            } catch (const Core::MemoryException &e) {
-                Utils::Log::debug("[DIAG] Cannot inspect drive-menu state: {}", e.what());
-            }
-        }
-        if (ppc_pc >= m_hooks_min && ppc_pc <= m_hooks_max) {
-            if (auto it = m_hooks.find(ppc_pc); it != m_hooks.end()) {
-                Profile::Scope hle(Profile::Stage::Hle);
-                it->second(*this);
+        if (havePcDiagnostics) [[unlikely]] {
+            if (haveWatchPcs && std::ranges::find(Diag::watchPcs(), ppc_pc) != Diag::watchPcs().end())
+                Diag::noteWatchHit(*this, ppc_pc);
+            if (haveWatchWords)
+                Diag::pollWatchWords(*this, ppc_pc);
+            if (haveWatchCstrs)
+                Diag::noteWatchCstrs(*this, ppc_pc);
+            if (haveWatchRegs)
+                Diag::noteWatchRegs(*this, ppc_pc);
+            if (haveCountPcs && std::ranges::find(Diag::countPcs(), ppc_pc) != Diag::countPcs().end())
+                Diag::notePcCount(ppc_pc);
+            if (haveHeartbeat)
+                Diag::pollHeartbeat(*this, ppc_pc);
+            if (haveResourceLookupTrace)
+                Diag::noteResourceLookup(*this, ppc_pc);
+            if (haveReadinessTrace)
+                Diag::noteReadinessGate(*this, ppc_pc);
+            if (haveItemResourceTrace)
+                Diag::noteItemResourceTrace(*this, ppc_pc);
+            if (haveFlvcNullTrace)
+                Diag::noteFlvcNullTrace(*this, ppc_pc);
+            if (haveMk8UiArrayZeroFill)
+                Diag::zeroMk8UiArrayAlloc(*this, ppc_pc);
+            if (haveMk8WorkQueueTrace)
+                Diag::noteMk8WorkQueueTrace(*this, ppc_pc);
+            if (haveSeadHeapTrace)
+                Diag::noteSeadHeapTrace(*this, ppc_pc);
+            if (haveSeadHeapContextTrace)
+                Diag::noteSeadHeapContextTrace(*this, ppc_pc);
+            if (haveFlvcSkip && Diag::skipNullFlvcTarget(*this, ppc_pc))
+                continue;
+            // EXPERIMENT (WEMU_ORDER_FIX=1, default off): skip MK8's title sequence calc while its
+            // decision input is still stale, so the game retries it on a later frame. Unlike m_hooks
+            // this is conditional per call, which is the whole point -- see Diag::deferTitleSeqCalc.
+            if (haveOrderFix && Diag::deferTitleSeqCalc(*this, ppc_pc)) {
                 m_pc = m_lr;
                 continue;
             }
+            // WEMU_DRIVE_MENU is an MK8-only diagnostic experiment.  Its title forward
+            // edge is stored in staleSlot+0x147 and otherwise reaches the driver before
+            // the post-present probe can hold it.
+            if (driveMenuTask && ppc_pc == 0x024D6430) {
+                try {
+                    const std::uint32_t incoming = driveMenuTask + 0xDC;
+                    if (m_memory.read<std::uint32_t>(incoming + 0x34) == 0) {
+                        const std::uint32_t staleSlot = m_memory.read<std::uint32_t>(0x101D6944);
+                        if (staleSlot)
+                            m_memory.write<std::uint8_t>(staleSlot + 0x147, 0);
+                        if (m_gpr[3])
+                            m_memory.write<std::uint8_t>(m_gpr[3] + 0x143, 0);
+                        if (++driveMenuCalls % 60 == 0) {
+                            if (inlineDriveMenuScene) {
+                                const std::uint32_t drainFunc = drainDriveMenuScheduled ? 0x0253A4F8 : (drainDriveMenuActive ? 0x0253A3C4 : 0);
+                                startInlineDriveMenuCall(0x025467D0, driveMenuTask, ppc_pc, drainFunc, forcedDriveMenuTask0);
+                                continue;
+                            } else {
+                                Core::Async::enqueue(0x025467D0, driveMenuTask);
+                                if (drainDriveMenuActive)
+                                    Core::Async::enqueue(0x0253A3C4, driveMenuTask);
+                            }
+                        }
+                    }
+                } catch (const Core::MemoryException &e) {
+                    Utils::Log::debug("[DIAG] Cannot inspect drive-menu state: {}", e.what());
+                }
+            }
         }
+        if (hooked(ppc_pc)) {
+#ifdef WEMU_HAS_X64_JIT
+            if (m_x64Jit)
+                m_x64Jit->installHook(m_pc);
+#endif
+            Profile::Scope hle(Profile::Stage::Hle);
+            m_hooks.find(ppc_pc)->second(*this);
+            m_pc = m_lr;
+            continue;
+        }
+#ifdef WEMU_HAS_X64_JIT
+        // Compiled blocks run chained until something above needs the loop again: service tick,
+        // hook, sentinel, HLE call, code write or a block that is not compiled yet.
+        if (m_x64Jit) {
+            Jit::X64Jit &jit = *m_x64Jit;
+            jit.sync(m_memory.codeEpoch(), m_hooks.size());
+            bool ready = jit.prepare(m_pc);
+            if (!ready) {
+                const Block &blk = getBlock(instructionDecoder, m_pc);
+                if (!blk.instrs.empty()) {
+                    Profile::Scope compiling(Profile::Stage::Compile);
+                    std::array<Jit::GuestInstruction, 64> guest;
+                    for (std::size_t i = 0; i < blk.instrs.size(); ++i)
+                        guest[i] = {blk.instrs[i].instr.raw, blk.instrs[i].id};
+                    ready = jit.compile(m_pc, std::span(guest.data(), blk.instrs.size()), blk.stores);
+                }
+            }
+            if (ready) {
+                const Jit::X64Jit::Exit exit = jit.run(m_retired, nextServiceTickAt, lastStoreRetired);
+                switch (exit.reason) {
+                    case Jit::ExitReason::Budget:
+                    case Jit::ExitReason::LookupMiss:
+                        m_pc = m_nextPc = exit.pc;
+                        break;
+                    case Jit::ExitReason::Done:
+                        m_pc = m_nextPc = exit.pc;
+                        noteBlockRetired(exit.stores);
+                        break;
+                    case Jit::ExitReason::Suffix: {
+                        const Block &blk = getBlock(instructionDecoder, exit.blockPc);
+                        m_pc = exit.pc;
+                        m_retired += runBlock(blk, exit.index);
+                        noteBlockRetired(blk.stores);
+                        break;
+                    }
+                    case Jit::ExitReason::Fatal:
+                        noteBlockRetired(exit.stores);
+                        break;
+                    default:
+                        break;
+                }
+                continue;
+            }
+        }
+#endif
         // Fast path: execute a whole pre-decoded block. The tick cadence keys off m_retired (updated
         // here), so whole-block execution stays accounted for without a separate countdown.
         if (jitFastPath) {
 #ifdef WEMU_HAS_LLVM
             const Block &blk = getBlock(instructionDecoder, m_pc, bool(native));
 #else
-            const Block &blk = getBlock(instructionDecoder, m_pc);
+            const Block &blk = chainedBlock(instructionDecoder);
 #endif
             if (!blk.instrs.empty()) {
                 if (hotBlocks) // TEMP-HOTBLOCKS
@@ -542,6 +682,7 @@ void Core::Interpreter::run()
                             m_retired += n;
                             if (blk.nativeWords.size() < blk.instrs.size())
                                 m_retired += runBlock(blk, n);
+                            noteBlockRetired(blk.stores);
                             continue;
                         }
                     } catch (const std::exception &error) {
@@ -552,6 +693,7 @@ void Core::Interpreter::run()
 #endif
                 const std::uint32_t n = runBlock(blk);
                 m_retired += n;
+                noteBlockRetired(blk.stores);
                 continue;
             }
         }
@@ -607,29 +749,37 @@ const Core::Interpreter::Block &Core::Interpreter::getBlock(Utils::BeDecoder &de
     const bool observedStart = observed(startPc + Memory::ApplicationCode);
     if (observedStart)
         nativeLookahead = false;
+    const auto &ram = m_memory.getMemory();
+    // Cached versions are valid while their guest words are unchanged in memory.
+    // Without a code-page write since the last comparison the words cannot have changed. Native
+    // stores bypass Memory, so native dispatch keeps comparing on every lookup.
+    const auto current = [&](const Block &block) {
+        if (block.instrs.empty())
+            return false;
+#ifdef WEMU_HAS_LLVM
+        if (nativeLookahead && !block.nativeLookahead)
+            return false;
+#endif
+        const std::uint64_t epoch = m_memory.codeEpoch();
+        if (block.validatedEpoch == epoch && !nativeLookahead)
+            return true;
+        const bool valid = std::size_t(startPc) + block.guestWords.size() * 4 <= ram.size() &&
+                           std::memcmp(ram.data() + startPc, block.guestWords.data(), block.guestWords.size() * 4) == 0;
+        if (valid)
+            block.validatedEpoch = epoch;
+        return valid;
+    };
+    BlockLookup &slot = m_blockLookup[blockLookupSlot(startPc)];
+    if (slot.pc == startPc && current(*slot.block))
+        return *slot.block;
     if (const auto it = m_blockCache.find(startPc); it != m_blockCache.end()) {
-        decoder.seek(startPc);
-        bool unchanged = !it->second.instrs.empty();
-#ifdef WEMU_HAS_LLVM
-        unchanged &= !nativeLookahead || it->second.nativeLookahead;
-#else
-        (void) nativeLookahead;
-#endif
-        for (const auto &instruction: it->second.instrs)
-            if (decoder.extractSwap<std::uint32_t>() != instruction.instr.raw) {
-                unchanged = false;
-                break;
-            }
-#ifdef WEMU_HAS_LLVM
-        if (unchanged && nativeLookahead)
-            for (unsigned i = it->second.instrs.size(); i < it->second.nativeWords.size(); ++i)
-                if (decoder.extractSwap<std::uint32_t>() != it->second.nativeWords[i]) {
-                    unchanged = false;
-                    break;
-                }
-#endif
-        if (unchanged)
+        if (current(it->second)) {
+            slot = {startPc, &it->second};
             return it->second;
+        }
+        if (slot.block == &it->second)
+            slot = {};
+        ++m_blockGeneration;
         m_blockCache.erase(it);
     }
 
@@ -653,54 +803,26 @@ const Core::Interpreter::Block &Core::Interpreter::getBlock(Utils::BeDecoder &de
         } catch (...) {
             break; // unknown encoding: stop here so the slow path executes and reports it
         }
-        b.instrs.push_back({m_handlers[static_cast<std::size_t>(id)], ei});
+        b.instrs.push_back({m_handlers[static_cast<std::size_t>(id)], ei, false, id});
         pc += Core::INSTR_SIZE;
         // A block ends at any control-flow instruction: bc (16), sc (17), b (18), the opcode-19
         // family (bclr/bcctr/rfi/...), and traps (3/twi). After such an instruction the next PC is
         // data-dependent, so the block boundary is where we hand control back to run().
-        const std::uint32_t op = ei.opcd;
-        if (op == 16 || op == 17 || op == 18 || op == 19 || op == 3)
+        if (endsBlock(word))
             break;
         // A store may replace a later instruction. Return to fetch/validation
         // before executing any instruction after a guest memory write.
-        bool stores = false;
-        switch (id) {
-            case E_STHX:
-            case E_STBX:
-            case E_STB:
-            case E_STH:
-            case E_STMW:
-            case E_STW:
-            case E_STWU:
-            case E_STWX:
-            case E_STBU:
-            case E_STHU:
-            case E_STWUX:
-            case E_STBUX:
-            case E_STHUX:
-            case E_STSWI:
-            case E_STWCX_:
-            case E_STWBRX:
-            case E_DCBZ:
-            case E_STFS:
-            case E_STFSU:
-            case E_STFD:
-            case E_STFDU:
-            case E_STFSX:
-            case E_STFSUX:
-            case E_STFDX:
-            case E_STFIWX:
-            case E_PSQ_ST:
-                stores = true;
-                break;
-            default:
-                break;
-        }
-        if (stores)
+        const bool stores = isStoreInstruction(id);
+        b.instrs.back().store = stores;
+        b.stores |= stores;
+        // Interpreted blocks continue past stores: Memory::write flags a store into a page of
+        // decoded code and runBlock() leaves the block right after it. Native lookahead keeps its
+        // own store policy below, so its reference blocks still stop here.
+        if (stores && nativeLookahead)
             break;
         // Stop just before a hooked address so run()'s HLE hook dispatch still fires for it.
         const std::uint32_t ppc = pc + Core::Memory::MemoryMap::ApplicationCode;
-        if (observed(ppc) || (ppc >= m_hooks_min && ppc <= m_hooks_max && m_hooks.contains(ppc)))
+        if (observed(ppc) || hooked(ppc))
             break;
     }
 #ifdef WEMU_HAS_LLVM
@@ -734,9 +856,23 @@ const Core::Interpreter::Block &Core::Interpreter::getBlock(Utils::BeDecoder &de
         }
         b.nativePrefixLength = b.nativeWords.size();
     }
+    b.stores |= std::ranges::any_of(b.nativeWords, [](std::uint32_t word) { return Ppc::Block::stores(word); });
     b.nativeLoop = Ppc::Block::loopsToStart(startPc + Memory::ApplicationCode, b.nativeWords);
+    const std::size_t validatedWords = std::max(b.instrs.size(), b.nativeWords.size());
+#else
+    const std::size_t validatedWords = b.instrs.size();
 #endif
-    return m_blockCache.emplace(startPc, std::move(b)).first->second;
+    b.guestWords.resize(validatedWords);
+    if (validatedWords) {
+        std::memcpy(b.guestWords.data(), ram.data() + startPc, validatedWords * 4);
+        for (std::size_t offset = startPc; offset < startPc + validatedWords * 4; offset += std::size_t{1} << Memory::kCodePageShift)
+            m_memory.markCodePage(offset);
+        m_memory.markCodePage(startPc + validatedWords * 4 - 1);
+    }
+    b.validatedEpoch = m_memory.codeEpoch();
+    Block &stored = m_blockCache.insert_or_assign(startPc, std::move(b)).first->second;
+    slot = {startPc, &stored};
+    return stored;
 }
 
 std::uint32_t Core::Interpreter::runBlock(const Block &block, std::size_t first)
@@ -746,27 +882,55 @@ std::uint32_t Core::Interpreter::runBlock(const Block &block, std::size_t first)
         m_nextPc = m_pc + Core::INSTR_SIZE;
         try {
             di.fn(*this, di.instr);
-        } catch (Core::Exception &e) {
-            const std::uint32_t ppc = m_pc + Core::Memory::MemoryMap::ApplicationCode;
-            Utils::Log::error("[PC=0x{:08X}] {}", ppc, e.what());
-            if (e.isFatal()) {
-                Diag::dumpCrashContext(*this, ppc, e.what());
-                // Same bring-up policy as step(): a fatal fault on a secondary thread kills only
-                // that thread and the boot continues; on the main thread it stops the interpreter.
-                const std::uint32_t faulting = m_scheduler.currentHandle();
-                if (faulting != m_scheduler.mainHandle() && m_scheduler.exitCurrent(*this)) {
-                    Utils::Log::error("[EMU] thread 0x{:08X} killed by fault at PC=0x{:08X}; continuing boot", faulting, ppc);
-                    return static_cast<std::uint32_t>(i + 1 - first); // m_pc was moved to the next thread
-                }
-                m_failed = true;
-                m_running = false;
+            if (di.store && m_memory.codeWritten()) [[unlikely]] {
+                // The store may have replaced a later instruction of this block: refetch from the
+                // next PC so getBlock() revalidates the words against memory.
+                m_memory.clearCodeWritten();
+                m_pc = m_nextPc;
                 return static_cast<std::uint32_t>(i + 1 - first);
             }
-            // Non-fatal: fall through and advance past the instruction, mirroring step().
+        } catch (Core::Exception &e) {
+            // A fatal fault moved m_pc to the next thread or stopped the interpreter. Non-fatal:
+            // fall through and advance past the instruction, mirroring step().
+            if (handleBlockException(e))
+                return static_cast<std::uint32_t>(i + 1 - first);
         }
         m_pc = m_nextPc;
     }
     return static_cast<std::uint32_t>(block.instrs.size() - first);
+}
+
+Core::Interpreter::SyscallFn Core::Interpreter::syscallFor(const std::string &name)
+{
+    if (m_syscallCacheVersion != syscallHandler.version) {
+        m_syscallCache.clear();
+        m_syscallCacheVersion = syscallHandler.version;
+    }
+    const auto [it, inserted] = m_syscallCache.try_emplace(&name, nullptr);
+    if (inserted) {
+        const auto found = syscallHandler.syscallTable.find(name);
+        it->second = found != syscallHandler.syscallTable.end() ? found->second : nullptr;
+    }
+    return it->second;
+}
+
+bool Core::Interpreter::handleBlockException(const Core::Exception &e)
+{
+    const std::uint32_t ppc = m_pc + Core::Memory::MemoryMap::ApplicationCode;
+    Utils::Log::error("[PC=0x{:08X}] {}", ppc, e.what());
+    if (!e.isFatal())
+        return false;
+    Diag::dumpCrashContext(*this, ppc, e.what());
+    // Same bring-up policy as step(): a fatal fault on a secondary thread kills only that thread
+    // and the boot continues; on the main thread it stops the interpreter.
+    const std::uint32_t faulting = m_scheduler.currentHandle();
+    if (faulting != m_scheduler.mainHandle() && m_scheduler.exitCurrent(*this)) {
+        Utils::Log::error("[EMU] thread 0x{:08X} killed by fault at PC=0x{:08X}; continuing boot", faulting, ppc);
+        return true;
+    }
+    m_failed = true;
+    m_running = false;
+    return true;
 }
 
 void Core::Interpreter::executeInstruction(const EncodedInstruction &instr)

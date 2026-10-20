@@ -83,6 +83,8 @@ namespace Core::Gfx {
             [[nodiscard]] std::uint64_t earlyDepthRejectedTriangles() const noexcept { return m_earlyDepthRejectedTriangles; }
             [[nodiscard]] std::uint64_t vertexShaderExecutions() const noexcept { return m_vertexShaderExecutions; }
             [[nodiscard]] std::uint64_t vertexShaderCacheHits() const noexcept { return m_vertexShaderCacheHits; }
+            // Draws with a GPU vertex program that reused converted vertex arrays.
+            [[nodiscard]] std::uint64_t directVertexReuses() const noexcept { return m_directVertexReuses; }
             void setVertexCacheEnabled(bool enabled) noexcept { m_vertexCacheEnabled = enabled; }
 
             // GPU render-target graph (the general multi-target compositor). When set, each guest
@@ -97,10 +99,11 @@ namespace Core::Gfx {
             unsigned m_nativeWorstError{};
             std::uint64_t m_earlyDepthRejectedFragments{};
             std::uint64_t m_earlyDepthRejectedTriangles{};
-            std::uint64_t m_vertexShaderExecutions{}, m_vertexShaderCacheHits{};
+            std::uint64_t m_vertexShaderExecutions{}, m_vertexShaderCacheHits{}, m_directVertexReuses{};
             bool m_vertexCacheEnabled{true};
             Latte::VertexShaderCache m_vertexShaderCache;
             std::unique_ptr<RasterWorkers> m_rasterWorkers;
+            std::unique_ptr<RasterWorkers> m_vertexWorkers; // parallel CPU vertex shading (pre-shading pass)
             unsigned m_rasterWorkerCount{};
             std::uint64_t m_parallelMinPixels{32768};
             std::optional<std::uint64_t> m_rasterVerifyEvery;
@@ -138,6 +141,7 @@ namespace Core::Gfx {
                     std::uint32_t addr{0};
                     std::uint32_t stride{0};
                     std::uint32_t size{0};
+                    bool operator==(const Attrib &) const = default;
             };
             struct BlendState {
                     bool useAlphaBlend{true};
@@ -157,23 +161,97 @@ namespace Core::Gfx {
             struct DepthBacking {
                     std::vector<float> pixels;
                     std::shared_ptr<RasterReadback> pending;
+                    // A clear not yet written to pixels: most cleared depth surfaces are only
+                    // rendered on the GPU, so filling the host copy is deferred to its first use.
+                    std::optional<float> clear;
+                    // Every pixel holds this value; a repeated clear then needs no fill.
+                    std::optional<float> uniform;
+                    // Identity of the current pixels for the backend's upload cache (snapshotOwner).
+                    // Dropped whenever pixels change, so an unchanged depth texture skips re-upload
+                    // and byte comparison.
+                    std::shared_ptr<const void> version;
+                    void changed()
+                    {
+                        uniform.reset();
+                        version.reset();
+                    }
                     DepthFormat format{DepthFormat::Float32};
             };
-            DepthBacking *depthBacking(const Surface &s, bool resolve = true) const;
+            // applyClear = false leaves a pending clear in DepthBacking::clear (pixels are stale).
+            DepthBacking *depthBacking(const Surface &s, bool resolve = true, bool applyClear = true) const;
+            // Current versions of an array view's layers when at least one was rendered as its own
+            // surface (a pending GPU version); layers never rendered come from guest memory.
+            std::vector<std::shared_ptr<RasterReadback>> renderedArrayLayers(const Surface &surface);
+            // Level-major pending GPU versions of every (level, slice) of a 2D, array or cube view,
+            // or empty unless all of them are still on the GPU.
+            std::vector<std::shared_ptr<RasterReadback>> renderedSubresources(const Surface &surface, unsigned levels) const;
             void clearDepthSurface(const Surface &s, float depth, unsigned flags);
             void drawImage(const Gx2Command &cmd);
             void drawPrimitives(const Gx2Command &cmd, bool indexed, int selectedColor = -1);
-            bool fetchAttributes(std::uint32_t vertex, std::span<std::array<float, 4>> out) const;
+            // The bound fetch shader resolved against the attribute buffers once per draw, so
+            // fetching a vertex no longer decodes formats, semantics or memory regions.
+            struct AttributeFetch {
+                    struct Element {
+                            std::uint32_t out{}, mask{}, offset{}, stride{}, size{}, address{};
+                            std::uint8_t components{}, bytes{};
+                            bool fails{}, floating{}, packed1010102{}, integer{}, isSigned{}, scaled{};
+                            std::array<std::uint8_t, 16> order{}; // source byte of each little-endian byte
+                            // Each component is one word read as is or byte-reversed (every endian
+                            // swap whose unit is the component size), so it loads without `order`.
+                            bool wordLoad{}, wordSwap{};
+                            std::array<std::uint8_t, 4> select{}; // mask: component 0-3, 4 zero, 5 one, else keep
+                            const std::uint8_t *host{}; // set when every in-bounds element is resident
+                            std::uint64_t count{}; // vertices whose element starts in the buffer
+                    };
+                    std::vector<Element> elements;
+                    bool valid{};
+            };
+            AttributeFetch prepareAttributeFetch() const;
+            // Compact inputs and triangle indices of a draw with a GPU vertex program.
+            struct DirectVertices {
+                    std::vector<std::array<float, 4>> attributes;
+                    std::vector<std::uint32_t> indices;
+            };
+            // DirectVertices reused across draws and frames while the indices, fetch state and
+            // guest vertex bytes they were converted from are unchanged.
+            struct DirectVertexEntry {
+                    std::vector<std::uint32_t> fetchLayout, sourceIndices;
+                    std::array<std::uint32_t, 32> semantics{};
+                    std::array<Attrib, 8> attribs{};
+                    unsigned attributeStride{}, mode{};
+                    std::vector<std::pair<std::uint32_t, std::vector<std::uint8_t>>> sources; // guest ranges read
+                    std::shared_ptr<const DirectVertices> vertices;
+                    std::uint32_t validatedFrame{~0u};
+                    std::uint64_t used{};
+                    std::size_t bytes() const;
+            };
+            std::unordered_map<std::uint64_t, DirectVertexEntry> m_directVertexCache;
+            std::unordered_map<std::uint64_t, std::uint8_t> m_directVertexSeen; // key -> sightings, then changes
+            std::uint64_t m_directVertexBytes{}, m_directVertexClock{};
+            // Guest byte ranges [address, address + size) the fetch plan reads for vertices
+            // low..high, merged; false when a read is not resident in one host range.
+            static bool directVertexSources(const AttributeFetch &fetch, unsigned outputs, std::uint32_t low, std::uint32_t high,
+                                            std::vector<std::pair<std::uint32_t, std::uint32_t>> &ranges);
+            bool fetchAttributes(const AttributeFetch &fetch, std::uint32_t vertex, std::span<std::array<float, 4>> out) const;
+            bool fetchAttributes(std::uint32_t vertex, std::span<std::array<float, 4>> out) const
+            {
+                return fetchAttributes(prepareAttributeFetch(), vertex, out);
+            }
             void copyToScanBuffer(const Surface &s);
             void copyToDrcBuffer(const Surface &s);
             void maybeDumpFrame();
             [[nodiscard]] std::array<std::uint8_t, 4> blendTexel(const std::array<std::uint8_t, 4> &src, const std::uint8_t *dst,
                                                                  const BlendState &blend) const;
             static bool useViewBacking();
+            // WEMU_NATIVE_RESIDENT_TARGETS=1: native results stay on the GPU until read.
+            static bool residentTargets();
+            // The pending native version of a surface, for binding it on the GPU (null: CPU bytes).
+            [[nodiscard]] const std::shared_ptr<RasterReadback> *renderedVersion(const Surface &s) const;
             static SurfaceKey makeSurfaceKey(const Surface &s);
             std::vector<std::uint8_t> &viewBacking(const Surface &s);
             void resolveViewBacking(const Surface &s) const;
-            void resolvePendingBackings() const;
+            // Materializes pending targets; with `within`, only those stored inside these surfaces.
+            void resolvePendingBackings(std::span<const Surface> within = {}) const;
             [[nodiscard]] const std::vector<std::uint8_t> *findViewBacking(const Surface &s) const;
             [[nodiscard]] std::array<std::uint8_t, 4> sampleViewBacking(const Surface &s, const std::vector<std::uint8_t> &backing, float u,
                                                                         float v) const;
@@ -212,11 +290,44 @@ namespace Core::Gfx {
                     std::uint32_t w = 0, h = 0;
             };
             std::unordered_map<std::uint32_t, DecodedTex> m_texCache;
+            // Guest bytes compared only when stores may have reached them: an entry is trusted
+            // once two comparisons saw the same write generation, and re-compared periodically.
+            struct WriteValidation {
+                    std::optional<std::uint64_t> generation;
+                    bool trusted{};
+                    std::uint32_t comparedFrame{};
+            };
+            bool unchangedSinceValidation(WriteValidation &validation, std::uint32_t address, std::size_t bytes, std::uint64_t stagger) const;
+            void validated(WriteValidation &validation, std::uint32_t address, std::size_t bytes, bool unchanged) const;
             struct ArraySnapshot {
                     Surface surface;
                     std::vector<std::uint8_t> source, rgba;
+                    std::uint32_t validatedFrame{~0u}; // source compared against guest memory during this present
+                    // Alias checks passed with this many view backings and CPU-written images; both
+                    // only grow, so equal counts in the same present skip the checks.
+                    std::size_t checkedBackings{}, checkedCpuWrites{};
+                    WriteValidation writes;
             };
             std::vector<std::shared_ptr<ArraySnapshot>> m_arraySnapshots;
+            // Raw canonical bytes of an array whose layers all live in view backings, packed layer
+            // after layer without row padding. Rebuilt when any layer is written again.
+            struct DecodedTexture;
+            struct LayerSnapshot {
+                    Surface surface;
+                    std::uint64_t generation{};
+                    std::shared_ptr<const std::vector<std::uint8_t>> bytes;
+                    // Decoded guest layers, kept alive so their addresses in `generation` stay unique.
+                    std::vector<std::shared_ptr<DecodedTexture>> guestLayers;
+            };
+            std::vector<LayerSnapshot> m_layerSnapshots;
+            // Evicted snapshots still owned by an upload keep their identity (and GPU image).
+            struct RetainedLayerSnapshot {
+                    Surface surface;
+                    std::uint64_t generation{};
+                    std::weak_ptr<const std::vector<std::uint8_t>> bytes;
+            };
+            std::vector<RetainedLayerSnapshot> m_retainedLayerSnapshots;
+            std::shared_ptr<const std::vector<std::uint8_t>> layerSnapshot(const Surface &surface);
             std::optional<Surface> arraySlice(const Surface &surface, unsigned relative) const;
             Surface attachmentSurface(const Surface &surface) const;
             std::optional<Surface> mipSurface(const Surface &surface, unsigned level) const;
@@ -228,6 +339,9 @@ namespace Core::Gfx {
                     std::vector<std::vector<float>> texels;
                     std::vector<RasterDraw::Texture::MipLevel> mips;
                     std::vector<std::uint8_t> source;
+                    // Image range of every (level, slice) view: lets a later lookup in the same frame
+                    // recheck writes and feedback without recomputing the views.
+                    std::vector<std::pair<std::uint32_t, std::uint32_t>> sliceRanges;
             };
             std::vector<std::shared_ptr<MipSnapshot>> m_mipSnapshots;
             std::vector<std::weak_ptr<MipSnapshot>> m_retainedMipSnapshots;
@@ -240,29 +354,31 @@ namespace Core::Gfx {
             struct DecodedTexture {
                     std::uint64_t used{};
                     std::uint32_t validatedFrame{~0u};
+                    WriteValidation writes;
                     std::vector<std::uint8_t> source;
                     std::vector<std::uint8_t> rgba;
-                    std::vector<float> floating; // component-mapped signed normalized texels
+                    std::vector<float> floating; // component-mapped signed normalized or float-format texels
                     std::vector<std::uint8_t> blocks;
                     std::size_t bytes() const { return source.size() + rgba.size() + floating.size() * sizeof(float) + blocks.size(); }
             };
             struct DecodedKey {
                     SurfaceKey surface;
                     std::uint32_t componentMap{}, imageSize{};
-                    bool blocksOnly{};
+                    bool blocksOnly{}, floatTexels{};
                     bool operator==(const DecodedKey &) const = default;
             };
             struct DecodedKeyHash {
                     std::size_t operator()(const DecodedKey &key) const
                     {
                         return SurfaceKeyHash{}(key.surface) ^ std::size_t(key.componentMap) ^ std::size_t(key.imageSize) ^
-                               std::size_t(key.blocksOnly);
+                               std::size_t(key.blocksOnly) ^ (std::size_t(key.floatTexels) << 1);
                     }
             };
             std::unordered_map<DecodedKey, std::shared_ptr<DecodedTexture>, DecodedKeyHash> m_decodedTextures;
             std::unordered_map<DecodedKey, std::weak_ptr<DecodedTexture>, DecodedKeyHash> m_retainedDecodedTextures;
             std::uint64_t m_decodedBytes{}, m_decodedClock{};
-            std::shared_ptr<DecodedTexture> decodedTexture(const Surface &surface, bool blocksOnly = false);
+            // floatTexels: component-mapped RGBA32F texels of a non-RGBA8 color format, in `floating`.
+            std::shared_ptr<DecodedTexture> decodedTexture(const Surface &surface, bool blocksOnly = false, bool floatTexels = false);
             std::vector<float> volumeTexels(const Surface &surface) const;
 
             float m_clear[4]{0.0f, 0.0f, 0.0f, 1.0f}; // RGBA, 0..1
@@ -270,7 +386,10 @@ namespace Core::Gfx {
             std::uint32_t m_presentCount{0};
             std::uint32_t m_richestTris{0}; // most triangles seen in one frame (WEMU_FB_DUMP_RICH)
 
-            Core::Memory *m_mem{nullptr};
+            // Guest memory, read-only: reads through a writable view would count as stores (see
+            // Memory::watchWrites). The few paths that render into guest memory use m_writableMem.
+            const Core::Memory *m_mem{nullptr};
+            Core::Memory *m_writableMem{nullptr};
             Surface m_color; // bound colour target
             Surface m_depth;
             std::array<Surface, 8> m_colorBuffers{};
@@ -293,15 +412,35 @@ namespace Core::Gfx {
             bool m_multiWriteEnable{};
             unsigned m_polygonControl{};
             std::array<float, 5> m_polygonOffset{};
-            bool m_rasterizerEnabled{true}, m_zClipEnabled{}, m_halfZ{};
+            bool m_rasterizerEnabled{true}, m_zClipEnabled{true}, m_halfZ{}; // GX2Init enables Z clipping
             // Vertex-shader uniform registers (GX2SetVertexUniformReg). MK8's UI places its unit
             // quads with a matrix in c0..c3; m_regsFresh marks regs written since the last draw.
             float m_vsRegs[256]{};
             bool m_regsFresh{false};
-            // Current vertex-shader bytecode (empty = none/unsupported) + cache keyed by the
-            // guest GX2VertexShader struct address.
-            std::vector<std::uint32_t> m_vsProgram;
-            std::unordered_map<std::uint32_t, std::vector<std::uint32_t>> m_vsCache;
+            // A shader's bytecode (empty = unsupported), interned per guest GX2VertexShader or
+            // GX2PixelShader address, with the results of the lookups draws make for it: hashing
+            // and comparing whole programs in each cache cost milliseconds per MK8 race frame.
+            struct ShaderProgram {
+                    std::vector<std::uint32_t> words;
+                    std::shared_ptr<const Latte::Program> declaration;
+                    std::shared_ptr<const Latte::VertexShader> vertexShader;
+                    std::map<unsigned, std::shared_ptr<const Latte::VertexShader>> windowedVertexShaders; // by uniform block window
+                    std::optional<bool> colorOnlyEffects, rejectsEveryPixel;
+                    // Resource types (two bits each), onlyColorZero, colorExport.
+                    std::map<std::tuple<std::uint64_t, bool, unsigned>, std::shared_ptr<const Latte::FragmentShader>> fragmentShaders;
+            };
+            [[nodiscard]] static const std::vector<std::uint32_t> &programWords(const std::shared_ptr<ShaderProgram> &program);
+            [[nodiscard]] const std::vector<std::uint32_t> &vsProgram() const { return programWords(m_vsShader); }
+            [[nodiscard]] const std::vector<std::uint32_t> &psProgram() const { return programWords(m_psShader); }
+            [[nodiscard]] static std::shared_ptr<const Latte::Program> declaration(const std::shared_ptr<ShaderProgram> &program);
+            [[nodiscard]] std::shared_ptr<const Latte::FragmentShader> fragmentShader(std::span<const Latte::TextureType> resourceTypes,
+                                                                                      bool onlyColorZero, unsigned colorExport);
+            [[nodiscard]] std::shared_ptr<const Latte::VertexShader> vertexShader(unsigned bufferWindow = 0);
+            [[nodiscard]] bool colorOnlyEffects();
+            [[nodiscard]] bool rejectsEveryPixel();
+            // Current vertex shader + cache keyed by the guest GX2VertexShader struct address.
+            std::shared_ptr<ShaderProgram> m_vsShader;
+            std::unordered_map<std::uint32_t, std::shared_ptr<ShaderProgram>> m_vsCache;
             // Vertex uniform BLOCKS (GX2SetVertexUniformBlock): payload snapshots per binding —
             // read through the shader's kcache windows in uniform-block mode.
             std::array<std::vector<std::uint32_t>, 16> m_vsBlocks{};
@@ -310,8 +449,8 @@ namespace Core::Gfx {
             // colour/mask composition, so the bytecode/uniform stream must be visible per draw.
             float m_psRegs[256]{};
             bool m_psRegsFresh{false};
-            std::vector<std::uint32_t> m_psProgram;
-            std::unordered_map<std::uint32_t, std::vector<std::uint32_t>> m_psCache;
+            std::shared_ptr<ShaderProgram> m_psShader;
+            std::unordered_map<std::uint32_t, std::shared_ptr<ShaderProgram>> m_psCache;
             // Opt-in translation audit only; no native dispatch authorization.
             std::map<std::pair<std::vector<std::uint32_t>, bool>, Latte::FragmentShader> m_nativeAuditCache;
             Latte::FragmentShaderCache m_fragmentShaderCache;
@@ -347,9 +486,10 @@ namespace Core::Gfx {
                     bool multiWriteEnable{};
                     unsigned polygonControl{};
                     std::array<float, 5> polygonOffset{};
-                    bool rasterizerEnabled{true}, zClipEnabled{}, halfZ{};
+                    bool rasterizerEnabled{true}, zClipEnabled{true}, halfZ{};
                     std::array<float, 256> vsRegs{}, psRegs{};
-                    std::vector<std::uint32_t> vsProgram, psProgram, fetchLayout;
+                    std::shared_ptr<ShaderProgram> vsShader, psShader;
+                    std::vector<std::uint32_t> fetchLayout;
                     std::array<std::vector<std::uint32_t>, 16> vsBlocks{}, psBlocks{};
                     std::array<Attrib, 8> attribs{};
                     std::array<std::uint32_t, 32> vertexSemantics{};
@@ -391,6 +531,18 @@ namespace Core::Gfx {
             std::unordered_map<std::uint32_t, WrittenSurface> m_cpuWrittenSurfaces;
             std::unordered_set<std::uint64_t> m_surfaceAliasTraced;
             mutable std::unordered_map<SurfaceKey, std::vector<std::uint8_t>, SurfaceKeyHash> m_viewBackings;
+            // Content version of each view backing, bumped by every write path (draws, clears,
+            // resolved GPU versions). Textures read from a backing share one upload per version.
+            struct BackingOwner {
+                    std::uint64_t version{};
+                    std::shared_ptr<const int> token;
+            };
+            mutable std::unordered_map<SurfaceKey, std::uint64_t, SurfaceKeyHash> m_backingVersions;
+            mutable std::unordered_map<SurfaceKey, BackingOwner, SurfaceKeyHash> m_backingOwners;
+            void touchBacking(const SurfaceKey &key) const { ++m_backingVersions[key]; }
+            std::shared_ptr<const void> backingOwner(const SurfaceKey &key) const;
+            // Shared zero texels for sized views of null images; replaced (never resized) when too small.
+            std::shared_ptr<const std::vector<std::uint8_t>> m_zeroTexels;
             mutable std::unordered_map<SurfaceKey, std::shared_ptr<RasterReadback>, SurfaceKeyHash> m_pendingReadbacks;
     };
 

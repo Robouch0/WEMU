@@ -11,6 +11,7 @@ Item {
     property int selection: 0
     property bool confirmingQuit: false
     property bool wasPaused: false
+    property int stickDir: 0
 
     onVisibleChanged: if (visible)
         forceActiveFocus()
@@ -34,27 +35,68 @@ Item {
         }
     }
 
+    function back() {
+        if (confirmingQuit) {
+            confirmingQuit = false;
+            selection = 2;
+        } else
+            EmulatorLauncher.togglePause();
+    }
+
+    function moveSelection(step) {
+        var count = confirmingQuit ? 2 : 3;
+        selection = (selection + count + step) % count;
+    }
+
     Keys.onPressed: function (event) {
         if (event.isAutoRepeat) {
             event.accepted = true;
             return;
         }
-        if (event.key === Qt.Key_Escape) {
-            if (confirmingQuit) {
-                confirmingQuit = false;
-                selection = 2;
-            } else
-                EmulatorLauncher.togglePause();
-        } else if (EmulatorLauncher.paused && !EmulatorLauncher.pausePending) {
-            var count = confirmingQuit ? 2 : 3;
+        if (event.key === Qt.Key_Escape)
+            back();
+        else if (EmulatorLauncher.paused && !EmulatorLauncher.pausePending) {
             if (event.key === Qt.Key_Up)
-                selection = (selection + count - 1) % count;
+                moveSelection(-1);
             else if (event.key === Qt.Key_Down)
-                selection = (selection + 1) % count;
+                moveSelection(1);
             else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter)
                 activateSelection();
         }
         event.accepted = true;
+    }
+
+    // Controllers: Guide opens and leaves this menu, the D-pad or left stick, A and B drive it. Their game input
+    // goes through EmulatorLauncher.setControllerInput.
+    Connections {
+        target: InputManager
+        function onButtonChanged(button, pressed, device) {
+            if (!page.visible || !pressed)
+                return;
+            if (button === "XBOX_GUIDE")
+                page.back();
+            else if (!EmulatorLauncher.paused || EmulatorLauncher.pausePending)
+                return;
+            else if (button === "Up")
+                page.moveSelection(-1);
+            else if (button === "Down")
+                page.moveSelection(1);
+            else if (button === "A")
+                page.activateSelection();
+            else if (button === "B")
+                page.back();
+        }
+
+        function onAxisChanged(axis, value, device) {
+            if (!page.visible || axis !== "LY")
+                return;
+            if (page.stickDir === 0 && Math.abs(value) >= 0.5) {
+                page.stickDir = value < 0 ? -1 : 1;
+                if (EmulatorLauncher.paused && !EmulatorLauncher.pausePending)
+                    page.moveSelection(page.stickDir);
+            } else if (page.stickDir !== 0 && Math.abs(value) < 0.25)
+                page.stickDir = 0;
+        }
     }
 
     Rectangle {
@@ -189,7 +231,7 @@ Item {
                     wrapMode: Text.WordWrap
                     color: Theme.mutedText
                     font.pixelSize: 14
-                    text: page.confirmingQuit ? "The game will stop. Unsaved progress will be lost." : "O or Escape to resume."
+                    text: page.confirmingQuit ? "The game will stop. Unsaved progress will be lost." : "O, Escape or the controller's Guide button to resume."
                 }
                 Repeater {
                     model: page.confirmingQuit ? ["Cancel", "Stop and return to library"] : ["Resume", "Show FPS: " + (EmulatorLauncher.showFps ? "On" : "Off"), "Return to library"]
@@ -208,7 +250,7 @@ Item {
                     width: parent.width
                     color: Theme.mutedText
                     font.pixelSize: 12
-                    text: "↑ / ↓ select     Enter accept"
+                    text: "↑ / ↓ select     Enter or A accept"
                 }
             }
         }

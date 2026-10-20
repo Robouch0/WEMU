@@ -114,8 +114,9 @@ host-visible staging buffers, and CPU consumers retain the source snapshot.
 The allocator falls back to another compatible heap when the preferred memory
 type is unavailable. Existing render-target placement follows its prior policy.
 
-The cache retains at most 256 entries and an estimated 512 MiB of image/staging
-storage. In-flight bundles own their sampled images independently of cache
+The cache retains at most 2048 entries and an estimated 1.5 GiB of image/staging
+storage: a race frame in MK8 samples hundreds of distinct textures, and a 256-entry
+bound re-uploaded most of them every frame. In-flight bundles own their sampled images independently of cache
 eviction. Ordered submissions make an upload visible before subsequent draws;
 duplicate bindings in its producing draw share the same recorded upload.
 Deferred frame tickets retain their device until their final release. Shared
@@ -157,11 +158,13 @@ this does not add cross-process GPU texture sharing.
 
 ## Batched submissions and lazy readback copies
 
-`WEMU_NATIVE_BATCH_SUBMITS=1` lets draw commands share a pooled completion fence
-in batches of up to four command buffers. Immediate submission remains the default
-because the measured Pikmin movie path did not gain FPS from delaying
-submissions. The small bound lets the GPU begin work while guest execution continues;
-a CPU dependency, resource reuse or cache drain flushes the current batch.
+Draw commands share a pooled completion fence in batches of up to eight command
+buffers (`WEMU_NATIVE_BATCH_SUBMITS=N` sets the bound). In MK8's main menu, about
+200 draws per frame, this cut per-submission driver work from 13.4 to 11.8 ms of
+replay-thread time; larger bounds delayed the GPU enough to add host fence waits.
+The Pikmin movie path did not gain FPS from delaying submissions. The small bound
+lets the GPU begin work while replay continues; a CPU dependency, resource reuse or
+cache drain flushes the current batch.
 Each resource keeps its completion token and sampled-image owners until work
 completes. Completed tokens are reused only after their last resource releases
 them. Live color/depth tickets retain their existing per-version ownership.
@@ -172,7 +175,7 @@ The copy's fence completes the producer and copy with one host wait. Draw comman
 pools and descriptor/staging data remain protected until completion; copy pools
 are reset only after the previous synchronous copy finishes.
 
-`WEMU_NATIVE_BATCH_SUBMITS=0` submits each command immediately for comparison;
+`WEMU_NATIVE_BATCH_SUBMITS=0` (or `1`) submits each command immediately for comparison;
 it retains the independent readback pool. Timing counters expose actual queue
 submissions, submitted command buffers and host fence waits. GPU execution and
 presentation still use the existing emulated ordering and CPU IPC path.
@@ -194,7 +197,62 @@ format and topology, but no longer includes target dimensions, scissor rectangle
 or attachment load operations. Resource identity still includes dimensions and
 load policy so backing images, framebuffers and uploads stay correct. Compatible
 pipelines are shared across these variants; clipping and output pixels stay the
-same. A pipeline-limit drain is needed only for a new pipeline at the limit.
+same. Pipelines are created through one context-level cache shared by both draw
+paths and stay alive with the device, so no pipeline-limit drain is needed.
+
+## Direct draws
+
+Deferred draws with lazy readback (the GUI configuration) are recorded by a direct
+renderer instead of a cached bundle per draw shape. A bundle owns target-sized
+color/depth images and buffers (about 22 MiB for a 1280x720 HDR target with
+depth), so MK8's race, with 2000-4500 draws per frame, overflowed the bundle
+budget after about 120 entries; half of its draws built a new bundle (~20 ms each)
+and frames took about 16 s. With direct draws they take about 0.5 s of native
+work (RTX 3060 Laptop GPU).
+
+Images the direct renderer creates are rendered in place: the replayer replaces
+the previous version's ticket with the draw's result, as it does for adopted
+bundle targets. Resident images from bundles, and targets kept for verification,
+are first copied into a new direct image, which then becomes the surface's
+version; a bundle that later adopts a direct image takes ownership of it. Depth
+is handled the same way. Fixed-point (16/24-bit) depth writes store their
+quantized value from the fragment shader, with the bundle quantization pass's
+exact rounding, instead of three full-surface copies per draw; the depth test
+then compares the quantized incoming value, as fixed-point hardware does, while
+the reference compares the unquantized one. MK8's race writes a 1024x1024
+16-bit shadow map about 500 times per frame. A read-only draw that had to upload
+or copy its depth returns the new image as well, so later draws find the surface
+resident instead of uploading 3.7 MB again.
+
+With resident targets, a color clear stays pending like a native version (a
+`ClearedImage` readback): the next direct draw into the surface clears its new
+image with `vkCmdClearColorImage` instead of uploading the CPU fill, and the CPU
+bytes are only produced if something reads the surface first. A clear also drops
+a pending native version instead of reading it back, since every element is
+replaced and row padding never comes from draws. A surface sampled while its
+clear is pending resolves it and keeps the CPU snapshot path (one shared upload
+per version). Depth clears were already applied lazily to the CPU copy; a direct
+draw now receives a pending depth clear as a value and clears its new D32 image
+with `vkCmdClearDepthStencilImage`, while the other paths and every CPU reader
+write the value first.
+
+Draws are recorded into segment command buffers of 48 draws
+(`WEMU_NATIVE_SEGMENT_DRAWS=N`). Constants, vertices, indices, CPU target/depth
+snapshots and private texels are suballocated from the segment's persistently
+mapped upload buffer, and descriptor sets from its pools; both are reset when the
+segment's fence completes. Immutable snapshots use the shared texture cache;
+resident images are sampled directly, or through a scratch copy when the draw
+also renders into them or when depth is sampled as R32. A segment is submitted
+before any bundle work and before readbacks, so the queue order matches replay
+order. `WEMU_NATIVE_DIRECT_DRAWS=0` restores the bundle path; GPU timing queries
+also use it.
+
+A direct draw that renders in place into the attachments of the pass the previous
+draw left open, and records no transfer or layout change (resident or host-written
+vertices, textures already in the shared cache), continues that render pass: it
+skips the begin/end and the two full pipeline barriers of a pass of its own.
+Rasterization order keeps blending and depth tests in draw order inside the pass.
+Any other draw, a segment submission and a readback end the pass first.
 
 Tests verify different target sizes and padded/clipped output, repeated scissor
 changes with a single pipeline, live older snapshots and depth comparisons under

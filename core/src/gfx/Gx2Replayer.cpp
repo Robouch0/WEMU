@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <format>
 #include <limits>
 #include <stdexcept>
@@ -110,7 +111,7 @@ namespace Core::Gfx {
             return result;
         }
 
-        std::uint8_t byteFromUnit(const double v) { return static_cast<std::uint8_t>(std::lround(std::clamp(v, 0.0, 1.0) * 255.0)); }
+        std::uint8_t byteFromUnit(const double v) { return unitByte(v); }
 
         float interpolateValue(float a, float b, float c, float w0, float w1, float w2)
         {
@@ -462,6 +463,15 @@ namespace Core::Gfx {
         return static_cast<std::size_t>(h);
     }
 
+    bool Gx2Replayer::residentTargets()
+    {
+        static const bool enabled = [] {
+            const auto *value = std::getenv("WEMU_NATIVE_RESIDENT_TARGETS");
+            return value && std::string_view(value) == "1";
+        }();
+        return enabled;
+    }
+
     bool Gx2Replayer::useViewBacking()
     {
         static const bool enabled = []() {
@@ -471,7 +481,7 @@ namespace Core::Gfx {
         return enabled;
     }
 
-    Gx2Replayer::DepthBacking *Gx2Replayer::depthBacking(const Surface &s, bool resolve) const
+    Gx2Replayer::DepthBacking *Gx2Replayer::depthBacking(const Surface &s, bool resolve, bool applyClear) const
     {
         DepthFormat format;
         if (s.format == 0x80E)
@@ -511,12 +521,22 @@ namespace Core::Gfx {
             found = m_depthBackings.emplace(key, std::move(backing)).first;
         }
         auto &backing = found->second;
+        if (backing.clear && applyClear) {
+            if (backing.uniform != backing.clear) {
+                for (unsigned y = 0; y < s.height; ++y)
+                    std::fill_n(backing.pixels.data() + std::size_t(y) * s.pitch, s.width, *backing.clear);
+                backing.changed();
+                backing.uniform = backing.clear;
+            }
+            backing.clear.reset();
+        }
         if (resolve && backing.pending) {
             const auto &bytes = backing.pending->resolve();
             if (bytes.size() != backing.pixels.size() * sizeof(float))
                 throw std::runtime_error("Depth backend returned an incomplete surface");
             std::memcpy(backing.pixels.data(), bytes.data(), bytes.size());
             backing.pending.reset();
+            backing.changed();
         }
         return &backing;
     }
@@ -526,11 +546,10 @@ namespace Core::Gfx {
         const auto s = attachmentSurface(original);
         if (!(flags & 1))
             return;
-        if (auto *backing = depthBacking(s, false)) {
+        // A clear still pending is replaced, never written.
+        if (auto *backing = depthBacking(s, false, false)) {
             backing->pending.reset();
-            const auto value = quantizeDepth(depth, backing->format);
-            for (unsigned y = 0; y < s.height; ++y)
-                std::fill_n(backing->pixels.data() + std::size_t(y) * s.pitch, s.width, value);
+            backing->clear = quantizeDepth(depth, backing->format);
         }
     }
 
@@ -539,9 +558,20 @@ namespace Core::Gfx {
         return {s.imagePtr, s.width, s.height, s.pitch, s.format, s.tileMode, s.swizzle};
     }
 
+    std::shared_ptr<const void> Gx2Replayer::backingOwner(const SurfaceKey &key) const
+    {
+        const auto version = m_backingVersions[key];
+        auto &owner = m_backingOwners[key];
+        if (!owner.token || owner.version != version)
+            owner = {version, std::make_shared<const int>()};
+        return owner.token;
+    }
+
     std::vector<std::uint8_t> &Gx2Replayer::viewBacking(const Surface &s)
     {
         resolveViewBacking(s);
+        // Callers write through the returned reference.
+        touchBacking(makeSurfaceKey(s));
         auto &backing = m_viewBackings[makeSurfaceKey(s)];
         const std::size_t bytes = static_cast<std::size_t>(s.pitch) * s.height * colorElementBytes(colorFormat(s.format));
         if (backing.size() != bytes)
@@ -569,21 +599,52 @@ namespace Core::Gfx {
         if (pixels.size() != backing.size())
             throw std::runtime_error("Deferred raster target size changed");
         std::copy(pixels.begin(), pixels.end(), backing.begin());
+        touchBacking(key);
         m_pendingReadbacks.erase(pending);
     }
 
-    void Gx2Replayer::resolvePendingBackings() const
+    const std::shared_ptr<RasterReadback> *Gx2Replayer::renderedVersion(const Surface &s) const
+    {
+        const auto pending = m_pendingReadbacks.find(makeSurfaceKey(s));
+        if (pending == m_pendingReadbacks.end())
+            return nullptr;
+        // A deferred clear only saves work as a draw target: sampled, it becomes CPU bytes again
+        // and takes the snapshot paths (one shared upload per version).
+        if (dynamic_cast<const ClearedImage *>(pending->second->image().get())) {
+            resolveViewBacking(s);
+            return nullptr;
+        }
+        return &pending->second;
+    }
+
+    void Gx2Replayer::resolvePendingBackings(std::span<const Surface> within) const
     {
         // Software workers can select array slices dynamically. Resolve on the
         // replay thread before dispatch so sampling never mutates shared maps.
-        for (const auto &[key, pending]: m_pendingReadbacks) {
-            const auto &pixels = pending->resolve();
-            auto &backing = m_viewBackings.at(key);
+        // Slices of `within` live inside its base or mip storage; other targets stay on the GPU.
+        const auto inside = [&](const SurfaceKey &key, std::size_t bytes) {
+            if (within.empty())
+                return true;
+            const auto overlaps = [&](std::uint64_t base, std::uint64_t size) {
+                return size && key.imagePtr < base + size && base < std::uint64_t(key.imagePtr) + bytes;
+            };
+            return std::any_of(within.begin(), within.end(), [&](const Surface &surface) {
+                return overlaps(surface.imagePtr, surface.imageSize) || overlaps(surface.mipImagePtr, surface.mipImageSize);
+            });
+        };
+        for (auto it = m_pendingReadbacks.begin(); it != m_pendingReadbacks.end();) {
+            auto &backing = m_viewBackings.at(it->first);
+            if (!inside(it->first, backing.size())) {
+                ++it;
+                continue;
+            }
+            const auto &pixels = it->second->resolve();
             if (pixels.size() != backing.size())
                 throw std::runtime_error("Deferred raster target size changed");
             std::copy(pixels.begin(), pixels.end(), backing.begin());
+            touchBacking(it->first);
+            it = m_pendingReadbacks.erase(it);
         }
-        m_pendingReadbacks.clear();
     }
 
     std::array<std::uint8_t, 4> Gx2Replayer::sampleViewBacking(const Surface &s, const std::vector<std::uint8_t> &backing, float u, float v) const
@@ -617,14 +678,15 @@ namespace Core::Gfx {
             return {};
         const auto fmt = original.format & 0x3F;
         const bool compressed = fmt >= 0x31 && fmt <= 0x35;
-        if (!compressed && fmt != 1 && fmt != 5 && fmt != 7 && fmt != 8 && fmt != 0xE && fmt != 0x11 && fmt != 0x16 && fmt != 0x1A &&
-            original.format != 0x823)
+        if (!compressed && fmt != 1 && fmt != 5 && fmt != 7 && fmt != 8 && fmt != 0xE && fmt != 0x11 && fmt != 0x16 && fmt != 0x1A && fmt != 0x22 &&
+            original.format != 0x820 && original.format != 0x823)
             return {};
-        const unsigned bytes = compressed                         ? (fmt == 0x31 || fmt == 0x34 ? 8 : 16)
-                               : original.format == 0x823         ? 16
-                               : fmt == 1                         ? 1
-                               : fmt == 5 || fmt == 7 || fmt == 8 ? 2
-                                                                  : 4;
+        const unsigned bytes = compressed                                ? (fmt == 0x31 || fmt == 0x34 ? 8 : 16)
+                               : original.format == 0x823 || fmt == 0x22 ? 16
+                               : original.format == 0x820                ? 8
+                               : fmt == 1                                ? 1
+                               : fmt == 5 || fmt == 7 || fmt == 8        ? 2
+                                                                         : 4;
         const unsigned width = compressed ? (original.width + 3) / 4 : original.width;
         unsigned height = compressed ? (original.height + 3) / 4 : original.height;
         unsigned pitchAlign = 1, heightAlign = 1;
@@ -660,6 +722,170 @@ namespace Core::Gfx {
             selected.swizzle = (original.swizzle & ~0x700u) | (swizzle << 8);
         }
         return selected;
+    }
+
+    std::vector<std::shared_ptr<RasterReadback>> Gx2Replayer::renderedArrayLayers(const Surface &surface)
+    {
+        // Every layer must have been rendered (or cleared) as its own surface; otherwise the guest
+        // memory snapshot paths keep the array.
+        const bool depthLayers = surface.format == 0x80E || surface.format == 5 || surface.format == 0x11;
+        std::vector<std::shared_ptr<RasterReadback>> layers;
+        bool rendered = false;
+        for (unsigned layer = 0; layer < surface.sliceCount; ++layer) {
+            const auto view = arraySlice(surface, layer);
+            if (!view) {
+                return {};
+            }
+            auto key = makeSurfaceKey(*view);
+            if (depthLayers) {
+                key.format = view->format;
+                auto *backing = m_depthBackings.contains(key) ? depthBacking(*view, false) : nullptr;
+                if (!backing)
+                    return {};
+                if (backing->pending) {
+                    layers.push_back(backing->pending);
+                    rendered = true;
+                    continue;
+                }
+                const auto size = backing->pixels.size() * sizeof(float);
+                std::vector<std::uint8_t> bytes(size);
+                std::memcpy(bytes.data(), backing->pixels.data(), size);
+                layers.push_back(std::make_shared<RasterReadback>(size, [bytes = std::move(bytes)] { return bytes; }));
+                continue;
+            }
+            if (const auto *pending = renderedVersion(*view)) {
+                layers.push_back(*pending);
+                rendered = true;
+            } else if (const auto backing = m_viewBackings.find(key); backing != m_viewBackings.end())
+                layers.push_back(std::make_shared<RasterReadback>(backing->second.size(), [bytes = backing->second] { return bytes; }));
+            else {
+                // A layer never rendered keeps its guest data (MK8 renders 17 of a 32-slice
+                // R8 volume array and samples all of them): decode it like an ordinary texture.
+                const auto decoded = view->format == surface.format ? decodedTexture(*view) : nullptr;
+                const auto rowBytes = std::size_t(surface.width) * 4;
+                if (!decoded || decoded->rgba.size() != rowBytes * surface.height || surface.pitch < surface.width)
+                    return {};
+                std::vector<std::uint8_t> bytes(std::size_t(surface.pitch) * surface.height * 4);
+                for (unsigned y = 0; y < surface.height; ++y)
+                    std::memcpy(bytes.data() + std::size_t(y) * surface.pitch * 4, decoded->rgba.data() + y * rowBytes, rowBytes);
+                const auto size = bytes.size();
+                layers.push_back(std::make_shared<RasterReadback>(size, [bytes = std::move(bytes)] { return bytes; }));
+            }
+        }
+        // Without a GPU layer, layerSnapshot() (CPU-rendered layers, possibly with guest ones) or
+        // arraySnapshot() (never rendered) share one upload per version instead.
+        return rendered ? layers : std::vector<std::shared_ptr<RasterReadback>>{};
+    }
+
+    std::vector<std::shared_ptr<RasterReadback>> Gx2Replayer::renderedSubresources(const Surface &surface, unsigned levels) const
+    {
+        // Same views as mipSnapshot(), so rendered targets match by surface key. MK8 renders its
+        // HDR glare chain and environment cube faces on the GPU every frame; decoding them on the
+        // CPU cost a readback and ~50 ms per frame.
+        if (surface.format == 5 || surface.format == 0x11 || surface.format == 0x80E || surface.aa || !surface.sliceCount ||
+            surface.sliceCount > 256 || (surface.dimension != 1 && surface.dimension != 3 && surface.dimension != 5) ||
+            (surface.dimension == 1 && surface.sliceCount != 1) || !levels)
+            return {};
+        std::vector<std::shared_ptr<RasterReadback>> result;
+        result.reserve(std::size_t(levels) * surface.sliceCount);
+        for (unsigned level = 0; level < levels; ++level) {
+            const auto selected = mipSurface(surface, level + surface.firstMip);
+            if (!selected)
+                return {};
+            auto view = *selected;
+            view.firstMip = 0;
+            if (view.dimension == 3)
+                view.dimension = 5;
+            if (view.width != std::max(1u, surface.width >> level) || view.height != std::max(1u, surface.height >> level))
+                return {};
+            for (unsigned layer = 0; layer < surface.sliceCount; ++layer) {
+                const auto slice = view.dimension == 5 ? arraySlice(view, layer) : std::optional{view};
+                if (!slice)
+                    return {};
+                const auto *pending = renderedVersion(*slice);
+                if (!pending)
+                    return {};
+                result.push_back(*pending);
+            }
+        }
+        return result;
+    }
+
+    std::shared_ptr<const std::vector<std::uint8_t>> Gx2Replayer::layerSnapshot(const Surface &surface)
+    {
+        // Rendered RGBA8/HDR layers that software draws left on the CPU (MK8 writes its 1280x720 HDR
+        // array with multi-target draws). Decoding them through the sampler cost ~140 ms per frame.
+        const auto elementBytes = colorElementBytes(colorFormat(surface.format));
+        if (surface.dimension != 5 || !surface.sliceCount || surface.sliceCount > 256 || !surface.width || !surface.height || surface.format == 5 ||
+            surface.format == 0x11 || surface.format == 0x80E)
+            return {};
+        std::vector<const std::vector<std::uint8_t> *> backings;
+        std::vector<unsigned> pitches;
+        std::vector<std::shared_ptr<DecodedTexture>> guestLayers; // keeps decoded layers alive while packing
+        std::uint64_t generation = 0;
+        bool rendered = false;
+        for (unsigned layer = 0; layer < surface.sliceCount; ++layer) {
+            const auto view = arraySlice(surface, layer);
+            if (!view || view->width != surface.width || view->height != surface.height)
+                return {};
+            const auto key = makeSurfaceKey(*view);
+            if (renderedVersion(*view))
+                return {};
+            if (const auto backing = m_viewBackings.find(key); backing != m_viewBackings.end()) {
+                if (backing->second.size() < std::size_t(view->pitch) * view->height * elementBytes)
+                    return {};
+                backings.push_back(&backing->second);
+                pitches.push_back(view->pitch);
+                rendered = true;
+            } else {
+                // Layers never rendered keep their guest data; RGBA8 arrays can decode it like an
+                // ordinary texture (MK8 renders 17 of a 32-slice R8 volume array).
+                auto decoded = colorFormat(surface.format) == ColorFormat::RGBA8 ? decodedTexture(*view) : nullptr;
+                if (!decoded || decoded->rgba.size() != std::size_t(surface.width) * surface.height * 4)
+                    return {};
+                backings.push_back(&decoded->rgba);
+                pitches.push_back(surface.width);
+                // A changed guest layer is decoded into a new entry.
+                generation = (generation ^ reinterpret_cast<std::uintptr_t>(decoded.get())) * 1099511628211ull;
+                guestLayers.push_back(std::move(decoded));
+            }
+            // Every draw or clear into a layer bumps its write count (see m_cpuWrittenSurfaces).
+            if (const auto written = m_cpuWrittenSurfaces.find(view->imagePtr); written != m_cpuWrittenSurfaces.end())
+                generation = (generation ^ written->second.writes ^ view->imagePtr) * 1099511628211ull;
+        }
+        if (!rendered)
+            return {}; // arraySnapshot() keeps arrays that were never rendered
+        for (const auto &entry: m_layerSnapshots)
+            if (entry.surface == surface && entry.generation == generation)
+                return entry.bytes;
+        std::shared_ptr<const std::vector<std::uint8_t>> bytes;
+        // Evicted snapshots no longer pin their decoded guest layers, whose addresses could be reused.
+        if (guestLayers.empty())
+            for (const auto &entry: m_retainedLayerSnapshots)
+                if (entry.surface == surface && entry.generation == generation) {
+                    bytes = entry.bytes.lock();
+                    if (bytes)
+                        break;
+                }
+        if (!bytes) {
+            const auto rowBytes = std::size_t(surface.width) * elementBytes;
+            auto packed = std::make_shared<std::vector<std::uint8_t>>(rowBytes * surface.height * surface.sliceCount);
+            for (unsigned layer = 0; layer < surface.sliceCount; ++layer)
+                for (unsigned y = 0; y < surface.height; ++y)
+                    std::memcpy(packed->data() + (std::size_t(layer) * surface.height + y) * rowBytes,
+                                backings[layer]->data() + std::size_t(y) * pitches[layer] * elementBytes, rowBytes);
+            bytes = std::move(packed);
+            if (m_retainedLayerSnapshots.size() >= 256)
+                std::erase_if(m_retainedLayerSnapshots, [](const auto &entry) { return entry.bytes.expired(); });
+            if (m_retainedLayerSnapshots.size() >= 256)
+                m_retainedLayerSnapshots.clear();
+            m_retainedLayerSnapshots.push_back({surface, generation, bytes});
+        }
+        std::erase_if(m_layerSnapshots, [&](const auto &entry) { return entry.surface == surface; });
+        if (m_layerSnapshots.size() >= 8)
+            m_layerSnapshots.erase(m_layerSnapshots.begin());
+        m_layerSnapshots.push_back({surface, generation, bytes, std::move(guestLayers)});
+        return bytes;
     }
 
     Gx2Replayer::Surface Gx2Replayer::attachmentSurface(const Surface &surface) const
@@ -719,7 +945,7 @@ namespace Core::Gfx {
         const bool knownUnorm =
                 !(surface.format & 0x300u) && (format == 1 || format == 7 || format == 8 || format == 0x1A || (format >= 0x31 && format <= 0x35));
         if (!knownUnorm && surface.format != 0x234 && surface.format != 0x235 && surface.format != 0x80E && surface.format != 0x816 &&
-            surface.format != 0x823)
+            surface.format != 0x820 && surface.format != 0x823)
             return {}; // Do not turn the legacy decoder's unknown-format placeholder into a native texture.
         if (!m_mem || surface.aa || (surface.dimension != 1 && surface.dimension != 3 && surface.dimension != 5) || !surface.sliceCount ||
             surface.sliceCount > 256 || (surface.dimension == 1 && surface.sliceCount != 1) || surface.firstMip >= std::max(1u, surface.mipCount) ||
@@ -734,6 +960,29 @@ namespace Core::Gfx {
         const auto overlaps = [](unsigned base, std::uint64_t size, unsigned other, std::uint64_t otherSize) {
             return std::uint64_t(base) < std::uint64_t(other) + otherSize && std::uint64_t(other) < std::uint64_t(base) + size;
         };
+        const auto colorBytes = std::uint64_t(m_color.pitch) * m_color.height * colorElementBytes(colorFormat(m_color.format));
+        // A snapshot already validated this frame stays valid while no slice was written since and
+        // the bound target does not alias it. Checking its stored ranges avoids rebuilding every
+        // level and slice view (AddrLib layouts) on each of the hundreds of lookups per frame.
+        const auto validatedThisFrame = [&](const std::shared_ptr<MipSnapshot> &entry) {
+            if (!entry || entry->surface != surface || entry->levelCount != count || entry->validatedFrame != m_presentCount ||
+                entry->sliceRanges.empty())
+                return false;
+            std::uint64_t current = 0;
+            for (const auto &[pointer, size]: entry->sliceRanges) {
+                if (const auto written = m_cpuWrittenSurfaces.find(pointer); written != m_cpuWrittenSurfaces.end())
+                    current = (current ^ written->second.writes ^ pointer) * 1099511628211ull;
+                if (overlaps(pointer, size, m_color.imagePtr, colorBytes))
+                    return false;
+            }
+            return current == entry->generation;
+        };
+        for (const auto &entry: m_mipSnapshots)
+            if (validatedThisFrame(entry))
+                return entry;
+        for (const auto &weak: m_retainedMipSnapshots)
+            if (auto entry = weak.lock(); validatedThisFrame(entry))
+                return entry;
         bool feedback = false;
         for (unsigned level = 0; level < count; ++level) {
             const auto selected = mipSurface(surface, level + surface.firstMip);
@@ -749,13 +998,14 @@ namespace Core::Gfx {
                 return {};
             for (unsigned layer = 0; layer < surface.sliceCount; ++layer) {
                 const auto slice = view.dimension == 5 ? arraySlice(view, layer) : std::optional{view};
-                if (!slice)
+                // 0x820 is only decoded from its rendered RGBA8 backings (MK8's environment probe);
+                // guest-memory half floats have no CPU decoder.
+                if (!slice || (surface.format == 0x820 && !findViewBacking(*slice)))
                     return {};
                 slices.push_back(*slice);
                 if (const auto written = m_cpuWrittenSurfaces.find(slice->imagePtr); written != m_cpuWrittenSurfaces.end())
                     generation = (generation ^ written->second.writes ^ slice->imagePtr) * 1099511628211ull;
-                feedback |= overlaps(slice->imagePtr, slice->imageSize, m_color.imagePtr,
-                                     std::uint64_t(m_color.pitch) * m_color.height * colorElementBytes(colorFormat(m_color.format)));
+                feedback |= overlaps(slice->imagePtr, slice->imageSize, m_color.imagePtr, colorBytes);
             }
         }
         const auto rawSize = std::uint64_t(surface.imageSize) + (count > 1 || surface.firstMip ? surface.mipImageSize : 0);
@@ -796,6 +1046,8 @@ namespace Core::Gfx {
         result->levelCount = count;
         result->validatedFrame = m_presentCount;
         result->generation = generation;
+        for (const auto &slice: slices)
+            result->sliceRanges.emplace_back(slice.imagePtr, slice.imageSize);
         result->source = std::move(source);
         result->levels = std::move(levels);
         for (unsigned level = 0; level < count; ++level) {
@@ -903,6 +1155,10 @@ namespace Core::Gfx {
         if (!surface.width || !surface.height || surface.width > 4096 || surface.height > 4096 || !surface.sliceCount || surface.sliceCount > 256 ||
             decodedBytes + surface.imageSize > budget || !useViewBacking())
             return {};
+        for (const auto &entry: m_arraySnapshots)
+            if (entry->validatedFrame == m_presentCount && entry->checkedBackings == m_viewBackings.size() &&
+                entry->checkedCpuWrites == m_cpuWritten.size() && entry->surface == surface)
+                return entry;
         const auto sourceEnd = std::uint64_t(surface.imagePtr) + surface.imageSize;
         for (const auto &[key, backing]: m_viewBackings)
             if (std::uint64_t(key.imagePtr) < sourceEnd && std::uint64_t(surface.imagePtr) < std::uint64_t(key.imagePtr) + backing.size())
@@ -919,12 +1175,28 @@ namespace Core::Gfx {
         const auto *end = m_mem->hostPtr(surface.imagePtr + surface.imageSize - 1);
         if (!begin || !end || std::uintptr_t(end) - std::uintptr_t(begin) != surface.imageSize - 1)
             return {};
-        for (const auto &entry: m_arraySnapshots)
-            if (entry->surface == surface && entry->source.size() == surface.imageSize &&
-                std::memcmp(entry->source.data(), begin, surface.imageSize) == 0)
-                return entry;
+        // Guest memory does not change while one frame replays, and the checks above exclude
+        // surfaces this replay renders into, so each snapshot is compared at most once per present.
+        for (const auto &entry: m_arraySnapshots) {
+            if (entry->surface != surface || entry->source.size() != surface.imageSize)
+                continue;
+            if (entry->validatedFrame != m_presentCount &&
+                !unchangedSinceValidation(entry->writes, surface.imagePtr, surface.imageSize, surface.imagePtr >> 12)) {
+                if (std::memcmp(entry->source.data(), begin, surface.imageSize) != 0)
+                    continue;
+                validated(entry->writes, surface.imagePtr, surface.imageSize, true);
+            }
+            entry->validatedFrame = m_presentCount;
+            entry->checkedBackings = m_viewBackings.size();
+            entry->checkedCpuWrites = m_cpuWritten.size();
+            return entry;
+        }
         auto result = std::make_shared<ArraySnapshot>();
         result->surface = surface;
+        result->validatedFrame = m_presentCount;
+        result->checkedBackings = m_viewBackings.size();
+        result->checkedCpuWrites = m_cpuWritten.size();
+        validated(result->writes, surface.imagePtr, surface.imageSize, false);
         result->source.assign(begin, begin + surface.imageSize);
         result->rgba.resize(decodedBytes);
         for (unsigned layer = 0; layer < slices.size(); ++layer)
@@ -946,29 +1218,53 @@ namespace Core::Gfx {
         return result;
     }
 
-    std::shared_ptr<Gx2Replayer::DecodedTexture> Gx2Replayer::decodedTexture(const Surface &surface, bool blocksOnly)
+    bool Gx2Replayer::unchangedSinceValidation(WriteValidation &validation, std::uint32_t address, std::size_t bytes, std::uint64_t stagger) const
+    {
+        // A store racing the first watch, or a writable view kept across frames, is caught by
+        // a full comparison at least every 16 frames (staggered across entries).
+        constexpr std::uint32_t recheck = 16;
+        if (!validation.trusted || !validation.generation || (m_presentCount + stagger) % recheck == 0 ||
+            m_presentCount - validation.comparedFrame > recheck)
+            return false;
+        return m_mem->writeGeneration(address, bytes) == validation.generation;
+    }
+
+    void Gx2Replayer::validated(WriteValidation &validation, std::uint32_t address, std::size_t bytes, bool unchanged) const
+    {
+        // Writable views count their store when handed out, before the bytes change: trust only
+        // a generation that already held at the previous comparison.
+        m_mem->watchWrites(address, bytes);
+        const auto generation = m_mem->writeGeneration(address, bytes);
+        validation.trusted = unchanged && generation && generation == validation.generation;
+        validation.generation = generation;
+        validation.comparedFrame = m_presentCount;
+    }
+
+    std::shared_ptr<Gx2Replayer::DecodedTexture> Gx2Replayer::decodedTexture(const Surface &surface, bool blocksOnly, bool floatTexels)
     {
         constexpr std::uint64_t budget = 256ull * 1024 * 1024;
         constexpr std::uint64_t entryBudget = 128ull * 1024 * 1024;
         const bool signedBc = surface.format == 0x234 || surface.format == 0x235;
         const bool blockFormat = surface.format == 0x31 || surface.format == 0x431 || surface.format == 0x34 || signedBc;
-        if (blocksOnly && !blockFormat)
+        if ((blocksOnly && !blockFormat) || (floatTexels && (blocksOnly || colorFormat(surface.format) == ColorFormat::RGBA8)))
             return {};
+        const bool floating = floatTexels || signedBc;
         const std::uint64_t pixels = std::uint64_t(surface.width) * surface.height;
-        if (!blocksOnly && pixels > entryBudget / (signedBc ? 16 : 4))
+        if (!blocksOnly && pixels > entryBudget / (floating ? 16 : 4))
             return {};
         const unsigned blockBytes = surface.format == 0x235 ? 16 : 8;
         const std::uint64_t bytes = blocksOnly ? ((std::uint64_t(surface.width) + 3) / 4) * ((std::uint64_t(surface.height) + 3) / 4) * blockBytes
-                                               : pixels * (signedBc ? 16 : 4);
+                                               : pixels * (floating ? 16 : 4);
         if (!m_mem || !surface.imagePtr || !surface.imageSize || !surface.width || !surface.height || bytes > entryBudget ||
             surface.imageSize > entryBudget - bytes || std::uint64_t(surface.imagePtr) + surface.imageSize > 0x100000000ull ||
-            findViewBacking(surface) || m_cpuWritten.contains(surface.imagePtr))
+            findViewBacking(surface) || m_cpuWritten.contains(surface.imagePtr) ||
+            (floatTexels && m_pendingReadbacks.contains(makeSurfaceKey(surface))))
             return {};
         const auto *base = m_mem->hostPtr(surface.imagePtr);
         const auto *last = m_mem->hostPtr(surface.imagePtr + surface.imageSize - 1);
         if (!base || !last || std::uintptr_t(last) - std::uintptr_t(base) != surface.imageSize - 1)
             return {};
-        const DecodedKey key{makeSurfaceKey(surface), signedBc && !blocksOnly ? surface.compMap : 0u, surface.imageSize, blocksOnly};
+        const DecodedKey key{makeSurfaceKey(surface), floating && !blocksOnly ? surface.compMap : 0u, surface.imageSize, blocksOnly, floatTexels};
         auto &entry = m_decodedTextures[key];
         if (!entry)
             if (const auto retained = m_retainedDecodedTextures.find(key); retained != m_retainedDecodedTextures.end()) {
@@ -981,20 +1277,32 @@ namespace Core::Gfx {
         // bytes cannot change during command replay. Include the snapshot in
         // the same cache budget as the decoded pixels.
         if (!entry || entry->validatedFrame != m_presentCount) {
-            if (entry && entry->source.size() == surface.imageSize && std::memcmp(entry->source.data(), base, surface.imageSize) == 0) {
+            if (entry && entry->source.size() == surface.imageSize &&
+                unchangedSinceValidation(entry->writes, surface.imagePtr, surface.imageSize, surface.imagePtr >> 12)) {
                 entry->validatedFrame = m_presentCount;
+            } else if (entry && entry->source.size() == surface.imageSize && std::memcmp(entry->source.data(), base, surface.imageSize) == 0) {
+                entry->validatedFrame = m_presentCount;
+                validated(entry->writes, surface.imagePtr, surface.imageSize, true);
             } else {
                 auto decoded = std::make_shared<DecodedTexture>();
+                validated(decoded->writes, surface.imagePtr, surface.imageSize, false);
                 decoded->source.assign(base, base + surface.imageSize);
                 decoded->validatedFrame = m_presentCount;
                 if (blocksOnly)
                     decoded->blocks.resize(bytes);
-                else if (signedBc)
+                else if (floating)
                     decoded->floating.resize(bytes / sizeof(float));
                 else
                     decoded->rgba.resize(bytes);
                 const auto format = surface.format & 0x3F;
-                if (blocksOnly) {
+                if (floatTexels) {
+                    for (unsigned y = 0; y < surface.height; ++y)
+                        for (unsigned x = 0; x < surface.width; ++x) {
+                            const auto texel = sampleTexture(surface, TextureSampler{}, (float(x) + .5f) / float(surface.width),
+                                                             (float(y) + .5f) / float(surface.height));
+                            std::copy(texel.begin(), texel.end(), decoded->floating.data() + (std::size_t(y) * surface.width + x) * 4);
+                        }
+                } else if (blocksOnly) {
                     const auto width = (surface.width + 3) / 4, height = (surface.height + 3) / 4;
                     for (unsigned y = 0; y < height; ++y)
                         for (unsigned x = 0; x < width; ++x) {
@@ -1372,6 +1680,75 @@ namespace Core::Gfx {
         return out;
     }
 
+    const std::vector<std::uint32_t> &Gx2Replayer::programWords(const std::shared_ptr<ShaderProgram> &program)
+    {
+        static const std::vector<std::uint32_t> none;
+        return program ? program->words : none;
+    }
+
+    std::shared_ptr<const Latte::Program> Gx2Replayer::declaration(const std::shared_ptr<ShaderProgram> &program)
+    {
+        if (!program)
+            return LatteVsInterp::compile(programWords(program));
+        if (!program->declaration)
+            program->declaration = LatteVsInterp::compile(program->words);
+        return program->declaration;
+    }
+
+    std::shared_ptr<const Latte::FragmentShader> Gx2Replayer::fragmentShader(std::span<const Latte::TextureType> resourceTypes, bool onlyColorZero,
+                                                                             unsigned colorExport)
+    {
+        // Trailing 2D resources are the default, as in FragmentShaderCache.
+        while (!resourceTypes.empty() && resourceTypes.back() == Latte::TextureType::TwoD)
+            resourceTypes = resourceTypes.first(resourceTypes.size() - 1);
+        if (!m_psShader || resourceTypes.size() > 32)
+            return m_fragmentShaderCache.get(psProgram(), resourceTypes, onlyColorZero, colorExport);
+        std::uint64_t types{};
+        for (std::size_t i = 0; i < resourceTypes.size(); ++i)
+            types |= std::uint64_t(resourceTypes[i]) << (i * 2);
+        auto &shader = m_psShader->fragmentShaders[{types, onlyColorZero, colorExport}];
+        if (!shader)
+            shader = m_fragmentShaderCache.get(m_psShader->words, resourceTypes, onlyColorZero, colorExport);
+        return shader;
+    }
+
+    std::shared_ptr<const Latte::VertexShader> Gx2Replayer::vertexShader(const unsigned bufferWindow)
+    {
+        if (!m_vsShader)
+            return m_vertexShaderCache.get(vsProgram(), bufferWindow);
+        if (bufferWindow) {
+            auto &shader = m_vsShader->windowedVertexShaders[bufferWindow];
+            if (!shader)
+                shader = m_vertexShaderCache.get(m_vsShader->words, bufferWindow);
+            return shader;
+        }
+        if (!m_vsShader->vertexShader)
+            m_vsShader->vertexShader = m_vertexShaderCache.get(m_vsShader->words);
+        return m_vsShader->vertexShader;
+    }
+
+    bool Gx2Replayer::colorOnlyEffects()
+    {
+        if (!m_psShader)
+            return m_fragmentShaderCache.hasUnconditionalColorOnlyEffects(psProgram());
+        if (const auto cached = m_psShader->colorOnlyEffects)
+            return *cached;
+        const bool effects = m_fragmentShaderCache.hasUnconditionalColorOnlyEffects(m_psShader->words);
+        m_psShader->colorOnlyEffects = effects;
+        return effects;
+    }
+
+    bool Gx2Replayer::rejectsEveryPixel()
+    {
+        if (!m_psShader)
+            return LatteVsInterp::rejectsEveryPixel(*declaration(m_psShader));
+        if (const auto cached = m_psShader->rejectsEveryPixel)
+            return *cached;
+        const bool rejects = LatteVsInterp::rejectsEveryPixel(*declaration(m_psShader));
+        m_psShader->rejectsEveryPixel = rejects;
+        return rejects;
+    }
+
     Gx2Replayer::Surface Gx2Replayer::parseSurface(const std::uint32_t addr)
     {
         Surface s;
@@ -1448,31 +1825,66 @@ namespace Core::Gfx {
         w.surface = s;
         w.frame = m_presentCount + 1;
         w.writes++;
-        std::uint8_t *base = nullptr;
-        if (useViewBacking()) {
-            base = viewBacking(s).data();
-        } else {
-            if (!m_mem)
-                return;
-            base = m_mem->hostPtr(s.imagePtr);
-            if (!base || !m_mem->hostPtr(s.imagePtr + s.pitch * s.height * colorElementBytes(colorFormat(s.format)) - 1))
-                return;
-        }
+        // Every element receives the same fully written bytes: encode one, then replicate rows.
         const auto format = colorFormat(s.format);
-        if (format != ColorFormat::RGBA8) {
-            const std::array value{rgba[0], rgba[1], rgba[2], rgba[3]};
-            for (unsigned y = 0; y < s.height; ++y)
-                for (unsigned x = 0; x < s.width; ++x)
-                    writeFloatColor(base + (std::size_t(y) * s.pitch + x) * colorElementBytes(format), value, 15, format);
+        const auto elementBytes = colorElementBytes(format);
+        std::array<std::uint8_t, 16> element{};
+        if (format != ColorFormat::RGBA8)
+            writeFloatColor(element.data(), {rgba[0], rgba[1], rgba[2], rgba[3]}, 15, format);
+        else {
+            const auto toByte = [](float f) { return static_cast<std::uint8_t>(std::lround(std::clamp(f, 0.0f, 1.0f) * 255.0f)); };
+            element = {toByte(rgba[0]), toByte(rgba[1]), toByte(rgba[2]), toByte(rgba[3])};
+        }
+        const std::size_t rowBytes = std::size_t(s.width) * elementBytes, pitchBytes = std::size_t(s.pitch) * elementBytes;
+        // By value: a deferred clear fills its bytes after this call returned.
+        const auto fill = [element, elementBytes, width = s.width, height = s.height, rowBytes, pitchBytes](std::uint8_t *base) {
+            for (std::uint32_t x = 0; x < width; x++)
+                std::memcpy(base + std::size_t(x) * elementBytes, element.data(), elementBytes);
+            for (std::uint32_t y = 1; y < height; y++)
+                std::memcpy(base + y * pitchBytes, base, rowBytes);
+        };
+        if (!useViewBacking()) {
+            if (!m_writableMem)
+                return;
+            auto *base = m_writableMem->hostPtr(s.imagePtr);
+            if (!base || !m_mem->hostPtr(s.imagePtr + s.pitch * s.height * elementBytes - 1) || !s.height || !rowBytes)
+                return;
+            fill(base);
             return;
         }
-        const auto toByte = [](float f) { return static_cast<std::uint8_t>(std::lround(std::clamp(f, 0.0f, 1.0f) * 255.0f)); };
-        const std::uint8_t px[4] = {toByte(rgba[0]), toByte(rgba[1]), toByte(rgba[2]), toByte(rgba[3])};
-        for (std::uint32_t y = 0; y < s.height; y++) {
-            std::uint8_t *row = base + static_cast<std::size_t>(y) * s.pitch * 4;
-            for (std::uint32_t x = 0; x < s.width; x++)
-                std::memcpy(row + std::size_t(x) * 4, px, 4);
+        // Every element is replaced and padding never comes from draws: a native version still
+        // pending needs no readback.
+        const auto key = makeSurfaceKey(s);
+        m_pendingReadbacks.erase(key);
+        auto &backing = viewBacking(s);
+        if (!s.height || !rowBytes)
+            return;
+        if (!residentTargets() || !m_rasterBackend || !m_rasterBackend->supportsRenderedTargets()) {
+            fill(backing.data());
+            return;
         }
+        // Resident targets: the clear stays pending like a native version, so the next native draw
+        // clears its image on the GPU instead of uploading these bytes. Only padding is kept.
+        std::vector<std::uint8_t> padding;
+        if (pitchBytes > rowBytes)
+            for (std::uint32_t y = 0; y < s.height; ++y)
+                padding.insert(padding.end(), backing.begin() + std::ptrdiff_t(y * pitchBytes + rowBytes),
+                               backing.begin() + std::ptrdiff_t((y + 1) * pitchBytes));
+        const auto color = format == ColorFormat::RGBA8 ? std::array{float(element[0]) / 255.f, float(element[1]) / 255.f, float(element[2]) / 255.f,
+                                                                     float(element[3]) / 255.f}
+                                                        : readFloatColor(element.data(), format);
+        m_pendingReadbacks[key] = std::make_shared<RasterReadback>(
+                backing.size(),
+                [fill, bytes = backing.size(), rowBytes, pitchBytes, height = s.height, padding = std::move(padding)] {
+                    std::vector<std::uint8_t> pixels(bytes);
+                    fill(pixels.data());
+                    if (!padding.empty())
+                        for (std::uint32_t y = 0; y < height; ++y)
+                            std::memcpy(pixels.data() + y * pitchBytes + rowBytes, padding.data() + y * (pitchBytes - rowBytes),
+                                        pitchBytes - rowBytes);
+                    return pixels;
+                },
+                std::make_shared<const ClearedImage>(color));
     }
 
     void Gx2Replayer::repairProjection()
@@ -1614,30 +2026,31 @@ namespace Core::Gfx {
         return {px[0], px[1], px[2], px[3]};
     }
 
-    bool Gx2Replayer::fetchAttributes(std::uint32_t vertex, std::span<std::array<float, 4>> out) const
+    Gx2Replayer::AttributeFetch Gx2Replayer::prepareAttributeFetch() const
     {
+        AttributeFetch plan;
         if (!m_mem || m_fetchLayout.empty())
-            return false;
-        std::ranges::fill(out, std::array<float, 4>{});
-        for (auto &a: out)
-            a[3] = 1.0f;
+            return plan;
+        plan.valid = true;
         for (std::size_t i = 0; i + 7 < m_fetchLayout.size(); i += 8) {
-            const auto location = m_fetchLayout[i], buffer = m_fetchLayout[i + 1], offset = m_fetchLayout[i + 2];
-            const auto format = m_fetchLayout[i + 3], mask = m_fetchLayout[i + 6];
+            const auto location = m_fetchLayout[i], buffer = m_fetchLayout[i + 1];
+            const auto format = m_fetchLayout[i + 3];
             auto endian = m_fetchLayout[i + 7];
             const auto semantic = std::find(m_vertexSemantics.begin(), m_vertexSemantics.end(), location);
             if (semantic == m_vertexSemantics.end())
                 continue;
-            if (std::size_t(std::distance(m_vertexSemantics.begin(), semantic)) >= out.size())
+            auto &e = plan.elements.emplace_back();
+            e.out = std::uint32_t(std::distance(m_vertexSemantics.begin(), semantic));
+            e.mask = m_fetchLayout[i + 6];
+            if (buffer >= m_attribs.size()) {
+                e.fails = true;
                 continue;
-            if (buffer >= m_attribs.size())
-                return false;
+            }
             const auto &binding = m_attribs[buffer];
             // GX2AttribFormat: the low byte selects the component layout; 0x100 = integer,
             // 0x200 = signed, 0x800 = float (or integer scaled to float).
             const auto type = format & 0xFF;
             unsigned components = 0, bytes = 0;
-            bool packed1010102 = false;
             switch (type) {
                 case 0x00:
                     components = 1, bytes = 1;
@@ -1677,75 +2090,193 @@ namespace Core::Gfx {
                     components = 4, bytes = 4;
                     break; // 32_32_32_32 / float
                 case 0x0B:
-                    components = 1, bytes = 4, packed1010102 = true;
+                    components = 1, bytes = 4, e.packed1010102 = true;
                     break; // 2_10_10_10
                 default:
-                    return false;
+                    e.fails = true;
+                    continue;
             }
-            const bool floating = type == 0x03 || type == 0x06 || type == 0x08 || type == 0x0D || type == 0x0F || type == 0x11 || type == 0x13;
-            const bool integer = format & 0x100, isSigned = format & 0x200, scaled = (format & 0x800) && !floating;
+            e.components = std::uint8_t(components);
+            e.bytes = std::uint8_t(bytes);
+            e.floating = type == 0x03 || type == 0x06 || type == 0x08 || type == 0x0D || type == 0x0F || type == 0x11 || type == 0x13;
+            e.integer = format & 0x100;
+            e.isSigned = format & 0x200;
+            e.scaled = (format & 0x800) && !e.floating;
             if (endian == 3)
                 endian = bytes == 4 ? 2 : bytes == 2 ? 1 : 0;
-            const std::uint32_t index = m_fetchLayout[i + 4] == 1 ? 0 : vertex;
-            const std::uint64_t start = std::uint64_t(index) * binding.stride + offset;
-            if (!binding.addr || start + std::uint64_t(components) * bytes > binding.size ||
-                std::uint64_t(binding.addr) + start + std::uint64_t(components) * bytes > 0x100000000ull)
-                return false;
-            const auto addr = binding.addr + static_cast<std::uint32_t>(start);
-            const auto *p = m_mem->hostPtr(addr);
-            if (!p || !m_mem->hostPtr(addr + components * bytes - 1))
-                return false;
-            const auto convert = [&](std::uint32_t bits, unsigned width) -> float {
-                const auto signBit = 1u << (width - 1);
-                const auto signedBits = std::int32_t(isSigned && (bits & signBit) && width < 32 ? bits | ~((signBit << 1) - 1) : bits);
-                if (integer && !scaled)
-                    return asFloat(isSigned ? std::uint32_t(signedBits) : bits); // raw integer bits for integer shader inputs
-                if (scaled || integer)
-                    return isSigned ? float(signedBits) : float(bits);
-                if (isSigned)
-                    return std::max(-1.0f, float(signedBits) / float(signBit - 1));
-                return width == 32 ? float(double(bits) / 4294967295.0) : float(bits) / float((signBit << 1) - 1);
-            };
-            const auto halfToFloat = [](std::uint32_t h) {
-                const std::uint32_t sign = (h & 0x8000u) << 16, exponent = (h >> 10) & 0x1F, mantissa = h & 0x3FF;
-                if (exponent == 0) {
-                    const float value = std::ldexp(float(mantissa), -24);
-                    return sign ? -value : value;
-                }
-                if (exponent == 31)
-                    return asFloat(sign | 0x7F800000u | (mantissa << 13));
-                return asFloat(sign | ((exponent + 112) << 23) | (mantissa << 13));
-            };
-            std::array<float, 4> value{0, 0, 0, 1};
-            for (unsigned c = 0; c < components; c++) {
-                std::uint32_t bits = 0;
-                for (unsigned b = 0; b < bytes; b++) {
-                    const auto byteIndex = c * bytes + b;
-                    const auto swapped = endian == 2 ? byteIndex ^ 3u : endian == 1 ? byteIndex ^ 1u : byteIndex;
-                    if (swapped >= components * bytes)
-                        return false;
-                    bits |= std::uint32_t(p[swapped]) << (b * 8);
-                }
-                if (packed1010102) {
-                    for (unsigned k = 0; k < 3; ++k) {
-                        const auto field = (bits >> (k * 10)) & 0x3FF;
-                        value[k] = convert(field, 10);
-                    }
-                    value[3] = (integer || scaled) ? float(bits >> 30) : float(bits >> 30) / 3.0f;
-                } else if (floating)
-                    value[c] = bytes == 2 ? halfToFloat(bits) : asFloat(bits);
-                else
-                    value[c] = convert(bits, bytes * 8);
+            const unsigned extent = components * bytes;
+            for (unsigned byteIndex = 0; byteIndex < extent; ++byteIndex) {
+                const auto swapped = endian == 2 ? byteIndex ^ 3u : endian == 1 ? byteIndex ^ 1u : byteIndex;
+                e.fails |= swapped >= extent;
+                e.order[byteIndex] = std::uint8_t(swapped);
             }
-            auto &a = out[std::distance(m_vertexSemantics.begin(), semantic)];
+            e.wordSwap = (endian == 2 && bytes == 4) || (endian == 1 && bytes == 2);
+            e.wordLoad = endian == 0 || e.wordSwap;
+            for (unsigned c = 0; c < 4; ++c)
+                e.select[c] = std::uint8_t((e.mask >> (24 - c * 8)) & 7);
+            // Per-instance elements always read the first element.
+            e.stride = m_fetchLayout[i + 4] == 1 ? 0 : binding.stride;
+            e.offset = m_fetchLayout[i + 2];
+            e.size = binding.size;
+            e.address = binding.addr;
+            if (e.fails || !binding.addr)
+                e.fails = true;
+            else if (e.offset < binding.size) {
+                // Bound a fetch by where its element starts, not by its byte extent: MK8 fetches
+                // 32_32_32_32 positions from 12-byte strides, so the last vertex's fourth float lies
+                // past the declared size and is read from the following memory.
+                e.count = e.stride ? (binding.size - 1 - e.offset) / e.stride + 1 : ~std::uint64_t{};
+                const std::uint64_t last = std::uint64_t(binding.addr) + e.offset + (e.stride ? (e.count - 1) * e.stride : 0) + extent;
+                if (last <= 0x100000000ull)
+                    e.host = m_mem->hostPtr(binding.addr + e.offset, last - binding.addr - e.offset);
+            }
+        }
+        return plan;
+    }
+
+    bool Gx2Replayer::fetchAttributes(const AttributeFetch &fetch, std::uint32_t vertex, std::span<std::array<float, 4>> out) const
+    {
+        if (!fetch.valid)
+            return false;
+        std::ranges::fill(out, std::array<float, 4>{0, 0, 0, 1});
+        for (const auto &e: fetch.elements) {
+            if (e.out >= out.size())
+                continue;
+            if (e.fails)
+                return false;
+            const unsigned extent = unsigned(e.components) * e.bytes;
+            const std::uint8_t *p;
+            if (e.host) {
+                if (e.stride && vertex >= e.count)
+                    return false;
+                p = e.host + std::uint64_t(vertex) * e.stride;
+            } else {
+                const std::uint64_t start = std::uint64_t(vertex) * e.stride + e.offset;
+                if (start >= e.size || std::uint64_t(e.address) + start + extent > 0x100000000ull)
+                    return false;
+                const auto addr = e.address + static_cast<std::uint32_t>(start);
+                p = m_mem->hostPtr(addr);
+                if (!p || !m_mem->hostPtr(addr + extent - 1))
+                    return false;
+            }
+            std::array<float, 4> value{0, 0, 0, 1};
+            // Component c's bits, as the byte-order loop below assembles them.
+            const auto word = [&](unsigned c) -> std::uint32_t {
+                if (e.bytes == 4) {
+                    std::uint32_t bits;
+                    std::memcpy(&bits, p + std::size_t{c} * 4, 4);
+                    return e.wordSwap ? std::byteswap(bits) : bits;
+                }
+                if (e.bytes == 2) {
+                    std::uint16_t bits;
+                    std::memcpy(&bits, p + std::size_t{c} * 2, 2);
+                    return e.wordSwap ? std::byteswap(bits) : bits;
+                }
+                return p[c];
+            };
+            if (e.floating && e.bytes == 4) {
+                for (unsigned c = 0; c < e.components; c++) {
+                    const auto *order = &e.order[std::size_t{c} * 4];
+                    value[c] = asFloat(e.wordLoad ? word(c)
+                                                  : std::uint32_t(p[order[0]]) | std::uint32_t(p[order[1]]) << 8 | std::uint32_t(p[order[2]]) << 16 |
+                                                            std::uint32_t(p[order[3]]) << 24);
+                }
+            } else {
+                const auto convert = [&](std::uint32_t bits, unsigned width) -> float {
+                    const auto signBit = 1u << ((width - 1) & 31);
+                    const auto signedBits = std::int32_t(e.isSigned && (bits & signBit) && width < 32 ? bits | ~((signBit << 1) - 1) : bits);
+                    if (e.integer && !e.scaled)
+                        return asFloat(e.isSigned ? std::uint32_t(signedBits) : bits); // raw integer bits for integer shader inputs
+                    if (e.scaled || e.integer)
+                        return e.isSigned ? float(signedBits) : float(bits);
+                    if (e.isSigned)
+                        return std::max(-1.0f, float(signedBits) / float(signBit - 1));
+                    return width == 32 ? float(double(bits) / 4294967295.0) : float(bits) / float((signBit << 1) - 1);
+                };
+                const auto halfToFloat = [](std::uint32_t h) {
+                    const std::uint32_t sign = (h & 0x8000u) << 16, exponent = (h >> 10) & 0x1F, mantissa = h & 0x3FF;
+                    if (exponent == 0) {
+                        const float value = std::ldexp(float(mantissa), -24);
+                        return sign ? -value : value;
+                    }
+                    if (exponent == 31)
+                        return asFloat(sign | 0x7F800000u | (mantissa << 13));
+                    return asFloat(sign | ((exponent + 112) << 23) | (mantissa << 13));
+                };
+                for (unsigned c = 0; c < e.components; c++) {
+                    std::uint32_t bits = 0;
+                    if (e.wordLoad)
+                        bits = word(c);
+                    else
+                        for (unsigned b = 0; b < e.bytes; b++)
+                            bits |= std::uint32_t(p[e.order[c * e.bytes + b]]) << (b * 8);
+                    if (e.packed1010102) {
+                        for (unsigned k = 0; k < 3; ++k) {
+                            const auto field = (bits >> (k * 10)) & 0x3FF;
+                            value[k] = convert(field, 10);
+                        }
+                        value[3] = (e.integer || e.scaled) ? float(bits >> 30) : float(bits >> 30) / 3.0f;
+                    } else if (e.floating)
+                        value[c] = halfToFloat(bits);
+                    else
+                        value[c] = convert(bits, e.bytes * 8u);
+                }
+            }
+            auto &a = out[e.out];
             for (unsigned c = 0; c < 4; c++) {
-                const auto select = (mask >> (24 - c * 8)) & 7;
+                const auto select = e.select[c];
                 if (select < 4)
                     a[c] = value[select];
                 else if (select == 4 || select == 5)
                     a[c] = select == 5 ? 1.0f : 0.0f;
             }
         }
+        return true;
+    }
+
+    std::size_t Gx2Replayer::DirectVertexEntry::bytes() const
+    {
+        std::size_t total = (fetchLayout.size() + sourceIndices.size()) * sizeof(std::uint32_t);
+        for (const auto &[address, data]: sources)
+            total += data.size();
+        if (vertices)
+            total += vertices->attributes.size() * sizeof(vertices->attributes[0]) + vertices->indices.size() * sizeof(std::uint32_t);
+        return total;
+    }
+
+    bool Gx2Replayer::directVertexSources(const AttributeFetch &fetch, unsigned outputs, std::uint32_t low, std::uint32_t high,
+                                          std::vector<std::pair<std::uint32_t, std::uint32_t>> &ranges)
+    {
+        ranges.clear();
+        if (!fetch.valid)
+            return true;
+        for (const auto &e: fetch.elements) {
+            // Skipped and failing elements read nothing; the per-vertex path is not tracked.
+            if (e.out >= outputs || e.fails)
+                continue;
+            if (!e.host)
+                return false;
+            const std::uint64_t extent = std::uint64_t(e.components) * e.bytes;
+            if (!e.stride) {
+                if (e.count)
+                    ranges.emplace_back(e.address + e.offset, std::uint32_t(extent));
+                continue;
+            }
+            if (low >= e.count)
+                continue;
+            const std::uint64_t last = std::min<std::uint64_t>(high, e.count - 1);
+            ranges.emplace_back(e.address + e.offset + low * e.stride, std::uint32_t((last - low) * e.stride + extent));
+        }
+        std::ranges::sort(ranges);
+        std::size_t merged = 0;
+        for (const auto &range: ranges) {
+            if (merged && std::uint64_t(range.first) <= std::uint64_t(ranges[merged - 1].first) + ranges[merged - 1].second) {
+                auto &previous = ranges[merged - 1];
+                previous.second = std::uint32_t(std::max<std::uint64_t>(previous.second, std::uint64_t(range.first) + range.second - previous.first));
+            } else
+                ranges[merged++] = range;
+        }
+        ranges.resize(merged);
         return true;
     }
 
@@ -1801,6 +2332,7 @@ namespace Core::Gfx {
                     rendered = pending->second;
             }
             auto &target = rendered ? m_viewBackings.at(key) : viewBacking(m_color);
+            touchBacking(key);
             RasterDraw::Texture texture{shader.textures.at(0), width, height, sampler, texel};
             texture.unorm8 = {rgba, std::size_t(width) * height * 4};
             texture.unorm8Pitch = width;
@@ -1817,6 +2349,7 @@ namespace Core::Gfx {
                             {}};
             draw.colorFormat = colorFormat(m_color.format);
             draw.renderedTarget = rendered;
+            draw.supersedesTarget = true; // the result replaces m_pendingReadbacks[key] below
             if (auto result = m_rasterBackend->renderDeferred(draw)) {
                 if (result->size() != target.size())
                     throw std::runtime_error("Image draw returned an incomplete target");
@@ -1829,7 +2362,7 @@ namespace Core::Gfx {
                 return;
             }
         }
-        auto *target = useViewBacking() ? viewBacking(m_color).data() : m_mem ? m_mem->hostPtr(m_color.imagePtr) : nullptr;
+        auto *target = useViewBacking() ? viewBacking(m_color).data() : m_writableMem ? m_writableMem->hostPtr(m_color.imagePtr) : nullptr;
         if (!target)
             return;
         const unsigned bytes = colorElementBytes(colorFormat(m_color.format));
@@ -1874,14 +2407,21 @@ namespace Core::Gfx {
     {
         if (!m_rasterizerEnabled)
             return;
-        static const bool nativeAudit = [] {
+        static const bool nativeAuditEnabled = [] {
             const auto *value = std::getenv("WEMU_NATIVE_SHADER_AUDIT");
             return value && value[0] == '1';
         }();
-        static const bool profile = [] {
+        static const bool profileEnabled = [] {
             const auto *value = std::getenv("WEMU_RASTER_PROFILE");
             return value && value[0] == '1';
         }();
+        // WEMU_RASTER_PROFILE_FROM=N limits both per-draw diagnostics to presents >= N.
+        static const std::uint32_t diagnosticsFrom = [] {
+            const auto *value = std::getenv("WEMU_RASTER_PROFILE_FROM");
+            return value ? std::uint32_t(std::strtoul(value, nullptr, 10)) : 0u;
+        }();
+        const bool nativeAudit = nativeAuditEnabled && m_presentCount >= diagnosticsFrom;
+        const bool profile = profileEnabled && m_presentCount >= diagnosticsFrom;
         const auto profileStart = (profile || nativeAudit) ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
         const auto pixelsBefore = m_stats.pixels;
         m_stats.draws++;
@@ -1893,12 +2433,13 @@ namespace Core::Gfx {
         // not the last unit-zero binding (post-process passes commonly bind other units).
         unsigned textureUnit = 0;
         unsigned textureParam = 0, textureSelectX = 0, textureSelectY = 1;
-        for (std::size_t cf = 0; cf + 1 < m_psProgram.size(); cf += 2) {
-            const auto w0 = m_psProgram[cf], w1 = m_psProgram[cf + 1];
+        const auto &pixelWords = psProgram();
+        for (std::size_t cf = 0; cf + 1 < pixelWords.size(); cf += 2) {
+            const auto w0 = pixelWords[cf], w1 = pixelWords[cf + 1];
             if (((w1 >> 26) & 15) >= 8)
                 continue;
-            if (((w1 >> 23) & 127) == 1 && std::uint64_t(w0) * 2 + 2 < m_psProgram.size()) {
-                const auto t0 = m_psProgram[std::size_t(w0) * 2], t2 = m_psProgram[std::size_t(w0) * 2 + 2];
+            if (((w1 >> 23) & 127) == 1 && std::uint64_t(w0) * 2 + 2 < pixelWords.size()) {
+                const auto t0 = pixelWords[std::size_t(w0) * 2], t2 = pixelWords[std::size_t(w0) * 2 + 2];
                 textureUnit = (t0 >> 8) & 255;
                 const auto input = (t0 >> 16) & 127;
                 if (input < m_pixelInputSemantics.size()) {
@@ -1919,28 +2460,45 @@ namespace Core::Gfx {
         // Export destination is independent of translation support. In particular,
         // a burst shader with only slot zero writable still targets slot zero when
         // its other exports or instructions require reference execution.
-        const auto pixelDeclaration = m_psProgram.empty() ? nullptr : LatteVsInterp::compile(m_psProgram);
+        const auto pixelDeclaration = psProgram().empty() ? nullptr : declaration(m_psShader);
         const auto colorExports = pixelDeclaration && pixelDeclaration->valid ? pixelDeclaration->colorExportMask : 0u;
         unsigned writableColors{};
         for (unsigned slot = 0; slot < m_colorBuffers.size(); ++slot)
             if ((colorExports & (1u << slot)) && m_colorWriteEnable && m_channelMask[slot] && m_colorBuffers[slot].imagePtr)
                 writableColors |= 1u << slot;
         // Independent color attachments can use separate native passes while the
-        // backend exposes one attachment. Shared depth/stencil and framebuffer
-        // feedback need a simultaneous MRT path, so retain fallback for those.
-        if (selectedColor < 0 && std::popcount(writableColors) > 1 && !m_depthTest && !m_stencilTest && !m_multiWriteEnable && !m_gpuRenderer) {
+        // backend exposes one attachment. A read-only depth test gives every pass the
+        // same coverage; depth writes, stencil and framebuffer feedback need a
+        // simultaneous MRT path, so retain fallback for those. Only the pixel units the
+        // shader samples count as feedback: titles leave earlier draws' textures bound
+        // (Pikmin 3's light passes keep the array they render into on an unused unit).
+        if (selectedColor < 0 && std::popcount(writableColors) > 1 && (!m_depthTest || !m_depthWrite) && !m_stencilTest && !m_multiWriteEnable &&
+            !m_gpuRenderer) {
             bool independent = true;
             const auto aliases = [](const Surface &a, const Surface &b) {
                 return a.imagePtr && b.imagePtr && std::uint64_t(a.imagePtr) < std::uint64_t(b.imagePtr) + b.imageSize &&
                        std::uint64_t(b.imagePtr) < std::uint64_t(a.imagePtr) + a.imageSize;
             };
+            // Every pass's samples count against every attachment: a later pass must not read
+            // what an earlier one wrote.
+            std::vector<const Surface *> sampled;
             for (unsigned slot = 0; slot < 8 && independent; ++slot)
                 if (writableColors & (1u << slot)) {
-                    independent = bool(*m_fragmentShaderCache.get(m_psProgram, {}, true, slot));
+                    const auto shader = fragmentShader({}, true, slot);
+                    independent = bool(*shader);
+                    for (const auto &binding: shader->textures)
+                        if (binding.resource < m_pixelTextures.size())
+                            sampled.push_back(&m_pixelTextures[binding.resource]);
+                }
+            for (unsigned slot = 0; slot < 8 && independent; ++slot)
+                if (writableColors & (1u << slot)) {
                     for (unsigned other = 0; other < slot; ++other)
                         if ((writableColors & (1u << other)) && aliases(m_colorBuffers[slot], m_colorBuffers[other]))
                             independent = false;
-                    for (const auto &texture: m_pixelTextures) {
+                    if (m_depthTest && aliases(m_colorBuffers[slot], m_depth))
+                        independent = false;
+                    for (const auto *surface: sampled) {
+                        const auto &texture = *surface;
                         independent &= !aliases(m_colorBuffers[slot], texture);
                         auto mips = texture;
                         mips.imagePtr = texture.mipImagePtr;
@@ -1978,7 +2536,7 @@ namespace Core::Gfx {
         // Zero writable colors can use the same analysis to prove a depth-only
         // replacement. A specialized original shader still needs mask 1 at submission.
         const bool onlyColorZero = writableColors <= 1 && !m_multiWriteEnable;
-        const auto colorShader = m_psProgram.empty() ? nullptr : m_fragmentShaderCache.get(m_psProgram, {}, onlyColorZero, colorExport);
+        const auto colorShader = psProgram().empty() ? nullptr : fragmentShader({}, onlyColorZero, colorExport);
         if (selectedColor < 0 && m_colorBuffers[0].imagePtr && (writableColors == 1 || (colorShader && *colorShader && colorShader->exportsColor))) {
             m_color = m_colorBuffers[0];
             m_colorTarget = 0;
@@ -1991,29 +2549,42 @@ namespace Core::Gfx {
         }
         std::uint8_t *target = nullptr;
         std::shared_ptr<RasterReadback> renderedTarget;
-        static const bool residentTargetsEnabled = [] {
-            const auto *value = std::getenv("WEMU_NATIVE_RESIDENT_TARGETS");
-            return value && std::string_view(value) == "1";
-        }();
         if (useViewBacking()) {
-            if (residentTargetsEnabled && m_rasterBackend && m_rasterBackend->supportsRenderedTargets()) {
+            if (residentTargets() && m_rasterBackend && m_rasterBackend->supportsRenderedTargets()) {
                 const auto pending = m_pendingReadbacks.find(makeSurfaceKey(m_color));
                 if (pending != m_pendingReadbacks.end())
                     renderedTarget = pending->second;
             }
             target = renderedTarget ? m_viewBackings.at(makeSurfaceKey(m_color)).data() : viewBacking(m_color).data();
         } else {
-            target = m_mem->hostPtr(m_color.imagePtr);
+            target = m_writableMem->hostPtr(m_color.imagePtr);
             if (!target || !m_mem->hostPtr(m_color.imagePtr + m_color.pitch * m_color.height * colorElementBytes(colorFormat(m_color.format)) - 1)) {
                 m_stats.skipBadPtr++;
                 return;
             }
         }
         m_lastDrawColor = m_color;
-        auto *drawDepth = m_depthTest ? depthBacking(m_depth, false) : nullptr;
+        // A pending clear goes to native draws as a value (cleared on the GPU, not uploaded);
+        // CPU readers below apply it first (prepareSoftwareInputs).
+        auto *drawDepth = m_depthTest ? depthBacking(m_depth, false, false) : nullptr;
+        // Software raster and copied-back native results write drawDepth->pixels during this call.
+        struct DepthWrites {
+                DepthBacking *backing;
+                ~DepthWrites()
+                {
+                    if (backing)
+                        backing->changed();
+                }
+        } depthWrites{drawDepth && m_depthWrite ? drawDepth : nullptr};
 
         const auto targetFormat = colorFormat(m_color.format);
         const auto targetElementBytes = colorElementBytes(targetFormat);
+        // 128-bit integer targets keep their exported bits in guest memory: MK8 encodes the BC3
+        // blocks of its reflection cube map into R32G32B32A32_UINT views of that texture, which
+        // the RGBA8 backing cannot hold. The compressed view then decodes them from memory.
+        const bool rawTarget = (m_color.format & 0x3F) == 0x22 && (m_color.format & 0x100) && m_mem && m_color.imagePtr;
+        // Cube faces and array layers are separate slices of the bound view.
+        const auto rawSurface = rawTarget ? attachmentSurface(m_color) : Surface{};
         const std::uint32_t mode = cmd.gpr[0];
         const std::uint32_t count = std::min<std::uint32_t>(cmd.gpr[1], 0x10000);
         const Attrib &ab = m_attribs[0];
@@ -2030,7 +2601,31 @@ namespace Core::Gfx {
             if (type != 0 && type != 1 && type != 4 && type != 9)
                 return;
             const std::uint32_t indexBytes = type == 9 || type == 1 ? 4 : 2;
-            for (std::uint32_t i = 0; i < count; i++) {
+            // Whole buffers in one mapped range decode without per-index lookups.
+            const std::uint8_t *indices = std::uint64_t(cmd.gpr[3]) + std::uint64_t(count) * indexBytes <= 0x100000000ull
+                                                  ? m_mem->hostPtr(cmd.gpr[3], std::size_t(count) * indexBytes)
+                                                  : nullptr;
+            if (indices) {
+                // One loop per index type, so the decode vectorizes: every draw decodes all its indices.
+                idx.resize(count);
+                const auto decode = [&](auto read) {
+                    for (std::uint32_t i = 0; i < count; i++)
+                        idx[i] = read(indices + std::size_t(i) * indexBytes) + cmd.gpr[4]; // base vertex
+                };
+                if (type == 1)
+                    decode([](const std::uint8_t *p) {
+                        return std::uint32_t(p[0]) | std::uint32_t(p[1]) << 8 | std::uint32_t(p[2]) << 16 | std::uint32_t(p[3]) << 24;
+                    });
+                else if (type == 9)
+                    decode([](const std::uint8_t *p) {
+                        return std::uint32_t(p[0]) << 24 | std::uint32_t(p[1]) << 16 | std::uint32_t(p[2]) << 8 | p[3];
+                    });
+                else if (type == 0)
+                    decode([](const std::uint8_t *p) { return std::uint32_t(p[0]) | std::uint32_t(p[1]) << 8; });
+                else
+                    decode([](const std::uint8_t *p) { return std::uint32_t(p[0]) << 8 | p[1]; });
+            }
+            for (std::uint32_t i = 0; !indices && i < count; i++) {
                 const std::uint64_t address = std::uint64_t(cmd.gpr[3]) + std::uint64_t(i) * indexBytes;
                 if (address + indexBytes > 0x100000000ull)
                     return;
@@ -2051,12 +2646,26 @@ namespace Core::Gfx {
             for (std::uint32_t i = 0; i < count; i++)
                 idx.push_back(cmd.gpr[2] + i); // DrawEx: gpr[2] = first vertex offset
         }
+        // Smallest and largest index, reduced once (vectorized) for the paths that need them.
+        std::optional<std::pair<std::uint32_t, std::uint32_t>> indexRange;
+        const auto indexBounds = [&] {
+            if (!indexRange) {
+                std::uint32_t low = ~0u, high = 0;
+                for (const auto value: idx) {
+                    low = std::min(low, value);
+                    high = std::max(high, value);
+                }
+                indexRange = std::pair{low, high};
+            }
+            return *indexRange;
+        };
 
+        const auto attributeFetch = prepareAttributeFetch();
         // Fetch one vertex: position from floats[0..1], uv heuristics by stride.
         const std::uint32_t nFloats = ab.stride / 4;
         auto fetch = [&](std::uint32_t vi, float &x, float &y, float &u, float &v) -> bool {
             std::array<std::array<float, 4>, 4> attributes{};
-            if (fetchAttributes(vi, attributes)) {
+            if (fetchAttributes(attributeFetch, vi, attributes)) {
                 x = attributes[0][0];
                 y = attributes[0][1];
                 u = attributes[1][0];
@@ -2098,27 +2707,34 @@ namespace Core::Gfx {
                 LatteVsInterp::Output output;
         };
         std::vector<CachedVertex> vertexCache;
-        const auto vertexDeclaration = LatteVsInterp::compile(m_vsProgram);
-        if (indexed && count >= 6 && m_vertexCacheEnabled && vertexDeclaration->valid) {
-            bool readsTextures = false;
-            for (std::size_t cf = 0; cf + 1 < m_vsProgram.size(); cf += 2) {
-                const auto word = m_vsProgram[cf + 1];
+        const auto vertexDeclaration = declaration(m_vsShader);
+        bool vertexShaderReadsTextures = false;
+        {
+            bool &readsTextures = vertexShaderReadsTextures;
+            const auto &vertexWords = vsProgram();
+            for (std::size_t cf = 0; cf + 1 < vertexWords.size(); cf += 2) {
+                const auto word = vertexWords[cf + 1];
                 if (!Latte::isAluClause(word) &&
                     (Latte::cfInst(word) == Latte::CF_TEX || Latte::cfInst(word) == Latte::CF_VTX || Latte::cfInst(word) == Latte::CF_VTX_TC)) {
                     const auto slots = (((word >> 10) & 7) | ((word >> 16) & 8)) + 1;
                     for (unsigned slot = 0; slot < slots; ++slot) {
-                        const auto offset = std::uint64_t(m_vsProgram[cf]) * 2 + std::uint64_t(slot) * 4;
-                        if (offset + 3 >= m_vsProgram.size() ||
-                            !Latte::decodeUniformBufferFetch(m_vsProgram[offset], m_vsProgram[offset + 1], m_vsProgram[offset + 2]))
+                        const auto offset = std::uint64_t(vertexWords[cf]) * 2 + std::uint64_t(slot) * 4;
+                        if (offset + 3 >= vertexWords.size() ||
+                            !Latte::decodeUniformBufferFetch(vertexWords[offset], vertexWords[offset + 1], vertexWords[offset + 2]))
                             readsTextures = true;
                     }
                 }
                 if (!Latte::isAluClause(word) && (word & (1u << 21)))
                     break;
             }
-            if (!readsTextures)
-                vertexCache.resize(128);
         }
+        // Allocated on the first CPU shading: 128 outputs are ~77 KB, wasted on GPU vertex draws.
+        const bool vertexCacheWanted = indexed && count >= 6 && m_vertexCacheEnabled && vertexDeclaration->valid && !vertexShaderReadsTextures;
+        // Outputs of the pre-shading pass (filled below, once the draw's vertex path is known),
+        // indexed by vertex index - preshadedBase. preshadedReady marks computed entries.
+        std::vector<LatteVsInterp::Output> preshaded;
+        std::vector<std::uint8_t> preshadedReady;
+        std::uint32_t preshadedBase = 0;
         // Execute the real vertex shader for one vertex; returns false if unavailable so the
         // caller falls back to the [0,1]/matrix heuristics. PARAM exports are optionally returned
         // because the pixel shader consumes them as interpolated inputs.
@@ -2134,11 +2750,15 @@ namespace Core::Gfx {
                 const char *e = std::getenv("WEMU_VS_EXEC");
                 return !e || e[0] != '0';
             }();
-            if (!enabled || m_vsProgram.empty())
+            if (!enabled || vsProgram().empty())
                 return false;
+            const LatteVsInterp::Output *preshadedOutput =
+                    vi - preshadedBase < preshaded.size() && preshadedReady[vi - preshadedBase] ? &preshaded[vi - preshadedBase] : nullptr;
             std::array<std::array<float, 4>, 32> attribs{};
-            if (!m_fetchLayout.empty()) {
-                if (!fetchAttributes(vi, std::span(attribs).first(m_vertexInputCount)))
+            if (preshadedOutput) {
+                // Attributes were consumed by the pre-shading pass.
+            } else if (!m_fetchLayout.empty()) {
+                if (!fetchAttributes(attributeFetch, vi, std::span(attribs).first(m_vertexInputCount)))
                     return false;
             } else {
                 const std::uint8_t *p = m_mem->hostPtr(ab.addr + vi * ab.stride);
@@ -2209,7 +2829,7 @@ namespace Core::Gfx {
             const bool sum = summary && !idx.empty() && vi == idx.front() && (!debugTraceOnly || m_trace);
             if (dbg) {
                 std::fprintf(stderr, "[VSDBG] draw#%u regsFresh=%d prog=%zudw stride=%u attrib0=(%g,%g,%g,%g)\n", m_stats.draws, m_regsFresh ? 1 : 0,
-                             m_vsProgram.size(), ab.stride, attribs[0][0], attribs[0][1], attribs[0][2], attribs[0][3]);
+                             vsProgram().size(), ab.stride, attribs[0][0], attribs[0][1], attribs[0][2], attribs[0][3]);
                 for (int c = 0; c < 20; c++)
                     std::fprintf(stderr, "[VSDBG]   c%-2d %g %g %g %g\n", c, m_vsRegs[std::size_t(c) * 4], m_vsRegs[std::size_t(c) * 4 + 1],
                                  m_vsRegs[std::size_t(c) * 4 + 2], m_vsRegs[std::size_t(c) * 4 + 3]);
@@ -2223,9 +2843,13 @@ namespace Core::Gfx {
                 rgba = sampleTexture(surface, m_vertexSamplers[sampler], coords[0], coords[1], coords[2]);
                 return true;
             };
+            if (vertexCacheWanted && vertexCache.empty())
+                vertexCache.resize(128);
             auto *cached = vertexCache.empty() ? nullptr : &vertexCache[vi % vertexCache.size()];
             LatteVsInterp::Output o;
-            if (cached && cached->valid && cached->index == vi) {
+            if (preshadedOutput) {
+                o = *preshadedOutput;
+            } else if (cached && cached->valid && cached->index == vi) {
                 o = cached->output;
                 ++m_vertexShaderCacheHits;
             } else {
@@ -2268,12 +2892,12 @@ namespace Core::Gfx {
                 }
             }
             if (sum) {
-                const std::uint32_t h = shaderHash(m_vsProgram);
+                const std::uint32_t h = shaderHash(vsProgram());
                 std::fprintf(stderr,
                              "[VSSUM] draw#%02u tgt=0x%08X(%ux%u) prog=%zudw hash=%08X stride=%u tex=0x%08X %ux%u | pos=(%g,%g,%g,%g)"
                              " valid=%d p0=(%g,%g,%g,%g)%c p1=(%g,%g,%g,%g)%c | c4=(%g,%g,%g,%g) c5=(%g,%g,%g,%g) c7=(%g,%g,%g,%g) c8=(%g,%g,%g,%g)"
                              " c9=(%g,%g,%g,%g) c15=(%g,%g,%g,%g) c16=(%g,%g,%g,%g)\n",
-                             m_stats.draws, m_color.imagePtr, m_color.width, m_color.height, m_vsProgram.size(), h, ab.stride, m_texture.imagePtr,
+                             m_stats.draws, m_color.imagePtr, m_color.width, m_color.height, vsProgram().size(), h, ab.stride, m_texture.imagePtr,
                              m_texture.width, m_texture.height, o.pos[0], o.pos[1], o.pos[2], o.pos[3], o.valid ? 1 : 0, o.params[0][0],
                              o.params[0][1], o.params[0][2], o.params[0][3], o.paramValid[0] ? 'v' : '-', o.params[1][0], o.params[1][1],
                              o.params[1][2], o.params[1][3], o.paramValid[1] ? 'v' : '-', m_vsRegs[16], m_vsRegs[17], m_vsRegs[18], m_vsRegs[19],
@@ -2456,7 +3080,7 @@ namespace Core::Gfx {
                 float su = 0, sv = 0;
                 if (runShader(idx[0], s0x, s0y, su, sv))
                     Utils::Log::error("[GX2TRACE]   vs#{} out v0 screen=({:.1f},{:.1f}) uv=({:.3f},{:.3f}) prog={}dw", m_stats.draws, s0x, s0y, su,
-                                      sv, m_vsProgram.size());
+                                      sv, vsProgram().size());
                 else
                     mapVertex(tx0, ty0, s0x, s0y);
                 // Snapshot the uniform register file per draw for offline interpreter debugging.
@@ -2487,13 +3111,13 @@ namespace Core::Gfx {
                               m_stats.draws, mode, count, ab.stride, m_texture.imagePtr, m_texture.format & 0x3F, m_texture.tileMode, m_texture.width,
                               m_texture.height, m_color.imagePtr, m_color.width, m_color.height, tx0, ty0, tu0, tv0, s0x, s0y, mid[0], mid[1], mid[2],
                               mid[3]);
-            if (!m_psProgram.empty()) {
+            if (!psProgram().empty()) {
                 std::size_t psBlockWords = 0;
                 for (const auto &blk: m_psBlocks)
                     psBlockWords += blk.size();
                 Utils::Log::error("[PSSUM] draw#{} psProg={}dw hash={:08X} psRegsFresh={} p0=({:.4g},{:.4g},{:.4g},{:.4g})"
                                   " p1=({:.4g},{:.4g},{:.4g},{:.4g}) psBlockWords={}",
-                                  m_stats.draws, m_psProgram.size(), shaderHash(m_psProgram), m_psRegsFresh ? 1 : 0, m_psRegs[0], m_psRegs[1],
+                                  m_stats.draws, psProgram().size(), shaderHash(psProgram()), m_psRegsFresh ? 1 : 0, m_psRegs[0], m_psRegs[1],
                                   m_psRegs[2], m_psRegs[3], m_psRegs[4], m_psRegs[5], m_psRegs[6], m_psRegs[7], psBlockWords);
             }
             // Dump the raw per-vertex positions: this reveals whether menu panes carry real screen
@@ -2558,7 +3182,7 @@ namespace Core::Gfx {
             const char *e = std::getenv("WEMU_PS_TEXMOD");
             return e && e[0] == '1';
         }();
-        const SimplePixelShaderKind psKind = psTexModEnabled ? simplePixelShaderKind(m_psProgram) : SimplePixelShaderKind::None;
+        const SimplePixelShaderKind psKind = psTexModEnabled ? simplePixelShaderKind(psProgram()) : SimplePixelShaderKind::None;
         static const bool pixelExecution = [] {
             const char *e = std::getenv("WEMU_PS_EXEC");
             return !e || e[0] != '0';
@@ -2568,16 +3192,15 @@ namespace Core::Gfx {
         // effects when color writes are disabled. Keep geometry/depth execution,
         // but avoid texture reads and shader work whose results cannot be stored.
         const bool skipColorShader = pixelProgram && writableColors == 0 && !m_multiWriteEnable &&
-                                     (!m_colorWriteEnable || !m_channelMask[m_colorTarget & 7]) &&
-                                     m_fragmentShaderCache.hasUnconditionalColorOnlyEffects(m_psProgram);
-        const bool pixelAlwaysRejected = pixelProgram && !skipColorShader && LatteVsInterp::rejectsEveryPixel(*pixelProgram);
+                                     (!m_colorWriteEnable || !m_channelMask[m_colorTarget & 7]) && colorOnlyEffects();
+        const bool pixelAlwaysRejected = pixelProgram && !skipColorShader && rejectsEveryPixel();
         // Rejected coverage has no shader side effects in the translated subset.
         // Depth exports must execute before comparison; unsupported shaders retain
         // the late test until their effects are understood.
         const auto depthShader = drawDepth && pixelProgram && m_depthCompare != 7 ? colorShader : nullptr;
-        const bool earlyDepth = drawDepth && m_depthCompare != 7 &&
-                                (skipColorShader || (depthShader && *depthShader && !depthShader->writesDepth) ||
-                                 (pixelProgram && m_fragmentShaderCache.hasUnconditionalColorOnlyEffects(m_psProgram)));
+        const bool earlyDepth =
+                drawDepth && m_depthCompare != 7 &&
+                (skipColorShader || (depthShader && *depthShader && !depthShader->writesDepth) || (pixelProgram && colorOnlyEffects()));
         std::optional<std::array<float, 2>> depthBounds;
         const auto rejectConstantDepth = [&](float incoming) {
             if (!earlyDepth)
@@ -2644,16 +3267,16 @@ namespace Core::Gfx {
         std::array<bool, 16> sampledResources{}, explicitResources{};
         std::array<std::shared_ptr<MipSnapshot>, 16> pixelMips{};
         if (pixelProgram)
-            for (std::size_t cf = 0; cf + 1 < m_psProgram.size(); cf += 2) {
-                const auto w0 = m_psProgram[cf], w1 = m_psProgram[cf + 1];
+            for (std::size_t cf = 0; cf + 1 < pixelWords.size(); cf += 2) {
+                const auto w0 = pixelWords[cf], w1 = pixelWords[cf + 1];
                 if (Latte::isAluClause(w1))
                     continue;
                 if (Latte::cfInst(w1) == Latte::CF_TEX)
                     for (unsigned slot = 0; slot < (((w1 >> 10) & 7) | ((w1 >> 16) & 8)) + 1; ++slot) {
                         const auto offset = std::uint64_t(w0) * 2 + std::uint64_t(slot) * 4;
-                        if (offset + 3 >= m_psProgram.size())
+                        if (offset + 3 >= pixelWords.size())
                             break;
-                        const auto word = m_psProgram[offset], op = word & 31, resource = (word >> 8) & 255;
+                        const auto word = pixelWords[offset], op = word & 31, resource = (word >> 8) & 255;
                         if (resource < sampledResources.size() && op != 0x0E) {
                             sampledResources[resource] = true;
                             explicitResources[resource] = explicitResources[resource] || op == 0x11;
@@ -2673,25 +3296,28 @@ namespace Core::Gfx {
                 return;
             if (skipColorShader) {
                 resolveViewBacking(m_color);
-                if (drawDepth && drawDepth->pending)
+                if (drawDepth && (drawDepth->pending || drawDepth->clear))
                     depthBacking(m_depth);
                 softwareInputsReady = true;
                 return;
             }
             // Workers must see immutable CPU inputs, but unrelated render targets
-            // can remain on the GPU. Array slices are selected dynamically, so keep
-            // the conservative all-surface path until their aliases are tracked.
-            if (m_texture.dimension == 5 || std::any_of(m_pixelTextures.begin(), m_pixelTextures.end(),
-                                                        [](const auto &surface) { return surface.dimension == 5 || surface.dimension == 2; }))
-                resolvePendingBackings();
-            else {
-                resolveViewBacking(m_color);
-                resolveViewBacking(m_texture);
-                if (pixelProgram)
-                    for (const auto &surface: m_pixelTextures)
-                        resolveViewBacking(surface);
-            }
-            if (drawDepth && drawDepth->pending)
+            // can remain on the GPU. Array and volume slices are selected dynamically:
+            // resolve every target stored inside a bound array, not every target.
+            std::vector<Surface> layered;
+            if (m_texture.dimension == 5)
+                layered.push_back(m_texture);
+            for (const auto &surface: m_pixelTextures)
+                if (surface.dimension == 5 || surface.dimension == 2)
+                    layered.push_back(surface);
+            if (!layered.empty())
+                resolvePendingBackings(layered);
+            resolveViewBacking(m_color);
+            resolveViewBacking(m_texture);
+            if (pixelProgram)
+                for (const auto &surface: m_pixelTextures)
+                    resolveViewBacking(surface);
+            if (drawDepth && (drawDepth->pending || drawDepth->clear))
                 depthBacking(m_depth);
             if (drawDepth && m_depthWrite)
                 for (unsigned i = 0; i < m_pixelTextures.size(); ++i)
@@ -2755,11 +3381,24 @@ namespace Core::Gfx {
         const LatteVsInterp::TextureFetch pixelFetch = [&](const LatteVsInterp::TextureRequest &request, std::array<float, 4> &rgba) {
             if (request.resource >= m_pixelTextures.size() || request.sampler >= m_pixelSamplers.size())
                 return false;
-            if (m_pixelTextures[request.resource].dimension != 3 && !request.explicitLod)
-                return pixelSample(request.resource, request.sampler, request.coords, rgba);
+            const auto &surface = m_pixelTextures[request.resource];
+            auto coords = request.coords;
+            if (request.offset != std::array<float, 3>{}) {
+                // Offsets apply in texels of the sampled level (MK8's BC3 encoder reads 4x4 blocks).
+                if (surface.dimension == 3 || surface.dimension == 2 || !surface.width || !surface.height)
+                    return false;
+                const auto level = request.explicitLod && std::isfinite(coords[3])
+                                           ? unsigned(std::clamp(std::floor(coords[3] + .5f), 0.f, float(std::max(1u, surface.mipCount) - 1)))
+                                           : 0u;
+                coords[0] += request.offset[0] / float(std::max(1u, surface.width >> level));
+                coords[1] += request.offset[1] / float(std::max(1u, surface.height >> level));
+                if (surface.dimension == 5)
+                    coords[2] += request.offset[2];
+            }
+            if (surface.dimension != 3 && !request.explicitLod)
+                return pixelSample(request.resource, request.sampler, coords, rgba);
             const auto &snapshot = pixelMips[request.resource];
-            return snapshot &&
-                   sampleMipSnapshot(*snapshot, m_pixelSamplers[request.sampler], request.coords, request.cubeIndex, request.explicitLod, rgba);
+            return snapshot && sampleMipSnapshot(*snapshot, m_pixelSamplers[request.sampler], coords, request.cubeIndex, request.explicitLod, rgba);
         };
         bool pixelFallbackReported = false;
         auto shadeTexel = [&](float u, float v, const std::array<std::array<float, 4>, 32> &params, LatteVsInterp::Output *output) {
@@ -2823,6 +3462,16 @@ namespace Core::Gfx {
             written.frame = m_presentCount + 1;
             ++written.writes;
         }
+        // Textures sampled by this draw still see the previous backing version; later ones must not.
+        struct BackingWrite {
+                const Gx2Replayer *replayer;
+                std::optional<SurfaceKey> key;
+                ~BackingWrite()
+                {
+                    if (key)
+                        replayer->touchBacking(*key);
+                }
+        } backingWrite{this, colorOutputEnabled ? std::optional{makeSurfaceKey(m_color)} : std::nullopt};
         const auto rasterWidth = drawDepth && !colorOutputEnabled ? m_depth.width : m_color.width;
         const auto rasterHeight = drawDepth && !colorOutputEnabled ? m_depth.height : m_color.height;
         const int sx0 = std::max(m_scissor[0], 0);
@@ -2830,6 +3479,22 @@ namespace Core::Gfx {
         const int sx1 = std::min<std::int32_t>(m_scissor[0] + m_scissor[2], static_cast<std::int32_t>(rasterWidth));
         const int sy1 = std::min<std::int32_t>(m_scissor[1] + m_scissor[3], static_cast<std::int32_t>(rasterHeight));
 
+        const auto writeRawElement = [&](unsigned x, unsigned y, const LatteVsInterp::Output &pixel) {
+            if (!pixel.colorValid || !rawSurface.imagePtr || x >= rawSurface.width || y >= rawSurface.height)
+                return;
+            const auto offset = tiledElementOffset(x, y, rawSurface.pitch, 128, rawSurface.tileMode, rawSurface.swizzle);
+            if (rawSurface.imageSize && std::uint64_t(offset) + 16 > rawSurface.imageSize)
+                return;
+            auto *element = m_writableMem->hostPtr(rawSurface.imagePtr + offset, 16);
+            if (!element)
+                return;
+            for (unsigned c = 0; c < 4; ++c)
+                if (channelMask & (1u << c)) {
+                    const auto bits = std::bit_cast<std::uint32_t>(pixel.color[c]);
+                    for (unsigned b = 0; b < 4; ++b)
+                        element[c * 4 + b] = std::uint8_t(bits >> (b * 8)); // GPU byte order
+                }
+        };
         const auto writeColor = [&](std::uint8_t *dst, const std::array<std::uint8_t, 4> &texel, const LatteVsInterp::Output &pixel) {
             const auto mask = pixel.depthValid && !pixel.colorValid ? 0u : channelMask;
             if (targetFormat != ColorFormat::RGBA8) {
@@ -2890,12 +3555,28 @@ namespace Core::Gfx {
         // modified by this draw remains on the reference path.
         // GX2 bindings persist across draws, so only resources this vertex program samples can
         // alias the target. Programs that cannot be lowered keep the conservative all-slot check.
-        const auto vertexProgram = m_rasterBackend && !m_vsProgram.empty() ? m_vertexShaderCache.get(m_vsProgram) : nullptr;
+        const auto vertexProgram = m_rasterBackend && !vsProgram().empty() ? vertexShader() : nullptr;
         const auto vertexSamples = [&](const Surface &surface) {
             const auto resource = static_cast<unsigned>(&surface - m_vertexTextures.data());
             return !vertexProgram || !*vertexProgram ||
                    std::any_of(vertexProgram->textures.begin(), vertexProgram->textures.end(),
                                [&](const auto &binding) { return binding.resource == resource; });
+        };
+        // Array slices can alias a target without matching its base-view key: compare storage.
+        const auto vertexFeedback = [&](const Surface &surface) {
+            if (!surface.imagePtr || !vertexSamples(surface))
+                return false;
+            if (surface.dimension != 5 || !surface.imageSize)
+                return surface.dimension == 5 || makeSurfaceKey(surface) == makeSurfaceKey(m_color) ||
+                       (drawDepth && m_depthWrite && makeSurfaceKey(surface) == makeSurfaceKey(m_depth));
+            const auto overlaps = [&](const Surface &target, std::uint64_t bytes) {
+                const auto inside = [&](std::uint64_t base, std::uint64_t size) {
+                    return size && base < std::uint64_t(target.imagePtr) + bytes && std::uint64_t(target.imagePtr) < base + size;
+                };
+                return target.imagePtr && (inside(surface.imagePtr, surface.imageSize) || inside(surface.mipImagePtr, surface.mipImageSize));
+            };
+            return overlaps(m_color, std::uint64_t(m_color.pitch) * m_color.height * colorElementBytes(colorFormat(m_color.format))) ||
+                   (drawDepth && m_depthWrite && overlaps(m_depth, std::uint64_t(m_depth.pitch) * m_depth.height * 4));
         };
         const bool frontBias = (m_polygonControl & (1u << 11)) && (m_polygonOffset[0] != 0 || m_polygonOffset[1] != 0);
         const bool backBias = (m_polygonControl & (1u << 12)) && (m_polygonOffset[2] != 0 || m_polygonOffset[3] != 0);
@@ -2904,26 +3585,17 @@ namespace Core::Gfx {
                 (frontBias != backBias || (frontBias && (m_polygonOffset[0] != m_polygonOffset[2] || m_polygonOffset[1] != m_polygonOffset[3])));
         const bool useBackBias = (m_polygonControl & 1) != 0;
         const bool nativeBias = useBackBias ? backBias : frontBias;
-        const bool collectBackend = m_rasterBackend && !m_gpuRenderer && !m_stencilTest && !m_multiWriteEnable && (!drawDepth || !splitBias) &&
-                                    (!m_depthTest || !m_depth.imagePtr || drawDepth) &&
+        const bool collectBackend = m_rasterBackend && !m_gpuRenderer && !rawTarget && !m_stencilTest && !m_multiWriteEnable &&
+                                    (!drawDepth || !splitBias) && (!m_depthTest || !m_depth.imagePtr || drawDepth) &&
                                     (!drawDepth || (nativeDepthEnabled && m_rasterBackend->supportsDepth())) && pixelProgram && useViewBacking() &&
                                     m_pixelInputCount <= 16 && m_color.pitch >= m_color.width && !m_color.aa && m_color.dimension == 1 &&
                                     !m_color.firstMip && !m_color.firstSlice && (mode != 1 || m_rasterBackend->supportsPoints()) &&
                                     (targetFormat == ColorFormat::RGBA8 || m_rasterBackend->supportsFloatTargets()) &&
-                                    std::none_of(m_vertexTextures.begin(), m_vertexTextures.end(), [&](const auto &surface) {
-                                        return surface.imagePtr && vertexSamples(surface) &&
-                                               (surface.dimension == 5 || makeSurfaceKey(surface) == makeSurfaceKey(m_color) ||
-                                                (drawDepth && m_depthWrite && makeSurfaceKey(surface) == makeSurfaceKey(m_depth)));
-                                    });
+                                    std::none_of(m_vertexTextures.begin(), m_vertexTextures.end(), vertexFeedback);
         if (nativeAudit && m_rasterBackend && !collectBackend)
             Utils::Log::error("[NATIVE_GATE] split_bias={} stencil={} multi={} inputs={} dim={} mip={} slice={} pitch={} vertex_feedback={}",
                               splitBias, m_stencilTest, m_multiWriteEnable, m_pixelInputCount, m_color.dimension, m_color.firstMip,
-                              m_color.firstSlice, m_color.pitch,
-                              std::any_of(m_vertexTextures.begin(), m_vertexTextures.end(), [&](const auto &surface) {
-                                  return surface.imagePtr && vertexSamples(surface) &&
-                                         (surface.dimension == 5 || makeSurfaceKey(surface) == makeSurfaceKey(m_color) ||
-                                          (drawDepth && m_depthWrite && makeSurfaceKey(surface) == makeSurfaceKey(m_depth)));
-                              }));
+                              m_color.firstSlice, m_color.pitch, std::any_of(m_vertexTextures.begin(), m_vertexTextures.end(), vertexFeedback));
         std::shared_ptr<const Latte::VertexShader> nativeVertexShader;
         static const bool gpuVertexEnabled = [] {
             const auto *v = std::getenv("WEMU_NATIVE_VERTEX");
@@ -2932,17 +3604,31 @@ namespace Core::Gfx {
         }();
         static const bool gpuTriangleVertexEnabled = [] {
             const auto *v = std::getenv("WEMU_NATIVE_TRIANGLE_VERTEX");
-            return v && v[0] == '1';
+            return !v || v[0] != '0';
         }();
         if (collectBackend && (mode == 1 || mode == 4 || mode == 0x13) && gpuVertexEnabled && m_rasterBackend->supportsVertexStage() &&
             !m_fetchLayout.empty()) {
-            const auto candidate = m_vertexShaderCache.get(m_vsProgram);
+            auto candidate = vertexShader();
             // The current Vulkan vertex payload contains sixteen attributes.
             // Wider fetch inputs must use the complete reference register file.
             const bool inputsSupported = m_vertexInputCount <= 16;
-            const bool buffersSupported = std::all_of(candidate->uniformBuffers.begin(), candidate->uniformBuffers.end(), [&](const auto &buffer) {
-                return buffer.bank < m_vsBlocks.size() && m_vsBlocks[buffer.bank].size() <= std::size_t(buffer.count) * 4;
-            });
+            const auto blocksFit = [&](const Latte::VertexShader &shader) {
+                return std::all_of(shader.uniformBuffers.begin(), shader.uniformBuffers.end(), [&](const auto &buffer) {
+                    return buffer.bank < m_vsBlocks.size() && m_vsBlocks[buffer.bank].size() <= std::size_t(buffer.count) * 4;
+                });
+            };
+            if (*candidate && !blocksFit(*candidate)) {
+                // Blocks larger than the default windows (Pikmin 3's shadow casters index two
+                // 544-vector palettes) get a lowering with windows sized for them, in steps of 64.
+                std::size_t largest = 0;
+                for (const auto &buffer: candidate->uniformBuffers)
+                    if (buffer.bank < m_vsBlocks.size())
+                        largest = std::max(largest, (m_vsBlocks[buffer.bank].size() + 3) / 4);
+                if (largest <= Latte::kUniformVectors)
+                    if (const auto windowed = vertexShader(unsigned((largest + 63) / 64 * 64)); *windowed)
+                        candidate = windowed;
+            }
+            const bool buffersSupported = blocksFit(*candidate);
             const bool resourcesSupported = std::all_of(candidate->textures.begin(), candidate->textures.end(), [&](const auto &binding) {
                 if (binding.resource >= m_vertexTextures.size() || binding.sampler >= m_vertexSamplers.size())
                     return false;
@@ -2950,10 +3636,9 @@ namespace Core::Gfx {
                 return surface.imagePtr && surface.dimension == 1 && !surface.aa && !surface.firstMip && !surface.firstSlice &&
                        surface.sliceCount == 1;
             });
-            // Point batches amortize vertex setup; texture shaders also avoid
-            // CPU reads of resident surfaces even for small draws. Keep ordinary
-            // triangle placement/interpolation on the established reference path
-            // unless explicitly benchmarking broader vertex execution.
+            // Interpreting vertex programs on the replay thread dominated MK8's
+            // character select and race frames, so triangles run them on the GPU
+            // too. Software fallback re-executes the reference program per corner.
             if (*candidate && inputsSupported && resourcesSupported && buffersSupported &&
                 ((mode == 1 && count >= 64) || !candidate->textures.empty() || !candidate->uniformBuffers.empty() ||
                  (mode != 1 && gpuTriangleVertexEnabled))) {
@@ -2961,8 +3646,9 @@ namespace Core::Gfx {
                 nativeVertexExecution = true;
             }
             if (nativeAudit)
-                Utils::Log::error("[NATIVEVS] frame={} draw={} lowered={} native={} reason={}", m_presentCount, m_stats.draws, bool(*candidate),
-                                  nativeVertexExecution, candidate->error);
+                Utils::Log::error("[NATIVEVS] frame={} draw={} lowered={} native={} inputs={} buffers={} resources={} mode={} count={} reason={}",
+                                  m_presentCount, m_stats.draws, bool(*candidate), nativeVertexExecution, m_vertexInputCount, buffersSupported,
+                                  resourcesSupported, mode, count, candidate->error);
         }
         const auto clipTriangle = [&](RasterVertex(&rv)[3], const auto &emit) {
             if (!std::all_of(std::begin(rv), std::end(rv), [](const auto &v) { return v.clipPosition.has_value(); })) {
@@ -3047,7 +3733,14 @@ namespace Core::Gfx {
                 emit(triangle);
             }
         };
-        std::vector<std::array<RasterVertex, 3>> preparedTriangles;
+        // Prepared triangles reference assembled corners, or copies kept in clippedCorners for
+        // triangles produced by clipping (a deque keeps those references stable).
+        struct PreparedTriangle {
+                std::array<const RasterVertex *, 3> corners;
+                const RasterVertex &operator[](std::size_t i) const { return *corners[i]; }
+        };
+        std::vector<PreparedTriangle> preparedTriangles;
+        std::deque<RasterVertex> clippedCorners;
         if (collectBackend && mode != 1) {
             const auto triangles = mode == 0x13 ? idx.size() / 4 * 2 : idx.size() / 3;
             preparedTriangles.reserve(triangles);
@@ -3152,8 +3845,11 @@ namespace Core::Gfx {
                         }
                         result.pixels++;
                         result.alphaSum += texel[3];
-                        if (colorOutputEnabled)
+                        if (colorOutputEnabled) {
                             writeColor(row + static_cast<std::size_t>(xx) * targetElementBytes, texel, pixel);
+                            if (rawTarget)
+                                writeRawElement(unsigned(xx), unsigned(yy), pixel);
+                        }
                     }
                 }
             };
@@ -3187,7 +3883,7 @@ namespace Core::Gfx {
                                                              std::distance(parallelOutput.begin(), mismatch.first)));
                     ++m_verifiedRasterTriangles;
                     Utils::Log::error("[RASTER_VERIFY] matched={} eligible={} frame={} ps={:016X}", m_verifiedRasterTriangles, m_parallelTriangles,
-                                      m_presentCount, shaderHash(m_psProgram));
+                                      m_presentCount, shaderHash(psProgram()));
                 }
             } else {
                 rasterRows(0, unsigned(rows.size()));
@@ -3253,39 +3949,204 @@ namespace Core::Gfx {
                 if (m_depthWrite)
                     writeDepth(stored, incoming);
             }
-            if (colorOutputEnabled)
+            if (colorOutputEnabled) {
                 writeColor(target + (std::size_t(y) * m_color.pitch + x) * targetElementBytes, texel, pixel);
+                if (rawTarget)
+                    writeRawElement(x, y, pixel);
+            }
             ++m_stats.pixels;
             m_stats.alphaSum += texel[3];
         };
 
+        // A corner depends only on its vertex index within a draw, so shared corners are assembled
+        // once: cornerState is 0 (pending), 1 (ready) or 2 (unavailable, drops its triangles).
+        // GPU vertex programs only need the fetched attributes: build each distinct vertex once,
+        // directly in the backend layout. Reference corners (~600 bytes each) are assembled only
+        // if the draw falls back to software. Verification compares against those corners.
+        static const bool verifyEnvironmentSet = std::getenv("WEMU_NATIVE_VERIFY_EVERY") != nullptr;
+        const bool directVertices =
+                collectBackend && nativeVertexExecution && mode != 1 && !(m_nativeVerifyEvery ? *m_nativeVerifyEvery != 0 : verifyEnvironmentSet);
+        std::vector<RasterVertex> corners;
+        std::vector<std::uint8_t> cornerState;
+        std::uint32_t cornerBase = 0;
+        if (indexed && idx.size() >= 6 && !directVertices) {
+            const auto [low, high] = indexBounds();
+            if (std::uint64_t(high) - low + 1 <= idx.size() * 2 + 64) {
+                cornerBase = low;
+                corners.resize(std::size_t(high) - low + 1);
+                cornerState.assign(corners.size(), 0);
+            }
+        }
+        const auto assembleCorner = [&](std::uint32_t vi, RasterVertex &corner) {
+            corner.vertexIndex = vi;
+            if (runShader(vi, corner.x, corner.y, corner.u, corner.v, &corner.params, &corner.paramValid, &corner.z, &corner.reciprocalW,
+                          &corner.clipPosition)) {
+                if (!nativeVertexExecution && !corner.paramValid[0])
+                    corner.params[0] = {1.0f, 1.0f, 1.0f, 1.0f};
+                return true;
+            }
+            float x = 0, y = 0;
+            if (!fetch(vi, x, y, corner.u, corner.v))
+                return false;
+            mapVertex(x, y, corner.x, corner.y);
+            return true;
+        };
+        const auto emit = [&](const RasterVertex(&triangle)[3]) {
+            if (collectBackend) {
+                PreparedTriangle prepared;
+                for (unsigned k = 0; k < 3; ++k)
+                    prepared.corners[k] = &clippedCorners.emplace_back(triangle[k]);
+                preparedTriangles.push_back(prepared);
+            } else {
+                rasterPrepared(triangle);
+            }
+        };
+        // Corners that need no clipping are projected the same way by every triangle using them,
+        // so the projected copy is kept per index too (projectedState like cornerState).
+        std::vector<RasterVertex> projectedCorners;
+        std::vector<std::uint8_t> projectedState;
+        if (collectBackend && !corners.empty() && !nativeVertexExecution) {
+            projectedCorners.resize(corners.size());
+            projectedState.assign(corners.size(), 0);
+        }
+        const auto projectedCorner = [&](std::uint32_t slot) -> const RasterVertex * {
+            if (!projectedState[slot]) {
+                auto &vertex = projectedCorners[slot] = corners[slot];
+                const auto &p = *vertex.clipPosition;
+                projectedState[slot] = 2;
+                if (p[3] > 0) {
+                    vertex.reciprocalW = 1.f / p[3];
+                    vertex.x = m_vp[0] + (p[0] / p[3] * .5f + .5f) * m_vp[2];
+                    vertex.y = m_vp[1] + (.5f - p[1] / p[3] * .5f) * m_vp[3];
+                    vertex.z = (m_vpFar + m_vpNear) * .5f + (p[2] / p[3]) * (m_vpFar - m_vpNear) * .5f;
+                    projectedState[slot] = 1;
+                }
+            }
+            return projectedState[slot] == 1 ? &projectedCorners[slot] : nullptr;
+        };
+        // Outcode of a cached corner against clipTriangle's four planes; 16 marks a non-finite
+        // clip position, for which clipTriangle drops the triangle.
+        const auto clipCode = [](const RasterVertex &vertex) {
+            const auto &p = *vertex.clipPosition;
+            if (!std::all_of(p.begin(), p.end(), [](float value) { return std::isfinite(value); }))
+                return 16u;
+            unsigned code = 0;
+            for (unsigned plane = 0; plane < 4; ++plane)
+                if (double(p[3]) + (plane & 1 ? -double(p[plane / 2]) : double(p[plane / 2])) < 0)
+                    code |= 1u << plane;
+            return code;
+        };
         auto rasterTri = [&](const std::uint32_t i0, const std::uint32_t i1, const std::uint32_t i2) {
             const std::uint32_t vis[3] = {idx[i0], idx[i1], idx[i2]};
-            RasterVertex rv[3];
-            for (int i = 0; i < 3; i++) {
-                rv[i].vertexIndex = vis[i];
-                if (runShader(vis[i], rv[i].x, rv[i].y, rv[i].u, rv[i].v, &rv[i].params, &rv[i].paramValid, &rv[i].z, &rv[i].reciprocalW,
-                              &rv[i].clipPosition)) {
-                    if (!nativeVertexExecution && !rv[i].paramValid[0])
-                        rv[i].params[0] = {1.0f, 1.0f, 1.0f, 1.0f};
-                    continue;
+            if (!corners.empty()) {
+                std::uint32_t slots[3];
+                for (int i = 0; i < 3; i++) {
+                    slots[i] = vis[i] - cornerBase;
+                    if (!cornerState[slots[i]])
+                        cornerState[slots[i]] = assembleCorner(vis[i], corners[slots[i]]) ? 1 : 2;
+                    if (cornerState[slots[i]] != 1)
+                        return;
                 }
-                float x = 0, y = 0;
-                if (!fetch(vis[i], x, y, rv[i].u, rv[i].v))
-                    return;
-                mapVertex(x, y, rv[i].x, rv[i].y);
-            }
-            const auto emit = [&](const RasterVertex(&triangle)[3]) {
-                if (collectBackend)
-                    preparedTriangles.push_back({triangle[0], triangle[1], triangle[2]});
+                if (collectBackend) {
+                    // Fast paths of clipTriangle that keep the corners as they are or only project them.
+                    PreparedTriangle prepared{{&corners[slots[0]], &corners[slots[1]], &corners[slots[2]]}};
+                    const bool clipped =
+                            std::all_of(std::begin(slots), std::end(slots), [&](auto slot) { return corners[slot].clipPosition.has_value(); });
+                    if (nativeVertexExecution || !clipped) {
+                        preparedTriangles.push_back(prepared);
+                        return;
+                    }
+                    unsigned outside = 0, sharedOutside = 15;
+                    for (const auto slot: slots) {
+                        const auto code = clipCode(corners[slot]);
+                        if (code & 16)
+                            return;
+                        outside |= code;
+                        sharedOutside &= code;
+                    }
+                    if (sharedOutside)
+                        return;
+                    if (!outside) {
+                        for (unsigned k = 0; k < 3; ++k) {
+                            prepared.corners[k] = projectedCorner(slots[k]);
+                            if (!prepared.corners[k])
+                                return;
+                        }
+                        preparedTriangles.push_back(prepared);
+                        return;
+                    }
+                }
+                RasterVertex rv[3]{corners[slots[0]], corners[slots[1]], corners[slots[2]]};
+                if (nativeVertexExecution)
+                    emit(rv);
                 else
-                    rasterPrepared(triangle);
-            };
+                    clipTriangle(rv, emit);
+                return;
+            }
+            RasterVertex rv[3];
+            for (int i = 0; i < 3; i++)
+                if (!assembleCorner(vis[i], rv[i]))
+                    return;
             if (nativeVertexExecution)
                 emit(rv);
             else
                 clipTriangle(rv, emit);
         };
+        // Pre-shading: CPU vertex shading dominates replay time, and vertices are independent, so
+        // shade every distinct index of the draw once, in parallel, before assembling primitives.
+        // Only pure shaders qualify (no texture reads, no diagnostics that trace a single run);
+        // results are identical to running them lazily in runShader.
+        static const bool preshadeEnabled = [] {
+            const auto set = [](const char *name) { return std::getenv(name) != nullptr; };
+            const auto *value = std::getenv("WEMU_VS_PRESHADE");
+            return (!value || value[0] != '0') && !set("WEMU_VS_DEBUG") && !set("WEMU_VS_DEBUG_DRAW") && !set("WEMU_VS_DEBUG_TEX") &&
+                   !set("WEMU_VS_SUMMARY") && !set("WEMU_VS_DEGEN_MODEL_FALLBACK") && !set("WEMU_KCACHE_BIAS");
+        }();
+        if (preshadeEnabled && !nativeVertexExecution && !m_trace && vertexDeclaration->valid && !vertexShaderReadsTextures && !vsProgram().empty() &&
+            !m_fetchLayout.empty() && idx.size() >= 64) {
+            const auto [low, high] = indexBounds();
+            const std::uint64_t span = std::uint64_t(high) - low + 1;
+            if (span <= idx.size() * 4 + 256) {
+                preshadedBase = low;
+                preshaded.resize(span);
+                preshadedReady.assign(span, 0);
+                std::vector<std::uint32_t> unique;
+                unique.reserve(idx.size());
+                for (const auto vi: idx)
+                    if (!preshadedReady[vi - preshadedBase]) {
+                        preshadedReady[vi - preshadedBase] = 2; // queued
+                        unique.push_back(vi);
+                    }
+                const auto shade = [&](unsigned first, unsigned end) {
+                    const LatteVsInterp::KcacheFetch kcache = [&](std::uint32_t bank, std::uint32_t vec4Idx, std::uint32_t chan) -> float {
+                        if (bank >= m_vsBlocks.size())
+                            return 0.0f;
+                        const auto &blk = m_vsBlocks[bank];
+                        const std::uint64_t offset = std::uint64_t(vec4Idx) * 4 + chan;
+                        return offset < blk.size() ? asFloat(blk[offset]) : 0.0f;
+                    };
+                    std::array<std::array<float, 4>, 32> attribs{};
+                    for (unsigned k = first; k < end; ++k) {
+                        const auto slot = unique[k] - preshadedBase;
+                        if (!fetchAttributes(attributeFetch, unique[k], std::span(attribs).first(m_vertexInputCount))) {
+                            preshadedReady[slot] = 0; // runShader reports the failure as before
+                            continue;
+                        }
+                        preshaded[slot] =
+                                LatteVsInterp::runVertex(*vertexDeclaration, std::span(attribs).first(m_vertexInputCount), m_vsRegs, 64, kcache);
+                        preshadedReady[slot] = 1;
+                    }
+                };
+                // About 2.5 us per vertex: from 64 vertices the pool beats its dispatch cost.
+                if (unique.size() >= 64) {
+                    if (!m_vertexWorkers)
+                        m_vertexWorkers = std::make_unique<RasterWorkers>(std::clamp(std::thread::hardware_concurrency() / 2, 1u, 8u));
+                    m_vertexWorkers->run(unsigned(unique.size()), shade);
+                } else
+                    shade(0, unsigned(unique.size()));
+                m_vertexShaderExecutions += unique.size();
+            }
+        }
         if (mode == 1) {
             for (const auto vi: idx) {
                 RasterVertex rv;
@@ -3301,18 +4162,171 @@ namespace Core::Gfx {
                 else
                     rasterPoint(rv);
             }
-        } else if (mode == 0x13) { // QUADS
-            for (std::uint32_t i = 0; i + 3 < idx.size(); i += 4) {
-                rasterTri(i, i + 1, i + 2);
-                rasterTri(i, i + 2, i + 3);
-            }
-        } else { // treat everything else as a triangle list
-            for (std::uint32_t i = 0; i + 2 < idx.size(); i += 3)
-                rasterTri(i, i + 1, i + 2);
         }
+        const auto assembleTriangles = [&] {
+            if (mode == 0x13) { // QUADS
+                for (std::uint32_t i = 0; i + 3 < idx.size(); i += 4) {
+                    rasterTri(i, i + 1, i + 2);
+                    rasterTri(i, i + 2, i + 3);
+                }
+            } else { // treat everything else as a triangle list
+                for (std::uint32_t i = 0; i + 2 < idx.size(); i += 3)
+                    rasterTri(i, i + 1, i + 2);
+            }
+        };
+        // Only the program's declared inputs are stored per vertex (compact attributes); the
+        // backend supplies the reference defaults for the other attribute slots.
+        std::vector<std::array<float, 4>> directAttributes;
+        std::vector<std::uint32_t> directIndices;
+        std::shared_ptr<const DirectVertices> directArrays;
+        bool directReused = false;
+        const auto attributeStride = unsigned(std::min<std::size_t>(m_vertexInputCount, RasterDraw::Vertex{}.inputs.size()));
+        // Static geometry is converted once: a draw whose indices, fetch state and guest vertex
+        // bytes match a previous conversion reuses its arrays (and the backend its upload).
+        std::uint64_t directKey = 0;
+        std::vector<std::pair<std::uint32_t, std::uint32_t>> directSources;
+        bool cacheDirect = false;
+        if (directVertices && idx.size() >= 64) {
+            const auto [low, high] = indexBounds();
+            cacheDirect = directVertexSources(attributeFetch, attributeStride, low, high, directSources);
+            if (cacheDirect) {
+                const auto mix = [&](std::uint64_t value) { directKey = (directKey ^ value) * 0x100000001B3ull + (directKey >> 29); };
+                for (unsigned i = 0; i < 6; ++i)
+                    mix(cmd.gpr[i]);
+                mix(idx.size());
+                mix(low);
+                mix(high);
+                mix(mode);
+                mix(attributeStride);
+                for (const auto &binding: m_attribs)
+                    mix((std::uint64_t(binding.addr) << 32) ^ binding.stride ^ (std::uint64_t(binding.size) << 16));
+                for (const auto word: m_fetchLayout)
+                    mix(word);
+                const auto found = m_directVertexCache.find(directKey);
+                if (found != m_directVertexCache.end()) {
+                    auto &entry = found->second;
+                    const bool inputsMatch = entry.mode == mode && entry.attributeStride == attributeStride && entry.attribs == m_attribs &&
+                                             entry.semantics == m_vertexSemantics && entry.fetchLayout == m_fetchLayout &&
+                                             std::ranges::equal(entry.sourceIndices, idx) && entry.sources.size() == directSources.size();
+                    bool bytesMatch = inputsMatch && entry.validatedFrame == m_presentCount;
+                    for (std::size_t i = 0; inputsMatch && !bytesMatch && i < directSources.size(); ++i) {
+                        const auto &[address, bytes] = entry.sources[i];
+                        const auto *current = m_mem->hostPtr(address, bytes.size());
+                        if (address != directSources[i].first || bytes.size() != directSources[i].second || !current ||
+                            std::memcmp(current, bytes.data(), bytes.size()) != 0)
+                            break;
+                        bytesMatch = i + 1 == directSources.size();
+                    }
+                    bytesMatch |= inputsMatch && directSources.empty();
+                    if (bytesMatch) {
+                        entry.validatedFrame = m_presentCount;
+                        entry.used = ++m_directVertexClock;
+                        directArrays = entry.vertices;
+                        directReused = true;
+                        ++m_directVertexReuses;
+                    }
+                }
+                // Convert into the cache only from a draw's second sighting, and not for draws
+                // whose data kept changing: dynamic buffers would only churn it.
+                if (!directArrays) {
+                    if (m_directVertexSeen.size() >= 65536)
+                        m_directVertexSeen.clear();
+                    auto &changes = m_directVertexSeen[directKey];
+                    cacheDirect = changes > 0 && changes < 4;
+                    if (found != m_directVertexCache.end() || !changes)
+                        changes = std::uint8_t(std::min(changes + 1, 255));
+                }
+            }
+        }
+        if (directVertices && !directArrays) {
+            const auto stride = std::max(1u, attributeStride);
+            const auto [low, high] = idx.empty() ? std::pair{0u, 0u} : indexBounds();
+            const std::uint64_t span = idx.empty() ? 0 : std::uint64_t(high) - low + 1;
+            const bool dense = span <= idx.size() * 2 + 64;
+            std::vector<std::uint32_t> denseSlots(dense ? span : 0, ~0u);
+            std::unordered_map<std::uint32_t, std::uint32_t> sparseSlots;
+            directAttributes.reserve(std::min<std::size_t>(idx.size(), dense ? span : idx.size()) * stride);
+            directIndices.reserve(idx.size() / 2 * 3);
+            // ~0u: not fetched yet; ~1u: unavailable, which drops its triangles like a failed corner.
+            const auto slotOf = [&](std::uint32_t vi) {
+                auto &slot = dense ? denseSlots[vi - low] : sparseSlots.try_emplace(vi, ~0u).first->second;
+                if (slot == ~0u) {
+                    const auto base = directAttributes.size();
+                    directAttributes.resize(base + stride);
+                    // A program without declared inputs still gets slot 0's default.
+                    if (!attributeStride)
+                        directAttributes[base] = {1, 1, 1, 1};
+                    slot = fetchAttributes(attributeFetch, vi, std::span(directAttributes).subspan(base, attributeStride))
+                                   ? std::uint32_t(base / stride)
+                                   : ~1u;
+                    if (slot == ~1u)
+                        directAttributes.resize(base);
+                }
+                return slot;
+            };
+            const auto triangle = [&](std::uint32_t a, std::uint32_t b, std::uint32_t c) {
+                const std::uint32_t slots[]{slotOf(idx[a]), slotOf(idx[b]), slotOf(idx[c])};
+                if (slots[0] != ~1u && slots[1] != ~1u && slots[2] != ~1u)
+                    directIndices.insert(directIndices.end(), std::begin(slots), std::end(slots));
+            };
+            if (mode == 0x13)
+                for (std::uint32_t i = 0; i + 3 < idx.size(); i += 4) {
+                    triangle(i, i + 1, i + 2);
+                    triangle(i, i + 2, i + 3);
+                }
+            else
+                for (std::uint32_t i = 0; i + 2 < idx.size(); i += 3)
+                    triangle(i, i + 1, i + 2);
+            if (cacheDirect) {
+                constexpr std::uint64_t budget = 192ull * 1024 * 1024;
+                DirectVertexEntry entry;
+                entry.fetchLayout = m_fetchLayout;
+                entry.sourceIndices = idx;
+                entry.semantics = m_vertexSemantics;
+                entry.attribs = m_attribs;
+                entry.attributeStride = attributeStride;
+                entry.mode = mode;
+                for (const auto &[address, size]: directSources) {
+                    const auto *bytes = m_mem->hostPtr(address, size);
+                    entry.sources.emplace_back(address, std::vector<std::uint8_t>(bytes, bytes + size));
+                }
+                entry.vertices = directArrays =
+                        std::make_shared<const DirectVertices>(DirectVertices{std::move(directAttributes), std::move(directIndices)});
+                // Moved from: the views below read directArrays instead.
+                directAttributes.clear();
+                directIndices.clear();
+                entry.validatedFrame = m_presentCount;
+                entry.used = ++m_directVertexClock;
+                if (const auto old = m_directVertexCache.find(directKey); old != m_directVertexCache.end()) {
+                    m_directVertexBytes -= old->second.bytes();
+                    m_directVertexCache.erase(old);
+                }
+                m_directVertexBytes += entry.bytes();
+                if (m_directVertexBytes > budget) {
+                    // Evict least recently used entries in one pass, down to three quarters.
+                    std::vector<std::pair<std::uint64_t, std::uint64_t>> order;
+                    order.reserve(m_directVertexCache.size());
+                    for (const auto &[key, cached]: m_directVertexCache)
+                        order.emplace_back(cached.used, key);
+                    std::ranges::sort(order);
+                    for (const auto &[used, key]: order) {
+                        if (m_directVertexBytes <= budget / 4 * 3)
+                            break;
+                        const auto it = m_directVertexCache.find(key);
+                        m_directVertexBytes -= it->second.bytes();
+                        m_directVertexCache.erase(it);
+                    }
+                }
+                m_directVertexCache.emplace(directKey, std::move(entry));
+            }
+        } else if (mode != 1 && !directVertices)
+            assembleTriangles();
+        const std::span<const std::array<float, 4>> directAttributeView =
+                directArrays ? std::span(directArrays->attributes) : std::span(directAttributes);
+        const std::span<const std::uint32_t> directIndexView = directArrays ? std::span(directArrays->indices) : std::span(directIndices);
         std::int64_t nativePrepareUs{}, nativeExecuteUs{}, nativeVerifyUs{}, fallbackUs{};
         bool nativeCommitted = false;
-        if (collectBackend && (!preparedTriangles.empty() || !preparedPoints.empty())) {
+        if (collectBackend && (!preparedTriangles.empty() || !preparedPoints.empty() || !directIndexView.empty())) {
             const auto prepareStart = (profile || nativeAudit) ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
             std::vector<Latte::TextureType> resourceTypes(m_pixelTextures.size(), Latte::TextureType::TwoD);
             for (unsigned i = 0; i < m_pixelTextures.size(); ++i)
@@ -3323,7 +4337,7 @@ namespace Core::Gfx {
                 else if (m_pixelTextures[i].dimension == 3)
                     resourceTypes[i] = Latte::TextureType::Cube;
             const auto translatedShader = skipColorShader ? m_fragmentShaderCache.get({0, (Latte::CF_EXP_DONE << 23) | (1u << 21) | 0xB24u})
-                                                          : m_fragmentShaderCache.get(m_psProgram, resourceTypes, onlyColorZero, colorExport);
+                                                          : fragmentShader(resourceTypes, onlyColorZero, colorExport);
             const auto &shader = *translatedShader;
             bool supported = bool(shader);
             std::string unsupportedReason = supported ? std::string{} : "fragment shader not lowered: " + shader.error;
@@ -3343,6 +4357,10 @@ namespace Core::Gfx {
                 }
             ownedTextures.reserve(allBindings.size());
             ownedFloatTextures.reserve(allBindings.size());
+            static const bool deferredRender = [] {
+                const auto *value = std::getenv("WEMU_NATIVE_DEFER_READBACK");
+                return value && std::string_view(value) == "1";
+            }();
             for (const auto &binding: allBindings) {
                 const bool vertexBinding = binding.binding > 17;
                 const auto &boundSurfaces = vertexBinding ? m_vertexTextures : m_pixelTextures;
@@ -3353,6 +4371,79 @@ namespace Core::Gfx {
                     break;
                 }
                 const auto surface = boundSurfaces[binding.resource];
+                if (!vertexBinding && surface.dimension == 5 && (!binding.explicitLod || surface.mipCount <= 1)) {
+                    // Arrays whose layers were rendered as separate surfaces (MK8's cascaded shadow
+                    // maps, HDR and volume slices): pass each layer's current version, so resident
+                    // layers are copied on the GPU instead of read back or sampled in software.
+                    // Explicit LODs of a single-level view always select that level.
+                    if (auto layers = renderedArrayLayers(surface); !layers.empty()) {
+                        const bool depthLayers = surface.format == 0x80E || surface.format == 5 || surface.format == 0x11;
+                        textures.push_back(
+                                {binding, surface.width, surface.height, boundSamplers[binding.sampler], [&, surface](unsigned x, unsigned y) {
+                                     return sampleTexture(surface, TextureSampler{}, (float(x) + 0.5f) / float(surface.width),
+                                                          (float(y) + 0.5f) / float(surface.height), 0, nullptr);
+                                 }});
+                        textures.back().renderedLayers = std::move(layers);
+                        textures.back().layers = surface.sliceCount;
+                        textures.back().unorm8Pitch = surface.pitch;
+                        textures.back().unorm8Map = surface.compMap;
+                        textures.back().r32Map = surface.compMap;
+                        textures.back().renderedDepth = depthLayers;
+                        textures.back().renderedFormat = depthLayers ? ColorFormat::RGBA8 : colorFormat(surface.format);
+                        textures.back().sourceMipCount = 1;
+                        continue;
+                    }
+                    if (const auto layers = layerSnapshot(surface)) {
+                        textures.push_back(
+                                {binding, surface.width, surface.height, boundSamplers[binding.sampler], [&, surface](unsigned x, unsigned y) {
+                                     return sampleTexture(surface, TextureSampler{}, (float(x) + 0.5f) / float(surface.width),
+                                                          (float(y) + 0.5f) / float(surface.height), 0, nullptr);
+                                 }});
+                        auto &texture = textures.back();
+                        if (surface.format == 0x816) {
+                            texture.r11g11b10Bytes = *layers;
+                            texture.r11g11b10Pitch = surface.width;
+                        } else if (colorFormat(surface.format) == ColorFormat::RGBA32Float) {
+                            texture.rgba32Bytes = *layers;
+                            texture.rgba32Pitch = surface.width;
+                        } else {
+                            texture.unorm8 = *layers;
+                            texture.unorm8Pitch = surface.width;
+                        }
+                        texture.unorm8Map = surface.compMap;
+                        texture.layers = surface.sliceCount;
+                        texture.sourceMipCount = 1;
+                        // Immutable until a layer is written: the backend shares one upload per version.
+                        texture.snapshotOwner = layers;
+                        continue;
+                    }
+                }
+                if (!vertexBinding && (surface.dimension == 3 || binding.explicitLod) && m_rasterBackend->supportsRenderedMipLevels() &&
+                    deferredRender) {
+                    // Levels and cube faces still on the GPU are assembled there, not snapshotted.
+                    const auto levels = binding.explicitLod ? std::min(surface.viewMipCount ? surface.viewMipCount : std::max(1u, surface.mipCount),
+                                                                       std::max(1u, surface.mipCount) - surface.firstMip)
+                                                            : 1u;
+                    // A single-level 2D view keeps the ordinary rendered-texture path below.
+                    if (auto subresources = surface.dimension == 1 && levels == 1 ? decltype(renderedSubresources(surface, levels)){}
+                                                                                  : renderedSubresources(surface, levels);
+                        !subresources.empty()) {
+                        textures.push_back(
+                                {binding, surface.width, surface.height, boundSamplers[binding.sampler], [&, surface](unsigned x, unsigned y) {
+                                     return sampleTexture(surface, TextureSampler{}, (float(x) + 0.5f) / float(surface.width),
+                                                          (float(y) + 0.5f) / float(surface.height), 0, nullptr);
+                                 }});
+                        auto &texture = textures.back();
+                        texture.renderedLayers = std::move(subresources);
+                        texture.renderedLevels = levels;
+                        texture.layers = surface.sliceCount;
+                        texture.unorm8Pitch = surface.pitch;
+                        texture.unorm8Map = surface.compMap;
+                        texture.renderedFormat = colorFormat(surface.format);
+                        texture.sourceMipCount = levels;
+                        continue;
+                    }
+                }
                 if (!vertexBinding && (surface.dimension == 3 || binding.explicitLod ||
                                        (surface.dimension == 5 &&
                                         (surface.format == 0x234 || surface.format == 0x235 || colorFormat(surface.format) != ColorFormat::RGBA8)))) {
@@ -3377,7 +4468,7 @@ namespace Core::Gfx {
                 auto depthKey = makeSurfaceKey(surface);
                 depthKey.format = surface.format;
                 if (m_depthBackings.contains(depthKey)) {
-                    const auto *depthTexture = depthBacking(surface, !residentTextures);
+                    auto *depthTexture = depthBacking(surface, !residentTextures);
                     if (!depthTexture) {
                         supported = false;
                         unsupportedReason = "replayer#2";
@@ -3399,6 +4490,9 @@ namespace Core::Gfx {
                         textures.back().r32Bytes = {reinterpret_cast<const std::uint8_t *>(depthTexture->pixels.data()),
                                                     depthTexture->pixels.size() * sizeof(float)};
                         textures.back().r32Pitch = surface.pitch;
+                        if (!depthTexture->version)
+                            depthTexture->version = std::make_shared<int>();
+                        textures.back().snapshotOwner = depthTexture->version;
                     } else {
                         auto &packed = ownedFloatTextures.emplace_back();
                         for (unsigned y = 0; y < surface.height; ++y)
@@ -3436,6 +4530,9 @@ namespace Core::Gfx {
                     textures.back().unorm8Pitch = surface.width;
                     textures.back().unorm8Map = surface.compMap;
                     textures.back().layers = surface.sliceCount;
+                    // Snapshots are immutable (changed sources get a new one), so backends may
+                    // share one upload across draws instead of comparing the texels every draw.
+                    textures.back().snapshotOwner = snapshot;
                     arrays.push_back(std::move(snapshot));
                     continue;
                 }
@@ -3465,6 +4562,22 @@ namespace Core::Gfx {
                     textures.back().unorm8Map = surface.compMap;
                     continue;
                 }
+                if (!surface.imagePtr && surface.dimension == 1 && !surface.aa && !surface.firstSlice && surface.sliceCount == 1 &&
+                    !m_viewBackings.contains(makeSurfaceKey(surface))) {
+                    // A sized view of a null image also reads zero texels everywhere (no guest memory
+                    // backs it). Keep its size so border addressing filters like the reference.
+                    // MK8's GamePad loading screen samples one every frame.
+                    const auto bytes = std::size_t(surface.width) * surface.height * 4;
+                    if (!m_zeroTexels || m_zeroTexels->size() < bytes)
+                        m_zeroTexels = std::make_shared<const std::vector<std::uint8_t>>(bytes, std::uint8_t{0});
+                    textures.push_back({binding, surface.width, surface.height, boundSamplers[binding.sampler],
+                                        [&, surface](unsigned, unsigned) { return sampleTexture(surface, TextureSampler{}, .5f, .5f); }});
+                    textures.back().unorm8 = std::span(*m_zeroTexels).first(bytes);
+                    textures.back().unorm8Pitch = surface.width;
+                    textures.back().unorm8Map = surface.compMap;
+                    textures.back().snapshotOwner = m_zeroTexels;
+                    continue;
+                }
                 if (!surface.imagePtr || !surface.width || !surface.height || surface.dimension != 1 || surface.aa || surface.firstMip ||
                     surface.firstSlice || surface.sliceCount != 1) {
                     supported = false;
@@ -3490,9 +4603,9 @@ namespace Core::Gfx {
                     textures.back().renderedFormat = colorFormat(surface.format);
                     textures.back().unorm8Map = surface.compMap;
                     textures.back().unorm8Pitch = surface.pitch;
-                    const auto pending = m_pendingReadbacks.find(makeSurfaceKey(surface));
-                    if (residentTextures && pending != m_pendingReadbacks.end())
-                        textures.back().rendered = pending->second;
+                    const auto *pending = renderedVersion(surface);
+                    if (residentTextures && pending)
+                        textures.back().rendered = *pending;
                     else if (backing) {
                         resolveViewBacking(surface);
                         if (surface.format == 0x816) {
@@ -3502,6 +4615,11 @@ namespace Core::Gfx {
                             textures.back().rgba32Bytes = *backing;
                             textures.back().rgba32Pitch = surface.pitch;
                         }
+                        textures.back().snapshotOwner = backingOwner(makeSurfaceKey(surface));
+                    } else if (const auto decoded = decodedTexture(surface, false, true)) {
+                        // Guest float textures are decoded once and shared until their bytes change.
+                        textures.back().rgba32 = decoded->floating;
+                        textures.back().snapshotOwner = decoded;
                     } else {
                         auto &values = ownedFloatTextures.emplace_back();
                         for (unsigned y = 0; y < surface.height; ++y)
@@ -3515,9 +4633,8 @@ namespace Core::Gfx {
                     continue;
                 }
                 if (residentTextures) {
-                    const auto pending = m_pendingReadbacks.find(makeSurfaceKey(surface));
-                    if (pending != m_pendingReadbacks.end()) {
-                        textures.back().rendered = pending->second;
+                    if (const auto *pending = renderedVersion(surface)) {
+                        textures.back().rendered = *pending;
                         textures.back().unorm8Pitch = surface.pitch;
                         textures.back().unorm8Map = surface.compMap;
                         continue;
@@ -3584,6 +4701,7 @@ namespace Core::Gfx {
                     textures.back().unorm8 = *backing;
                     textures.back().unorm8Pitch = surface.pitch;
                     textures.back().unorm8Map = surface.compMap;
+                    textures.back().snapshotOwner = backingOwner(makeSurfaceKey(surface));
                 } else if (rawBytes && surface.imageSize && (surface.tileMode <= 4 || surface.tileMode == 16) &&
                            std::uint64_t(surface.width) * surface.height * 4 <= 64ull * 1024 * 1024 &&
                            std::uint64_t(surface.imagePtr) + surface.imageSize <= 0x100000000ull && m_mem) {
@@ -3651,12 +4769,32 @@ namespace Core::Gfx {
             }
             std::vector<RasterDraw::Vertex> vertices;
             vertices.reserve(preparedTriangles.size() * 3 + preparedPoints.size());
+            // Triangles index their corners: a corner cached in corners/projectedCorners becomes one
+            // vertex however many triangles share it; clipped corners stay private.
+            std::vector<std::uint32_t> indices;
+            indices.reserve(preparedTriangles.size() * 3);
+            std::vector<std::uint32_t> cornerVertex(corners.size(), ~0u), projectedVertex(projectedCorners.size(), ~0u);
+            const auto vertexSlot = [&](const RasterVertex *corner) -> std::uint32_t * {
+                if (!corners.empty() && corner >= corners.data() && corner < corners.data() + corners.size())
+                    return &cornerVertex[std::size_t(corner - corners.data())];
+                if (!projectedCorners.empty() && corner >= projectedCorners.data() && corner < projectedCorners.data() + projectedCorners.size())
+                    return &projectedVertex[std::size_t(corner - projectedCorners.data())];
+                return nullptr;
+            };
+            if (directVertices && !directArrays)
+                indices = std::move(directIndices);
             for (const auto &triangle: preparedTriangles) {
                 const auto &a = triangle[0], &b = triangle[1], &c = triangle[2];
                 const float area = (b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y);
                 if (!nativeVertexShader && std::fabs(area) < 0.5f)
                     continue;
-                for (const auto &rv: triangle) {
+                for (const auto *corner: triangle.corners) {
+                    auto *slot = vertexSlot(corner);
+                    if (slot && *slot != ~0u) {
+                        indices.push_back(*slot);
+                        continue;
+                    }
+                    const auto &rv = *corner;
                     if (!std::isfinite(rv.x) || !std::isfinite(rv.y)) {
                         supported = false;
                         unsupportedReason = "replayer#6";
@@ -3670,6 +4808,9 @@ namespace Core::Gfx {
                         for (unsigned i = 0; i < vertex.inputs.size(); ++i)
                             if (pixelInputParams[i] >= 0)
                                 vertex.inputs[i] = rv.params[pixelInputParams[i]];
+                    if (slot)
+                        *slot = std::uint32_t(vertices.size());
+                    indices.push_back(std::uint32_t(vertices.size()));
                     vertices.push_back(vertex);
                 }
             }
@@ -3705,7 +4846,7 @@ namespace Core::Gfx {
             bool committed = false;
             if (profile || nativeAudit)
                 nativePrepareUs = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - prepareStart).count();
-            if (supported && !vertices.empty()) {
+            if (supported && (!vertices.empty() || !directAttributeView.empty())) {
                 const auto targetBytes = std::size_t(m_color.pitch) * m_color.height * targetElementBytes;
                 RasterDraw draw{shader,
                                 vertices,
@@ -3729,6 +4870,7 @@ namespace Core::Gfx {
                 draw.uniforms = pixelUniforms;
                 std::vector<float> vertexUniforms;
                 if (nativeVertexShader) {
+                    vertexUniforms.reserve(nativeVertexShader->uniforms.size() * 4);
                     static const unsigned bias = [] {
                         const auto *v = std::getenv("WEMU_KCACHE_BIAS");
                         return v ? unsigned(std::atoi(v)) : 0u;
@@ -3745,6 +4887,13 @@ namespace Core::Gfx {
                     draw.vertexStage.uniforms = vertexUniforms;
                     std::copy_n(pixelInputParams.begin(), draw.vertexStage.inputParams.size(), draw.vertexStage.inputParams.begin());
                     draw.vertexStage.inputCount = m_pixelInputCount;
+                    if (directVertices) {
+                        draw.vertexStage.attributes = directAttributeView;
+                        // Only arrays reused at least once are worth keeping on the GPU.
+                        if (directArrays && directReused)
+                            draw.vertexStage.attributesOwner = directArrays;
+                        draw.vertexStage.attributeStride = std::max(1u, attributeStride);
+                    }
                     draw.vertexStage.viewport = {m_vp[0], m_vp[1], m_vp[2], m_vp[3], m_vpNear, m_vpFar};
                 }
                 draw.enabledColorTargets = writableColors;
@@ -3757,10 +4906,15 @@ namespace Core::Gfx {
                 }
                 draw.colorFormat = targetFormat;
                 draw.topology = mode == 1 ? RasterDraw::Topology::Points : RasterDraw::Topology::Triangles;
+                if (mode != 1)
+                    draw.indices = directArrays ? directIndexView : std::span<const std::uint32_t>(indices);
                 draw.renderedTarget = renderedTarget;
+                // The result replaces m_pendingReadbacks for m_color; verification re-reads the old version.
+                draw.supersedesTarget = !m_nativeVerifyEvery;
                 if (drawDepth)
-                    draw.depth = {true,          m_depthWrite,   m_depthCompare, drawDepth->format, drawDepth->pixels,
-                                  m_depth.width, m_depth.height, m_depth.pitch,  drawDepth->pending};
+                    draw.depth = {true,          m_depthWrite,   m_depthCompare, drawDepth->format,  drawDepth->pixels,
+                                  m_depth.width, m_depth.height, m_depth.pitch,  drawDepth->pending, drawDepth->clear};
+                draw.depth.clamp = !m_zClipEnabled;
                 static const bool deferReadback = [] {
                     const auto *value = std::getenv("WEMU_NATIVE_DEFER_READBACK");
                     return value && std::string_view(value) == "1";
@@ -3774,7 +4928,7 @@ namespace Core::Gfx {
                 if (result) {
                     if (result->size() != targetBytes)
                         throw std::runtime_error("Raster backend returned an incomplete target");
-                    if (drawDepth && m_depthWrite &&
+                    if (drawDepth && (m_depthWrite || result->depthReadback) &&
                         (result->depthReadback ? result->depthReadback->size() != drawDepth->pixels.size() * sizeof(float)
                                                : result->depth.size() != drawDepth->pixels.size()))
                         throw std::runtime_error("Raster backend returned an incomplete depth surface");
@@ -3807,7 +4961,7 @@ namespace Core::Gfx {
                     const bool compare = interval && m_presentCount >= verifyFrom && m_nativeDraws % interval == 0 &&
                                          (verifyFrame < 0 || m_presentCount == unsigned(verifyFrame)) &&
                                          (verifyDraw < 0 || m_stats.draws == unsigned(verifyDraw)) &&
-                                         (!verifyShader || shaderHash(m_psProgram) == *verifyShader);
+                                         (!verifyShader || shaderHash(psProgram()) == *verifyShader);
                     ++m_nativeDraws;
                     if (compare) {
                         const auto verifyStart =
@@ -3818,6 +4972,8 @@ namespace Core::Gfx {
                         prepareSoftwareInputs();
                         result->resolve();
                         result->resolveDepth();
+                        if (result->unchangedTarget)
+                            result->rgba.assign(target, target + targetBytes);
                         // The backend has not changed target; feedback snapshots and
                         // prepared vertices are shared by both executions of this draw.
                         const auto savedStats = m_stats;
@@ -3899,7 +5055,7 @@ namespace Core::Gfx {
                             ++m_comparedNativeDraws;
                             m_differingNativeDraws += different != 0;
                             Utils::Log::error("[NATIVE_VERIFY] frame={} draw={} ps={:016X} bytes={} different={} over_one={} max_error={} first={}",
-                                              m_presentCount, m_stats.draws, shaderHash(m_psProgram), targetBytes, different, overOne, maxError,
+                                              m_presentCount, m_stats.draws, shaderHash(psProgram()), targetBytes, different, overOne, maxError,
                                               first);
                             if (different && (m_differingNativeDraws == 1 || maxError > m_nativeWorstError)) {
                                 m_nativeWorstError = std::max(m_nativeWorstError, maxError);
@@ -3953,15 +5109,17 @@ namespace Core::Gfx {
                         m_pendingReadbacks.erase(makeSurfaceKey(m_color));
                         std::copy(result->rgba.begin(), result->rgba.end(), target);
                     }
-                    if (drawDepth && m_depthWrite) {
+                    // Backends may also return a resident copy of a depth surface they only read.
+                    if (drawDepth && (m_depthWrite || result->depthReadback)) {
                         drawDepth->pending = std::move(result->depthReadback);
+                        drawDepth->clear.reset(); // the backend's version includes a pending clear
                         if (!drawDepth->pending)
                             std::copy(result->depth.begin(), result->depth.end(), drawDepth->pixels.begin());
                     }
                     if (mode == 1)
                         m_stats.points += vertices.size();
                     else
-                        m_stats.tris += vertices.size() / 3;
+                        m_stats.tris += (draw.indices.empty() ? vertices.size() : draw.indices.size()) / 3;
                     m_stats.pixels += result->pixels;
                     m_stats.alphaSum += result->alphaSum;
                     committed = true;
@@ -3969,6 +5127,8 @@ namespace Core::Gfx {
             }
             if (!committed) {
                 const auto fallbackStart = (profile || nativeAudit) ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+                if (directVertices)
+                    assembleTriangles();
                 for (const auto &triangle: preparedTriangles) {
                     const RasterVertex rv[]{triangle[0], triangle[1], triangle[2]};
                     rasterPrepared(rv);
@@ -4083,7 +5243,7 @@ namespace Core::Gfx {
         if (profile || nativeAudit) {
             const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - profileStart).count();
             std::uint64_t hash = 14695981039346656037ull;
-            for (const auto word: m_psProgram) {
+            for (const auto word: psProgram()) {
                 for (unsigned shift = 0; shift < 32; shift += 8) {
                     hash ^= (word >> shift) & 255;
                     hash *= 1099511628211ull;
@@ -4091,19 +5251,19 @@ namespace Core::Gfx {
             }
             Utils::Log::error("[RASTER] frame={} draw={} us={} pixels={} ps={:016X} words={} target={}x{} image={:08X} native={} stencil={} "
                               "depth={}:{:08X} aa={} fmt={:X}",
-                              m_presentCount, m_stats.draws, elapsed, m_stats.pixels - pixelsBefore, hash, m_psProgram.size(), m_color.width,
+                              m_presentCount, m_stats.draws, elapsed, m_stats.pixels - pixelsBefore, hash, psProgram().size(), m_color.width,
                               m_color.height, m_color.imagePtr, nativeCommitted, m_stencilTest, m_depthTest, m_depth.imagePtr, m_color.aa,
                               m_color.format);
             Utils::Log::error("[RASTER_STAGES] frame={} draw={} native={} prepare_us={} execute_us={} verify_us={} fallback_us={} other_us={}",
                               m_presentCount, m_stats.draws, nativeCommitted, nativePrepareUs, nativeExecuteUs, nativeVerifyUs, fallbackUs,
                               elapsed - nativePrepareUs - nativeExecuteUs - nativeVerifyUs - fallbackUs);
             if (nativeAudit) {
-                const auto auditKey = std::make_pair(m_psProgram, onlyColorZero);
+                const auto auditKey = std::make_pair(psProgram(), onlyColorZero);
                 auto found = m_nativeAuditCache.find(auditKey);
                 if (found == m_nativeAuditCache.end()) {
                     if (m_nativeAuditCache.size() >= 128)
                         m_nativeAuditCache.clear();
-                    found = m_nativeAuditCache.emplace(auditKey, Latte::lowerFragmentShader(*Latte::decodeProgram(m_psProgram), {}, onlyColorZero))
+                    found = m_nativeAuditCache.emplace(auditKey, Latte::lowerFragmentShader(*Latte::decodeProgram(psProgram()), {}, onlyColorZero))
                                     .first;
                     const auto &shader = found->second;
                     Utils::Log::error("[NATIVEPS] ps={:016X} lowered={} textures={} base_only={} reason={}", hash, bool(shader),
@@ -4168,8 +5328,8 @@ namespace Core::Gfx {
         state.halfZ = m_halfZ;
         std::copy(std::begin(m_vsRegs), std::end(m_vsRegs), state.vsRegs.begin());
         std::copy(std::begin(m_psRegs), std::end(m_psRegs), state.psRegs.begin());
-        state.vsProgram = m_vsProgram;
-        state.psProgram = m_psProgram;
+        state.vsShader = m_vsShader;
+        state.psShader = m_psShader;
         state.fetchLayout = m_fetchLayout;
         state.vsBlocks = m_vsBlocks;
         state.psBlocks = m_psBlocks;
@@ -4213,8 +5373,8 @@ namespace Core::Gfx {
         m_halfZ = state.halfZ;
         std::copy(state.vsRegs.begin(), state.vsRegs.end(), std::begin(m_vsRegs));
         std::copy(state.psRegs.begin(), state.psRegs.end(), std::begin(m_psRegs));
-        m_vsProgram = state.vsProgram;
-        m_psProgram = state.psProgram;
+        m_vsShader = state.vsShader;
+        m_psShader = state.psShader;
         m_fetchLayout = state.fetchLayout;
         m_vsBlocks = state.vsBlocks;
         m_psBlocks = state.psBlocks;
@@ -4269,6 +5429,23 @@ namespace Core::Gfx {
         const std::uint32_t rows = std::min(kHeight, s.height);
         const std::uint32_t cols = std::min(kWidth, s.width);
         buildClearFrame(cols, rows);
+        if (colorFormat(s.format) == ColorFormat::R11G11B10Float) {
+            // Pikmin 3 scans out both screens in this format every frame.
+            const auto &unitBytes = packedFloatUnitBytes();
+            for (std::uint32_t y = 0; y < rows; y++) {
+                const std::uint8_t *src = base + static_cast<std::size_t>(y) * s.pitch * 4;
+                std::uint8_t *dst = m_fb.data() + static_cast<std::size_t>(y) * kWidth * 4;
+                for (std::uint32_t x = 0; x < cols; x++) {
+                    const std::size_t at = std::size_t{x} * 4;
+                    const auto rgb = unitBytes(src + at);
+                    dst[at] = rgb[0];
+                    dst[at + 1] = rgb[1];
+                    dst[at + 2] = rgb[2];
+                    dst[at + 3] = 255;
+                }
+            }
+            return;
+        }
         if (colorFormat(s.format) != ColorFormat::RGBA8) {
             const auto format = colorFormat(s.format);
             for (unsigned y = 0; y < std::min(kHeight, s.height); ++y)
@@ -4289,43 +5466,65 @@ namespace Core::Gfx {
         }
     }
 
-    void Gx2Replayer::copyToDrcBuffer(const Surface &s)
+    void Gx2Replayer::copyToDrcBuffer(const Surface &original)
     {
         // The scan-out engine scales the source to the 854x480 panel (titles often render the
         // GamePad view at another size), so resample instead of cropping like the TV path.
-        m_drcFb.assign(static_cast<std::size_t>(kDrcWidth) * kDrcHeight * 4, 0);
-        for (std::size_t i = 3; i < m_drcFb.size(); i += 4)
-            m_drcFb[i] = 0xFF;
+        const auto blank = [&] {
+            m_drcFb.assign(static_cast<std::size_t>(kDrcWidth) * kDrcHeight * 4, 0);
+            for (std::size_t i = 3; i < m_drcFb.size(); i += 4)
+                m_drcFb[i] = 0xFF;
+        };
+        const auto s = attachmentSurface(original);
         if (!s.imagePtr || !s.width || !s.height || !s.pitch)
-            return;
-        const bool floatColor = s.format == 0x823;
-        const std::size_t elementBytes = floatColor ? 16 : 4;
+            return blank();
+        // Decoded like the TV copy: Pikmin 3 renders both screens in R11G11B10_FLOAT.
+        const auto format = colorFormat(s.format);
+        const std::size_t elementBytes = colorElementBytes(format);
         const auto *backing = useViewBacking() ? findViewBacking(s) : nullptr;
         const std::uint8_t *base = backing ? backing->data() : nullptr;
         const std::size_t bytes = static_cast<std::size_t>(s.pitch) * s.height * elementBytes;
         if (backing && backing->size() < bytes)
-            return;
+            return blank();
         if (!base) {
             if (!m_mem)
-                return;
+                return blank();
             base = m_mem->hostPtr(s.imagePtr);
             if (!base || !m_mem->hostPtr(s.imagePtr + bytes - 1))
-                return;
+                return blank();
         }
+        // Every panel pixel is written below.
+        m_drcFb.resize(static_cast<std::size_t>(kDrcWidth) * kDrcHeight * 4);
+        const auto &unitBytes = packedFloatUnitBytes();
+        // Source byte offset of each panel column, computed once instead of a division per pixel.
+        std::array<std::size_t, kDrcWidth> columns;
+        for (std::uint32_t x = 0; x < kDrcWidth; x++)
+            columns[x] = static_cast<std::size_t>(std::uint64_t(x) * s.width / kDrcWidth) * elementBytes;
         for (std::uint32_t y = 0; y < kDrcHeight; y++) {
             const std::uint32_t sy = static_cast<std::uint32_t>(std::uint64_t(y) * s.height / kDrcHeight);
             std::uint8_t *dst = m_drcFb.data() + static_cast<std::size_t>(y) * kDrcWidth * 4;
-            for (std::uint32_t x = 0; x < kDrcWidth; x++) {
-                const std::uint32_t sx = static_cast<std::uint32_t>(std::uint64_t(x) * s.width / kDrcWidth);
-                const std::uint8_t *src = base + (static_cast<std::size_t>(sy) * s.pitch + sx) * elementBytes;
-                if (floatColor) {
-                    const auto value = readFloatColor(src);
-                    for (unsigned c = 0; c < 3; ++c)
-                        dst[x * 4 + c] = byteFromUnit(value[c]);
-                } else
-                    std::memcpy(dst + static_cast<std::size_t>(x) * 4, src, 3);
-                dst[x * 4 + 3] = 0xFF;
-            }
+            const std::uint8_t *row = base + static_cast<std::size_t>(sy) * s.pitch * elementBytes;
+            // One 32-bit store per pixel (RGB, alpha 255): byte stores read back as a word stalled
+            // store forwarding on every pixel.
+            const auto store = [&](std::uint32_t x, std::uint32_t r, std::uint32_t g, std::uint32_t b) {
+                const std::uint32_t pixel = r | (g << 8) | (b << 16) | 0xFF000000u;
+                std::memcpy(dst + static_cast<std::size_t>(x) * 4, &pixel, 4);
+            };
+            if (format == ColorFormat::R11G11B10Float)
+                for (std::uint32_t x = 0; x < kDrcWidth; x++) {
+                    const auto rgb = unitBytes(row + columns[x]);
+                    store(x, rgb[0], rgb[1], rgb[2]);
+                }
+            else if (format != ColorFormat::RGBA8)
+                for (std::uint32_t x = 0; x < kDrcWidth; x++) {
+                    const auto value = readFloatColor(row + columns[x], format);
+                    store(x, byteFromUnit(value[0]), byteFromUnit(value[1]), byteFromUnit(value[2]));
+                }
+            else
+                for (std::uint32_t x = 0; x < kDrcWidth; x++) {
+                    const auto *src = row + columns[x];
+                    store(x, src[0], src[1], src[2]);
+                }
         }
     }
 
@@ -4410,7 +5609,7 @@ namespace Core::Gfx {
     void Gx2Replayer::replay(const Gx2CommandStream &stream, Core::Memory *mem)
     {
         Profile::Scope replay(Profile::Stage::Replay);
-        m_mem = mem;
+        m_mem = m_writableMem = mem;
         m_lastDrawColor = {};
         // GPU path: open a fresh GPU frame; draws append triangles, the present writes back to m_fb.
         if (m_gpuRenderer) {
@@ -4630,7 +5829,7 @@ namespace Core::Gfx {
                     // Capture the shader bytecode (GX2VertexShader: size @+0xD0, program @+0xD4)
                     // so draws can run the real vertex transform via LatteVsInterp.
                     const std::uint32_t sh = cmd.gpr[0];
-                    m_vsProgram.clear();
+                    m_vsShader.reset();
                     if (!m_mem || !sh)
                         break;
                     const auto semanticCount = std::min(m_mem->read<std::uint32_t>(sh + 0x40), 32u);
@@ -4667,16 +5866,16 @@ namespace Core::Gfx {
                             prog.clear();
                         }
                         Utils::Log::error("[GX2] VS 0x{:08X}: size={} program=0x{:08X} -> {} dwords captured", sh, size, ptr, prog.size());
-                        it = m_vsCache.emplace(sh, std::move(prog)).first;
+                        it = m_vsCache.emplace(sh, std::make_shared<ShaderProgram>(ShaderProgram{std::move(prog)})).first;
                     }
-                    m_vsProgram = it->second;
-                    if (m_dumpSurfaces && !m_vsProgram.empty()) {
+                    m_vsShader = it->second;
+                    if (m_dumpSurfaces && !vsProgram().empty()) {
                         const char *dir = std::getenv("WEMU_FB_DUMP_DIR");
                         char path[512];
                         std::snprintf(path, sizeof(path), "%s/vs_%08X.hex", dir ? dir : ".", sh);
                         if (FILE *fp = std::fopen(path, "w")) {
-                            for (std::size_t i = 0; i < m_vsProgram.size(); i++)
-                                std::fprintf(fp, "%08X%c", m_vsProgram[i], (i % 8 == 7) ? '\n' : ' ');
+                            for (std::size_t i = 0; i < vsProgram().size(); i++)
+                                std::fprintf(fp, "%08X%c", vsProgram()[i], (i % 8 == 7) ? '\n' : ' ');
                             std::fclose(fp);
                         }
                     }
@@ -4686,7 +5885,7 @@ namespace Core::Gfx {
                     // GX2PixelShader has a shorter register prefix than GX2VertexShader:
                     // WUT documents size @+0xA4 and program @+0xA8.
                     const std::uint32_t sh = cmd.gpr[0];
-                    m_psProgram.clear();
+                    m_psShader.reset();
                     if (!m_mem || !sh)
                         break;
                     m_pixelInputSemantics.fill(255);
@@ -4712,16 +5911,16 @@ namespace Core::Gfx {
                         }
                         Utils::Log::error("[GX2] PS 0x{:08X}: size={} program=0x{:08X} -> {} dwords captured", sh, size, ptr, prog.size());
                         summarizePixelShaderBytecode(prog, sh);
-                        it = m_psCache.emplace(sh, std::move(prog)).first;
+                        it = m_psCache.emplace(sh, std::make_shared<ShaderProgram>(ShaderProgram{std::move(prog)})).first;
                     }
-                    m_psProgram = it->second;
-                    if (m_dumpSurfaces && !m_psProgram.empty()) {
+                    m_psShader = it->second;
+                    if (m_dumpSurfaces && !psProgram().empty()) {
                         const char *dir = std::getenv("WEMU_FB_DUMP_DIR");
                         char path[512];
                         std::snprintf(path, sizeof(path), "%s/ps_%08X.hex", dir ? dir : ".", sh);
                         if (FILE *fp = std::fopen(path, "w")) {
-                            for (std::size_t i = 0; i < m_psProgram.size(); i++)
-                                std::fprintf(fp, "%08X%c", m_psProgram[i], (i % 8 == 7) ? '\n' : ' ');
+                            for (std::size_t i = 0; i < psProgram().size(); i++)
+                                std::fprintf(fp, "%08X%c", psProgram()[i], (i % 8 == 7) ? '\n' : ' ');
                             std::fclose(fp);
                         }
                     }
@@ -4734,22 +5933,20 @@ namespace Core::Gfx {
                     // big-endian read<u32> behind the snapshot leaves every word reversed. Without
                     // this swap a 1.0f identity row reads back as the denormal 4.6e-41 and every
                     // transform collapses to the origin.
+                    // Blocks are rebound for nearly every draw: swap into the bank's existing storage.
                     if (cmd.gpr[0] < m_vsBlocks.size() && !cmd.payload.empty()) {
-                        auto blk = cmd.payload;
-                        for (auto &w: blk)
-                            w = std::byteswap(w);
-                        m_vsBlocks[cmd.gpr[0]] = std::move(blk);
+                        auto &block = m_vsBlocks[cmd.gpr[0]];
+                        block.resize(cmd.payload.size());
+                        std::ranges::transform(cmd.payload, block.begin(), [](std::uint32_t word) { return std::byteswap(word); });
                     }
                     break;
                 case Gx2Cmd::SetPixelUniformBlock:
                     if (cmd.gpr[0] < m_psBlocks.size() && !cmd.payload.empty()) {
-                        auto blk = cmd.payload;
-                        for (auto &w: blk)
-                            w = std::byteswap(w);
-                        const std::size_t words = blk.size();
-                        m_psBlocks[cmd.gpr[0]] = std::move(blk);
+                        auto &block = m_psBlocks[cmd.gpr[0]];
+                        block.resize(cmd.payload.size());
+                        std::ranges::transform(cmd.payload, block.begin(), [](std::uint32_t word) { return std::byteswap(word); });
                         if (m_trace)
-                            Utils::Log::error("[GX2TRACE] setPsBlock loc={} bytes={} words={}", cmd.gpr[0], cmd.gpr[1], words);
+                            Utils::Log::error("[GX2TRACE] setPsBlock loc={} bytes={} words={}", cmd.gpr[0], cmd.gpr[1], block.size());
                     }
                     break;
                 case Gx2Cmd::SetVertexUniformReg: {

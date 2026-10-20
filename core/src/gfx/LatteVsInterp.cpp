@@ -108,9 +108,7 @@ namespace Core::Gfx {
 
     std::shared_ptr<const LatteVsInterp::Program> LatteVsInterp::compile(const std::vector<std::uint32_t> &words)
     {
-        std::uint64_t hash = 14695981039346656037ull;
-        for (auto word: words)
-            hash = (hash ^ word) * 1099511628211ull;
+        const std::uint64_t hash = Latte::ProgramWordsHash{}(words);
         static std::unordered_map<std::uint64_t, std::shared_ptr<const Program>> cache;
         if (const auto it = cache.find(hash); it != cache.end() && it->second->words == words)
             return it->second;
@@ -200,6 +198,7 @@ namespace Core::Gfx {
         std::array<int, 4> address{};
         std::array<bool, 4> addressValid{};
         bool skippedPixelExport = false;
+        bool killed = false; // KILL* ran with a true condition: the pixel is discarded at the end
         std::array<bool, 32> activeStack{};
         unsigned activeDepth = 0;
         std::array<float, 256> cubeIndices{};
@@ -249,6 +248,9 @@ namespace Core::Gfx {
                         break;
                     case SRC_1_INT:
                         v = fromU32(1u);
+                        break;
+                    case SRC_M_1_INT:
+                        v = fromU32(0xFFFFFFFFu);
                         break;
                     case SRC_HALF:
                         v = 0.5f;
@@ -582,6 +584,58 @@ namespace Core::Gfx {
                                 case OP2_NOP:
                                     v = 0.0f;
                                     break;
+                                case OP2_KILLE:
+                                case OP2_KILLGT:
+                                case OP2_KILLGE:
+                                case OP2_KILLNE:
+                                case OP2_KILLGT_UINT:
+                                case OP2_KILLGE_UINT:
+                                case OP2_KILLE_INT:
+                                case OP2_KILLGT_INT:
+                                case OP2_KILLGE_INT:
+                                case OP2_KILLNE_INT: {
+                                    if (!pixelStage)
+                                        return false;
+                                    const auto ia = std::int32_t(asU32(a)), ib = std::int32_t(asU32(b));
+                                    bool condition{};
+                                    switch (in.op) {
+                                        case OP2_KILLE:
+                                            condition = a == b;
+                                            break;
+                                        case OP2_KILLGT:
+                                            condition = a > b;
+                                            break;
+                                        case OP2_KILLGE:
+                                            condition = a >= b;
+                                            break;
+                                        case OP2_KILLNE:
+                                            condition = a != b;
+                                            break;
+                                        case OP2_KILLGT_UINT:
+                                            condition = asU32(a) > asU32(b);
+                                            break;
+                                        case OP2_KILLGE_UINT:
+                                            condition = asU32(a) >= asU32(b);
+                                            break;
+                                        case OP2_KILLE_INT:
+                                            condition = ia == ib;
+                                            break;
+                                        case OP2_KILLGT_INT:
+                                            condition = ia > ib;
+                                            break;
+                                        case OP2_KILLGE_INT:
+                                            condition = ia >= ib;
+                                            break;
+                                        default:
+                                            condition = ia != ib;
+                                            break;
+                                    }
+                                    killed |= condition;
+                                    // Integer forms return integer one/zero, like SETxx_INT.
+                                    const bool integer = in.op >= OP2_KILLGT_UINT;
+                                    v = integer ? fromU32(condition ? 1u : 0u) : (condition ? 1.0f : 0.0f);
+                                    break;
+                                }
                                 default:
                                     if (pixelStage)
                                         return false;
@@ -755,8 +809,11 @@ namespace Core::Gfx {
                     }
                     const bool gather = pixelStage && op == 0x0F;
                     const auto &fetch = gather ? textureGather : textureSample;
+                    // Texel offsets go through the detailed fetch, which knows the sampled level's size.
+                    const bool offsets = (t2 & 0x7FFF) != 0;
                     if ((!fetch && !(pixelStage && !gather && textureFetch)) || (pixelStage ? !supportsPixelTextureOperation(op) : op != 0x13) ||
-                        (op == 0x11 && !textureFetch) || (t0 & (1u << 23)) || (t1 & (1u << 7)) || (t1 & 0x30000000) != 0x30000000 || (t2 & 0x7FFF))
+                        (op == 0x11 && !textureFetch) || (t0 & (1u << 23)) || (t1 & (1u << 7)) || (t1 & 0x30000000) != 0x30000000 ||
+                        (offsets && (gather || !pixelStage || !textureFetch)))
                         return {};
                     // Gather currently accepts only direct, normalized, zero-offset TEX.
                     if (gather && ((t0 & ~(31u | (255u << 8) | (127u << 16))) || (t1 & ~(127u | (0xFFFu << 9) | (15u << 28)))))
@@ -771,7 +828,17 @@ namespace Core::Gfx {
                     }
                     const auto resource = (t0 >> 8) & 255;
                     const auto sampler = (t2 >> 15) & 31;
-                    if (pixelStage && !gather && textureFetch ? !textureFetch({resource, sampler, coords, cubeIndices[resource], op == 0x11}, rgba)
+                    const auto texelOffset = [&](unsigned shift) {
+                        const auto bits = (t2 >> shift) & 31u;
+                        return float(std::int32_t(bits << 27) >> 27) * .5f;
+                    };
+                    if (pixelStage && !gather && textureFetch ? !textureFetch({resource,
+                                                                               sampler,
+                                                                               coords,
+                                                                               cubeIndices[resource],
+                                                                               op == 0x11,
+                                                                               {texelOffset(0), texelOffset(5), texelOffset(10)}},
+                                                                              rgba)
                                                               : !fetch(resource, sampler, coords, rgba))
                         return {};
                     for (unsigned c = 0; c < 4; c++) {
@@ -831,7 +898,9 @@ namespace Core::Gfx {
             if (pixelStage && inst != CF_NOP)
                 return {};
         }
-        out.discarded = skippedPixelExport && !out.colorValid && !out.depthValid;
+        out.discarded = (skippedPixelExport && !out.colorValid && !out.depthValid) || killed;
+        if (killed)
+            out.colorValid = out.depthValid = false;
         return out;
     }
 

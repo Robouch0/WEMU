@@ -2,6 +2,7 @@
 #include <QVector>
 #include <QMap>
 #include <QTimer>
+#include "ControllerMapping.hpp"
 #include "IInputDevice.hpp"
 
 class InputManager final : public QObject {
@@ -18,6 +19,8 @@ class InputManager final : public QObject {
         Q_INVOKABLE [[nodiscard]] bool isButtonReleased(const QString &buttonName) const;
         Q_INVOKABLE [[nodiscard]] QStringList connectedDevices() const;
         Q_INVOKABLE [[nodiscard]] float getAxis(const QString &axisName) const;
+        // Every connected controller (not the keyboard) as GamePad input, through a profile's bindings.
+        [[nodiscard]] ControllerMapping::State controllerState(const QMap<QString, QString> &bindings) const;
 
     public slots:
         void stopPolling() { m_updateTimer.stop(); }

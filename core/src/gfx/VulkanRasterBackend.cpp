@@ -12,9 +12,12 @@
 #include <format>
 #include <limits>
 #include <map>
+#include <mutex>
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 #include <vulkan/vulkan.h>
 
@@ -30,6 +33,13 @@ namespace Core::Gfx {
                 throw std::runtime_error(std::string(operation) + ": Vulkan result " + std::to_string(result));
         }
         bool depthOnly(const RasterDraw &draw) { return draw.depth.test && !draw.channelMask; }
+        std::size_t vertexCount(const RasterDraw &draw)
+        {
+            const auto stride = draw.vertexStage.attributeStride;
+            return stride ? draw.vertexStage.attributes.size() / stride : draw.vertices.size();
+        }
+        // Defaults of program inputs past a compact draw's attribute stride (see VertexStage).
+        constexpr std::array<std::array<float, 4>, 16> compactAttributeDefaults{{{1, 1, 1, 1}, {0, 0, 0, 1}, {0, 0, 0, 1}, {0, 0, 0, 1}}};
         unsigned rasterWidth(const RasterDraw &draw) { return depthOnly(draw) ? draw.depth.width : draw.width; }
         unsigned rasterHeight(const RasterDraw &draw) { return depthOnly(draw) ? draw.depth.height : draw.height; }
         VkExtent2D attachmentExtent(const RasterDraw &draw)
@@ -72,6 +82,15 @@ namespace Core::Gfx {
                 return region;
             return {{0, 0}, {draw.width, draw.height}};
         }
+        // Depth target values with a pending clear (RasterDraw::Depth::clear) written.
+        std::vector<float> clearedDepth(const RasterDraw::Depth &depth, const float clear)
+        {
+            std::vector<float> values(depth.target.begin(), depth.target.end());
+            for (unsigned y = 0; y < depth.height; ++y)
+                std::fill_n(values.begin() + std::ptrdiff_t(std::size_t(y) * depth.pitch), depth.width, clear);
+            return values;
+        }
+
         bool overwritesTarget(const RasterDraw &draw)
         {
             static const bool enabled = [] {
@@ -79,7 +98,7 @@ namespace Core::Gfx {
                 return !value || value[0] != '0';
             }();
             if (!enabled || !draw.shader.alwaysWritesColor || draw.channelMask != 15 || draw.blend.enabled || draw.depth.test ||
-                draw.vertexStage.shader || draw.topology != RasterDraw::Topology::Triangles || draw.vertices.size() != 6)
+                draw.vertexStage.shader || draw.topology != RasterDraw::Topology::Triangles || draw.vertices.size() != 6 || !draw.indices.empty())
                 return false;
             const auto scissor = clippedScissor(draw);
             if (scissor.offset.x || scissor.offset.y || scissor.extent.width != draw.width || scissor.extent.height != draw.height)
@@ -188,9 +207,9 @@ namespace Core::Gfx {
             // UNORM writes are quantized in a GPU buffer pass after comparison.
             return VK_FORMAT_D32_SFLOAT;
         }
-        std::array<unsigned, 4> depthKey(const RasterDraw::Depth &depth)
+        std::array<unsigned, 5> depthKey(const RasterDraw::Depth &depth)
         {
-            return {depth.test ? unsigned(depth.format) + 1 : 0, unsigned(depth.test), unsigned(depth.write), depth.compare};
+            return {depth.test ? unsigned(depth.format) + 1 : 0, unsigned(depth.test), unsigned(depth.write), depth.compare, unsigned(depth.clamp)};
         }
         struct TextureMemoryUsage {
                 std::atomic<std::uint64_t> bytes{};
@@ -223,6 +242,13 @@ namespace Core::Gfx {
                         usage->bytes.fetch_sub(bytes, std::memory_order_relaxed);
                 }
         };
+        struct KeyWordsHash {
+                std::size_t operator()(const std::vector<std::uint64_t> &words) const noexcept
+                {
+                    return std::hash<std::string_view>{}({reinterpret_cast<const char *>(words.data()), words.size() * sizeof(words[0])});
+                }
+        };
+
         struct Context {
                 struct BatchFence {
                         VkDevice device{};
@@ -234,9 +260,12 @@ namespace Core::Gfx {
                                 vkDestroyFence(device, fence, nullptr);
                         }
                 };
-                bool batchSubmissions = [] {
+                // Command buffers per vkQueueSubmit. Waiting on a batch flushes it, so batching
+                // only delays GPU start; 8 balances submit overhead against that delay in MK8's
+                // menu. WEMU_NATIVE_BATCH_SUBMITS=N overrides it, 0 or 1 submits every draw.
+                std::size_t batchLimit = [] {
                     const auto *value = std::getenv("WEMU_NATIVE_BATCH_SUBMITS");
-                    return value && value[0] == '1';
+                    return value ? std::size_t(std::strtoul(value, nullptr, 10)) : std::size_t{8};
                 }();
                 std::vector<VkCommandBuffer> pendingCommands;
                 std::shared_ptr<BatchFence> pendingBatch;
@@ -263,7 +292,7 @@ namespace Core::Gfx {
                     }
                     pendingCommands.push_back(command);
                     auto result = pendingBatch;
-                    if (!batchSubmissions || pendingCommands.size() >= 4)
+                    if (pendingCommands.size() >= batchLimit)
                         flush();
                     return result;
                 }
@@ -293,12 +322,16 @@ namespace Core::Gfx {
                     batch->completed = true;
                 }
                 struct PipelineKey {
-                        std::vector<std::uint32_t> vertex, fragment, bindings;
+                        // SpirvModule ids: equal sources share one cached module, so comparing ids
+                        // replaces copying and comparing whole SPIR-V word vectors on every draw.
+                        std::uint64_t vertex{}, fragment{};
+                        std::vector<std::uint32_t> bindings;
                         unsigned channelMask{};
                         std::array<unsigned, 11> blend{};
-                        std::array<unsigned, 4> depth{};
+                        std::array<unsigned, 5> depth{};
                         unsigned topology{}, colorFormat{}, cull{};
                         bool depthBias{};
+                        unsigned attributeStride{}; // compact program inputs (0: full RasterDraw::Vertex)
                         auto operator<=>(const PipelineKey &) const = default;
                 };
                 struct PipelineBundle {
@@ -313,14 +346,16 @@ namespace Core::Gfx {
                 VkPipelineCache pipelineCache{};
                 std::uint32_t family{};
                 std::string deviceName;
-                std::uint64_t readbackTransfers{}, residentTextureCopies{}, directTextureBindings{}, directTextureBytes{};
-                std::uint64_t targetUploadTransfers{}, targetCopyTransfers{}, fullOverwriteDraws{};
+                bool discrete{}; // separate VRAM: host-visible memory sits across PCIe
+                std::uint64_t readbackTransfers{}, residentTextureCopies{}, directTextureBindings{}, directTextureBytes{}, residentVertexHits{},
+                        assembledTextureHits{};
+                std::uint64_t targetUploadTransfers{}, targetCopyTransfers{}, fullOverwriteDraws{}, targetClears{}, depthClears{};
                 std::uint64_t pipelineCreations{};
                 VkDescriptorSetLayout depthQuantizeSetLayout{};
                 VkPipelineLayout depthQuantizeLayout{};
                 VkPipeline depthQuantizePipeline{};
                 bool computeQueue{};
-                bool cubeArrays{}, biasClamp{}, blockTextures{};
+                bool cubeArrays{}, biasClamp{}, blockTextures{}, depthClamp{};
                 unsigned timestampBits{};
                 float timestampPeriod{};
                 std::map<PipelineKey, PipelineBundle> pipelines;
@@ -328,10 +363,36 @@ namespace Core::Gfx {
                         std::shared_ptr<CachedTexture> value;
                         std::uint64_t bytes{}, used{};
                 };
-                std::map<std::vector<std::uint64_t>, TextureEntry> textures;
-                std::map<std::vector<std::uint64_t>, std::weak_ptr<CachedTexture>> retainedTextures;
+                // Hashed: ordered maps compared key vectors word by word on every lookup.
+                std::unordered_map<std::vector<std::uint64_t>, TextureEntry, KeyWordsHash> textures;
+                std::unordered_map<std::vector<std::uint64_t>, std::weak_ptr<CachedTexture>, KeyWordsHash> retainedTextures;
                 std::uint64_t textureBytes{}, textureClock{}, textureUploads{}, textureHits{};
                 std::shared_ptr<TextureMemoryUsage> textureMemory = std::make_shared<TextureMemoryUsage>();
+                // Shared texture LRU. A race frame samples hundreds of distinct textures; evicting them
+                // every frame re-uploads each one. In-flight users retain their own references.
+                static constexpr std::uint64_t textureBudget = 1536ull * 1024 * 1024;
+                static constexpr std::size_t textureEntryLimit = 2048;
+                void evictTextures(std::uint64_t incoming)
+                {
+                    while (!textures.empty() && (textureBytes + incoming > textureBudget || textures.size() >= textureEntryLimit)) {
+                        const auto oldest = std::min_element(textures.begin(), textures.end(),
+                                                             [](const auto &a, const auto &b) { return a.second.used < b.second.used; });
+                        textureBytes -= oldest->second.bytes;
+                        textures.erase(oldest);
+                    }
+                }
+                void admitTexture(std::vector<std::uint64_t> key, const std::shared_ptr<CachedTexture> &texture)
+                {
+                    if (retainedTextures.size() >= 4096) {
+                        std::erase_if(retainedTextures, [](const auto &entry) { return entry.second.expired(); });
+                        if (retainedTextures.size() >= 4096)
+                            retainedTextures.clear();
+                    }
+                    retainedTextures[key] = texture;
+                    textures.emplace(std::move(key), TextureEntry{texture, texture->bytes, ++textureClock});
+                    textureBytes += texture->bytes;
+                    ++textureUploads;
+                }
                 void drainNoThrow() noexcept
                 {
                     try {
@@ -348,6 +409,137 @@ namespace Core::Gfx {
                         batch->completed = true;
                     pendingCommands.clear();
                     pendingBatch.reset();
+                }
+                // Pipelines depend on attachment formats only through render-pass compatibility, so any
+                // pass with the draw's color/depth formats can create one. Modules are only needed
+                // while compiling. Owners never destroy cached handles; clearPipelines() does.
+                const PipelineBundle &pipelineFor(const PipelineKey &key, const SpirvModule &vertex, const SpirvModule &fragment,
+                                                  const RasterDraw &draw, const std::vector<unsigned> &textureBindings, VkRenderPass pass)
+                {
+                    if (const auto it = pipelines.find(key); it != pipelines.end())
+                        return it->second;
+                    PipelineBundle created;
+                    std::vector<VkDescriptorSetLayoutBinding> bindings{
+                            {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}};
+                    if (draw.vertexStage.shader)
+                        bindings.push_back({17, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr});
+                    for (const auto binding: textureBindings)
+                        bindings.push_back({binding, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+                                            binding > 17 ? VK_SHADER_STAGE_VERTEX_BIT : VK_SHADER_STAGE_FRAGMENT_BIT, nullptr});
+                    VkDescriptorSetLayoutCreateInfo si{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+                    si.bindingCount = bindings.size();
+                    si.pBindings = bindings.data();
+                    check(vkCreateDescriptorSetLayout(device, &si, nullptr, &created.setLayout), "create descriptor layout");
+                    std::vector<VkShaderModule> modules;
+                    VkPushConstantRange push{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 128};
+                    VkPipelineLayoutCreateInfo li{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+                    li.setLayoutCount = li.pushConstantRangeCount = 1;
+                    li.pSetLayouts = &created.setLayout;
+                    li.pPushConstantRanges = &push;
+                    check(vkCreatePipelineLayout(device, &li, nullptr, &created.layout), "create pipeline layout");
+                    VkPipelineShaderStageCreateInfo stages[2]{};
+                    for (unsigned i = 0; i < 2; ++i) {
+                        const auto &code = (i ? fragment : vertex).words;
+                        VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+                        mi.codeSize = code.size() * sizeof(std::uint32_t);
+                        mi.pCode = code.data();
+                        VkShaderModule module{};
+                        check(vkCreateShaderModule(device, &mi, nullptr, &module), "create shader");
+                        modules.push_back(module);
+                        stages[i].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+                        stages[i].stage = i ? VK_SHADER_STAGE_FRAGMENT_BIT : VK_SHADER_STAGE_VERTEX_BIT;
+                        stages[i].module = module;
+                        stages[i].pName = "main";
+                    }
+                    VkVertexInputBindingDescription vertexBindings[2]{{0, sizeof(RasterDraw::Vertex), VK_VERTEX_INPUT_RATE_VERTEX}};
+                    VkVertexInputAttributeDescription attributes[18]{};
+                    VkPipelineVertexInputStateCreateInfo input{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+                    input.pVertexBindingDescriptions = vertexBindings;
+                    input.pVertexAttributeDescriptions = attributes;
+                    if (const auto stride = key.attributeStride) {
+                        // Translated programs read locations 1..16 only. The first `stride` come from
+                        // the compact buffer, the rest from a constant defaults buffer (stride 0).
+                        vertexBindings[0] = {0, stride * unsigned(sizeof(float) * 4), VK_VERTEX_INPUT_RATE_VERTEX};
+                        vertexBindings[1] = {1, 0, VK_VERTEX_INPUT_RATE_VERTEX};
+                        for (unsigned i = 0; i < 16; ++i)
+                            attributes[i] = {i + 1, i < stride ? 0u : 1u, VK_FORMAT_R32G32B32A32_SFLOAT, unsigned(i * sizeof(float) * 4)};
+                        input.vertexBindingDescriptionCount = 2;
+                        input.vertexAttributeDescriptionCount = 16;
+                    } else {
+                        attributes[0] = {0, 0, VK_FORMAT_R32G32_SFLOAT, 0};
+                        for (unsigned i = 0; i < 16; ++i)
+                            attributes[i + 1] = {i + 1, 0, VK_FORMAT_R32G32B32A32_SFLOAT,
+                                                 unsigned(offsetof(RasterDraw::Vertex, inputs) + i * sizeof(float) * 4)};
+                        attributes[17] = {17, 0, VK_FORMAT_R32G32_SFLOAT, unsigned(offsetof(RasterDraw::Vertex, z))};
+                        input.vertexBindingDescriptionCount = 1;
+                        input.vertexAttributeDescriptionCount = 18;
+                    }
+                    VkPipelineInputAssemblyStateCreateInfo assembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+                    assembly.topology =
+                            draw.topology == RasterDraw::Topology::Points ? VK_PRIMITIVE_TOPOLOGY_POINT_LIST : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+                    VkViewport viewport{0, 0, float(rasterWidth(draw)), float(rasterHeight(draw)), 0, 1};
+                    const auto scissor = clippedScissor(draw);
+                    VkPipelineViewportStateCreateInfo viewportState{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+                    viewportState.viewportCount = viewportState.scissorCount = 1;
+                    viewportState.pViewports = &viewport;
+                    viewportState.pScissors = &scissor;
+                    constexpr VkDynamicState dynamicStates[]{VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_DEPTH_BIAS};
+                    VkPipelineDynamicStateCreateInfo dynamic{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+                    dynamic.dynamicStateCount = std::size(dynamicStates);
+                    dynamic.pDynamicStates = dynamicStates;
+                    VkPipelineRasterizationStateCreateInfo raster{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+                    raster.polygonMode = VK_POLYGON_MODE_FILL;
+                    raster.cullMode = (draw.cullFront ? VK_CULL_MODE_FRONT_BIT : 0) | (draw.cullBack ? VK_CULL_MODE_BACK_BIT : 0);
+                    raster.frontFace = draw.frontFaceClockwise ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE;
+                    raster.lineWidth = 1;
+                    raster.depthBiasEnable = draw.depthBias.enabled && draw.depth.format == DepthFormat::Float32;
+                    raster.depthClampEnable = draw.depth.clamp;
+                    VkPipelineMultisampleStateCreateInfo samples{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+                    samples.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+                    VkPipelineColorBlendAttachmentState blend{};
+                    blend.colorWriteMask = draw.channelMask;
+                    if (draw.blend.enabled) {
+                        blend.blendEnable = VK_TRUE;
+                        const auto colorSource = blendFactor(draw.blend.colorSource);
+                        const auto colorDestination = blendFactor(draw.blend.colorDestination);
+                        const auto alphaSource = blendFactor(draw.blend.alphaSource);
+                        const auto alphaDestination = blendFactor(draw.blend.alphaDestination);
+                        if (!colorSource || !colorDestination || !alphaSource || !alphaDestination)
+                            throw std::runtime_error("Unsupported blend factors");
+                        blend.srcColorBlendFactor = *colorSource;
+                        blend.dstColorBlendFactor = *colorDestination;
+                        blend.colorBlendOp = blendOperation(draw.blend.colorOperation);
+                        blend.srcAlphaBlendFactor = *alphaSource;
+                        blend.dstAlphaBlendFactor = *alphaDestination;
+                        blend.alphaBlendOp = blendOperation(draw.blend.alphaOperation);
+                    }
+                    VkPipelineColorBlendStateCreateInfo blending{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+                    blending.attachmentCount = depthOnly(draw) ? 0 : 1;
+                    blending.pAttachments = &blend;
+                    for (unsigned i = 0; i < 4; ++i)
+                        blending.blendConstants[i] = float(draw.blend.constant[i]) / 255.0f;
+                    VkGraphicsPipelineCreateInfo gp{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+                    gp.stageCount = 2;
+                    gp.pStages = stages;
+                    gp.pVertexInputState = &input;
+                    gp.pInputAssemblyState = &assembly;
+                    gp.pViewportState = &viewportState;
+                    gp.pDynamicState = &dynamic;
+                    gp.pRasterizationState = &raster;
+                    gp.pMultisampleState = &samples;
+                    gp.pColorBlendState = &blending;
+                    VkPipelineDepthStencilStateCreateInfo depthState{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+                    depthState.depthTestEnable = draw.depth.test;
+                    depthState.depthWriteEnable = draw.depth.test && draw.depth.write;
+                    depthState.depthCompareOp = VkCompareOp(draw.depth.compare);
+                    gp.pDepthStencilState = &depthState;
+                    gp.layout = created.layout;
+                    gp.renderPass = pass;
+                    check(vkCreateGraphicsPipelines(device, pipelineCache, 1, &gp, nullptr, &created.pipeline), "create pipeline");
+                    for (auto module: modules)
+                        vkDestroyShaderModule(device, module, nullptr);
+                    ++pipelineCreations;
+                    return pipelines.emplace(key, created).first->second;
                 }
                 void destroyPipelines() noexcept
                 {
@@ -430,6 +622,7 @@ namespace Core::Gfx {
                     VkPhysicalDeviceProperties props{};
                     vkGetPhysicalDeviceProperties(physical, &props);
                     deviceName = props.deviceName;
+                    discrete = props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU;
                     timestampPeriod = props.limits.timestampPeriod;
                     Utils::Log::error("[NATIVE_VULKAN] device={}", deviceName);
                     const float priority = 1.0f;
@@ -445,10 +638,12 @@ namespace Core::Gfx {
                     cubeArrays = features.imageCubeArray;
                     biasClamp = features.depthBiasClamp;
                     blockTextures = features.textureCompressionBC;
+                    depthClamp = features.depthClamp;
                     VkPhysicalDeviceFeatures enabled{};
                     enabled.imageCubeArray = features.imageCubeArray;
                     enabled.depthBiasClamp = features.depthBiasClamp;
                     enabled.textureCompressionBC = features.textureCompressionBC;
+                    enabled.depthClamp = features.depthClamp;
                     di.pEnabledFeatures = &enabled;
                     check(vkCreateDevice(physical, &di, nullptr, &device), "create device");
                     vkGetDeviceQueue(device, family, 0, &queue);
@@ -525,6 +720,9 @@ void main() {
                 std::shared_ptr<Context> context;
                 VkImage image{};
                 VkDeviceMemory memory{};
+                VkImageView attachmentView{}; // color attachment view shared by every bundle rendering into this image
+                bool initialized{}; // rendered at least once: TRANSFER_SRC_OPTIMAL between draws, else UNDEFINED
+                bool direct{}; // created by DirectRenderer and not adopted by a bundle since: rendered in place
                 unsigned width{}, height{};
                 std::uint64_t version{};
                 VkFormat format{VK_FORMAT_R8G8B8A8_UNORM};
@@ -548,6 +746,8 @@ void main() {
                 }
                 ~ColorImage()
                 {
+                    if (attachmentView)
+                        vkDestroyImageView(context->device, attachmentView, nullptr);
                     for (const auto &[key, view]: samplingViews)
                         vkDestroyImageView(context->device, view, nullptr);
                     if (image)
@@ -588,6 +788,13 @@ void main() {
                         VkSamplerMipmapMode mipFilter{VK_SAMPLER_MIPMAP_MODE_NEAREST};
                         float minLod{}, maxLod{};
                         std::shared_ptr<ColorImage> rendered;
+                        // Levels x layers for direct draws: resident images, or null with the layer's CPU
+                        // bytes (rows of layerPitch bytes) in layerBytes.
+                        std::vector<std::shared_ptr<ColorImage>> renderedLayers;
+                        std::vector<std::span<const std::uint8_t>> layerBytes;
+                        std::size_t layerPitch{};
+                        unsigned renderedLevels{1};
+                        unsigned levelCount() const { return std::max(unsigned(mips.size() + 1), renderedLevels); }
                         std::shared_ptr<const void> snapshotOwner;
 
                         std::size_t rowBytes() const
@@ -668,12 +875,12 @@ void main() {
                         vkDestroyDescriptorPool(device, descriptorPool, nullptr);
                     if (setLayout && !cachedPipeline)
                         vkDestroyDescriptorSetLayout(device, setLayout, nullptr);
-                    if (framebuffer)
+                    if (framebuffer && !colorImage)
                         vkDestroyFramebuffer(device, framebuffer, nullptr);
+                    for (const auto &entry: framebuffers)
+                        vkDestroyFramebuffer(device, entry.second, nullptr);
                     if (pass)
                         vkDestroyRenderPass(device, pass, nullptr);
-                    if (view)
-                        vkDestroyImageView(device, view, nullptr);
                     if (depthView)
                         vkDestroyImageView(device, depthView, nullptr);
                     if (depthQuantizePool)
@@ -696,10 +903,13 @@ void main() {
                         vkDestroyCommandPool(device, readbackPool, nullptr);
                 }
 
-                void initialize(const std::vector<std::uint32_t> &vertex, const std::vector<std::uint32_t> &fragment,
-                                const std::array<float, 3200> &constants, const std::array<float, 3200> &vertexConstants,
-                                const std::vector<Texture> &textures, const RasterDraw &draw, const std::shared_ptr<ColorImage> &targetSource,
-                                const std::shared_ptr<ColorImage> &depthSource, bool overwriteTarget)
+                // Only the first constantFloats/vertexConstantFloats values are defined and read by
+                // the bundle's shaders; the rest of each uniform buffer is never accessed.
+                void initialize(const SpirvModule &vertex, const SpirvModule &fragment,
+                                const std::array<float, Latte::kStageConstantFloats> &constants,
+                                const std::array<float, Latte::kStageConstantFloats> &vertexConstants, std::size_t constantFloats,
+                                std::size_t vertexConstantFloats, const std::vector<Texture> &textures, const RasterDraw &draw,
+                                const std::shared_ptr<ColorImage> &targetSource, const std::shared_ptr<ColorImage> &depthSource, bool overwriteTarget)
                 {
                     fullOverwrite = overwriteTarget;
                     const auto *profile = std::getenv("WEMU_NATIVE_GPU_TIMING");
@@ -756,6 +966,7 @@ void main() {
                         vi.format = ci.format;
                         vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
                         check(vkCreateImageView(device, &vi, nullptr, &view), "create view");
+                        colorImage->attachmentView = view;
                     }
                     if (draw.depth.test) {
                         depthImage = std::make_shared<ColorImage>();
@@ -828,15 +1039,18 @@ void main() {
                     fi.height = attachmentExtent(draw).height;
                     fi.layers = 1;
                     check(vkCreateFramebuffer(device, &fi, nullptr, &framebuffer), "create framebuffer");
+                    framebufferExtent = {fi.width, fi.height};
+                    if (colorImage)
+                        framebuffers.emplace_back(colorImage, framebuffer);
 
                     uniform = buffer(sizeof(constants), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, uniformMemory);
                     void *mapped = nullptr;
                     check(vkMapMemory(device, uniformMemory, 0, sizeof(constants), 0, &mapped), "map constants");
-                    std::memcpy(mapped, constants.data(), sizeof(constants));
+                    std::memcpy(mapped, constants.data(), constantFloats * sizeof(float));
                     vkUnmapMemory(device, uniformMemory);
                     if (draw.vertexStage.shader) {
                         vertexUniform = buffer(sizeof(vertexConstants), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, vertexUniformMemory);
-                        upload(vertexUniformMemory, vertexConstants.data(), sizeof(vertexConstants));
+                        upload(vertexUniformMemory, vertexConstants.data(), vertexConstantFloats * sizeof(float));
                     }
                     if (!depthOnly(draw))
                         readback = buffer(draw.target.size(), VK_BUFFER_USAGE_TRANSFER_DST_BIT, readbackMemory, VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
@@ -846,6 +1060,11 @@ void main() {
                     vertexBuffer =
                             buffer(std::bit_ceil(draw.vertices.size()) * sizeof(RasterDraw::Vertex), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, vertexMemory);
                     upload(vertexMemory, draw.vertices.data(), draw.vertices.size_bytes());
+                    if (!draw.indices.empty()) {
+                        indexBuffer =
+                                buffer(std::bit_ceil(draw.indices.size()) * sizeof(std::uint32_t), VK_BUFFER_USAGE_INDEX_BUFFER_BIT, indexMemory);
+                        upload(indexMemory, draw.indices.data(), draw.indices.size_bytes());
+                    }
                     if (!depthOnly(draw)) {
                         targetBuffer = buffer(draw.target.size(), VK_BUFFER_USAGE_TRANSFER_SRC_BIT, targetMemory);
                         if (!fullOverwrite && !targetSource)
@@ -854,34 +1073,23 @@ void main() {
                     // Dimensions/scissors are dynamic, and attachment load ops
                     // do not affect render-pass compatibility. Share one pipeline
                     // across these draw variants instead of compiling each size.
-                    Context::PipelineKey key{vertex, fragment, {}, draw.channelMask};
+                    Context::PipelineKey key{vertex.id, fragment.id, {}, draw.channelMask};
                     key.blend = blendKey(draw.blend);
                     key.depth = depthKey(draw.depth);
                     key.depthBias = draw.depthBias.enabled;
                     key.topology = unsigned(draw.topology);
                     key.colorFormat = unsigned(draw.colorFormat);
                     key.cull = unsigned(draw.cullFront) | (unsigned(draw.cullBack) << 1) | (unsigned(draw.frontFaceClockwise) << 2);
-                    for (const auto &texture: textures)
+                    std::vector<unsigned> textureBindings;
+                    for (const auto &texture: textures) {
                         key.bindings.push_back(texture.binding);
-                    if (const auto it = context.pipelines.find(key); it != context.pipelines.end()) {
-                        setLayout = it->second.setLayout;
-                        layout = it->second.layout;
-                        pipeline = it->second.pipeline;
-                        cachedPipeline = true;
+                        textureBindings.push_back(texture.binding);
                     }
-                    if (!cachedPipeline) {
-                        std::vector<VkDescriptorSetLayoutBinding> bindings{
-                                {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}};
-                        if (draw.vertexStage.shader)
-                            bindings.push_back({17, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr});
-                        for (const auto &texture: textures)
-                            bindings.push_back({texture.binding, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
-                                                texture.binding > 17 ? VK_SHADER_STAGE_VERTEX_BIT : VK_SHADER_STAGE_FRAGMENT_BIT, nullptr});
-                        VkDescriptorSetLayoutCreateInfo si{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-                        si.bindingCount = bindings.size();
-                        si.pBindings = bindings.data();
-                        check(vkCreateDescriptorSetLayout(device, &si, nullptr, &setLayout), "create descriptor layout");
-                    }
+                    const auto &cached = context.pipelineFor(key, vertex, fragment, draw, textureBindings, pass);
+                    setLayout = cached.setLayout;
+                    layout = cached.layout;
+                    pipeline = cached.pipeline;
+                    cachedPipeline = true;
                     VkDescriptorPoolSize sizes[]{{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, draw.vertexStage.shader ? 2u : 1u},
                                                  {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, static_cast<std::uint32_t>(textures.size())}};
                     VkDescriptorPoolCreateInfo dpi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
@@ -909,110 +1117,75 @@ void main() {
                     }
                     for (const auto &texture: textures)
                         uploadTexture(texture);
-
-                    if (!cachedPipeline) {
-                        VkPushConstantRange push{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 128};
-                        VkPipelineLayoutCreateInfo li{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-                        li.setLayoutCount = li.pushConstantRangeCount = 1;
-                        li.pSetLayouts = &setLayout;
-                        li.pPushConstantRanges = &push;
-                        check(vkCreatePipelineLayout(device, &li, nullptr, &layout), "create pipeline layout");
-                        VkPipelineShaderStageCreateInfo stages[2]{};
-                        for (unsigned i = 0; i < 2; ++i) {
-                            const auto &code = i ? fragment : vertex;
-                            VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
-                            mi.codeSize = code.size() * sizeof(std::uint32_t);
-                            mi.pCode = code.data();
-                            VkShaderModule module{};
-                            check(vkCreateShaderModule(device, &mi, nullptr, &module), "create shader");
-                            modules.push_back(module);
-                            stages[i].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-                            stages[i].stage = i ? VK_SHADER_STAGE_FRAGMENT_BIT : VK_SHADER_STAGE_VERTEX_BIT;
-                            stages[i].module = module;
-                            stages[i].pName = "main";
-                        }
-                        VkVertexInputBindingDescription vertexBinding{0, sizeof(RasterDraw::Vertex), VK_VERTEX_INPUT_RATE_VERTEX};
-                        VkVertexInputAttributeDescription attributes[18]{};
-                        attributes[0] = {0, 0, VK_FORMAT_R32G32_SFLOAT, 0};
-                        for (unsigned i = 0; i < 16; ++i)
-                            attributes[i + 1] = {i + 1, 0, VK_FORMAT_R32G32B32A32_SFLOAT,
-                                                 unsigned(offsetof(RasterDraw::Vertex, inputs) + i * sizeof(float) * 4)};
-                        attributes[17] = {17, 0, VK_FORMAT_R32G32_SFLOAT, unsigned(offsetof(RasterDraw::Vertex, z))};
-                        VkPipelineVertexInputStateCreateInfo input{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
-                        input.vertexBindingDescriptionCount = 1;
-                        input.pVertexBindingDescriptions = &vertexBinding;
-                        input.vertexAttributeDescriptionCount = 18;
-                        input.pVertexAttributeDescriptions = attributes;
-                        VkPipelineInputAssemblyStateCreateInfo assembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
-                        assembly.topology = draw.topology == RasterDraw::Topology::Points ? VK_PRIMITIVE_TOPOLOGY_POINT_LIST
-                                                                                          : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-                        VkViewport viewport{0, 0, float(rasterWidth(draw)), float(rasterHeight(draw)), 0, 1};
-                        const auto scissor = clippedScissor(draw);
-                        VkPipelineViewportStateCreateInfo viewportState{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
-                        viewportState.viewportCount = viewportState.scissorCount = 1;
-                        viewportState.pViewports = &viewport;
-                        viewportState.pScissors = &scissor;
-                        constexpr VkDynamicState dynamicStates[]{VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_DEPTH_BIAS};
-                        VkPipelineDynamicStateCreateInfo dynamic{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
-                        dynamic.dynamicStateCount = std::size(dynamicStates);
-                        dynamic.pDynamicStates = dynamicStates;
-                        VkPipelineRasterizationStateCreateInfo raster{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
-                        raster.polygonMode = VK_POLYGON_MODE_FILL;
-                        raster.cullMode = (draw.cullFront ? VK_CULL_MODE_FRONT_BIT : 0) | (draw.cullBack ? VK_CULL_MODE_BACK_BIT : 0);
-                        raster.frontFace = draw.frontFaceClockwise ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE;
-                        raster.lineWidth = 1;
-                        raster.depthBiasEnable = draw.depthBias.enabled && draw.depth.format == DepthFormat::Float32;
-                        VkPipelineMultisampleStateCreateInfo samples{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
-                        samples.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-                        VkPipelineColorBlendAttachmentState blend{};
-                        blend.colorWriteMask = draw.channelMask;
-                        if (draw.blend.enabled) {
-                            blend.blendEnable = VK_TRUE;
-                            const auto colorSource = blendFactor(draw.blend.colorSource);
-                            const auto colorDestination = blendFactor(draw.blend.colorDestination);
-                            const auto alphaSource = blendFactor(draw.blend.alphaSource);
-                            const auto alphaDestination = blendFactor(draw.blend.alphaDestination);
-                            if (!colorSource || !colorDestination || !alphaSource || !alphaDestination)
-                                throw std::runtime_error("Unsupported blend factors");
-                            blend.srcColorBlendFactor = *colorSource;
-                            blend.dstColorBlendFactor = *colorDestination;
-                            blend.colorBlendOp = blendOperation(draw.blend.colorOperation);
-                            blend.srcAlphaBlendFactor = *alphaSource;
-                            blend.dstAlphaBlendFactor = *alphaDestination;
-                            blend.alphaBlendOp = blendOperation(draw.blend.alphaOperation);
-                        }
-                        VkPipelineColorBlendStateCreateInfo blending{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-                        blending.attachmentCount = depthOnly(draw) ? 0 : 1;
-                        blending.pAttachments = &blend;
-                        for (unsigned i = 0; i < 4; ++i)
-                            blending.blendConstants[i] = float(draw.blend.constant[i]) / 255.0f;
-                        VkGraphicsPipelineCreateInfo gp{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
-                        gp.stageCount = 2;
-                        gp.pStages = stages;
-                        gp.pVertexInputState = &input;
-                        gp.pInputAssemblyState = &assembly;
-                        gp.pViewportState = &viewportState;
-                        gp.pDynamicState = &dynamic;
-                        gp.pRasterizationState = &raster;
-                        gp.pMultisampleState = &samples;
-                        gp.pColorBlendState = &blending;
-                        VkPipelineDepthStencilStateCreateInfo depthState{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
-                        depthState.depthTestEnable = draw.depth.test;
-                        depthState.depthWriteEnable = draw.depth.test && draw.depth.write;
-                        depthState.depthCompareOp = VkCompareOp(draw.depth.compare);
-                        gp.pDepthStencilState = &depthState;
-                        gp.layout = layout;
-                        gp.renderPass = pass;
-                        check(vkCreateGraphicsPipelines(device, pipelineCache, 1, &gp, nullptr, &pipeline), "create pipeline");
-                        ++context.pipelineCreations;
-                        if (context.pipelines.size() >= 512)
-                            context.clearPipelines();
-                        context.pipelines.emplace(std::move(key), Context::PipelineBundle{setLayout, layout, pipeline});
-                        cachedPipeline = true;
-                    }
                 }
 
                 bool ownsImage(const std::shared_ptr<ColorImage> &candidate) const { return colorImage == candidate || depthImage == candidate; }
+                const std::shared_ptr<ColorImage> &color() const { return colorImage; }
+
+                // Render the next draw directly into `target`, the current version of its color
+                // surface, instead of copying it into this bundle's own image. The images are
+                // exchanged with `owner` (the bundle that produced `target`, if still cached), so
+                // every image keeps exactly one owner. The caller guarantees the draw supersedes
+                // the readback ticket of `target`'s current version (the replayer replaces it
+                // with this draw's result), so nothing reads that version afterwards.
+                void adopt(const std::shared_ptr<ColorImage> &target, DrawResources *owner)
+                {
+                    auto previous = std::exchange(colorImage, target);
+                    target->direct = false; // this bundle may overwrite it when reused
+                    image = target->image;
+                    retainedTarget = true;
+                    if (owner) {
+                        owner->colorImage = std::move(previous);
+                        owner->image = owner->colorImage->image;
+                    }
+                }
+
+                VkFramebuffer framebufferFor(const std::shared_ptr<ColorImage> &target)
+                {
+                    // Called after this bundle's previous submission completed, so framebuffers of
+                    // released images are no longer in use.
+                    std::erase_if(framebuffers, [&](const auto &entry) {
+                        if (!entry.first.expired())
+                            return false;
+                        vkDestroyFramebuffer(device, entry.second, nullptr);
+                        return true;
+                    });
+                    for (const auto &[owner, cached]: framebuffers)
+                        if (owner.lock() == target)
+                            return cached;
+                    if (!target->attachmentView) {
+                        VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+                        vi.image = target->image;
+                        vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+                        vi.format = target->format;
+                        vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+                        check(vkCreateImageView(device, &vi, nullptr, &target->attachmentView), "create adopted view");
+                    }
+                    const VkImageView views[]{target->attachmentView, depthView};
+                    VkFramebufferCreateInfo fi{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+                    fi.renderPass = pass;
+                    fi.attachmentCount = depthView ? 2 : 1;
+                    fi.pAttachments = views;
+                    fi.width = framebufferExtent.width;
+                    fi.height = framebufferExtent.height;
+                    fi.layers = 1;
+                    VkFramebuffer created{};
+                    check(vkCreateFramebuffer(device, &fi, nullptr, &created), "create adopted framebuffer");
+                    framebuffers.emplace_back(target, created);
+                    return created;
+                }
+                // True when refreshing this bundle cannot block on the GPU (non-blocking fence query).
+                bool idle() const
+                {
+                    if (!batch || batch->completed)
+                        return true;
+                    if (!batch->submitted)
+                        return false;
+                    if (vkGetFenceStatus(device, batch->fence) != VK_SUCCESS)
+                        return false;
+                    batch->completed = true;
+                    return true;
+                }
                 bool needsReadbackPreservation() const
                 {
                     return (!readbackValid && !pendingReadback.expired()) || (!depthReadbackValid && !pendingDepthReadback.expired());
@@ -1056,20 +1229,22 @@ void main() {
                         targetBarrier.srcQueueFamilyIndex = targetBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
                         targetBarrier.image = image;
                         targetBarrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-                        targetBarrier.oldLayout = submitted ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED;
+                        // Layout state belongs to the image: bundles can exchange images (adopt()).
+                        const bool initialized = colorImage->initialized;
+                        targetBarrier.oldLayout = initialized ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED;
                         if (fullOverwrite) {
                             targetBarrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-                            targetBarrier.srcAccessMask = submitted ? VK_ACCESS_TRANSFER_READ_BIT : 0;
+                            targetBarrier.srcAccessMask = initialized ? VK_ACCESS_TRANSFER_READ_BIT : 0;
                             targetBarrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-                            vkCmdPipelineBarrier(command, submitted ? VK_PIPELINE_STAGE_TRANSFER_BIT : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                            vkCmdPipelineBarrier(command, initialized ? VK_PIPELINE_STAGE_TRANSFER_BIT : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                                                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr, 0, nullptr, 1, &targetBarrier);
                             ++context.fullOverwriteDraws;
                         } else {
                             if (!retainedTarget) {
                                 targetBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-                                targetBarrier.srcAccessMask = submitted ? VK_ACCESS_TRANSFER_READ_BIT : 0;
+                                targetBarrier.srcAccessMask = initialized ? VK_ACCESS_TRANSFER_READ_BIT : 0;
                                 targetBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-                                vkCmdPipelineBarrier(command, submitted ? VK_PIPELINE_STAGE_TRANSFER_BIT : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                vkCmdPipelineBarrier(command, initialized ? VK_PIPELINE_STAGE_TRANSFER_BIT : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                                                      VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &targetBarrier);
                                 if (targetSource) {
                                     VkImageCopy copy{};
@@ -1110,7 +1285,7 @@ void main() {
                     }
                     VkRenderPassBeginInfo rp{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
                     rp.renderPass = pass;
-                    rp.framebuffer = framebuffer;
+                    rp.framebuffer = colorImage ? framebufferFor(colorImage) : framebuffer;
                     rp.renderArea.extent = attachmentExtent(draw);
                     transitionDirectTextures(true);
                     vkCmdBeginRenderPass(command, &rp, VK_SUBPASS_CONTENTS_INLINE);
@@ -1148,7 +1323,12 @@ void main() {
                     vkCmdPushConstants(command, layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
                     const VkDeviceSize offset = 0;
                     vkCmdBindVertexBuffers(command, 0, 1, &vertexBuffer, &offset);
-                    vkCmdDraw(command, draw.vertices.size(), 1, 0, 0);
+                    if (draw.indices.empty()) {
+                        vkCmdDraw(command, draw.vertices.size(), 1, 0, 0);
+                    } else {
+                        vkCmdBindIndexBuffer(command, indexBuffer, 0, VK_INDEX_TYPE_UINT32);
+                        vkCmdDrawIndexed(command, draw.indices.size(), 1, 0, 0, 0);
+                    }
                     vkCmdEndRenderPass(command);
                     transitionDirectTextures(false);
                     if (gpuQueries)
@@ -1179,6 +1359,8 @@ void main() {
                         if (texture && texture->producer.lock().get() == this)
                             texture->ready = true;
                     submitted = true;
+                    if (colorImage)
+                        colorImage->initialized = true;
                     readbackValid = hasColor && !lazyReadback;
                     depthReadbackValid = !lazyReadback;
                     if (colorImage)
@@ -1210,14 +1392,14 @@ void main() {
                     }
                     if (!deferReadback) {
                         pendingReadback.reset();
-                        result.rgba = readPixels(draw.width, draw.height, draw.pitch, padding);
+                        result.rgba = readPixels(colorImage, draw.width, draw.height, draw.pitch, padding);
                         result.resolveDepth();
                         return result;
                     }
                     auto ticket = std::make_shared<RasterReadback>(
                             draw.target.size(),
-                            [self = shared_from_this(), padding, width = draw.width, height = draw.height, pitch = draw.pitch] {
-                                return self->readPixels(width, height, pitch, padding);
+                            [self = shared_from_this(), target = colorImage, padding, width = draw.width, height = draw.height, pitch = draw.pitch] {
+                                return self->readPixels(target, width, height, pitch, padding);
                             },
                             std::make_shared<NativeImage>(colorImage, draw.pitch, padding));
                     pendingReadback = ticket;
@@ -1448,7 +1630,7 @@ void main() {
                     return result;
                 }
 
-                std::vector<std::uint8_t> readPixels(unsigned width, unsigned height, unsigned pitch,
+                std::vector<std::uint8_t> readPixels(const std::shared_ptr<ColorImage> &target, unsigned width, unsigned height, unsigned pitch,
                                                      const std::shared_ptr<const std::vector<std::uint8_t>> &padding)
                 {
                     Profile::Scope reading(Profile::Stage::Readback);
@@ -1460,7 +1642,7 @@ void main() {
                         copy.bufferRowLength = pitch;
                         copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
                         copy.imageExtent = {width, height, 1};
-                        vkCmdCopyImageToBuffer(copyCommand, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback, 1, &copy);
+                        vkCmdCopyImageToBuffer(copyCommand, target->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback, 1, &copy);
                         ++context.readbackTransfers;
                         VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
                         barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -1472,25 +1654,26 @@ void main() {
                     } else {
                         wait();
                     }
-                    std::vector<std::uint8_t> result(std::size_t(pitch) * height * imageElementBytes(colorImage->format));
+                    std::vector<std::uint8_t> result(std::size_t(pitch) * height * imageElementBytes(target->format));
                     void *mapped = nullptr;
                     check(vkMapMemory(device, readbackMemory, 0, result.size(), 0, &mapped), "map readback");
                     for (unsigned y = 0; y < height; ++y)
-                        std::memcpy(result.data() + std::size_t(y) * pitch * imageElementBytes(colorImage->format),
-                                    static_cast<const std::uint8_t *>(mapped) + std::size_t(y) * pitch * imageElementBytes(colorImage->format),
-                                    std::size_t(width) * imageElementBytes(colorImage->format));
+                        std::memcpy(result.data() + std::size_t(y) * pitch * imageElementBytes(target->format),
+                                    static_cast<const std::uint8_t *>(mapped) + std::size_t(y) * pitch * imageElementBytes(target->format),
+                                    std::size_t(width) * imageElementBytes(target->format));
                     vkUnmapMemory(device, readbackMemory);
                     if (padding) {
-                        const auto rowBytes = std::size_t(pitch - width) * imageElementBytes(colorImage->format);
+                        const auto rowBytes = std::size_t(pitch - width) * imageElementBytes(target->format);
                         for (unsigned y = 0; y < height; ++y)
-                            std::memcpy(result.data() + (std::size_t(y) * pitch + width) * imageElementBytes(colorImage->format),
+                            std::memcpy(result.data() + (std::size_t(y) * pitch + width) * imageElementBytes(target->format),
                                         padding->data() + y * rowBytes, rowBytes);
                     }
                     return result;
                 }
 
-                bool refresh(const std::array<float, 3200> &constants, const std::array<float, 3200> &vertexConstants,
-                             const std::vector<Texture> &textures, const RasterDraw &draw, bool retainTextures,
+                bool refresh(const std::array<float, Latte::kStageConstantFloats> &constants,
+                             const std::array<float, Latte::kStageConstantFloats> &vertexConstants, std::size_t constantFloats,
+                             std::size_t vertexConstantFloats, const std::vector<Texture> &textures, const RasterDraw &draw, bool retainTextures,
                              const std::shared_ptr<ColorImage> &targetSource, const std::shared_ptr<ColorImage> &depthSource)
                 {
                     finishPending();
@@ -1498,10 +1681,12 @@ void main() {
                     check(vkResetCommandPool(device, pool, 0), "reset commands");
                     VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
                     check(vkBeginCommandBuffer(command, &begin), "begin commands");
-                    upload(uniformMemory, constants.data(), sizeof(constants));
+                    upload(uniformMemory, constants.data(), constantFloats * sizeof(float));
                     if (draw.vertexStage.shader)
-                        upload(vertexUniformMemory, vertexConstants.data(), sizeof(vertexConstants));
+                        upload(vertexUniformMemory, vertexConstants.data(), vertexConstantFloats * sizeof(float));
                     upload(vertexMemory, draw.vertices.data(), draw.vertices.size_bytes());
+                    if (!draw.indices.empty())
+                        upload(indexMemory, draw.indices.data(), draw.indices.size_bytes());
                     retainedTarget = !depthOnly(draw) && !fullOverwrite && (targetSource ? targetSource == colorImage : targetMatchesReadback(draw));
                     if (!depthOnly(draw) && !fullOverwrite && !targetSource && !retainedTarget)
                         upload(targetMemory, draw.target.data(), draw.target.size());
@@ -1653,13 +1838,7 @@ void main() {
                             return value;
                         }
                     const auto bytes = texture.bytes() * 2;
-                    constexpr std::uint64_t budget = 512ull * 1024 * 1024;
-                    while (!context.textures.empty() && (context.textureBytes + bytes > budget || context.textures.size() >= 256)) {
-                        const auto oldest = std::min_element(context.textures.begin(), context.textures.end(),
-                                                             [](const auto &a, const auto &b) { return a.second.used < b.second.used; });
-                        context.textureBytes -= oldest->second.bytes;
-                        context.textures.erase(oldest); // In-flight bundles retain their own ownership.
-                    }
+                    context.evictTextures(bytes);
                     auto result = std::make_shared<CachedTexture>();
                     result->device = device;
                     result->owner = texture.snapshotOwner;
@@ -1701,15 +1880,7 @@ void main() {
                     result->bytes = bytes;
                     result->usage = context.textureMemory;
                     result->usage->bytes.fetch_add(bytes, std::memory_order_relaxed);
-                    if (context.retainedTextures.size() >= 4096) {
-                        std::erase_if(context.retainedTextures, [](const auto &entry) { return entry.second.expired(); });
-                        if (context.retainedTextures.size() >= 4096)
-                            context.retainedTextures.clear();
-                    }
-                    context.retainedTextures[key] = result;
-                    context.textures.emplace(std::move(key), Context::TextureEntry{result, bytes, ++context.textureClock});
-                    context.textureBytes += bytes;
-                    ++context.textureUploads;
+                    context.admitTexture(std::move(key), result);
                     return result;
                 }
 
@@ -1933,16 +2104,17 @@ void main() {
                 VkDeviceMemory allocate(const VkMemoryRequirements &req, VkMemoryPropertyFlags flags, VkMemoryPropertyFlags preferred = 0,
                                         bool track = true)
                 {
-                    // Explicit device-only buffers prefer the local heap. Keep
-                    // the established image placement until CPU consumers no
-                    // longer outweigh the raster gain from local images. The
-                    // diagnostic override measures that tradeoff separately.
+                    // Explicit device-only buffers prefer the local heap. On a discrete GPU, images in
+                    // the first compatible (system memory) type are rendered and sampled across PCIe:
+                    // MK8's character select spent ~75 ms per frame in fence waits. Integrated GPUs keep
+                    // the established placement, where local images regressed total frame delivery.
+                    // WEMU_NATIVE_DEVICE_LOCAL_IMAGES=0/1 overrides the choice.
                     if (!(flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) && !preferred) {
-                        static const bool localImages = [] {
+                        static const int localImages = [] {
                             const auto *value = std::getenv("WEMU_NATIVE_DEVICE_LOCAL_IMAGES");
-                            return value && value[0] == '1';
+                            return value ? int(value[0] == '1') : -1;
                         }();
-                        if (localImages)
+                        if (localImages == 1 || (localImages < 0 && context.discrete))
                             preferred = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
                     }
                     VkPhysicalDeviceMemoryProperties props{};
@@ -2014,12 +2186,16 @@ void main() {
                 VkImageView depthView{};
                 VkRenderPass pass{};
                 VkFramebuffer framebuffer{};
+                // Framebuffers for every color image this bundle has rendered into (see adopt()).
+                std::vector<std::pair<std::weak_ptr<ColorImage>, VkFramebuffer>> framebuffers;
+                VkExtent2D framebufferExtent{};
                 VkDescriptorSetLayout setLayout{};
                 VkDescriptorPool descriptorPool{};
                 VkDescriptorSet descriptor{};
                 VkPipelineLayout layout{};
                 VkPipeline pipeline{};
-                VkBuffer uniform{}, readback{}, vertexBuffer{}, targetBuffer{};
+                VkBuffer uniform{}, readback{}, vertexBuffer{}, targetBuffer{}, indexBuffer{};
+                VkDeviceMemory indexMemory{};
                 VkDeviceMemory uniformMemory{}, vertexUniformMemory{}, vertexMemory{}, targetMemory{};
                 VkBuffer vertexUniform{};
                 VkBuffer depthUpload{}, depthReadback{};
@@ -2049,12 +2225,1407 @@ void main() {
                 std::uint64_t retainedTextureBytes{};
         };
 
+
+        // Records draws whose attachments can stay resident into shared command buffers, instead of
+        // a cached bundle per draw shape (each owning target-sized images and buffers). Images this
+        // path creates (ColorImage::direct) are rendered in place: the replayer supersedes the
+        // previous version's ticket. Other resident images are copied once into a direct image.
+        // Constants, vertices, indices and private texels are suballocated from the open segment's
+        // upload buffer and descriptor sets from its pools. A segment is submitted every few dozen
+        // draws, and always before bundle work or readbacks, so queue order follows replay order.
+        class DirectRenderer : public std::enable_shared_from_this<DirectRenderer> {
+            public:
+                struct Inputs {
+                        const RasterDraw &draw;
+                        const SpirvModule &vertex, &fragment;
+                        const std::array<float, Latte::kStageConstantFloats> &constants, &vertexConstants;
+                        std::size_t constantFloats{}, vertexConstantFloats{};
+                        const std::vector<DrawResources::Texture> &textures;
+                        std::shared_ptr<ColorImage> targetSource;
+                        std::shared_ptr<const NativeImage> targetSnapshot;
+                        std::shared_ptr<ColorImage> depthSource;
+                        bool overwriteTarget{};
+                        // The replayer drops the previous versions' tickets, so their images can be
+                        // rendered in place. Verification keeps them and gets copies instead.
+                        bool supersedes{};
+                        // The target is a deferred clear (ClearedImage): clear the new image to this.
+                        std::optional<std::array<float, 4>> targetClear;
+                };
+
+                explicit DirectRenderer(std::shared_ptr<Context> owner) :
+                    contextOwner(std::move(owner)), context(*contextOwner), device(context.device)
+                {
+                    VkPhysicalDeviceProperties properties{};
+                    vkGetPhysicalDeviceProperties(context.physical, &properties);
+                    alignment = std::max<VkDeviceSize>(
+                            {256, properties.limits.minUniformBufferOffsetAlignment, properties.limits.optimalBufferCopyOffsetAlignment});
+                    static const unsigned configured = [] {
+                        const auto *value = std::getenv("WEMU_NATIVE_SEGMENT_DRAWS");
+                        return value ? std::max(1u, unsigned(std::strtoul(value, nullptr, 10))) : 48u;
+                    }();
+                    drawsPerSegment = configured;
+                }
+                DirectRenderer(const DirectRenderer &) = delete;
+                DirectRenderer &operator=(const DirectRenderer &) = delete;
+                ~DirectRenderer()
+                {
+                    try {
+                        submit();
+                    } catch (...) {
+                        // The failed segment was never queued; the drain below still waits for earlier work.
+                        segments[current].recording = false;
+                    }
+                    context.drainNoThrow();
+                    for (auto &segment: segments) {
+                        segment.retained.clear();
+                        for (auto pool: segment.descriptorPools)
+                            vkDestroyDescriptorPool(device, pool, nullptr);
+                        if (segment.pool)
+                            vkDestroyCommandPool(device, segment.pool, nullptr);
+                        destroyBuffer(segment.buffer, segment.memory);
+                    }
+                    if (readbackPool)
+                        vkDestroyCommandPool(device, readbackPool, nullptr);
+                    destroyBuffer(readbackBuffer, readbackMemory);
+                    destroyBuffer(scratchBuffer, scratchMemory);
+                    for (const auto &[key, entry]: framebuffers)
+                        vkDestroyFramebuffer(device, entry.framebuffer, nullptr);
+                    for (const auto &[key, pass]: passes)
+                        vkDestroyRenderPass(device, pass, nullptr);
+                    for (const auto &[key, sampler]: samplers)
+                        vkDestroySampler(device, sampler, nullptr);
+                    scratchTextures.clear();
+                }
+
+                // Queues everything recorded so far. Bundle submissions and readbacks call this first.
+                void submit()
+                {
+                    auto &segment = segments[current];
+                    if (!segment.recording)
+                        return;
+                    endPass(segment.command);
+                    check(vkEndCommandBuffer(segment.command), "end direct commands");
+                    segment.fence = context.enqueue(segment.command);
+                    context.flush();
+                    segment.recording = false;
+                    current = (current + 1) % segments.size();
+                }
+
+                std::uint64_t draws() const { return renderedDraws; }
+                std::uint64_t passMerges() const { return mergedDraws; }
+
+                RasterResult render(const Inputs &in)
+                {
+                    const auto &draw = in.draw;
+                    const bool hasColor = !depthOnly(draw);
+                    const bool colorInPlace = hasColor && in.targetSource && in.targetSource->direct && in.supersedes;
+                    const bool colorCopy = hasColor && in.targetSource && !colorInPlace;
+                    const bool colorUpload = hasColor && !in.targetSource && !in.overwriteTarget;
+                    const bool depthInPlace = draw.depth.test && in.depthSource && in.depthSource->direct && (in.supersedes || !draw.depth.write);
+                    const bool depthCopy = draw.depth.test && in.depthSource && !depthInPlace;
+                    const bool depthUpload = draw.depth.test && !in.depthSource;
+
+                    // Classify textures before recording, so the whole draw fits in one segment.
+                    enum class Source : std::uint8_t { Shared, Direct, Copy, Private };
+                    std::vector<Source> sources(in.textures.size());
+                    std::vector<std::shared_ptr<CachedTexture>> shared(in.textures.size());
+                    VkDeviceSize need = 0;
+                    const auto reserve = [&](VkDeviceSize bytes) { need += (bytes + alignment - 1) / alignment * alignment; };
+                    reserve(sizeof(in.constants));
+                    if (draw.vertexStage.shader)
+                        reserve(sizeof(in.vertexConstants));
+                    const bool compact = draw.vertexStage.attributeStride != 0;
+                    const auto vertexBytes = compact ? draw.vertexStage.attributes.size_bytes() : draw.vertices.size_bytes();
+                    const void *vertexData = compact ? static_cast<const void *>(draw.vertexStage.attributes.data()) : draw.vertices.data();
+                    // Owned compact arrays live in the vertex arena while their owner does: later
+                    // draws bind that copy instead of uploading the same arrays again.
+                    std::shared_ptr<VertexAllocation> residentVertices;
+                    VkDeviceSize residentIndexOffset{};
+                    const auto *vertexOwner = compact ? draw.vertexStage.attributesOwner.get() : nullptr;
+                    if (vertexOwner)
+                        if (const auto found = vertexCache.find(vertexOwner); found != vertexCache.end()) {
+                            if (!found->second.owner.expired() && found->second.attributeBytes == vertexBytes &&
+                                found->second.indexBytes == draw.indices.size_bytes()) {
+                                found->second.used = ++vertexClock;
+                                residentVertices = found->second.allocation;
+                                residentIndexOffset = found->second.indexOffset;
+                                ++context.residentVertexHits;
+                            } else {
+                                vertexCacheBytes -= found->second.allocation->bytes;
+                                vertexCache.erase(found);
+                            }
+                        }
+                    if (!residentVertices) {
+                        reserve(vertexBytes);
+                        reserve(draw.indices.size_bytes());
+                    }
+                    if (compact)
+                        reserve(sizeof(compactAttributeDefaults));
+                    if (colorUpload && !in.targetClear)
+                        reserve(draw.target.size());
+                    if (depthUpload && !draw.depth.clear)
+                        reserve(draw.depth.target.size_bytes());
+                    static const bool directTextures = [] {
+                        const auto *value = std::getenv("WEMU_NATIVE_DIRECT_TEXTURES");
+                        return !value || value[0] != '0';
+                    }();
+                    for (std::size_t i = 0; i < in.textures.size(); ++i) {
+                        const auto &texture = in.textures[i];
+                        if (!texture.renderedLayers.empty()) {
+                            sources[i] = Source::Copy;
+                            for (const auto bytes: texture.layerBytes)
+                                reserve(bytes.size());
+                            continue;
+                        }
+                        if (texture.rendered) {
+                            // Sampling an attachment of this draw would be a feedback loop: copy it first.
+                            const bool attached = (hasColor && texture.rendered == in.targetSource) || texture.rendered == in.depthSource;
+                            sources[i] = directTextures && !attached && !texture.array && !texture.cube && texture.mips.empty() &&
+                                                         texture.rendered->format == texture.format
+                                                 ? Source::Direct
+                                                 : Source::Copy;
+                            continue;
+                        }
+                        if (texture.snapshotOwner && !texture.snapshot.empty()) {
+                            sources[i] = Source::Shared;
+                            shared[i] = findSharedTexture(texture);
+                            if (!shared[i])
+                                reserve(texture.bytes());
+                            continue;
+                        }
+                        sources[i] = Source::Private;
+                        reserve(texture.bytes());
+                    }
+
+                    // A draw recording no transfer or layout change, into the attachments of the render
+                    // pass left open, continues it: a pass and two full barriers per draw were most of
+                    // the driver's time in a MK8 race (4500 draws per frame).
+                    bool passFree = (colorInPlace || !hasColor) && (depthInPlace || !draw.depth.test) && !(vertexOwner && !residentVertices);
+                    for (std::size_t i = 0; passFree && i < sources.size(); ++i)
+                        passFree = sources[i] == Source::Shared && shared[i];
+                    auto &segment = open(need);
+                    const auto command = segment.command;
+                    const auto extent = attachmentExtent(draw);
+                    const bool continuesPass = passFree && openPass && openPass->color == (hasColor ? in.targetSource.get() : nullptr) &&
+                                               openPass->depth == (draw.depth.test ? in.depthSource.get() : nullptr) &&
+                                               openPass->extent.width == extent.width && openPass->extent.height == extent.height;
+                    if (!continuesPass)
+                        endPass(command);
+                    const auto pushUpload = [&](const void *data, std::size_t bytes, std::size_t reserved) {
+                        const auto offset = segment.used;
+                        if (bytes)
+                            std::memcpy(segment.mapped + offset, data, bytes);
+                        segment.used += (std::max(bytes, reserved) + alignment - 1) / alignment * alignment;
+                        return offset;
+                    };
+                    const auto constantsOffset = pushUpload(in.constants.data(), in.constantFloats * sizeof(float), sizeof(in.constants));
+                    const auto vertexConstantsOffset =
+                            draw.vertexStage.shader
+                                    ? pushUpload(in.vertexConstants.data(), in.vertexConstantFloats * sizeof(float), sizeof(in.vertexConstants))
+                                    : VkDeviceSize{};
+                    const auto verticesOffset = residentVertices ? VkDeviceSize{} : pushUpload(vertexData, vertexBytes, 0);
+                    const auto defaultsOffset =
+                            compact ? pushUpload(compactAttributeDefaults.data(), sizeof(compactAttributeDefaults), 0) : VkDeviceSize{};
+                    const auto indicesOffset =
+                            residentVertices || draw.indices.empty() ? VkDeviceSize{} : pushUpload(draw.indices.data(), draw.indices.size_bytes(), 0);
+                    bool copiedVertices = false;
+                    if (vertexOwner && !residentVertices) {
+                        const auto indexOffset = (vertexBytes + alignment - 1) / alignment * alignment;
+                        if (auto allocation = allocateVertices(indexOffset + draw.indices.size_bytes())) {
+                            const VkBufferCopy copies[]{{verticesOffset, allocation->offset, vertexBytes},
+                                                        {indicesOffset, allocation->offset + indexOffset, draw.indices.size_bytes()}};
+                            vkCmdCopyBuffer(command, segment.buffer, allocation->buffer, draw.indices.empty() ? 1 : 2, copies);
+                            copiedVertices = true;
+                            vertexCacheBytes += allocation->bytes;
+                            vertexCache[vertexOwner] = {draw.vertexStage.attributesOwner, allocation,   indexOffset, vertexBytes,
+                                                        draw.indices.size_bytes(),        ++vertexClock};
+                            residentVertices = std::move(allocation);
+                            residentIndexOffset = indexOffset;
+                        }
+                    }
+                    if (residentVertices)
+                        segment.retained.push_back(residentVertices);
+
+                    // Textures first: their transfers must precede the render pass.
+                    std::vector<VkDescriptorImageInfo> imageInfos(in.textures.size());
+                    std::vector<std::shared_ptr<ColorImage>> sampled;
+                    for (std::size_t i = 0; i < in.textures.size(); ++i) {
+                        const auto &texture = in.textures[i];
+                        imageInfos[i].sampler = sampler(texture);
+                        imageInfos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                        switch (sources[i]) {
+                            case Source::Shared:
+                                if (!shared[i])
+                                    shared[i] = createSharedTexture(texture, segment, pushUpload);
+                                imageInfos[i].imageView = shared[i]->view;
+                                segment.retained.push_back(shared[i]);
+                                break;
+                            case Source::Direct:
+                                imageInfos[i].imageView = texture.rendered->samplingView(texture.components);
+                                if (std::find(sampled.begin(), sampled.end(), texture.rendered) == sampled.end())
+                                    sampled.push_back(texture.rendered);
+                                segment.retained.push_back(texture.rendered);
+                                ++context.directTextureBindings;
+                                context.directTextureBytes += texture.bytes();
+                                break;
+                            case Source::Copy:
+                            case Source::Private: {
+                                // Every draw sampling a rendered array, cube or mip chain assembled it
+                                // again: reuse the copy while its sources keep their versions.
+                                const auto assembled = sources[i] == Source::Copy ? assembledKey(texture) : std::nullopt;
+                                if (assembled)
+                                    if (const auto found = assembledTextures.find(*assembled);
+                                        found != assembledTextures.end() &&
+                                        std::ranges::none_of(found->second.sources, [](const auto &source) { return source.expired(); })) {
+                                        found->second.used = ++assembledClock;
+                                        imageInfos[i].imageView = found->second.image->view;
+                                        segment.retained.push_back(found->second.image);
+                                        ++context.assembledTextureHits;
+                                        break;
+                                    }
+                                auto scratch = scratchTexture(texture);
+                                if (sources[i] == Source::Copy)
+                                    copyRendered(command, texture, *scratch, [&](std::span<const std::uint8_t> bytes) {
+                                        return std::pair{segment.buffer, pushUpload(bytes.data(), bytes.size(), 0)};
+                                    });
+                                else {
+                                    const auto offset = pushUpload(nullptr, 0, texture.bytes());
+                                    texture.copyTo(segment.mapped + offset);
+                                    uploadTexels(command, texture, scratch->image, segment.buffer, offset, true);
+                                }
+                                imageInfos[i].imageView = scratch->view;
+                                if (assembled) {
+                                    if (assembledTextures.size() >= 64) {
+                                        auto oldest = assembledTextures.begin();
+                                        for (auto it = assembledTextures.begin(); it != assembledTextures.end(); ++it)
+                                            if (it->second.used < oldest->second.used)
+                                                oldest = it;
+                                        assembledTextures.erase(oldest);
+                                    }
+                                    auto &entry = assembledTextures[*assembled];
+                                    entry.sources.clear();
+                                    if (texture.rendered)
+                                        entry.sources.push_back(texture.rendered);
+                                    entry.sources.insert(entry.sources.end(), texture.renderedLayers.begin(), texture.renderedLayers.end());
+                                    entry.image = scratch;
+                                    entry.used = ++assembledClock;
+                                }
+                                segment.retained.push_back(std::move(scratch));
+                                if (sources[i] == Source::Copy) {
+                                    if (texture.rendered)
+                                        segment.retained.push_back(texture.rendered);
+                                    for (const auto &layer: texture.renderedLayers)
+                                        if (layer)
+                                            segment.retained.push_back(layer);
+                                    ++context.residentTextureCopies;
+                                }
+                                break;
+                            }
+                        }
+                    }
+
+                    // Attachments: render in place, or start a direct image from a copy or CPU bytes.
+                    std::shared_ptr<ColorImage> color, depth;
+                    VkImageLayout colorLayout = VK_IMAGE_LAYOUT_UNDEFINED, depthLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+                    if (hasColor) {
+                        if (colorInPlace) {
+                            color = in.targetSource;
+                            colorLayout = color->initialized ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED;
+                        } else {
+                            color = createImage(draw.width, draw.height, colorVkFormat(draw.colorFormat), false);
+                            if (colorCopy) {
+                                copyImage(command, *in.targetSource, *color, false);
+                                segment.retained.push_back(in.targetSource);
+                                ++context.targetCopyTransfers;
+                                colorLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                            } else if (colorUpload && in.targetClear) {
+                                clearImage(command, *color, *in.targetClear);
+                                ++context.targetClears;
+                                colorLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                            } else if (colorUpload) {
+                                const auto offset = pushUpload(draw.target.data(), draw.target.size(), 0);
+                                uploadImage(command, *color, segment.buffer, offset, draw.pitch, false);
+                                ++context.targetUploadTransfers;
+                                colorLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                            } else
+                                ++context.fullOverwriteDraws;
+                        }
+                    }
+                    if (draw.depth.test) {
+                        if (depthInPlace) {
+                            depth = in.depthSource;
+                            depthLayout = depth->initialized ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED;
+                        } else {
+                            depth = createImage(draw.depth.width, draw.depth.height, depthVkFormat(draw.depth.format), true);
+                            depth->depthFormat = draw.depth.format;
+                            if (depthCopy) {
+                                copyImage(command, *in.depthSource, *depth, true);
+                                segment.retained.push_back(in.depthSource);
+                            } else if (draw.depth.clear) {
+                                clearDepthImage(command, *depth, *draw.depth.clear);
+                                ++context.depthClears;
+                            } else {
+                                const auto offset = pushUpload(draw.depth.target.data(), draw.depth.target.size_bytes(), 0);
+                                uploadImage(command, *depth, segment.buffer, offset, draw.depth.pitch, true);
+                            }
+                            depthLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                        }
+                    }
+                    std::vector<VkImageMemoryBarrier> barriers;
+                    const auto transition = [&](const ColorImage &image, bool depthAspect, VkImageLayout from, VkImageLayout to) {
+                        VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+                        barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                        barrier.image = image.image;
+                        barrier.subresourceRange = {VkImageAspectFlags(depthAspect ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT), 0, 1, 0,
+                                                    1};
+                        barrier.oldLayout = from;
+                        barrier.newLayout = to;
+                        barrier.srcAccessMask = from == VK_IMAGE_LAYOUT_UNDEFINED ? 0 : VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT;
+                        barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+                        barriers.push_back(barrier);
+                    };
+                    if (color)
+                        transition(*color, false, colorLayout, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+                    if (depth)
+                        transition(*depth, true, depthLayout, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+                    for (const auto &image: sampled)
+                        transition(*image, false, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                    const VkMemoryBarrier vertexCopy{VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr, VK_ACCESS_TRANSFER_WRITE_BIT,
+                                                     VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_INDEX_READ_BIT};
+                    if (!continuesPass)
+                        vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0,
+                                             copiedVertices ? 1 : 0, &vertexCopy, 0, nullptr, unsigned(barriers.size()), barriers.data());
+
+                    const auto pass = renderPass(hasColor ? colorVkFormat(draw.colorFormat) : VK_FORMAT_UNDEFINED,
+                                                 draw.depth.test ? depthVkFormat(draw.depth.format) : VK_FORMAT_UNDEFINED);
+                    Context::PipelineKey key{in.vertex.id, in.fragment.id, {}, draw.channelMask};
+                    key.blend = blendKey(draw.blend);
+                    key.depth = depthKey(draw.depth);
+                    key.depthBias = draw.depthBias.enabled;
+                    key.topology = unsigned(draw.topology);
+                    key.colorFormat = unsigned(draw.colorFormat);
+                    key.cull = unsigned(draw.cullFront) | (unsigned(draw.cullBack) << 1) | (unsigned(draw.frontFaceClockwise) << 2);
+                    key.attributeStride = draw.vertexStage.attributeStride;
+                    std::vector<unsigned> textureBindings;
+                    for (const auto &texture: in.textures) {
+                        key.bindings.push_back(texture.binding);
+                        textureBindings.push_back(texture.binding);
+                    }
+                    const auto &pipeline = context.pipelineFor(key, in.vertex, in.fragment, draw, textureBindings, pass);
+
+                    const auto descriptor = allocateDescriptor(segment, pipeline.setLayout);
+                    std::vector<VkWriteDescriptorSet> writes;
+                    const VkDescriptorBufferInfo constantsInfo{segment.buffer, constantsOffset, sizeof(in.constants)};
+                    const VkDescriptorBufferInfo vertexConstantsInfo{segment.buffer, vertexConstantsOffset, sizeof(in.vertexConstants)};
+                    VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+                    write.dstSet = descriptor;
+                    write.descriptorCount = 1;
+                    write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+                    write.pBufferInfo = &constantsInfo;
+                    writes.push_back(write);
+                    if (draw.vertexStage.shader) {
+                        write.dstBinding = 17;
+                        write.pBufferInfo = &vertexConstantsInfo;
+                        writes.push_back(write);
+                    }
+                    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                    write.pBufferInfo = nullptr;
+                    for (std::size_t i = 0; i < in.textures.size(); ++i) {
+                        write.dstBinding = in.textures[i].binding;
+                        write.pImageInfo = &imageInfos[i];
+                        writes.push_back(write);
+                    }
+                    vkUpdateDescriptorSets(device, unsigned(writes.size()), writes.data(), 0, nullptr);
+
+                    if (continuesPass)
+                        ++mergedDraws;
+                    else {
+                        VkRenderPassBeginInfo begin{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+                        begin.renderPass = pass;
+                        begin.renderArea.extent = extent;
+                        begin.framebuffer = framebuffer(pass, color, depth, extent);
+                        vkCmdBeginRenderPass(command, &begin, VK_SUBPASS_CONTENTS_INLINE);
+                        openPass = OpenPass{color.get(), depth.get(), extent};
+                    }
+                    vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipeline);
+                    const VkViewport viewport{0, 0, float(rasterWidth(draw)), float(rasterHeight(draw)), 0, 1};
+                    const auto scissor = clippedScissor(draw);
+                    vkCmdSetViewport(command, 0, 1, &viewport);
+                    vkCmdSetScissor(command, 0, 1, &scissor);
+                    const bool floatBias = draw.depthBias.enabled && draw.depth.format == DepthFormat::Float32;
+                    vkCmdSetDepthBias(command, floatBias ? draw.depthBias.constant : 0.f, floatBias ? draw.depthBias.clamp : 0.f,
+                                      floatBias ? draw.depthBias.slope : 0.f);
+                    vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.layout, 0, 1, &descriptor, 0, nullptr);
+                    struct VertexPush {
+                            float scale[3], unused;
+                            float window[4], depth[2], padding[2];
+                            std::int32_t inputs[16];
+                            float bias[4];
+                    } push{};
+                    static_assert(sizeof(push) == 128);
+                    push.scale[0] = 2.0f / float(rasterWidth(draw));
+                    push.scale[1] = 2.0f / float(rasterHeight(draw));
+                    push.scale[2] = draw.depth.test ? 1.f : 0.f;
+                    push.window[0] = draw.vertexStage.viewport[0];
+                    push.window[1] = draw.vertexStage.viewport[1];
+                    push.window[2] = draw.vertexStage.viewport[2] * .5f;
+                    push.window[3] = draw.vertexStage.viewport[3] * .5f;
+                    push.depth[0] = draw.vertexStage.viewport[4];
+                    push.depth[1] = draw.vertexStage.viewport[5];
+                    std::fill(std::begin(push.inputs), std::end(push.inputs), -1);
+                    std::copy_n(draw.vertexStage.inputParams.begin(), draw.vertexStage.inputCount, push.inputs);
+                    if (draw.depthBias.enabled && draw.depth.format != DepthFormat::Float32) {
+                        push.bias[0] = draw.depthBias.constant / (draw.depth.format == DepthFormat::UNorm16 ? 65535.f : 16777215.f);
+                        push.bias[1] = draw.depthBias.slope;
+                        push.bias[2] = draw.depthBias.clamp;
+                    }
+                    vkCmdPushConstants(command, pipeline.layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
+                    const VkBuffer vertexBuffers[]{residentVertices ? residentVertices->buffer : segment.buffer, segment.buffer};
+                    const VkDeviceSize vertexOffsets[]{residentVertices ? residentVertices->offset : verticesOffset, defaultsOffset};
+                    vkCmdBindVertexBuffers(command, 0, compact ? 2 : 1, vertexBuffers, vertexOffsets);
+                    if (draw.indices.empty())
+                        vkCmdDraw(command, unsigned(vertexCount(draw)), 1, 0, 0);
+                    else {
+                        if (residentVertices)
+                            vkCmdBindIndexBuffer(command, residentVertices->buffer, residentVertices->offset + residentIndexOffset,
+                                                 VK_INDEX_TYPE_UINT32);
+                        else
+                            vkCmdBindIndexBuffer(command, segment.buffer, indicesOffset, VK_INDEX_TYPE_UINT32);
+                        vkCmdDrawIndexed(command, unsigned(draw.indices.size()), 1, 0, 0, 0);
+                    }
+                    // The pass stays open for the next draw, unless attachments of earlier draws this
+                    // one sampled must return to TRANSFER_SRC.
+                    if (!sampled.empty())
+                        endPass(command);
+                    barriers.clear();
+                    for (const auto &image: sampled)
+                        transition(*image, false, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+                    if (!barriers.empty())
+                        vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0,
+                                             nullptr, unsigned(barriers.size()), barriers.data());
+
+                    RasterResult result;
+                    if (depth) {
+                        depth->initialized = true;
+                        segment.retained.push_back(depth);
+                        // A read-only draw that had to upload or copy its depth still returns the new
+                        // image, so later draws find the surface resident instead of uploading again.
+                        if (draw.depth.write || !depthInPlace) {
+                            if (draw.depth.write)
+                                ++depth->version;
+                            const auto padding = depthPadding(draw.depth);
+                            result.depthReadback = std::make_shared<RasterReadback>(
+                                    draw.depth.target.size_bytes(),
+                                    [self = shared_from_this(), image = depth, width = draw.depth.width, height = draw.depth.height,
+                                     pitch = draw.depth.pitch, padding] { return self->read(image, true, width, height, pitch, padding); },
+                                    std::make_shared<NativeImage>(depth, draw.depth.pitch, padding));
+                        }
+                    }
+                    if (++segment.draws >= drawsPerSegment)
+                        submit();
+                    ++renderedDraws;
+                    if (!color) {
+                        // The guest color binding is unused: preserve its exact version.
+                        result.readback = draw.renderedTarget;
+                        if (!result.readback)
+                            result.unchangedTarget = draw.target.size();
+                        return result;
+                    }
+                    color->initialized = true;
+                    ++color->version;
+                    segment.retained.push_back(color);
+                    std::shared_ptr<const std::vector<std::uint8_t>> padding;
+                    if (in.targetSnapshot)
+                        padding = in.targetSnapshot->padding;
+                    else if (draw.pitch > draw.width) {
+                        const auto elementBytes = colorElementBytes(draw.colorFormat);
+                        const auto rowBytes = std::size_t(draw.pitch - draw.width) * elementBytes;
+                        auto snapshot = std::make_shared<std::vector<std::uint8_t>>(rowBytes * draw.height);
+                        for (unsigned y = 0; y < draw.height; ++y)
+                            std::memcpy(snapshot->data() + y * rowBytes,
+                                        draw.target.data() + (std::size_t(y) * draw.pitch + draw.width) * elementBytes, rowBytes);
+                        padding = std::move(snapshot);
+                    }
+                    result.readback = std::make_shared<RasterReadback>(
+                            draw.target.size(),
+                            [self = shared_from_this(), image = color, width = draw.width, height = draw.height, pitch = draw.pitch, padding] {
+                                return self->read(image, false, width, height, pitch, padding);
+                            },
+                            std::make_shared<NativeImage>(color, draw.pitch, padding));
+                    return result;
+                }
+
+            private:
+                // Device-local blocks for vertex arrays reused across draws. A range returns to its
+                // block once neither the cache nor an in-flight segment refers to it.
+                struct VertexArena {
+                        struct Block {
+                                VkBuffer buffer{};
+                                VkDeviceMemory memory{};
+                                VkDeviceSize size{};
+                                std::map<VkDeviceSize, VkDeviceSize> free; // offset -> bytes
+                        };
+                        VkDevice device{};
+                        std::vector<Block> blocks;
+                        std::mutex mutex;
+                        ~VertexArena()
+                        {
+                            for (auto &block: blocks) {
+                                vkDestroyBuffer(device, block.buffer, nullptr);
+                                vkFreeMemory(device, block.memory, nullptr);
+                            }
+                        }
+                        void release(std::size_t index, VkDeviceSize offset, VkDeviceSize bytes)
+                        {
+                            std::lock_guard lock(mutex);
+                            auto &free = blocks[index].free;
+                            auto next = free.lower_bound(offset);
+                            if (next != free.begin())
+                                if (const auto previous = std::prev(next); previous->first + previous->second == offset) {
+                                    offset = previous->first;
+                                    bytes += previous->second;
+                                    free.erase(previous);
+                                }
+                            if (next != free.end() && offset + bytes == next->first) {
+                                bytes += next->second;
+                                free.erase(next);
+                            }
+                            free.emplace(offset, bytes);
+                        }
+                };
+                struct VertexAllocation {
+                        std::shared_ptr<VertexArena> arena;
+                        std::size_t block{};
+                        VkDeviceSize offset{}, bytes{};
+                        VkBuffer buffer{};
+                        VertexAllocation(std::shared_ptr<VertexArena> owner, std::size_t index, VkDeviceSize start, VkDeviceSize size,
+                                         VkBuffer target) : arena(std::move(owner)), block(index), offset(start), bytes(size), buffer(target)
+                        {
+                        }
+                        VertexAllocation(const VertexAllocation &) = delete;
+                        VertexAllocation &operator=(const VertexAllocation &) = delete;
+                        ~VertexAllocation() { arena->release(block, offset, bytes); }
+                };
+                struct CachedVertices {
+                        std::weak_ptr<const void> owner;
+                        std::shared_ptr<VertexAllocation> allocation;
+                        VkDeviceSize indexOffset{}, attributeBytes{}, indexBytes{};
+                        std::uint64_t used{};
+                };
+                // Null when the arena is full, so the draw uploads its arrays as before.
+                std::shared_ptr<VertexAllocation> allocateVertices(VkDeviceSize bytes)
+                {
+                    constexpr VkDeviceSize cacheBudget = 160ull << 20, arenaBudget = 256ull << 20, blockBytes = 64ull << 20;
+                    bytes = (bytes + alignment - 1) / alignment * alignment;
+                    if (bytes > blockBytes)
+                        return {};
+                    if (vertexCacheBytes + bytes > cacheBudget || vertexCache.size() >= 4096) {
+                        // Dead owners first, then least recently used arrays down to three quarters.
+                        std::erase_if(vertexCache, [&](const auto &entry) {
+                            if (!entry.second.owner.expired())
+                                return false;
+                            vertexCacheBytes -= entry.second.allocation->bytes;
+                            return true;
+                        });
+                        std::vector<std::pair<std::uint64_t, const void *>> order;
+                        order.reserve(vertexCache.size());
+                        for (const auto &[owner, cached]: vertexCache)
+                            order.emplace_back(cached.used, owner);
+                        std::ranges::sort(order);
+                        for (const auto &[used, owner]: order) {
+                            if (vertexCacheBytes + bytes <= cacheBudget / 4 * 3 && vertexCache.size() < 3072)
+                                break;
+                            const auto it = vertexCache.find(owner);
+                            vertexCacheBytes -= it->second.allocation->bytes;
+                            vertexCache.erase(it);
+                        }
+                    }
+                    if (!vertexArena) {
+                        vertexArena = std::make_shared<VertexArena>();
+                        vertexArena->device = device;
+                    }
+                    std::lock_guard lock(vertexArena->mutex);
+                    for (std::size_t index = 0; index < vertexArena->blocks.size(); ++index) {
+                        auto &block = vertexArena->blocks[index];
+                        for (auto it = block.free.begin(); it != block.free.end(); ++it)
+                            if (it->second >= bytes) {
+                                const auto [offset, size] = *it;
+                                block.free.erase(it);
+                                if (size > bytes)
+                                    block.free.emplace(offset + bytes, size - bytes);
+                                return std::make_shared<VertexAllocation>(vertexArena, index, offset, bytes, block.buffer);
+                            }
+                    }
+                    if ((vertexArena->blocks.size() + 1) * blockBytes > arenaBudget)
+                        return {};
+                    VertexArena::Block block;
+                    block.size = blockBytes;
+                    block.buffer = createBuffer(
+                            blockBytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                            block.memory, 0, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+                    block.free.emplace(bytes, blockBytes - bytes);
+                    vertexArena->blocks.push_back(std::move(block));
+                    return std::make_shared<VertexAllocation>(vertexArena, vertexArena->blocks.size() - 1, 0, bytes,
+                                                              vertexArena->blocks.back().buffer);
+                }
+                struct Segment {
+                        VkCommandPool pool{};
+                        VkCommandBuffer command{};
+                        std::shared_ptr<Context::BatchFence> fence;
+                        std::vector<VkDescriptorPool> descriptorPools;
+                        std::size_t descriptorPool{};
+                        VkBuffer buffer{};
+                        VkDeviceMemory memory{};
+                        std::uint8_t *mapped{};
+                        VkDeviceSize capacity{}, used{};
+                        std::vector<std::shared_ptr<const void>> retained; // released once the fence completes
+                        unsigned draws{};
+                        bool recording{};
+                };
+                struct ScratchTexture {
+                        VkDevice device{};
+                        VkImage image{};
+                        VkImageView view{};
+                        VkDeviceMemory memory{};
+                        ~ScratchTexture()
+                        {
+                            if (view)
+                                vkDestroyImageView(device, view, nullptr);
+                            if (image)
+                                vkDestroyImage(device, image, nullptr);
+                            if (memory)
+                                vkFreeMemory(device, memory, nullptr);
+                        }
+                };
+                struct FramebufferEntry {
+                        std::weak_ptr<ColorImage> color, depth;
+                        VkFramebuffer framebuffer{};
+                };
+
+                Segment &open(VkDeviceSize need)
+                {
+                    if (segments[current].recording && segments[current].used + need <= segments[current].capacity)
+                        return segments[current];
+                    submit();
+                    auto &segment = segments[current];
+                    context.wait(segment.fence);
+                    segment.fence.reset();
+                    segment.retained.clear();
+                    for (auto pool: segment.descriptorPools)
+                        check(vkResetDescriptorPool(device, pool, 0), "reset direct descriptors");
+                    segment.descriptorPool = 0;
+                    if (!segment.pool) {
+                        VkCommandPoolCreateInfo info{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+                        info.queueFamilyIndex = context.family;
+                        check(vkCreateCommandPool(device, &info, nullptr, &segment.pool), "create direct command pool");
+                        VkCommandBufferAllocateInfo allocate{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+                        allocate.commandPool = segment.pool;
+                        allocate.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+                        allocate.commandBufferCount = 1;
+                        check(vkAllocateCommandBuffers(device, &allocate, &segment.command), "allocate direct commands");
+                    } else
+                        check(vkResetCommandPool(device, segment.pool, 0), "reset direct commands");
+                    if (segment.capacity < need) {
+                        destroyBuffer(segment.buffer, segment.memory);
+                        segment.capacity = std::max<VkDeviceSize>(need, VkDeviceSize{32} << 20);
+                        segment.buffer = createBuffer(segment.capacity,
+                                                      VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
+                                                              VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                                      segment.memory, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 0);
+                        void *mapped = nullptr;
+                        check(vkMapMemory(device, segment.memory, 0, VK_WHOLE_SIZE, 0, &mapped), "map direct uploads");
+                        segment.mapped = static_cast<std::uint8_t *>(mapped);
+                    }
+                    segment.used = 0;
+                    segment.draws = 0;
+                    VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+                    begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+                    check(vkBeginCommandBuffer(segment.command, &begin), "begin direct commands");
+                    segment.recording = true;
+                    return segment;
+                }
+
+                VkDescriptorSet allocateDescriptor(Segment &segment, VkDescriptorSetLayout layout)
+                {
+                    for (;; ++segment.descriptorPool) {
+                        if (segment.descriptorPool == segment.descriptorPools.size()) {
+                            const VkDescriptorPoolSize sizes[]{{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 512},
+                                                               {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2048}};
+                            VkDescriptorPoolCreateInfo info{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+                            info.maxSets = 256;
+                            info.poolSizeCount = 2;
+                            info.pPoolSizes = sizes;
+                            VkDescriptorPool pool{};
+                            check(vkCreateDescriptorPool(device, &info, nullptr, &pool), "create direct descriptors");
+                            segment.descriptorPools.push_back(pool);
+                        }
+                        VkDescriptorSetAllocateInfo info{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+                        info.descriptorPool = segment.descriptorPools[segment.descriptorPool];
+                        info.descriptorSetCount = 1;
+                        info.pSetLayouts = &layout;
+                        VkDescriptorSet set{};
+                        const auto result = vkAllocateDescriptorSets(device, &info, &set);
+                        if (result == VK_SUCCESS)
+                            return set;
+                        if (result != VK_ERROR_OUT_OF_POOL_MEMORY && result != VK_ERROR_FRAGMENTED_POOL)
+                            check(result, "allocate direct descriptor");
+                    }
+                }
+
+                VkDeviceMemory allocate(const VkMemoryRequirements &requirements, VkMemoryPropertyFlags required, VkMemoryPropertyFlags preferred)
+                {
+                    VkPhysicalDeviceMemoryProperties properties{};
+                    vkGetPhysicalDeviceMemoryProperties(context.physical, &properties);
+                    for (unsigned pass = 0; pass < 2; ++pass) {
+                        const auto flags = required | (pass ? 0 : preferred);
+                        for (unsigned i = 0; i < properties.memoryTypeCount; ++i) {
+                            if (!(requirements.memoryTypeBits & (1u << i)) || (properties.memoryTypes[i].propertyFlags & flags) != flags)
+                                continue;
+                            VkMemoryAllocateInfo info{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+                            info.allocationSize = requirements.size;
+                            info.memoryTypeIndex = i;
+                            VkDeviceMemory memory{};
+                            check(vkAllocateMemory(device, &info, nullptr, &memory), "allocate direct memory");
+                            return memory;
+                        }
+                    }
+                    throw std::runtime_error("No suitable Vulkan memory type");
+                }
+                VkMemoryPropertyFlags imagePlacement() const
+                {
+                    // Same placement policy as bundle images (see DrawResources::allocate).
+                    static const int localImages = [] {
+                        const auto *value = std::getenv("WEMU_NATIVE_DEVICE_LOCAL_IMAGES");
+                        return value ? int(value[0] == '1') : -1;
+                    }();
+                    return localImages == 1 || (localImages < 0 && context.discrete) ? VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT : 0;
+                }
+                VkBuffer createBuffer(VkDeviceSize bytes, VkBufferUsageFlags usage, VkDeviceMemory &memory, VkMemoryPropertyFlags required,
+                                      VkMemoryPropertyFlags preferred)
+                {
+                    VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+                    info.size = bytes;
+                    info.usage = usage;
+                    VkBuffer buffer{};
+                    check(vkCreateBuffer(device, &info, nullptr, &buffer), "create direct buffer");
+                    VkMemoryRequirements requirements{};
+                    vkGetBufferMemoryRequirements(device, buffer, &requirements);
+                    try {
+                        memory = allocate(requirements, required, preferred);
+                        check(vkBindBufferMemory(device, buffer, memory, 0), "bind direct buffer");
+                    } catch (...) {
+                        vkDestroyBuffer(device, buffer, nullptr);
+                        if (memory)
+                            vkFreeMemory(device, memory, nullptr);
+                        memory = {};
+                        throw;
+                    }
+                    return buffer;
+                }
+                void destroyBuffer(VkBuffer &buffer, VkDeviceMemory &memory)
+                {
+                    if (buffer)
+                        vkDestroyBuffer(device, buffer, nullptr);
+                    if (memory)
+                        vkFreeMemory(device, memory, nullptr);
+                    buffer = {};
+                    memory = {};
+                }
+
+                std::shared_ptr<ColorImage> createImage(unsigned width, unsigned height, VkFormat format, bool depthAspect)
+                {
+                    auto image = std::make_shared<ColorImage>();
+                    image->context = contextOwner;
+                    image->width = width;
+                    image->height = height;
+                    image->format = format;
+                    image->direct = true;
+                    VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+                    info.imageType = VK_IMAGE_TYPE_2D;
+                    info.format = format;
+                    info.extent = {width, height, 1};
+                    info.mipLevels = info.arrayLayers = 1;
+                    info.samples = VK_SAMPLE_COUNT_1_BIT;
+                    info.tiling = VK_IMAGE_TILING_OPTIMAL;
+                    info.usage = depthAspect ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                                                       VK_IMAGE_USAGE_TRANSFER_DST_BIT
+                                             : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                                                       VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+                    check(vkCreateImage(device, &info, nullptr, &image->image), "create direct image");
+                    VkMemoryRequirements requirements{};
+                    vkGetImageMemoryRequirements(device, image->image, &requirements);
+                    image->memory = allocate(requirements, 0, imagePlacement());
+                    check(vkBindImageMemory(device, image->image, image->memory, 0), "bind direct image");
+                    VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+                    view.image = image->image;
+                    view.viewType = VK_IMAGE_VIEW_TYPE_2D;
+                    view.format = format;
+                    view.subresourceRange = {VkImageAspectFlags(depthAspect ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT), 0, 1, 0, 1};
+                    check(vkCreateImageView(device, &view, nullptr, &image->attachmentView), "create direct attachment view");
+                    return image;
+                }
+                void imageBarrier(VkCommandBuffer command, VkImage image, VkImageAspectFlags aspect, VkImageLayout from, VkImageLayout to,
+                                  unsigned levels = 1, unsigned layers = 1)
+                {
+                    VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+                    barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                    barrier.image = image;
+                    barrier.subresourceRange = {aspect, 0, levels, 0, layers};
+                    barrier.oldLayout = from;
+                    barrier.newLayout = to;
+                    barrier.srcAccessMask = from == VK_IMAGE_LAYOUT_UNDEFINED ? 0 : VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT;
+                    barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+                    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr,
+                                         1, &barrier);
+                }
+                void copyImage(VkCommandBuffer command, const ColorImage &source, const ColorImage &destination, bool depthAspect)
+                {
+                    const VkImageAspectFlags aspect = depthAspect ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+                    imageBarrier(command, destination.image, aspect, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+                    VkImageCopy copy{};
+                    copy.srcSubresource = copy.dstSubresource = {aspect, 0, 0, 1};
+                    copy.extent = {std::min(source.width, destination.width), std::min(source.height, destination.height), 1};
+                    vkCmdCopyImage(command, source.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, destination.image,
+                                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+                }
+                void uploadImage(VkCommandBuffer command, const ColorImage &destination, VkBuffer buffer, VkDeviceSize offset, unsigned pitch,
+                                 bool depthAspect)
+                {
+                    const VkImageAspectFlags aspect = depthAspect ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+                    imageBarrier(command, destination.image, aspect, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+                    VkBufferImageCopy copy{};
+                    copy.bufferOffset = offset;
+                    copy.bufferRowLength = pitch;
+                    copy.imageSubresource = {aspect, 0, 0, 1};
+                    copy.imageExtent = {destination.width, destination.height, 1};
+                    vkCmdCopyBufferToImage(command, buffer, destination.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+                }
+
+                // A whole-target clear the replayer deferred, instead of uploading its CPU bytes.
+                void clearImage(VkCommandBuffer command, const ColorImage &destination, const std::array<float, 4> &color)
+                {
+                    imageBarrier(command, destination.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+                    VkClearColorValue value{};
+                    std::copy(color.begin(), color.end(), value.float32);
+                    const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+                    vkCmdClearColorImage(command, destination.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &value, 1, &range);
+                }
+
+                // The depth counterpart of clearImage(): a stored (quantized) value, exact in D32.
+                void clearDepthImage(VkCommandBuffer command, const ColorImage &destination, float depth)
+                {
+                    imageBarrier(command, destination.image, VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+                    const VkClearDepthStencilValue value{depth, 0};
+                    const VkImageSubresourceRange range{VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+                    vkCmdClearDepthStencilImage(command, destination.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &value, 1, &range);
+                }
+
+                // Tightly packed texels (DrawResources::Texture::copyTo) into every level and layer.
+                void uploadTexels(VkCommandBuffer command, const DrawResources::Texture &texture, VkImage image, VkBuffer buffer, VkDeviceSize offset,
+                                  bool initial)
+                {
+                    const unsigned levels = unsigned(texture.mips.size() + 1);
+                    const unsigned depth = texture.volume ? texture.layers : 1;
+                    const unsigned layers = texture.volume ? 1 : texture.layers;
+                    imageBarrier(command, image, VK_IMAGE_ASPECT_COLOR_BIT,
+                                 initial ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                 levels, layers);
+                    std::vector<VkBufferImageCopy> copies;
+                    for (unsigned level = 0; level < levels; ++level) {
+                        VkBufferImageCopy copy{};
+                        copy.bufferOffset = offset;
+                        copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, 0, layers};
+                        copy.imageExtent = {std::max(1u, texture.width >> level), std::max(1u, texture.height >> level), depth};
+                        copies.push_back(copy);
+                        // Multilevel snapshots are RGBA32F; single-level formats need no following offset.
+                        offset += VkDeviceSize(copy.imageExtent.width) * copy.imageExtent.height * depth * layers * 16;
+                    }
+                    vkCmdCopyBufferToImage(command, buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, unsigned(copies.size()), copies.data());
+                    imageBarrier(command, image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, levels, layers);
+                }
+                // Copies a resident image, or each layer (and level) of an array, into a sampled scratch
+                // texture; D32 depth goes through a device buffer to become R32 float texels. Layers
+                // without a resident image upload their CPU bytes through `upload`.
+                template<typename Upload>
+                void copyRendered(VkCommandBuffer command, const DrawResources::Texture &texture, const ScratchTexture &scratch, Upload &&upload)
+                {
+                    const unsigned levels = texture.renderedLayers.empty() ? 1u : texture.renderedLevels;
+                    const unsigned layers = texture.renderedLayers.empty() ? 1u : unsigned(texture.renderedLayers.size()) / levels;
+                    imageBarrier(command, scratch.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                 levels, layers);
+                    for (unsigned entry = 0; entry < levels * layers; ++entry) {
+                        const unsigned level = entry / layers, layer = entry % layers;
+                        const unsigned width = std::max(1u, texture.width >> level), height = std::max(1u, texture.height >> level);
+                        if (!texture.renderedLayers.empty() && !texture.renderedLayers[entry]) {
+                            const auto [buffer, offset] = upload(texture.layerBytes[entry]);
+                            VkBufferImageCopy copy{};
+                            copy.bufferOffset = offset;
+                            copy.bufferRowLength = unsigned(texture.layerPitch / imageElementBytes(texture.format));
+                            copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, layer, 1};
+                            copy.imageExtent = {width, height, 1};
+                            vkCmdCopyBufferToImage(command, buffer, scratch.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+                            continue;
+                        }
+                        const auto &source = texture.renderedLayers.empty() ? *texture.rendered : *texture.renderedLayers[entry];
+                        if (source.format == VK_FORMAT_D32_SFLOAT) {
+                            const VkDeviceSize bytes = VkDeviceSize(width) * height * sizeof(float);
+                            if (scratchCapacity < bytes) {
+                                destroyBuffer(scratchBuffer, scratchMemory);
+                                scratchCapacity = std::max(bytes, VkDeviceSize{16} << 20);
+                                scratchBuffer = createBuffer(scratchCapacity, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                                             scratchMemory, 0, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+                            }
+                            VkMemoryBarrier reuse{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+                            reuse.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+                            reuse.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT;
+                            vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &reuse, 0, nullptr, 0,
+                                                 nullptr);
+                            VkBufferImageCopy copy{};
+                            copy.imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1};
+                            copy.imageExtent = {width, height, 1};
+                            vkCmdCopyImageToBuffer(command, source.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, scratchBuffer, 1, &copy);
+                            vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &reuse, 0, nullptr, 0,
+                                                 nullptr);
+                            copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, layer, 1};
+                            vkCmdCopyBufferToImage(command, scratchBuffer, scratch.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+                        } else {
+                            VkImageCopy copy{};
+                            copy.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+                            copy.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, layer, 1};
+                            copy.extent = {width, height, 1};
+                            vkCmdCopyImage(command, source.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, scratch.image,
+                                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+                        }
+                    }
+                    imageBarrier(command, scratch.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, levels, layers);
+                }
+
+                std::vector<std::uint64_t> sharedKey(const DrawResources::Texture &texture) const
+                {
+                    // Same identity as DrawResources::cachedTexture, so both paths share uploads.
+                    std::vector<std::uint64_t> key{reinterpret_cast<std::uintptr_t>(texture.snapshotOwner.get()),
+                                                   reinterpret_cast<std::uintptr_t>(texture.snapshot.data()),
+                                                   texture.width,
+                                                   texture.height,
+                                                   texture.layers,
+                                                   unsigned(texture.format),
+                                                   texture.sourcePitch,
+                                                   unsigned(texture.components.r),
+                                                   unsigned(texture.components.g),
+                                                   unsigned(texture.components.b),
+                                                   unsigned(texture.components.a),
+                                                   unsigned(texture.array),
+                                                   unsigned(texture.volume),
+                                                   unsigned(texture.cube)};
+                    for (const auto mip: texture.mips) {
+                        key.push_back(reinterpret_cast<std::uintptr_t>(mip.data()));
+                        key.push_back(mip.size());
+                    }
+                    return key;
+                }
+                std::shared_ptr<CachedTexture> findSharedTexture(const DrawResources::Texture &texture)
+                {
+                    const auto key = sharedKey(texture);
+                    if (auto found = context.textures.find(key); found != context.textures.end() && found->second.value->ready) {
+                        found->second.used = ++context.textureClock;
+                        ++context.textureHits;
+                        return found->second.value;
+                    }
+                    if (const auto retained = context.retainedTextures.find(key); retained != context.retainedTextures.end())
+                        if (auto value = retained->second.lock(); value && value->ready) {
+                            ++context.textureHits;
+                            return value;
+                        }
+                    return {};
+                }
+                template<typename Upload>
+                std::shared_ptr<CachedTexture> createSharedTexture(const DrawResources::Texture &texture, Segment &segment, Upload &upload)
+                {
+                    auto key = sharedKey(texture);
+                    if (const auto found = context.textures.find(key); found != context.textures.end()) {
+                        context.textureBytes -= found->second.bytes;
+                        context.textures.erase(found);
+                    }
+                    const auto bytes = texture.bytes();
+                    context.evictTextures(bytes);
+                    auto result = std::make_shared<CachedTexture>();
+                    result->device = device;
+                    result->owner = texture.snapshotOwner;
+                    result->key = key;
+                    VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+                    info.imageType = texture.volume ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D;
+                    info.flags = texture.cube ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0;
+                    info.format = texture.format;
+                    info.extent = {texture.width, texture.height, texture.volume ? texture.layers : 1};
+                    info.mipLevels = unsigned(texture.mips.size() + 1);
+                    info.arrayLayers = texture.volume ? 1 : texture.layers;
+                    info.samples = VK_SAMPLE_COUNT_1_BIT;
+                    info.tiling = VK_IMAGE_TILING_OPTIMAL;
+                    info.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+                    check(vkCreateImage(device, &info, nullptr, &result->image), "create shared texture");
+                    VkMemoryRequirements requirements{};
+                    vkGetImageMemoryRequirements(device, result->image, &requirements);
+                    result->imageMemory = allocate(requirements, 0, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+                    check(vkBindImageMemory(device, result->image, result->imageMemory, 0), "bind shared texture");
+                    VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+                    view.image = result->image;
+                    view.viewType = texture.cube     ? VK_IMAGE_VIEW_TYPE_CUBE_ARRAY
+                                    : texture.volume ? VK_IMAGE_VIEW_TYPE_3D
+                                    : texture.array  ? VK_IMAGE_VIEW_TYPE_2D_ARRAY
+                                                     : VK_IMAGE_VIEW_TYPE_2D;
+                    view.format = info.format;
+                    view.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, info.mipLevels, 0, info.arrayLayers};
+                    view.components = texture.components;
+                    check(vkCreateImageView(device, &view, nullptr, &result->view), "create shared texture view");
+                    const auto offset = upload(nullptr, 0, bytes);
+                    texture.copyTo(segment.mapped + offset);
+                    uploadTexels(segment.command, texture, result->image, segment.buffer, offset, true);
+                    // Bundles close the open segment before recording, so the upload is already queued
+                    // ahead of any other consumer.
+                    result->ready = true;
+                    result->bytes = bytes; // no staging copy is kept
+                    result->usage = context.textureMemory;
+                    result->usage->bytes.fetch_add(result->bytes, std::memory_order_relaxed);
+                    context.admitTexture(std::move(key), result);
+                    return result;
+                }
+
+                // Shape plus (image, version) of every rendered source, or nothing when a layer comes
+                // from CPU bytes, whose buffers can change without a version.
+                static std::optional<std::vector<std::uint64_t>> assembledKey(const DrawResources::Texture &texture)
+                {
+                    std::vector<std::uint64_t> key{texture.width,
+                                                   texture.height,
+                                                   texture.layers,
+                                                   unsigned(texture.format),
+                                                   texture.levelCount(),
+                                                   texture.renderedLevels,
+                                                   unsigned(texture.array) | unsigned(texture.volume) << 1 | unsigned(texture.cube) << 2,
+                                                   unsigned(texture.components.r) | unsigned(texture.components.g) << 8 |
+                                                           unsigned(texture.components.b) << 16 | std::uint64_t(texture.components.a) << 24};
+                    if (texture.rendered)
+                        key.insert(key.end(), {reinterpret_cast<std::uintptr_t>(texture.rendered.get()), texture.rendered->version});
+                    for (const auto &layer: texture.renderedLayers) {
+                        if (!layer)
+                            return std::nullopt;
+                        key.insert(key.end(), {reinterpret_cast<std::uintptr_t>(layer.get()), layer->version});
+                    }
+                    return key;
+                }
+
+                std::shared_ptr<ScratchTexture> scratchTexture(const DrawResources::Texture &texture)
+                {
+                    const std::array<std::uint64_t, 10> key{texture.width,
+                                                            texture.height,
+                                                            texture.layers,
+                                                            unsigned(texture.format),
+                                                            texture.levelCount(),
+                                                            unsigned(texture.array) | unsigned(texture.volume) << 1 | unsigned(texture.cube) << 2,
+                                                            unsigned(texture.components.r),
+                                                            unsigned(texture.components.g),
+                                                            unsigned(texture.components.b),
+                                                            unsigned(texture.components.a)};
+                    auto &pool = scratchTextures[key];
+                    // Retained by in-flight segments until their fences complete.
+                    for (const auto &entry: pool)
+                        if (entry.use_count() == 1)
+                            return entry;
+                    auto result = std::make_shared<ScratchTexture>();
+                    result->device = device;
+                    VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+                    info.imageType = texture.volume ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D;
+                    info.flags = texture.cube ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0;
+                    info.format = texture.format;
+                    info.extent = {texture.width, texture.height, texture.volume ? texture.layers : 1};
+                    info.mipLevels = texture.levelCount();
+                    info.arrayLayers = texture.volume ? 1 : texture.layers;
+                    info.samples = VK_SAMPLE_COUNT_1_BIT;
+                    info.tiling = VK_IMAGE_TILING_OPTIMAL;
+                    info.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+                    check(vkCreateImage(device, &info, nullptr, &result->image), "create scratch texture");
+                    VkMemoryRequirements requirements{};
+                    vkGetImageMemoryRequirements(device, result->image, &requirements);
+                    result->memory = allocate(requirements, 0, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+                    check(vkBindImageMemory(device, result->image, result->memory, 0), "bind scratch texture");
+                    VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+                    view.image = result->image;
+                    view.viewType = texture.cube     ? VK_IMAGE_VIEW_TYPE_CUBE_ARRAY
+                                    : texture.volume ? VK_IMAGE_VIEW_TYPE_3D
+                                    : texture.array  ? VK_IMAGE_VIEW_TYPE_2D_ARRAY
+                                                     : VK_IMAGE_VIEW_TYPE_2D;
+                    view.format = info.format;
+                    view.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, info.mipLevels, 0, info.arrayLayers};
+                    view.components = texture.components;
+                    check(vkCreateImageView(device, &view, nullptr, &result->view), "create scratch texture view");
+                    if (pool.size() >= 16)
+                        std::erase_if(pool, [](const auto &entry) { return entry.use_count() == 1; });
+                    pool.push_back(result);
+                    return result;
+                }
+
+                VkSampler sampler(const DrawResources::Texture &texture)
+                {
+                    const std::array<std::uint32_t, 9> key{unsigned(texture.filter),
+                                                           unsigned(texture.minFilter),
+                                                           unsigned(texture.mipFilter),
+                                                           std::bit_cast<std::uint32_t>(texture.minLod),
+                                                           std::bit_cast<std::uint32_t>(texture.maxLod),
+                                                           unsigned(texture.addressU),
+                                                           unsigned(texture.addressV),
+                                                           unsigned(texture.addressW),
+                                                           unsigned(texture.borderColor)};
+                    if (const auto found = samplers.find(key); found != samplers.end())
+                        return found->second;
+                    VkSamplerCreateInfo info{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+                    info.magFilter = texture.filter;
+                    info.minFilter = texture.minFilter;
+                    info.mipmapMode = texture.mipFilter;
+                    info.minLod = texture.minLod;
+                    info.maxLod = texture.maxLod;
+                    info.addressModeU = texture.addressU;
+                    info.addressModeV = texture.addressV;
+                    info.addressModeW = texture.addressW;
+                    info.borderColor = texture.borderColor;
+                    VkSampler created{};
+                    check(vkCreateSampler(device, &info, nullptr, &created), "create direct sampler");
+                    return samplers.emplace(key, created).first->second;
+                }
+
+                VkRenderPass renderPass(VkFormat colorFormat, VkFormat depthFormat)
+                {
+                    const auto key = std::make_pair(colorFormat, depthFormat);
+                    if (const auto found = passes.find(key); found != passes.end())
+                        return found->second;
+                    // Matches the bundle passes' attachment formats (render-pass compatibility), but
+                    // always loads: images are rendered in place and stay TRANSFER_SRC between draws.
+                    std::vector<VkAttachmentDescription> attachments;
+                    VkAttachmentReference colorReference{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+                    VkAttachmentReference depthReference{0, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+                    VkAttachmentDescription attachment{};
+                    attachment.samples = VK_SAMPLE_COUNT_1_BIT;
+                    attachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+                    attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+                    attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+                    attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+                    attachment.finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+                    if (colorFormat != VK_FORMAT_UNDEFINED) {
+                        attachment.format = colorFormat;
+                        attachment.initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                        attachments.push_back(attachment);
+                    }
+                    if (depthFormat != VK_FORMAT_UNDEFINED) {
+                        depthReference.attachment = unsigned(attachments.size());
+                        attachment.format = depthFormat;
+                        attachment.initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+                        attachments.push_back(attachment);
+                    }
+                    VkSubpassDescription subpass{};
+                    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+                    subpass.colorAttachmentCount = colorFormat != VK_FORMAT_UNDEFINED ? 1 : 0;
+                    subpass.pColorAttachments = &colorReference;
+                    subpass.pDepthStencilAttachment = depthFormat != VK_FORMAT_UNDEFINED ? &depthReference : nullptr;
+                    VkSubpassDependency dependency{};
+                    dependency.srcSubpass = 0;
+                    dependency.dstSubpass = VK_SUBPASS_EXTERNAL;
+                    dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                                              VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+                    dependency.dstStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT;
+                    dependency.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+                    dependency.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+                    VkRenderPassCreateInfo info{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
+                    info.attachmentCount = unsigned(attachments.size());
+                    info.pAttachments = attachments.data();
+                    info.subpassCount = 1;
+                    info.pSubpasses = &subpass;
+                    info.dependencyCount = 1;
+                    info.pDependencies = &dependency;
+                    VkRenderPass pass{};
+                    check(vkCreateRenderPass(device, &info, nullptr, &pass), "create direct render pass");
+                    return passes.emplace(key, pass).first->second;
+                }
+
+                VkFramebuffer framebuffer(VkRenderPass pass, const std::shared_ptr<ColorImage> &color, const std::shared_ptr<ColorImage> &depth,
+                                          VkExtent2D extent)
+                {
+                    const std::tuple key{pass, color ? color->attachmentView : VkImageView{}, depth ? depth->attachmentView : VkImageView{},
+                                         extent.width, extent.height};
+                    if (const auto found = framebuffers.find(key); found != framebuffers.end()) {
+                        // Views of released images can be recycled with the same handle.
+                        if (found->second.color.lock() == color && found->second.depth.lock() == depth)
+                            return found->second.framebuffer;
+                        vkDestroyFramebuffer(device, found->second.framebuffer, nullptr);
+                        framebuffers.erase(found);
+                    }
+                    if (framebuffers.size() >= framebufferPurgeAt) {
+                        // In-flight segments retain their images, so a framebuffer whose images are
+                        // released is idle.
+                        std::erase_if(framebuffers, [&](const auto &entry) {
+                            if (!entry.second.color.expired() || !entry.second.depth.expired())
+                                return false;
+                            vkDestroyFramebuffer(device, entry.second.framebuffer, nullptr);
+                            return true;
+                        });
+                        // A MK8 race keeps more than 1024 attachments alive: scanning them again at
+                        // every new framebuffer cost 5% of the replay thread. Wait for the map to double.
+                        framebufferPurgeAt = std::max<std::size_t>(1024, framebuffers.size() * 2);
+                    }
+                    VkImageView views[2]{};
+                    unsigned count = 0;
+                    if (color)
+                        views[count++] = color->attachmentView;
+                    if (depth)
+                        views[count++] = depth->attachmentView;
+                    VkFramebufferCreateInfo info{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+                    info.renderPass = pass;
+                    info.attachmentCount = count;
+                    info.pAttachments = views;
+                    info.width = extent.width;
+                    info.height = extent.height;
+                    info.layers = 1;
+                    VkFramebuffer created{};
+                    check(vkCreateFramebuffer(device, &info, nullptr, &created), "create direct framebuffer");
+                    framebuffers.emplace(key, FramebufferEntry{color, depth, created});
+                    return created;
+                }
+
+                std::shared_ptr<const std::vector<std::uint8_t>> depthPadding(const RasterDraw::Depth &depth) const
+                {
+                    if (depth.rendered)
+                        if (const auto native = std::dynamic_pointer_cast<const NativeImage>(depth.rendered->image());
+                            native && native->storage->format == depthVkFormat(depth.format))
+                            return native->padding;
+                    if (depth.pitch == depth.width)
+                        return {};
+                    const auto rowBytes = std::size_t(depth.pitch - depth.width) * sizeof(float);
+                    auto padding = std::make_shared<std::vector<std::uint8_t>>(rowBytes * depth.height);
+                    for (unsigned y = 0; y < depth.height; ++y)
+                        std::memcpy(padding->data() + y * rowBytes, depth.target.data() + std::size_t(y) * depth.pitch + depth.width, rowBytes);
+                    return padding;
+                }
+
+                std::vector<std::uint8_t> read(const std::shared_ptr<ColorImage> &image, bool depthAspect, unsigned width, unsigned height,
+                                               unsigned pitch, const std::shared_ptr<const std::vector<std::uint8_t>> &padding)
+                {
+                    Profile::Scope reading(Profile::Stage::Readback);
+                    submit();
+                    const auto elementBytes = depthAspect ? sizeof(float) : imageElementBytes(image->format);
+                    const VkDeviceSize bytes = VkDeviceSize(pitch) * height * elementBytes;
+                    context.wait(readbackFence);
+                    if (readbackCapacity < bytes) {
+                        destroyBuffer(readbackBuffer, readbackMemory);
+                        readbackCapacity = bytes;
+                        readbackBuffer = createBuffer(bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, readbackMemory,
+                                                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                                      VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+                        void *mapped = nullptr;
+                        check(vkMapMemory(device, readbackMemory, 0, VK_WHOLE_SIZE, 0, &mapped), "map direct readback");
+                        readbackMapped = static_cast<const std::uint8_t *>(mapped);
+                    }
+                    if (!readbackPool) {
+                        VkCommandPoolCreateInfo info{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+                        info.queueFamilyIndex = context.family;
+                        check(vkCreateCommandPool(device, &info, nullptr, &readbackPool), "create direct readback pool");
+                        VkCommandBufferAllocateInfo allocate{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+                        allocate.commandPool = readbackPool;
+                        allocate.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+                        allocate.commandBufferCount = 1;
+                        check(vkAllocateCommandBuffers(device, &allocate, &readbackCommand), "allocate direct readback");
+                    } else
+                        check(vkResetCommandPool(device, readbackPool, 0), "reset direct readback pool");
+                    VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+                    begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+                    check(vkBeginCommandBuffer(readbackCommand, &begin), "begin direct readback");
+                    VkBufferImageCopy copy{};
+                    copy.bufferRowLength = pitch;
+                    copy.imageSubresource = {VkImageAspectFlags(depthAspect ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT), 0, 0, 1};
+                    copy.imageExtent = {width, height, 1};
+                    vkCmdCopyImageToBuffer(readbackCommand, image->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readbackBuffer, 1, &copy);
+                    VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+                    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                    barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+                    vkCmdPipelineBarrier(readbackCommand, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &barrier, 0, nullptr, 0,
+                                         nullptr);
+                    check(vkEndCommandBuffer(readbackCommand), "end direct readback");
+                    readbackFence = context.enqueue(readbackCommand);
+                    context.wait(readbackFence);
+                    ++context.readbackTransfers;
+                    // Appended row by row: zero-filling the whole target first cost as much as the copy.
+                    std::vector<std::uint8_t> result;
+                    result.reserve(bytes);
+                    const auto rowBytes = std::size_t(pitch) * elementBytes, pixelBytes = std::size_t(width) * elementBytes;
+                    const auto paddingBytes = rowBytes - pixelBytes;
+                    if (!paddingBytes)
+                        result.assign(readbackMapped, readbackMapped + bytes);
+                    for (unsigned y = 0; paddingBytes && y < height; ++y) {
+                        result.insert(result.end(), readbackMapped + y * rowBytes, readbackMapped + y * rowBytes + pixelBytes);
+                        if (padding)
+                            result.insert(result.end(), padding->data() + y * paddingBytes, padding->data() + (y + 1) * paddingBytes);
+                        else
+                            result.resize(result.size() + paddingBytes);
+                    }
+                    return result;
+                }
+
+                std::shared_ptr<Context> contextOwner;
+                Context &context;
+                VkDevice device{};
+                VkDeviceSize alignment{256};
+                unsigned drawsPerSegment{48};
+                std::array<Segment, 4> segments;
+                // The render pass the last draw left open in the current segment. Its images are
+                // retained by that segment, so their addresses identify them.
+                struct OpenPass {
+                        const ColorImage *color{}, *depth{};
+                        VkExtent2D extent{};
+                };
+                std::optional<OpenPass> openPass;
+                std::uint64_t mergedDraws{};
+                void endPass(VkCommandBuffer command)
+                {
+                    if (!openPass)
+                        return;
+                    vkCmdEndRenderPass(command);
+                    openPass.reset();
+                }
+                std::size_t current{};
+                std::uint64_t renderedDraws{};
+                VkCommandPool readbackPool{};
+                VkCommandBuffer readbackCommand{};
+                std::shared_ptr<Context::BatchFence> readbackFence;
+                VkBuffer readbackBuffer{};
+                VkDeviceMemory readbackMemory{};
+                VkDeviceSize readbackCapacity{};
+                const std::uint8_t *readbackMapped{};
+                VkBuffer scratchBuffer{};
+                VkDeviceMemory scratchMemory{};
+                VkDeviceSize scratchCapacity{};
+                std::map<std::array<std::uint32_t, 9>, VkSampler> samplers;
+                std::map<std::pair<VkFormat, VkFormat>, VkRenderPass> passes;
+                std::map<std::tuple<VkRenderPass, VkImageView, VkImageView, unsigned, unsigned>, FramebufferEntry> framebuffers;
+                std::size_t framebufferPurgeAt{1024};
+                std::map<std::array<std::uint64_t, 10>, std::vector<std::shared_ptr<ScratchTexture>>> scratchTextures;
+                struct AssembledTexture {
+                        std::vector<std::weak_ptr<ColorImage>> sources; // expired: the key's addresses may be reused
+                        std::shared_ptr<ScratchTexture> image;
+                        std::uint64_t used{};
+                };
+                std::unordered_map<std::vector<std::uint64_t>, AssembledTexture, KeyWordsHash> assembledTextures;
+                std::uint64_t assembledClock{};
+                std::shared_ptr<VertexArena> vertexArena;
+                std::unordered_map<const void *, CachedVertices> vertexCache;
+                VkDeviceSize vertexCacheBytes{};
+                std::uint64_t vertexClock{};
+        };
     } // namespace
 
     struct VulkanRasterBackend::Impl {
             struct ResourceKey {
                     Context::PipelineKey pipeline;
-                    unsigned width{}, height{}, pitch{}, vertexCapacity{};
+                    unsigned width{}, height{}, pitch{}, vertexCapacity{}, indexCapacity{};
                     bool overwriteTarget{};
                     unsigned depthWidth{}, depthHeight{}, depthPitch{};
                     std::vector<std::uint32_t> textureShape;
@@ -2062,13 +3633,17 @@ void main() {
                     bool sameDraw(const ResourceKey &other) const
                     {
                         return pipeline == other.pipeline && width == other.width && height == other.height && pitch == other.pitch &&
-                               vertexCapacity == other.vertexCapacity && overwriteTarget == other.overwriteTarget && depthWidth == other.depthWidth &&
-                               depthHeight == other.depthHeight && depthPitch == other.depthPitch && textureShape == other.textureShape;
+                               vertexCapacity == other.vertexCapacity && indexCapacity == other.indexCapacity &&
+                               overwriteTarget == other.overwriteTarget && depthWidth == other.depthWidth && depthHeight == other.depthHeight &&
+                               depthPitch == other.depthPitch && textureShape == other.textureShape;
                     }
                     auto operator<=>(const ResourceKey &) const = default;
             };
-            SpirvCompiler compiler;
+            SpirvCompiler compiler{SpirvCompiler::defaultCacheDirectory()};
             std::shared_ptr<Context> context;
+            std::shared_ptr<DirectRenderer> direct; // destroyed before the context it shares
+            // Compiled modules by lowered-source hash and source variant (see renderImpl).
+            std::unordered_map<std::uint64_t, std::shared_ptr<const SpirvModule>> modules;
             struct ResourceEntry {
                     std::shared_ptr<DrawResources> value;
                     std::uint64_t bytes{}, used{};
@@ -2078,6 +3653,7 @@ void main() {
             std::uint64_t resourceHits{};
             std::uint64_t residentTargetCopies{};
             std::uint64_t retainedTargets{};
+            std::uint64_t adoptedTargets{};
             std::uint64_t retainedTextures{};
             std::uint64_t retainedTextureBytes{};
             std::uint64_t cachedBytes{};
@@ -2085,12 +3661,14 @@ void main() {
             std::uint64_t completed{};
             bool retainTextures = true;
             bool lazyReadback = false;
+            bool directDraws = true;
     };
 
-    VulkanRasterBackend::VulkanRasterBackend(bool retainTextures, bool lazyReadback) : m_impl(std::make_unique<Impl>())
+    VulkanRasterBackend::VulkanRasterBackend(bool retainTextures, bool lazyReadback, bool directDraws) : m_impl(std::make_unique<Impl>())
     {
         m_impl->retainTextures = retainTextures;
         m_impl->lazyReadback = lazyReadback;
+        m_impl->directDraws = directDraws;
     }
     VulkanRasterBackend::~VulkanRasterBackend() = default;
     const std::string &VulkanRasterBackend::lastError() const noexcept { return m_impl->error; }
@@ -2099,9 +3677,14 @@ void main() {
     std::uint64_t VulkanRasterBackend::retainedTargetDraws() const noexcept { return m_impl->retainedTargets; }
     std::uint64_t VulkanRasterBackend::retainedTextureUploads() const noexcept { return m_impl->retainedTextures; }
     std::uint64_t VulkanRasterBackend::residentTextureCopies() const noexcept { return m_impl->context ? m_impl->context->residentTextureCopies : 0; }
+    std::uint64_t VulkanRasterBackend::residentVertexHits() const noexcept { return m_impl->context ? m_impl->context->residentVertexHits : 0; }
+    std::uint64_t VulkanRasterBackend::assembledTextureHits() const noexcept { return m_impl->context ? m_impl->context->assembledTextureHits : 0; }
     std::uint64_t VulkanRasterBackend::directTextureBindings() const noexcept { return m_impl->context ? m_impl->context->directTextureBindings : 0; }
     std::uint64_t VulkanRasterBackend::directTextureBytes() const noexcept { return m_impl->context ? m_impl->context->directTextureBytes : 0; }
     std::uint64_t VulkanRasterBackend::targetUploadTransfers() const noexcept { return m_impl->context ? m_impl->context->targetUploadTransfers : 0; }
+    std::uint64_t VulkanRasterBackend::targetClears() const noexcept { return m_impl->context ? m_impl->context->targetClears : 0; }
+    std::uint64_t VulkanRasterBackend::depthClears() const noexcept { return m_impl->context ? m_impl->context->depthClears : 0; }
+    std::uint64_t VulkanRasterBackend::mergedRenderPasses() const noexcept { return m_impl->direct ? m_impl->direct->passMerges() : 0; }
     std::uint64_t VulkanRasterBackend::targetCopyTransfers() const noexcept { return m_impl->context ? m_impl->context->targetCopyTransfers : 0; }
     std::uint64_t VulkanRasterBackend::fullOverwriteDraws() const noexcept { return m_impl->context ? m_impl->context->fullOverwriteDraws : 0; }
     std::uint64_t VulkanRasterBackend::residentTargetCopies() const noexcept { return m_impl->residentTargetCopies; }
@@ -2109,6 +3692,20 @@ void main() {
     std::uint64_t VulkanRasterBackend::pipelineCreations() const noexcept { return m_impl->context ? m_impl->context->pipelineCreations : 0; }
 
     std::optional<RasterResult> VulkanRasterBackend::render(const RasterDraw &draw) { return renderImpl(draw, false); }
+
+    bool VulkanRasterBackend::supportsRenderedMipLevels() const
+    {
+        // Only direct draws assemble resident levels; see renderImpl.
+        static const bool directDraws = [] {
+            const auto *value = std::getenv("WEMU_NATIVE_DIRECT_DRAWS");
+            return !value || value[0] != '0';
+        }();
+        static const bool gpuTiming = [] {
+            const auto *value = std::getenv("WEMU_NATIVE_GPU_TIMING");
+            return value && value[0] == '1';
+        }();
+        return directDraws && !gpuTiming && m_impl->directDraws && m_impl->lazyReadback;
+    }
 
     std::optional<RasterResult> VulkanRasterBackend::renderDeferred(const RasterDraw &draw) { return renderImpl(draw, true); }
 
@@ -2147,17 +3744,24 @@ void main() {
              draw.depth.target.size_bytes() > 64ull * 1024 * 1024 ||
              (draw.depth.rendered && draw.depth.rendered->size() != draw.depth.target.size_bytes())))
             return reject("Unsupported depth dimensions or snapshot");
-        if (draw.blend.enabled && (draw.blend.colorOperation > 4 || draw.blend.alphaOperation > 4 ||
-                                   (draw.colorFormat == ColorFormat::RGBA8 && (draw.blend.colorOperation || draw.blend.alphaOperation)) ||
-                                   !blendFactor(draw.blend.colorSource) || !blendFactor(draw.blend.colorDestination) ||
-                                   !blendFactor(draw.blend.alphaSource) || !blendFactor(draw.blend.alphaDestination)))
+        // UNORM targets saturate subtract results to [0, 1], as the reference blender does.
+        if (draw.blend.enabled &&
+            (draw.blend.colorOperation > 4 || draw.blend.alphaOperation > 4 || !blendFactor(draw.blend.colorSource) ||
+             !blendFactor(draw.blend.colorDestination) || !blendFactor(draw.blend.alphaSource) || !blendFactor(draw.blend.alphaDestination)))
             return reject("Unsupported blend factors or equation");
         if (!draw.width || !draw.height || draw.width > 4096 || draw.height > 4096 || draw.pitch < draw.width ||
             std::uint64_t(draw.pitch) * draw.height * colorElementBytes(draw.colorFormat) != draw.target.size() ||
             draw.target.size() > std::size_t{64} * 1024 * 1024)
             return reject("Unsupported target dimensions");
-        if ((draw.topology == RasterDraw::Topology::Triangles && draw.vertices.size() % 3) || draw.vertices.size() > 262144 ||
-            draw.constants.size() > 1024 || draw.uniforms.size() != draw.shader.uniforms.size() * 4 || draw.uniforms.size() > 2048 ||
+        const auto stride = draw.vertexStage.attributeStride;
+        if (stride && (!draw.vertexStage.shader || stride > 16 || draw.vertexStage.attributes.size() % stride || !draw.vertices.empty()))
+            return reject("Invalid compact vertex attributes");
+        const auto vertices = vertexCount(draw);
+        const auto drawnVertices = draw.indices.empty() ? vertices : draw.indices.size();
+        if ((!draw.indices.empty() && (draw.topology != RasterDraw::Topology::Triangles || draw.indices.size() > std::size_t{262144} * 3 ||
+                                       std::any_of(draw.indices.begin(), draw.indices.end(), [&](auto i) { return i >= vertices; }))) ||
+            (draw.topology == RasterDraw::Topology::Triangles && drawnVertices % 3) || vertices > 262144 || draw.constants.size() > 1024 ||
+            draw.uniforms.size() != draw.shader.uniforms.size() * 4 || draw.uniforms.size() > 2048 ||
             draw.textures.size() != draw.shader.textures.size() + (draw.vertexStage.shader ? draw.vertexStage.shader->textures.size() : 0) ||
             draw.textures.size() > 32)
             return reject("Unsupported draw inputs");
@@ -2170,17 +3774,28 @@ void main() {
             return reject("Invalid vertex parameter mapping");
         for (const auto &vertex: draw.vertices)
             if (!std::isfinite(vertex.x) || !std::isfinite(vertex.y) || !std::isfinite(vertex.reciprocalW) || vertex.reciprocalW <= 0.f ||
-                (draw.depth.test && (!std::isfinite(vertex.z) || vertex.z < 0.f || vertex.z > 1.f)))
+                (draw.depth.test && (!std::isfinite(vertex.z) || (!draw.depth.clamp && (vertex.z < 0.f || vertex.z > 1.f)))))
                 return reject("Nonfinite vertex position");
         if (draw.renderedTarget && draw.renderedTarget->size() != draw.target.size())
             return reject("Invalid rendered target size");
-        if (draw.vertices.empty() || (!draw.channelMask && !(draw.depth.test && draw.depth.write)) || draw.scissor[2] <= 0 || draw.scissor[3] <= 0) {
-            if (draw.renderedTarget)
-                draw.target = draw.renderedTarget->resolve();
-            RasterResult result{std::vector<std::uint8_t>(draw.target.begin(), draw.target.end()), 0, 0};
+        if (!vertices || (!draw.channelMask && !(draw.depth.test && draw.depth.write)) || draw.scissor[2] <= 0 || draw.scissor[3] <= 0) {
+            RasterResult result;
+            if (deferReadback) {
+                // Nothing is drawn: keep the target's current version. Resolving it waited for the
+                // GPU and copied the whole target, for MK8's many draws without color writes.
+                result.readback = draw.renderedTarget;
+                if (!result.readback)
+                    result.unchangedTarget = draw.target.size();
+            } else {
+                if (draw.renderedTarget)
+                    draw.target = draw.renderedTarget->resolve();
+                result.rgba.assign(draw.target.begin(), draw.target.end());
+            }
             if (draw.depth.test && draw.depth.write) {
                 if (draw.depth.rendered)
                     result.depthReadback = draw.depth.rendered;
+                else if (draw.depth.clear)
+                    result.depth = clearedDepth(draw.depth, *draw.depth.clear);
                 else
                     result.depth.assign(draw.depth.target.begin(), draw.depth.target.end());
             }
@@ -2214,8 +3829,24 @@ void main() {
                 return reject("Invalid cube texture dimensions or face count");
             if (!texture.layers || texture.layers > 256 || (!array && texture.layers != 1) ||
                 (array && (texture.rendered || (texture.unorm8.empty() && texture.rgba32.empty() && texture.r32.empty() && texture.r32Bytes.empty() &&
-                                                texture.r11g11b10Bytes.empty()))))
+                                                texture.r11g11b10Bytes.empty() && texture.rgba32Bytes.empty() && texture.renderedLayers.empty()))))
                 return reject("Unsupported array texture snapshot");
+            // Several levels (2D, array or cube) must stay resident; one level may also be packed
+            // from CPU versions, which needs every layer's row pitch.
+            const auto renderedLevels = texture.renderedLevels;
+            if (!texture.renderedLayers.empty() &&
+                (texture.rendered || !texture.mips.empty() || !renderedLevels || renderedLevels > 14 ||
+                 (1u << (renderedLevels - 1)) > std::max(texture.width, texture.height) ||
+                 texture.renderedLayers.size() != std::size_t(texture.layers) * renderedLevels || texture.unorm8Pitch < texture.width ||
+                 (renderedLevels == 1 ? binding.type != Latte::TextureType::TwoDArray && binding.type != Latte::TextureType::Cube
+                                      : binding.type == Latte::TextureType::ThreeD) ||
+                 std::any_of(texture.renderedLayers.begin(), texture.renderedLayers.end(), [&](const auto &layer) {
+                     return !layer ||
+                            (renderedLevels == 1 && std::uint64_t(texture.unorm8Pitch) * texture.height *
+                                                                    (texture.renderedDepth ? 4u : colorElementBytes(texture.renderedFormat)) !=
+                                                            layer->size());
+                 })))
+                return reject("Invalid rendered array layers");
             if (texture.rendered &&
                 (texture.unorm8Pitch < texture.width ||
                  std::uint64_t(texture.unorm8Pitch) * texture.height * (texture.renderedDepth ? 4u : colorElementBytes(texture.renderedFormat)) !=
@@ -2233,7 +3864,8 @@ void main() {
                 return reject("Invalid R32 texture snapshot");
             if (!texture.rgba32Bytes.empty() &&
                 (!texture.unorm8.empty() || !texture.rgba32.empty() || !texture.r32.empty() || !texture.r32Bytes.empty() ||
-                 texture.rgba32Pitch < texture.width || std::uint64_t(texture.rgba32Pitch) * texture.height * 16 > texture.rgba32Bytes.size()))
+                 texture.rgba32Pitch < texture.width ||
+                 std::uint64_t(texture.rgba32Pitch) * texture.height * texture.layers * 16 > texture.rgba32Bytes.size()))
                 return reject("Invalid RGBA32 float texture snapshot");
             if (!texture.r11g11b10Bytes.empty() &&
                 (std::endian::native != std::endian::little || !texture.unorm8.empty() || !texture.rgba32.empty() || !texture.r32.empty() ||
@@ -2255,8 +3887,9 @@ void main() {
                     return reject("Incomplete mip chain snapshot");
                 textureBytes += mip.rgba32.size_bytes();
             }
+            const auto extraLevels = std::max<std::size_t>(texture.mips.size(), texture.renderedLevels - 1);
             if (found->explicitLod && (((r >> 12) & 7) > 1 || ((r >> 17) & 3) > 2 ||
-                                       (((r >> 17) & 3) && (!texture.sourceMipCount || texture.mips.size() + 1 < texture.sourceMipCount))))
+                                       (((r >> 17) & 3) && (!texture.sourceMipCount || extraLevels + 1 < texture.sourceMipCount))))
                 return reject("Explicit LOD requires the complete texture view and supported filters");
             if (binding.binding <= 16 && draw.shader.requiresDerivativeFreeSampling && found->implicitLod &&
                 (texture.sourceMipCount != 1 || texture.sourceFirstMip || ((r >> 9) & 7) != ((r >> 12) & 7) || ((r >> 19) & 7)))
@@ -2294,7 +3927,7 @@ void main() {
             if (textureBytes > std::uint64_t{128} * 1024 * 1024)
                 return reject("Texture upload budget exceeded");
         }
-        constexpr auto vertexSource = R"(#version 450
+        static constexpr auto vertexSource = R"(#version 450
 layout(location=0) in vec2 position;
 layout(location=1) in vec4 attributes[16];
 layout(location=17) in vec2 depthAndW;
@@ -2316,31 +3949,105 @@ void main() {
         }();
         const auto t0 = std::chrono::steady_clock::now();
         const bool overwriteTarget = overwritesTarget(draw);
-        auto nativeVertexSource = draw.vertexStage.shader ? draw.vertexStage.shader->source : std::string(vertexSource);
-        if (draw.vertexStage.shader)
-            for (const auto &binding: draw.vertexStage.shader->textures) {
-                const auto old = "binding=" + std::to_string(binding.binding) + ")";
-                const auto pos = nativeVertexSource.find(old);
-                if (pos == std::string::npos)
-                    return reject("Invalid vertex sampler interface");
-                nativeVertexSource.replace(pos, old.size(), "binding=" + std::to_string(binding.binding + 17) + ")");
+        // Modules of lowered shaders are found by their precomputed source hash and the draw's
+        // source variant, so a hit neither patches nor hashes the GLSL text.
+        const auto mixKey = [](std::uint64_t seed, std::uint64_t value) {
+            return seed ^ (value + 0x9E3779B97F4A7C15ull + (seed << 6) + (seed >> 2));
+        };
+        const auto cachedModule = [&](std::uint64_t key, auto &&build) -> std::shared_ptr<const SpirvModule> {
+            if (!key)
+                return build();
+            if (const auto found = m_impl->modules.find(key); found != m_impl->modules.end())
+                return found->second;
+            auto module = build();
+            if (module) {
+                if (m_impl->modules.size() >= 8192)
+                    m_impl->modules.clear();
+                m_impl->modules.emplace(key, module);
             }
-        const auto vertex = m_impl->compiler.compile(ShaderStage::Vertex, nativeVertexSource);
-        auto fragmentSource = draw.shader.source;
-        if (draw.depthBias.enabled && draw.depth.format != DepthFormat::Float32) {
-            fragmentSource.insert(fragmentSource.find('\n') + 1,
-                                  "layout(push_constant) uniform Bias { layout(offset=112) vec4 value; } bias;\n"
-                                  "float biasedDepth() { float slope=max(abs(dFdx(gl_FragCoord.z)),abs(dFdy(gl_FragCoord.z))); "
-                                  "float b=bias.value.x+bias.value.y*slope; "
-                                  "if(bias.value.z>0.0) b=min(b,bias.value.z); else if(bias.value.z<0.0) b=max(b,bias.value.z); "
-                                  "return clamp(gl_FragCoord.z+b,0.0,1.0); }\n");
-            const auto initial = fragmentSource.find("gl_FragDepth=gl_FragCoord.z;");
-            if (initial != std::string::npos)
-                fragmentSource.replace(initial, std::string("gl_FragDepth=gl_FragCoord.z;").size(), "gl_FragDepth=biasedDepth();");
-            else
-                fragmentSource.insert(fragmentSource.find("void main() {") + std::string("void main() {").size(), "\ngl_FragDepth=biasedDepth();\n");
-        }
-        const auto fragment = m_impl->compiler.compile(ShaderStage::Fragment, fragmentSource);
+            return module;
+        };
+        static const bool directDraws = [] {
+            const auto *value = std::getenv("WEMU_NATIVE_DIRECT_DRAWS");
+            return !value || value[0] != '0';
+        }();
+        static const bool gpuTiming = [] {
+            const auto *value = std::getenv("WEMU_NATIVE_GPU_TIMING");
+            return value && value[0] == '1';
+        }();
+        // GPU timing uses bundle queries.
+        const bool direct = directDraws && m_impl->directDraws && !gpuTiming && deferReadback && m_impl->lazyReadback;
+        const auto *vertexShader = draw.vertexStage.shader.get();
+        const auto vertex = cachedModule(vertexShader ? vertexShader->sourceHash ? mixKey(0x5653, vertexShader->sourceHash) : 0 : 0x5650,
+                                         [&]() -> std::shared_ptr<const SpirvModule> {
+                                             if (!vertexShader)
+                                                 return m_impl->compiler.compile(ShaderStage::Vertex, vertexSource);
+                                             if (vertexShader->textures.empty())
+                                                 return m_impl->compiler.compile(ShaderStage::Vertex, vertexShader->source);
+                                             // Vertex samplers follow the 16 pixel bindings.
+                                             auto patched = vertexShader->source;
+                                             for (const auto &binding: vertexShader->textures) {
+                                                 const auto old = "binding=" + std::to_string(binding.binding) + ")";
+                                                 const auto pos = patched.find(old);
+                                                 if (pos == std::string::npos)
+                                                     return nullptr;
+                                                 patched.replace(pos, old.size(), "binding=" + std::to_string(binding.binding + 17) + ")");
+                                             }
+                                             return m_impl->compiler.compile(ShaderStage::Vertex, patched);
+                                         });
+        if (!vertex)
+            return reject("Invalid vertex sampler interface");
+        const bool biasedDepth = draw.depthBias.enabled && draw.depth.format != DepthFormat::Float32;
+        const bool quantizedDepth = direct && draw.depth.test && draw.depth.write && draw.depth.format != DepthFormat::Float32;
+        const auto fragmentVariant = unsigned(biasedDepth) | (quantizedDepth ? draw.depth.format == DepthFormat::UNorm16 ? 2u : 4u : 0u);
+        const auto fragment = cachedModule(draw.shader.sourceHash ? mixKey(mixKey(0x4653, draw.shader.sourceHash), fragmentVariant) : 0, [&] {
+            std::string_view fragmentView = draw.shader.source;
+            std::string fragmentSource;
+            if (biasedDepth) {
+                fragmentSource = draw.shader.source;
+                fragmentSource.insert(fragmentSource.find('\n') + 1,
+                                      "layout(push_constant) uniform Bias { layout(offset=112) vec4 value; } bias;\n"
+                                      "float biasedDepth() { float slope=max(abs(dFdx(gl_FragCoord.z)),abs(dFdy(gl_FragCoord.z))); "
+                                      "float b=bias.value.x+bias.value.y*slope; "
+                                      "if(bias.value.z>0.0) b=min(b,bias.value.z); else if(bias.value.z<0.0) b=max(b,bias.value.z); "
+                                      "return clamp(gl_FragCoord.z+b,0.0,1.0); }\n");
+                const auto initial = fragmentSource.find("gl_FragDepth=gl_FragCoord.z;");
+                if (initial != std::string::npos)
+                    fragmentSource.replace(initial, std::string("gl_FragDepth=gl_FragCoord.z;").size(), "gl_FragDepth=biasedDepth();");
+                else
+                    fragmentSource.insert(fragmentSource.find("void main() {") + std::string("void main() {").size(),
+                                          "\ngl_FragDepth=biasedDepth();\n");
+                fragmentView = fragmentSource;
+            }
+            if (quantizedDepth) {
+                // Direct draws store fixed-point depth from the fragment shader instead of the bundle
+                // quantization pass (three full-surface copies per draw). Rounding matches that pass;
+                // the depth test then compares quantized incoming values, as fixed-point hardware does.
+                if (fragmentSource.empty())
+                    fragmentSource = draw.shader.source;
+                const bool writesDepth = fragmentSource.find("gl_FragDepth=") != std::string::npos;
+                const auto maximum = draw.depth.format == DepthFormat::UNorm16 ? "65535u" : "16777215u";
+                fragmentSource.insert(fragmentSource.find('\n') + 1, std::format(R"(float wemuQuantizedDepth(float depth) {{
+    const uint maximum={0};
+    float value=clamp(depth,0.0,1.0);
+    float scaled=value*float(maximum+1u);
+    uint integer=uint(int(scaled)+int(floor(fract(scaled)-value+0.5)));
+    if(integer==0u) return 0.0;
+    if(integer>=maximum) return 1.0;
+    uint leading=uint(findMSB(integer));
+    uint t=integer<<(23u-leading);
+    uint significand=t+(maximum==65535u ? (t+32767u)/65535u : 1u);
+    uint exponent=leading+(maximum==65535u ? 111u : 103u);
+    return uintBitsToFloat((exponent<<23)|(significand&0x7fffffu));
+}}
+)",
+                                                                                 maximum));
+                fragmentSource.insert(fragmentSource.rfind('}'),
+                                      std::format("gl_FragDepth=wemuQuantizedDepth({});\n", writesDepth ? "gl_FragDepth" : "gl_FragCoord.z"));
+                fragmentView = fragmentSource;
+            }
+            return m_impl->compiler.compile(ShaderStage::Fragment, fragmentView);
+        });
         if (!*vertex || !*fragment) {
             m_impl->error = !*vertex ? vertex->error : fragment->error;
             return std::nullopt;
@@ -2356,6 +4063,8 @@ void main() {
             (!std::isfinite(draw.depthBias.constant) || !std::isfinite(draw.depthBias.slope) || !std::isfinite(draw.depthBias.clamp) ||
              (draw.depth.format == DepthFormat::Float32 && draw.depthBias.clamp != 0 && !m_impl->context->biasClamp)))
             return reject("Unsupported polygon depth bias");
+        if (draw.depth.clamp && !m_impl->context->depthClamp)
+            return reject("Device lacks depth clamping support");
         if (!m_impl->context->cubeArrays && std::any_of(draw.textures.begin(), draw.textures.end(),
                                                         [](const auto &texture) { return texture.binding.type == Latte::TextureType::Cube; }))
             return reject("Device lacks cube array sampling support");
@@ -2389,19 +4098,30 @@ void main() {
                 draw.depth.target = resolvedDepth;
             }
         }
+        // Only direct draws clear their depth image on the GPU; the other paths upload values.
+        if (draw.depth.test && draw.depth.clear && !direct) {
+            resolvedDepth = clearedDepth(draw.depth, *draw.depth.clear);
+            draw.depth.target = resolvedDepth;
+            draw.depth.clear.reset();
+        }
         std::shared_ptr<ColorImage> targetSource;
         std::shared_ptr<const NativeImage> targetSnapshot;
+        std::optional<std::array<float, 4>> targetClear;
         if (draw.renderedTarget) {
             const auto native = std::dynamic_pointer_cast<const NativeImage>(draw.renderedTarget->image());
+            const auto *cleared = dynamic_cast<const ClearedImage *>(draw.renderedTarget->image().get());
             if (native && native->pitch == draw.pitch && native->storage->context == m_impl->context && native->storage->version == native->version &&
                 native->storage->width == draw.width && native->storage->height == draw.height &&
                 native->storage->format == colorVkFormat(draw.colorFormat)) {
                 targetSource = native->storage;
                 targetSnapshot = native;
-            } else
+            } else if (cleared && direct)
+                targetClear = cleared->color; // draw.target keeps the padding the clear left
+            else
                 draw.target = draw.renderedTarget->resolve();
         }
         std::vector<DrawResources::Texture> textures;
+        std::vector<std::vector<std::uint8_t>> packedLayers; // CPU snapshots of non-resident array layers
         for (const auto &input: draw.textures) {
             auto texture = input;
             std::shared_ptr<ColorImage> resident;
@@ -2432,11 +4152,70 @@ void main() {
                     texture.r32Bytes = {};
                 texture.rgba32 = {};
             }
+            std::vector<std::shared_ptr<ColorImage>> residentLayers;
+            std::vector<std::span<const std::uint8_t>> layerBytes;
+            if (!texture.renderedLayers.empty()) {
+                // Direct draws assemble the layers (and levels) into one image on the GPU: resident
+                // ones by copy, the others from their CPU version. Otherwise pack a single level's
+                // CPU versions into one tight snapshot.
+                const auto layerFormat = texture.renderedDepth ? VK_FORMAT_D32_SFLOAT : colorVkFormat(texture.renderedFormat);
+                if (direct)
+                    for (std::size_t entry = 0; entry < texture.renderedLayers.size(); ++entry) {
+                        const auto level = unsigned(entry / texture.layers);
+                        const auto native = std::dynamic_pointer_cast<const NativeImage>(texture.renderedLayers[entry]->image());
+                        if (native && native->storage->context == m_impl->context && native->storage->version == native->version &&
+                            native->storage->width == std::max(1u, texture.width >> level) &&
+                            native->storage->height == std::max(1u, texture.height >> level) && native->storage->format == layerFormat) {
+                            residentLayers.push_back(native->storage);
+                            layerBytes.emplace_back();
+                        } else if (texture.renderedLevels > 1)
+                            return reject("Rendered mip levels are no longer resident");
+                        else {
+                            residentLayers.emplace_back();
+                            layerBytes.push_back(texture.renderedLayers[entry]->resolve());
+                        }
+                    }
+                std::span<const std::uint8_t> packed;
+                if (!direct) {
+                    const auto elementBytes = texture.renderedDepth ? 4u : colorElementBytes(texture.renderedFormat);
+                    const auto rowBytes = std::size_t(texture.width) * elementBytes;
+                    auto &bytes = packedLayers.emplace_back();
+                    bytes.reserve(rowBytes * texture.height * texture.renderedLayers.size());
+                    for (const auto &layer: texture.renderedLayers) {
+                        const auto &source = layer->resolve();
+                        for (unsigned y = 0; y < texture.height; ++y) {
+                            const auto *row = source.data() + std::size_t(y) * texture.unorm8Pitch * elementBytes;
+                            bytes.insert(bytes.end(), row, row + rowBytes);
+                        }
+                    }
+                    packed = bytes;
+                }
+                if (texture.renderedDepth) {
+                    texture.r32Bytes = packed;
+                    texture.r32Pitch = texture.width;
+                    texture.r32Map = texture.unorm8Map;
+                    texture.unorm8 = {};
+                } else if (texture.renderedFormat == ColorFormat::RGBA32Float) {
+                    texture.rgba32Bytes = packed;
+                    texture.rgba32Pitch = texture.width;
+                    texture.unorm8 = {};
+                } else if (texture.renderedFormat == ColorFormat::R11G11B10Float) {
+                    texture.r11g11b10Bytes = packed;
+                    texture.r11g11b10Pitch = texture.width;
+                    texture.unorm8 = {};
+                } else {
+                    texture.unorm8 = packed;
+                    texture.unorm8Pitch = texture.width;
+                }
+                texture.unorm8Channels = 4;
+            }
+            const bool residentArray = !residentLayers.empty();
             const auto compressedFormat = blockVkFormat(texture.blockFormat);
             if (compressedFormat != VK_FORMAT_UNDEFINED && !m_impl->context->blockTextures)
                 return reject("Device lacks BC texture compression support");
             const auto textureFormat = compressedFormat != VK_FORMAT_UNDEFINED ? compressedFormat
                                        : resident                              ? (texture.renderedDepth ? VK_FORMAT_R32_SFLOAT : resident->format)
+                                       : residentArray ? (texture.renderedDepth ? VK_FORMAT_R32_SFLOAT : colorVkFormat(texture.renderedFormat))
                                        : !texture.r32.empty() || !texture.r32Bytes.empty() ? VK_FORMAT_R32_SFLOAT
                                        : !texture.r11g11b10Bytes.empty()                   ? VK_FORMAT_B10G11R11_UFLOAT_PACK32
                                        : texture.unorm8.empty()                            ? VK_FORMAT_R32G32B32A32_SFLOAT
@@ -2478,11 +4257,16 @@ void main() {
                 uploaded.minFilter = ((r >> 12) & 7) ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
                 uploaded.mipFilter = ((r >> 17) & 3) == 2 ? VK_SAMPLER_MIPMAP_MODE_LINEAR : VK_SAMPLER_MIPMAP_MODE_NEAREST;
                 if ((r >> 17) & 3) {
-                    uploaded.minLod = std::min(float(texture.mips.size()), float(texture.sampler.regs[1] & 1023) / 64.f);
-                    uploaded.maxLod = std::clamp(float((texture.sampler.regs[1] >> 10) & 1023) / 64.f, uploaded.minLod, float(texture.mips.size()));
+                    const auto extraLevels = std::max<std::size_t>(texture.mips.size(), texture.renderedLevels - 1);
+                    uploaded.minLod = std::min(float(extraLevels), float(texture.sampler.regs[1] & 1023) / 64.f);
+                    uploaded.maxLod = std::clamp(float((texture.sampler.regs[1] >> 10) & 1023) / 64.f, uploaded.minLod, float(extraLevels));
                 }
             }
             uploaded.rendered = resident;
+            uploaded.renderedLayers = std::move(residentLayers);
+            uploaded.layerBytes = std::move(layerBytes);
+            uploaded.layerPitch = std::size_t(texture.unorm8Pitch) * (texture.renderedDepth ? 4u : colorElementBytes(texture.renderedFormat));
+            uploaded.renderedLevels = uploaded.renderedLayers.empty() ? 1u : texture.renderedLevels;
             if (compressedFormat != VK_FORMAT_UNDEFINED) {
                 const auto channel = [&](unsigned c) {
                     constexpr VkComponentSwizzle channels[]{VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G,    VK_COMPONENT_SWIZZLE_B,
@@ -2498,8 +4282,8 @@ void main() {
                 textures.push_back(std::move(uploaded));
                 continue;
             }
-            if ((resident && !texture.renderedDepth && texture.renderedFormat != ColorFormat::RGBA8) || !texture.rgba32Bytes.empty() ||
-                !texture.r11g11b10Bytes.empty()) {
+            if (((resident || residentArray) && !texture.renderedDepth && texture.renderedFormat != ColorFormat::RGBA8) ||
+                !texture.rgba32Bytes.empty() || !texture.r11g11b10Bytes.empty()) {
                 const auto channel = [&](unsigned c) {
                     constexpr VkComponentSwizzle channels[]{VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G,    VK_COMPONENT_SWIZZLE_B,
                                                             VK_COMPONENT_SWIZZLE_A, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ONE};
@@ -2526,7 +4310,7 @@ void main() {
                 textures.push_back(std::move(uploaded));
                 continue;
             }
-            if (!texture.unorm8.empty() || resident) {
+            if (!texture.unorm8.empty() || resident || residentArray) {
                 const auto channel = [&](unsigned c) {
                     constexpr VkComponentSwizzle channels[]{VK_COMPONENT_SWIZZLE_R,    VK_COMPONENT_SWIZZLE_G,    VK_COMPONENT_SWIZZLE_B,
                                                             VK_COMPONENT_SWIZZLE_A,    VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ONE,
@@ -2560,14 +4344,30 @@ void main() {
                 }
             textures.push_back(std::move(uploaded));
         }
-        std::array<float, 3200> constants{};
-        std::array<float, 3200> vertexConstants{};
-        if (draw.vertexStage.shader) {
-            std::copy(draw.vertexStage.constants.begin(), draw.vertexStage.constants.end(), vertexConstants.begin());
-            std::copy(draw.vertexStage.uniforms.begin(), draw.vertexStage.uniforms.end(), vertexConstants.begin() + 1152);
-        }
-        std::copy(draw.constants.begin(), draw.constants.end(), constants.begin());
-        std::copy(draw.uniforms.begin(), draw.uniforms.end(), constants.begin() + 1152);
+        // Layout: registers [0, 1024), sampler borders and modes [1024, 1152), static uniform-block
+        // references from 1152. Values past the references are never read, so they stay unset.
+        std::array<float, Latte::kStageConstantFloats> constants, vertexConstants;
+        const auto constantFloats = std::min<std::size_t>(constants.size(), std::max(draw.constants.size(), 1152 + draw.uniforms.size()));
+        const auto vertexConstantFloats =
+                draw.vertexStage.shader ? std::min<std::size_t>(vertexConstants.size(),
+                                                                std::max(draw.vertexStage.constants.size(), 1152 + draw.vertexStage.uniforms.size()))
+                                        : 0;
+        // Registers a program never reads stay unset too: most titles read uniform blocks.
+        const auto stageConstants = [](std::array<float, Latte::kStageConstantFloats> &values, std::size_t floats, std::span<const float> registers,
+                                       unsigned used, std::span<const float> uniforms) {
+            const auto copied = std::min<std::size_t>(registers.size(), std::size_t(used) * 4);
+            std::copy_n(registers.begin(), copied, values.begin());
+            std::fill(values.begin() + std::ptrdiff_t(copied), values.begin() + std::ptrdiff_t(std::min<std::size_t>(std::size_t(used) * 4, 1024)),
+                      0.f);
+            std::fill(values.begin() + 1024, values.begin() + std::ptrdiff_t(std::min<std::size_t>(floats, 1152)), 0.f);
+            std::copy(uniforms.begin(), uniforms.end(), values.begin() + 1152);
+            if (floats > 1152 + uniforms.size())
+                std::fill(values.begin() + std::ptrdiff_t(1152 + uniforms.size()), values.begin() + std::ptrdiff_t(floats), 0.f);
+        };
+        if (draw.vertexStage.shader)
+            stageConstants(vertexConstants, vertexConstantFloats, draw.vertexStage.constants, draw.vertexStage.shader->constantRegisters,
+                           draw.vertexStage.uniforms);
+        stageConstants(constants, constantFloats, draw.constants, draw.shader.constantRegisters, draw.uniforms);
         for (const auto &texture: draw.textures) {
             const auto border = texture.sampler.border();
             const auto slot = texture.binding.binding - (texture.binding.binding > 17 ? 18 : 1);
@@ -2580,8 +4380,31 @@ void main() {
             stageConstants[offset + 2] = float((sampler >> 9) & 7);
             stageConstants[offset + 3] = float((sampler >> 26) & 7); // DEPTH_COMPARE_FUNCTION
         }
+        std::vector<RasterDraw::Vertex> expandedVertices;
+        if (stride && !direct) {
+            // Cached bundles keep the full vertex layout.
+            expandedVertices.resize(vertices);
+            for (std::size_t v = 0; v < vertices; ++v) {
+                std::copy(compactAttributeDefaults.begin(), compactAttributeDefaults.end(), expandedVertices[v].inputs.begin());
+                std::copy_n(draw.vertexStage.attributes.begin() + std::ptrdiff_t(v * stride), stride, expandedVertices[v].inputs.begin());
+            }
+            draw.vertices = expandedVertices;
+            draw.vertexStage.attributes = {};
+            draw.vertexStage.attributeStride = 0;
+        }
+        if (direct) {
+            if (!m_impl->direct)
+                m_impl->direct = std::make_shared<DirectRenderer>(m_impl->context);
+            auto result =
+                    m_impl->direct->render({draw, *vertex, *fragment, constants, vertexConstants, constantFloats, vertexConstantFloats, textures,
+                                            targetSource, targetSnapshot, depthSource, overwriteTarget, draw.supersedesTarget, targetClear});
+            ++m_impl->completed;
+            return result;
+        }
+        if (m_impl->direct)
+            m_impl->direct->submit(); // keep queue order: bundle commands follow earlier direct draws
         Impl::ResourceKey key;
-        key.pipeline = {vertex->words, fragment->words, {}, draw.channelMask};
+        key.pipeline = {vertex->id, fragment->id, {}, draw.channelMask};
         key.pipeline.blend = blendKey(draw.blend);
         key.pipeline.depth = depthKey(draw.depth);
         key.pipeline.depthBias = draw.depthBias.enabled;
@@ -2596,6 +4419,7 @@ void main() {
         key.depthPitch = draw.depth.test ? draw.depth.pitch : 0;
         key.pitch = draw.pitch;
         key.vertexCapacity = std::bit_ceil(draw.vertices.size());
+        key.indexCapacity = draw.indices.empty() ? 0 : std::bit_ceil(draw.indices.size());
         std::uint64_t depthTransferBytes{}, privateTextureBytes{}, incomingSharedBytes{};
         for (const auto &texture: textures) {
             if (texture.snapshotOwner && !texture.snapshot.empty() && !texture.rendered)
@@ -2607,7 +4431,8 @@ void main() {
             }
         }
         const auto estimatedBytes = (depthOnly(draw) ? 0 : std::uint64_t(draw.target.size()) * 3) + privateTextureBytes * 2 + depthTransferBytes +
-                                    std::uint64_t(key.vertexCapacity) * sizeof(RasterDraw::Vertex) + sizeof(constants) +
+                                    std::uint64_t(key.vertexCapacity) * sizeof(RasterDraw::Vertex) +
+                                    std::uint64_t(key.indexCapacity) * sizeof(std::uint32_t) + sizeof(constants) +
                                     (draw.vertexStage.shader ? sizeof(vertexConstants) : 0) +
                                     (draw.depth.test ? draw.depth.target.size_bytes() * 3 : 0);
         for (const auto &texture: textures) {
@@ -2644,8 +4469,10 @@ void main() {
             // Reuse any free matching bundle before forcing a live surface onto
             // the CPU. Search past holes left by eviction before allocating.
             // chainSlot is last in the key so matching bundles are contiguous.
-            const auto *preserveImages = std::getenv("WEMU_NATIVE_PRESERVE_IMAGES");
-            const bool preserve = !preserveImages || preserveImages[0] != '0';
+            static const bool preserve = [] {
+                const auto *preserveImages = std::getenv("WEMU_NATIVE_PRESERVE_IMAGES");
+                return !preserveImages || preserveImages[0] != '0';
+            }();
             // Keeping every live output resident can allocate thousands of identical
             // bundles for small lighting passes. Retain a short version chain, then
             // materialize its oldest output and reuse the existing allocations.
@@ -2658,7 +4485,7 @@ void main() {
                 // attachment inputs themselves need a separate destination.
                 return (targetSource && resources.ownsImage(targetSource)) || (depthSource && resources.ownsImage(depthSource));
             };
-            auto recyclable = m_impl->resources.end();
+            auto recyclable = m_impl->resources.end(), busy = m_impl->resources.end();
             unsigned freeSlot{}, matching{};
             for (; it != m_impl->resources.end(); ++it) {
                 if (!it->first.sameDraw(key)) {
@@ -2667,14 +4494,21 @@ void main() {
                 }
                 ++matching;
                 if (!ownsInput(*it->second.value)) {
-                    if (!preserve || !it->second.value->needsReadbackPreservation())
-                        break;
-                    if (recyclable == m_impl->resources.end() || it->second.used < recyclable->second.used)
+                    if (!preserve || !it->second.value->needsReadbackPreservation()) {
+                        // Refreshing a bundle the GPU still executes would stall the CPU on its
+                        // fence; keep looking for an idle one and grow the chain instead.
+                        if (it->second.value->idle())
+                            break;
+                        if (busy == m_impl->resources.end())
+                            busy = it;
+                    } else if (recyclable == m_impl->resources.end() || it->second.used < recyclable->second.used)
                         recyclable = it;
                 }
                 if (it->first.chainSlot == freeSlot)
                     ++freeSlot;
             }
+            if (it == m_impl->resources.end() && busy != m_impl->resources.end() && matching >= maxLiveVersions)
+                it = busy;
             if (it == m_impl->resources.end() && matching >= maxLiveVersions && recyclable != m_impl->resources.end())
                 it = recyclable; // refresh() saves outstanding versions before overwriting.
             key.chainSlot = freeSlot;
@@ -2686,12 +4520,6 @@ void main() {
                 const auto *value = std::getenv("WEMU_NATIVE_CACHE_MB");
                 return (value ? std::max<std::uint64_t>(128, std::strtoull(value, nullptr, 10)) : 2560ull) * 1024 * 1024;
             }();
-            if (it == m_impl->resources.end() && m_impl->context->pipelines.size() >= 512 && !m_impl->context->pipelines.contains(key.pipeline)) {
-                for (auto &[oldKey, entry]: m_impl->resources)
-                    entry.value->finishPending();
-                m_impl->resources.clear();
-                m_impl->cachedBytes = 0;
-            }
             // Count each shared image once, including images evicted from the
             // texture cache but still held by draw bundles. Reserve a worst-case
             // upload for the incoming snapshots on both allocation and refresh.
@@ -2715,8 +4543,8 @@ void main() {
             }
             if (it == m_impl->resources.end()) {
                 auto resources = std::make_shared<DrawResources>(m_impl->context);
-                resources->initialize(vertex->words, fragment->words, constants, vertexConstants, textures, draw, targetSource, depthSource,
-                                      overwriteTarget);
+                resources->initialize(*vertex, *fragment, constants, vertexConstants, constantFloats, vertexConstantFloats, textures, draw,
+                                      targetSource, depthSource, overwriteTarget);
                 it = m_impl->resources.emplace(std::move(key), Impl::ResourceEntry{std::move(resources), estimatedBytes, ++m_impl->resourceClock})
                              .first;
                 m_impl->cachedBytes += estimatedBytes;
@@ -2726,10 +4554,31 @@ void main() {
                 it->second.used = ++m_impl->resourceClock;
                 const auto oldTextures = it->second.value->retainedTextures;
                 const auto oldBytes = it->second.value->retainedTextureBytes;
-                if (it->second.value->refresh(constants, vertexConstants, textures, draw, m_impl->retainTextures, targetSource, depthSource))
+                if (it->second.value->refresh(constants, vertexConstants, constantFloats, vertexConstantFloats, textures, draw,
+                                              m_impl->retainTextures, targetSource, depthSource))
                     ++m_impl->retainedTargets;
                 m_impl->retainedTextures += it->second.value->retainedTextures - oldTextures;
                 m_impl->retainedTextureBytes += it->second.value->retainedTextureBytes - oldBytes;
+            }
+            // Render into the surface's current image instead of copying it into this bundle's
+            // image first (a full-target copy per draw otherwise). Excluded when the draw also
+            // samples that image, which would turn the attachment into a feedback loop.
+            static const bool adoptTargets = [] {
+                const auto *value = std::getenv("WEMU_NATIVE_ADOPT_TARGETS");
+                return !value || value[0] != '0';
+            }();
+            auto &bundle = *it->second.value;
+            if (adoptTargets && draw.supersedesTarget && targetSource && targetSnapshot && !overwriteTarget && !depthOnly(draw) && bundle.color() &&
+                bundle.color() != targetSource &&
+                std::none_of(textures.begin(), textures.end(), [&](const auto &texture) { return texture.rendered == targetSource; })) {
+                DrawResources *owner = nullptr;
+                for (auto &[ownerKey, entry]: m_impl->resources)
+                    if (entry.value->color() == targetSource) {
+                        owner = entry.value.get();
+                        break;
+                    }
+                bundle.adopt(targetSource, owner);
+                ++m_impl->adoptedTargets;
             }
             t4 = std::chrono::steady_clock::now();
             // Fragment/alpha counters are not measured by this backend yet.

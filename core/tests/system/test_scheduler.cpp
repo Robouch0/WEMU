@@ -68,6 +68,32 @@ TEST_F(SchedulerTest, NewThreadsStartWithCafeQuantizationDefaultsAndPreserveChan
     EXPECT_EQ(cpu->m_gqr[5], 0x02070207u);
 }
 
+TEST_F(SchedulerTest, QuantizedPairedSinglesApplyPositiveAndNegativeScales)
+{
+    cpu->m_gpr[3] = 0x28020000;
+    // GQR1: store type 7 (s16), load type 7, scale 3 (x8 on store, /8 on load).
+    cpu->m_gqr[1] = (3u << 24) | (7u << 16) | (3u << 8) | 7u;
+    cpu->m_fpr[1] = -12.5;
+    cpu->m_ps1[1] = 2.25;
+    // psq_st f1,0(r3),0,1 then psq_l f2,0(r3),0,1.
+    cpu->executeInstruction(EncodedInstruction{(60u << 26) | (1u << 21) | (3u << 16) | (1u << 12)});
+    EXPECT_EQ(std::int16_t(cpu->m_memory.read<unsigned short>(0x28020000)), -100);
+    EXPECT_EQ(std::int16_t(cpu->m_memory.read<unsigned short>(0x28020002)), 18);
+    cpu->executeInstruction(EncodedInstruction{(56u << 26) | (2u << 21) | (3u << 16) | (1u << 12)});
+    EXPECT_EQ(cpu->m_fpr[2], -12.5);
+    EXPECT_EQ(cpu->m_ps1[2], 2.25);
+    // A six-bit scale of 0x3E is -2: stores divide by 4, loads multiply by 4 (u8).
+    cpu->m_gqr[1] = (0x3Eu << 24) | (4u << 16) | (0x3Eu << 8) | 4u;
+    cpu->m_fpr[1] = 400;
+    cpu->m_ps1[1] = 8;
+    cpu->executeInstruction(EncodedInstruction{(60u << 26) | (1u << 21) | (3u << 16) | (1u << 12)});
+    EXPECT_EQ(cpu->m_memory.read<std::uint8_t>(0x28020000), 100u);
+    EXPECT_EQ(cpu->m_memory.read<std::uint8_t>(0x28020001), 2u);
+    cpu->executeInstruction(EncodedInstruction{(56u << 26) | (2u << 21) | (3u << 16) | (1u << 12)});
+    EXPECT_EQ(cpu->m_fpr[2], 400.);
+    EXPECT_EQ(cpu->m_ps1[2], 8.);
+}
+
 TEST_F(SchedulerTest, VpadReadInitializesOneCompleteSampleAndTracksEdges)
 {
     RegisterCoreinitFunctions();

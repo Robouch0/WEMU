@@ -10,8 +10,10 @@
 */
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 
 #include "cpu/interpreter/Interpreter.hpp"
@@ -20,6 +22,9 @@
 namespace Core::Instruction {
 
     static inline double single(const double v) { return static_cast<double>(static_cast<float>(v)); }
+    // Sign flip of a fused result. With FMA enabled, GCC folds -std::fma(...) into fnmadd/fnmsub,
+    // which round an exact zero to +0 where the Espresso negates it to -0.
+    static inline double negated(const double v) { return std::bit_cast<double>(std::bit_cast<std::uint64_t>(v) ^ 0x8000000000000000ull); }
 
     // Apply a paired op lane-wise then round both lanes to single precision.
     template<typename F>
@@ -58,11 +63,11 @@ namespace Core::Instruction {
     }
     void PS_NMADD(Interpreter &c, const EncodedInstruction &i)
     {
-        pairLanes(c, i, [](double a, double b, double cc) { return -std::fma(a, cc, b); });
+        pairLanes(c, i, [](double a, double b, double cc) { return negated(std::fma(a, cc, b)); });
     }
     void PS_NMSUB(Interpreter &c, const EncodedInstruction &i)
     {
-        pairLanes(c, i, [](double a, double b, double cc) { return -std::fma(a, cc, -b); });
+        pairLanes(c, i, [](double a, double b, double cc) { return negated(std::fma(a, cc, -b)); });
     }
     void PS_RES(Interpreter &c, const EncodedInstruction &i)
     {
@@ -257,9 +262,23 @@ namespace Core::Instruction {
     // ---- Quantized load/store ----
     static inline int scale6(std::uint32_t s) { return (s & 0x20) ? static_cast<int>(s) - 64 : static_cast<int>(s); }
 
+    // 2^exponent for the quantization scales, exponent in [-32, 32]: exact powers of two without a
+    // libm call per element.
+    static double power2(int exponent)
+    {
+        static const auto table = [] {
+            std::array<double, 65> powers{};
+            for (std::size_t k = 0; k < powers.size(); ++k)
+                powers[k] = std::ldexp(1.0, static_cast<int>(k) - 32);
+            return powers;
+        }();
+        const int index = exponent + 32;
+        return table[static_cast<std::size_t>(index)];
+    }
+
     static double dequant(Interpreter &cpu, std::uint32_t ea, std::uint32_t type, int scale)
     {
-        const double f = std::ldexp(1.0, -scale);
+        const double f = type >= 4 ? power2(-scale) : 1.0;
         switch (type) {
             case 4:
                 return static_cast<double>(cpu.m_memory.read<std::uint8_t>(ea)) * f; // u8
@@ -282,7 +301,7 @@ namespace Core::Instruction {
 
     static void quant(Interpreter &cpu, std::uint32_t ea, std::uint32_t type, int scale, double value)
     {
-        const double v = value * std::ldexp(1.0, scale);
+        const double v = type >= 4 ? value * power2(scale) : value;
         switch (type) {
             case 4:
                 cpu.m_memory.write<std::uint8_t>(ea, static_cast<std::uint8_t>(std::clamp(v, 0.0, 255.0)));

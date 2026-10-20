@@ -3,6 +3,13 @@
 #include <algorithm>
 #include <bit>
 #include <cmath>
+#include <condition_variable>
+#include <exception>
+#include <functional>
+#include <mutex>
+#include <pthread.h>
+#include <thread>
+#include <unordered_map>
 
 #include "AsyncCallbacks.hpp"
 #include "Coreinit.hpp"
@@ -17,6 +24,7 @@
 #include "gfx/SurfaceLayout.hpp"
 #include "gfx/VulkanRasterBackend.hpp"
 #include "utils/Diagnostics.hpp"
+#include "utils/FrameProfiler.hpp"
 #include "utils/Logger.hpp"
 
 // GX2 high-level emulation.
@@ -29,9 +37,82 @@
 
 namespace {
 
+    // Replays one captured frame at a time on its own host thread, so GX2 lowering and Vulkan
+    // submission overlap the guest CPU's next frame, the way the Wii U GPU runs behind the CPU.
+    class ReplayWorker {
+        public:
+            ReplayWorker()
+            {
+                m_thread = std::thread([this] { loop(); });
+                pthread_setname_np(m_thread.native_handle(), "wemu-replay");
+            }
+            ~ReplayWorker()
+            {
+                {
+                    std::lock_guard lock(m_mutex);
+                    m_stop = true;
+                }
+                m_wake.notify_all();
+                m_thread.join();
+            }
+            ReplayWorker(const ReplayWorker &) = delete;
+            ReplayWorker &operator=(const ReplayWorker &) = delete;
+
+            // Callers wait() first: one frame is in flight at most.
+            void submit(std::function<void()> job)
+            {
+                {
+                    std::lock_guard lock(m_mutex);
+                    m_job = std::move(job);
+                }
+                m_wake.notify_all();
+            }
+            // Blocks until the submitted frame finished; its failure is rethrown on the guest thread.
+            void wait()
+            {
+                std::unique_lock lock(m_mutex);
+                m_done.wait(lock, [&] { return !m_job; });
+                if (auto error = std::exchange(m_error, nullptr))
+                    std::rethrow_exception(error);
+            }
+
+        private:
+            void loop()
+            {
+                std::unique_lock lock(m_mutex);
+                for (;;) {
+                    m_wake.wait(lock, [&] { return m_stop || m_job; });
+                    if (!m_job)
+                        return;
+                    const auto job = m_job;
+                    lock.unlock();
+                    std::exception_ptr error;
+                    try {
+                        job();
+                    } catch (...) {
+                        error = std::current_exception();
+                    }
+                    lock.lock();
+                    m_error = error;
+                    m_job = nullptr;
+                    m_done.notify_all();
+                }
+            }
+
+            std::mutex m_mutex;
+            std::condition_variable m_wake, m_done;
+            std::function<void()> m_job;
+            std::exception_ptr m_error;
+            bool m_stop{};
+            std::thread m_thread;
+    };
+
     struct HostReplayState {
             std::unique_ptr<Core::Gfx::Gx2Replayer> replayer;
             bool nativeInitialized{};
+            // Asynchronous replay: the frame owned by the worker while it is in flight.
+            std::unique_ptr<ReplayWorker> worker;
+            Core::Gfx::Gx2CommandStream frame;
     };
     HostReplayState &hostReplayState()
     {
@@ -345,12 +426,21 @@ namespace {
                 words = 0x80 / 4; // color/depth viewMip, viewFirstSlice and viewNumSlices
         }
         if (ptr && words) {
-            c.payload.reserve(words);
-            try {
-                for (std::uint32_t i = 0; i < words; i++)
-                    c.payload.push_back(cpu.m_memory.read<std::uint32_t>(ptr + i * 4));
-            } catch (const Core::MemoryException &) {
-                c.payload.clear();
+            if (const auto *source = std::as_const(cpu.m_memory).hostPtr(ptr, std::size_t(words) * 4)) {
+                auto &payload = c.payload.overwrite(words);
+                for (std::uint32_t i = 0; i < words; i++) {
+                    std::uint32_t word;
+                    std::memcpy(&word, source + std::size_t(i) * 4, 4);
+                    payload[i] = std::byteswap(word);
+                }
+            } else {
+                c.payload.reserve(words);
+                try {
+                    for (std::uint32_t i = 0; i < words; i++)
+                        c.payload.push_back(cpu.m_memory.read<std::uint32_t>(ptr + i * 4));
+                } catch (const Core::MemoryException &) {
+                    c.payload.clear();
+                }
             }
         }
         if (type == Core::Gfx::Gx2Cmd::ClearBuffersEx && c.gpr[1]) {
@@ -425,11 +515,17 @@ namespace {
         Core::advanceGuestFrameClock(cpu);
         // Uniform BLOCKS are bound before the game fills them (the GPU reads at submission), so
         // their call-time payload snapshot is premature — refresh from memory now, at frame end.
+        static const bool regProbe = std::getenv("WEMU_GX2_REG_PROBE") != nullptr;
+        // Every refresh reads memory at this same point, so commands binding the same block
+        // (address and size) share one snapshot: draws rebind a few blocks hundreds of times.
+        static std::unordered_map<std::uint64_t, Core::Gfx::Gx2Payload> refreshed;
         for (auto &c: Core::Gfx::gx2Stream().mutableCommands()) {
-            // Probe: if a reg upload's source memory holds different data at frame end than it
-            // did at call time, the title fills the buffer after binding (would need frame-end
-            // snapshots for regs too). Logs first few diffs.
+            // Probe (WEMU_GX2_REG_PROBE): if a reg upload's source memory holds different data at
+            // frame end than it did at call time, the title fills the buffer after binding (would
+            // need frame-end snapshots for regs too). Logs first few diffs.
             if ((c.type == Core::Gfx::Gx2Cmd::SetVertexUniformReg || c.type == Core::Gfx::Gx2Cmd::SetPixelUniformReg) && !c.payload.empty()) {
+                if (!regProbe)
+                    continue;
                 static int regDiffs = 0;
                 if (regDiffs < 8) {
                     try {
@@ -453,6 +549,22 @@ namespace {
             const std::uint32_t words = std::min<std::uint32_t>(c.gpr[1] / 4, 0x1000);
             if (!c.gpr[2] || !words)
                 continue;
+            if (const auto *source = std::as_const(cpu.m_memory).hostPtr(c.gpr[2], std::size_t(words) * 4)) {
+                const auto key = (std::uint64_t(c.gpr[2]) << 32) | words;
+                if (const auto found = refreshed.find(key); found != refreshed.end()) {
+                    c.payload = found->second;
+                    continue;
+                }
+                // Blocks spliced from display lists share their recorded words: detach once.
+                auto &payload = c.payload.overwrite(words);
+                for (std::uint32_t i = 0; i < words; i++) {
+                    std::uint32_t word;
+                    std::memcpy(&word, source + std::size_t(i) * 4, 4);
+                    payload[i] = std::byteswap(word);
+                }
+                refreshed.emplace(key, c.payload);
+                continue;
+            }
             c.payload.clear();
             try {
                 for (std::uint32_t i = 0; i < words; i++)
@@ -461,6 +573,7 @@ namespace {
                 c.payload.clear();
             }
         }
+        refreshed.clear(); // The stream owns this frame's snapshots now.
         auto &host = hostReplayState();
         if (!host.replayer)
             host.replayer = std::make_unique<Core::Gfx::Gx2Replayer>();
@@ -729,19 +842,50 @@ namespace {
         }();
         static std::uint64_t s_lastHash = 0;
         static bool s_haveFrame = false;
-        const std::uint64_t hash = Core::Gfx::gx2Stream().contentHash();
+        // The hash only serves frame skipping; it walks every command and payload word.
+        const std::uint64_t hash = noSkip ? 0 : Core::Gfx::gx2Stream().contentHash();
+        // WEMU_ASYNC_REPLAY=0 replays inside this call. Otherwise the previous frame, replayed
+        // while the guest built this one, is finished and presented here, and this frame goes
+        // to the replay thread: presentation trails the guest by one frame. Replay only reads
+        // guest memory (uniform blocks were snapshotted above), like the GPU it stands for.
+        static const bool asyncReplay = [] {
+            const char *e = std::getenv("WEMU_ASYNC_REPLAY");
+            return !e || e[0] != '0';
+        }();
+        if (asyncReplay) {
+            if (!host.worker)
+                host.worker = std::make_unique<ReplayWorker>();
+            Core::Profile::Scope waiting(Core::Profile::Stage::GpuWait);
+            host.worker->wait();
+        }
+        const auto present = [&] {
+            const bool drcShown = cpu.m_renderer && cpu.m_renderer->drc_wanted();
+            if (drcShown && !replayer.drcFramebuffer().empty())
+                cpu.m_renderer->flip_drc(replayer.drcFramebuffer().data(), Core::Gfx::Gx2Replayer::kDrcWidth, Core::Gfx::Gx2Replayer::kDrcHeight);
+            if (cpu.m_renderer)
+                cpu.m_renderer->flip_tv(replayer.framebuffer().data(), Core::Gfx::Gx2Replayer::kWidth, Core::Gfx::Gx2Replayer::kHeight);
+        };
+        if (asyncReplay && s_haveFrame)
+            present();
         // A remote GamePad attached during a static stretch needs one rebuild to get its first image.
         const bool drcWanted = cpu.m_renderer && cpu.m_renderer->drc_wanted();
         replayer.setDrcCapture(drcWanted);
         if (noSkip || !s_haveFrame || hash != s_lastHash || (drcWanted && replayer.drcFramebuffer().empty())) {
-            replayer.replay(Core::Gfx::gx2Stream(), &cpu.m_memory);
+            if (asyncReplay) {
+                std::swap(host.frame, Core::Gfx::gx2Stream());
+                host.worker->submit([&replayer, &frame = host.frame, memory = &cpu.m_memory, presents = g_swapCount] {
+                    Core::Profile::timeline().reset();
+                    replayer.replay(frame, memory);
+                    Core::Profile::reportReplay(presents);
+                });
+            } else {
+                replayer.replay(Core::Gfx::gx2Stream(), &cpu.m_memory);
+            }
             s_lastHash = hash;
             s_haveFrame = true;
         }
-        if (drcWanted && !replayer.drcFramebuffer().empty())
-            cpu.m_renderer->flip_drc(replayer.drcFramebuffer().data(), Core::Gfx::Gx2Replayer::kDrcWidth, Core::Gfx::Gx2Replayer::kDrcHeight);
-        if (cpu.m_renderer)
-            cpu.m_renderer->flip_tv(replayer.framebuffer().data(), Core::Gfx::Gx2Replayer::kWidth, Core::Gfx::Gx2Replayer::kHeight);
+        if (!asyncReplay)
+            present();
         Core::Gfx::gx2Stream().clear();
         g_swapCount++;
         g_flipCount = g_swapCount;
@@ -1308,7 +1452,9 @@ void ReleaseGx2HostResources() noexcept
     // Drop worker/image/readback owners while Vulkan, renderer and guest memory
     // are still alive, rather than during process-static destruction.
     auto &host = hostReplayState();
+    host.worker.reset(); // finish the frame in flight before its replayer goes away
     host.replayer.reset();
+    host.frame.clear();
     host.nativeInitialized = false;
     g_openLists.clear();
     g_displayLists.clear();

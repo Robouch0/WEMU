@@ -23,6 +23,12 @@ namespace Core::Gfx {
     struct RasterImage {
             virtual ~RasterImage() = default;
     };
+    // A target cleared on the CPU side that nothing has drawn into since: a backend may clear its
+    // image to `color` (the stored element, decoded) instead of uploading the resolved bytes.
+    struct ClearedImage final : RasterImage {
+            std::array<float, 4> color;
+            explicit ClearedImage(const std::array<float, 4> &value) : color(value) {}
+    };
     // Synchronous reference-raster ABI. All borrowed data expires when render returns.
     // Positions include window depth and reciprocal clip W. Varyings interpolate
     // perspectively for positive W; full clipping, stencil and multisampling are
@@ -59,8 +65,15 @@ namespace Core::Gfx {
                     // unorm8Pitch/Map describe its layout and component mapping.
                     std::shared_ptr<RasterReadback> rendered;
                     // Array snapshots are layer-major, with identical row pitches.
-                    // Arrays require explicit CPU snapshots; rendered aliases remain 2D.
+                    // Arrays require explicit CPU snapshots or renderedLayers.
                     unsigned layers{1};
+                    // Optional rendered layers of a 2D array view, one current version per layer,
+                    // laid out like `rendered` (unorm8Pitch, unorm8Map, renderedFormat/Depth).
+                    // With renderedLevels > 1 (2D, array or cube views; backends advertising
+                    // supportsRenderedMipLevels), entries are level-major: levels x layers, each
+                    // level max(1, size >> level), and every entry must still be resident.
+                    std::vector<std::shared_ptr<RasterReadback>> renderedLayers;
+                    unsigned renderedLevels{1};
                     // Optional little-endian R32 texels, with pitch in texels. Avoids
                     // expanding guest GPU words into a temporary host float array.
                     std::span<const std::uint8_t> r32Bytes;
@@ -107,6 +120,10 @@ namespace Core::Gfx {
             // Optional complete pre-draw target. Backends advertising this
             // capability may preserve active pixels on GPU; CPU fallback resolves it.
             std::shared_ptr<RasterReadback> renderedTarget;
+            // The caller replaces its only reference to renderedTarget with this draw's result,
+            // so that version is never resolved afterwards: a backend may render into its image
+            // in place instead of preserving it.
+            bool supersedesTarget{};
             struct Depth {
                     using Format = DepthFormat;
                     bool test{}, write{};
@@ -115,9 +132,18 @@ namespace Core::Gfx {
                     std::span<const float> target; // canonical depth, including padding
                     unsigned width{}, height{}, pitch{};
                     std::shared_ptr<RasterReadback> rendered;
+                    // The surface was cleared to this stored value since `target` was written:
+                    // every element of the width x height area holds it, padding keeps `target`.
+                    std::optional<float> clear;
+                    // The guest disabled Z clipping: window depth outside [0, 1] is clamped per
+                    // fragment, as the reference rasterizer does, instead of clipping the primitive.
+                    bool clamp{};
             } depth;
             enum class Topology { Triangles, Points };
             Topology topology{Topology::Triangles};
+            // Triangle-list indices into vertices; empty draws vertices in order. Shared corners are
+            // then built and uploaded once per draw.
+            std::span<const std::uint32_t> indices;
             ColorFormat colorFormat{ColorFormat::RGBA8};
             struct VertexStage {
                     std::shared_ptr<const Latte::VertexShader> shader;
@@ -130,6 +156,15 @@ namespace Core::Gfx {
                     }();
                     std::array<float, 6> viewport{};
                     unsigned inputCount{4};
+                    // Optional compact program inputs replacing `vertices` (then empty): for each
+                    // vertex, attributeStride consecutive attributes 0..stride-1. Attributes from
+                    // attributeStride on read the reference defaults ({1,1,1,1}, three {0,0,0,1},
+                    // then zeros). Positions come from the program, so none are needed.
+                    std::span<const std::array<float, 4>> attributes;
+                    unsigned attributeStride{};
+                    // Identity/lifetime of immutable `attributes` and the draw's `indices`: a changed
+                    // array must supply a new owner. Lets backends keep one upload across draws.
+                    std::shared_ptr<const void> attributesOwner;
             } vertexStage;
             // Static kcache references in shader.uniforms, four floats each;
             // replayer snapshots the actual fragment uniform-block values.
@@ -187,9 +222,12 @@ namespace Core::Gfx {
             std::vector<std::uint8_t> rgba; // complete target, including preserved padding
             std::uint64_t pixels{}, alphaSum{};
             std::shared_ptr<RasterReadback> readback;
+            // Byte size of a target the draw left exactly as passed (no color attachment): rgba
+            // then stays empty and callers keep their bytes.
+            std::size_t unchangedTarget{};
             std::vector<float> depth;
             std::shared_ptr<RasterReadback> depthReadback;
-            std::size_t size() const { return readback ? readback->size() : rgba.size(); }
+            std::size_t size() const { return readback ? readback->size() : unchangedTarget ? unchangedTarget : rgba.size(); }
             void resolve()
             {
                 if (readback) {
@@ -225,6 +263,8 @@ namespace Core::Gfx {
             virtual bool supportsFloatTargets() const { return false; }
             virtual bool supportsVertexStage() const { return false; }
             virtual bool supportsBlockTextures() const { return false; }
+            // Textures may carry rendered mip levels and cube faces (Texture::renderedLevels).
+            virtual bool supportsRenderedMipLevels() const { return false; }
             // Same borrowed-input lifetime as render; only the owned readback may
             // outlive this call. Backends without deferred support remain synchronous.
             virtual std::optional<RasterResult> renderDeferred(const RasterDraw &draw) { return render(draw); }

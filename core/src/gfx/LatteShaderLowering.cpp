@@ -4,6 +4,7 @@
 #include <array>
 #include <bit>
 #include <format>
+#include <map>
 #include <set>
 #include <stdexcept>
 
@@ -17,12 +18,12 @@ namespace Core::Gfx::Latte {
         // Missing resource types default to 2D, so trailing defaults are equivalent.
         while (!resourceTypes.empty() && resourceTypes.back() == TextureType::TwoD)
             resourceTypes = resourceTypes.first(resourceTypes.size() - 1);
-        Key key{words, {resourceTypes.begin(), resourceTypes.end()}, onlyColorZero, colorExport};
-        if (const auto found = m_entries.find(key); found != m_entries.end()) {
+        if (const auto found = m_entries.find(KeyView{words, resourceTypes, onlyColorZero, colorExport}); found != m_entries.end()) {
             ++m_hits;
             return found->second;
         }
         ++m_misses;
+        Key key{words, {resourceTypes.begin(), resourceTypes.end()}, onlyColorZero, colorExport};
         auto shader = std::make_shared<const FragmentShader>(lowerFragmentShader(*decodeProgram(words), resourceTypes, onlyColorZero, colorExport));
         constexpr std::size_t maxBytes = std::size_t{256} * 1024 * 1024;
         const auto bytes = words.size() * sizeof(std::uint32_t) + resourceTypes.size() * sizeof(TextureType) + shader->source.size() +
@@ -180,7 +181,9 @@ namespace Core::Gfx::Latte {
                         }
                         return std::format("u.k[{}][{}]", std::distance(shader.uniforms.begin(), it), src.chan);
                     }
-                    return std::format("u.c[{}][{}]", src.sel >= 256 ? src.sel - 256 : src.sel - 128, src.chan);
+                    const auto index = src.sel >= 256 ? src.sel - 256 : src.sel - 128;
+                    shader.constantRegisters = std::max(shader.constantRegisters, index + 1);
+                    return std::format("u.c[{}][{}]", index, src.chan);
                 }
         };
         std::string source(const Src &s, const AluInst &instruction, LoweringConstants &constants)
@@ -195,8 +198,10 @@ namespace Core::Gfx::Latte {
                 if (s.sel < 128) {
                     const auto index = std::format("({}+ar[{}])", s.sel, indexMode);
                     value = std::format("({0}>=0 && {0}<128 ? r[clamp({0},0,127)][{1}] : uintBitsToFloat(2147483647u))", index, s.chan);
-                } else
+                } else {
+                    constants.shader.constantRegisters = 256;
                     value = std::format("relativeConstant({}+ar[{}],{})", s.sel - 256, indexMode, s.chan);
+                }
             } else if (s.sel < 128)
                 value = std::format("r[{}][{}]", s.sel, s.chan);
             else if (s.sel < 192 || (s.sel >= 256 && s.sel < 512))
@@ -212,6 +217,9 @@ namespace Core::Gfx::Latte {
                     case SRC_1_INT:
                         value = "uintBitsToFloat(1u)";
                         break;
+                    case SRC_M_1_INT:
+                        value = "uintBitsToFloat(4294967295u)";
+                        break;
                     case SRC_HALF:
                         value = "0.5";
                         break;
@@ -225,7 +233,7 @@ namespace Core::Gfx::Latte {
                         value = "ps";
                         break;
                     default:
-                        throw std::runtime_error("unsupported ALU source selector");
+                        throw std::runtime_error(std::format("unsupported ALU source selector {}", s.sel));
                 }
             if (s.abs)
                 value = "abs(" + value + ")";
@@ -357,6 +365,27 @@ namespace Core::Gfx::Latte {
                     return "(" + a + " >= " + b + " ? 1.0 : 0.0)";
                 case OP2_SETNE:
                     return "(" + a + " != " + b + " ? 1.0 : 0.0)";
+                // KILL* results are the kill condition; the commit marks the lane killed.
+                case OP2_KILLE:
+                    return "(" + a + " == " + b + " ? 1.0 : 0.0)";
+                case OP2_KILLGT:
+                    return "(" + a + " > " + b + " ? 1.0 : 0.0)";
+                case OP2_KILLGE:
+                    return "(" + a + " >= " + b + " ? 1.0 : 0.0)";
+                case OP2_KILLNE:
+                    return "(" + a + " != " + b + " ? 1.0 : 0.0)";
+                case OP2_KILLGT_UINT:
+                    return "uintBitsToFloat(floatBitsToUint(" + a + ") > floatBitsToUint(" + b + ") ? 1u : 0u)";
+                case OP2_KILLGE_UINT:
+                    return "uintBitsToFloat(floatBitsToUint(" + a + ") >= floatBitsToUint(" + b + ") ? 1u : 0u)";
+                case OP2_KILLE_INT:
+                    return "uintBitsToFloat(floatBitsToInt(" + a + ") == floatBitsToInt(" + b + ") ? 1u : 0u)";
+                case OP2_KILLGT_INT:
+                    return "uintBitsToFloat(floatBitsToInt(" + a + ") > floatBitsToInt(" + b + ") ? 1u : 0u)";
+                case OP2_KILLGE_INT:
+                    return "uintBitsToFloat(floatBitsToInt(" + a + ") >= floatBitsToInt(" + b + ") ? 1u : 0u)";
+                case OP2_KILLNE_INT:
+                    return "uintBitsToFloat(floatBitsToInt(" + a + ") != floatBitsToInt(" + b + ") ? 1u : 0u)";
                 case OP2_SETE_DX10:
                     return "uintBitsToFloat(" + a + " == " + b + " ? 4294967295u : 0u)";
                 case OP2_SETGE_DX10:
@@ -472,10 +501,11 @@ namespace Core::Gfx::Latte {
     } // namespace
 
     static FragmentShader lowerShader(const Program &program, std::span<const TextureType> resourceTypes, bool vertexStage,
-                                      bool onlyColorZero = false, unsigned colorExport = 0)
+                                      bool onlyColorZero = false, unsigned colorExport = 0, unsigned bufferWindow = 0)
     {
         FragmentShader result;
         result.exportsColor = false;
+        result.constantRegisters = 0;
         LoweringConstants constants{result, {}, {}, {}};
         try {
             if (!program.valid || program.words.size() < 2 || colorExport >= 8 || (!onlyColorZero && colorExport))
@@ -486,7 +516,8 @@ namespace Core::Gfx::Latte {
                 body += vertexStage ? std::format("r[{}]=attributes[{}];\n", i + 1, i) : std::format("r[{}]=inputs[{}];\n", i, i);
             if (vertexStage)
                 body += "vec4 position=vec4(0.0,0.0,0.0,1.0); vec4 parameters[32]; for(int i=0;i<32;++i) parameters[i]=vec4(0.0);\n";
-            body += "vec4 pv=vec4(0.0); float ps=0.0;\nbool pred=true,laneActive=true,wroteOutput=false; bool activeStack[32]; uint pc=0u;\n";
+            body += "vec4 pv=vec4(0.0); float ps=0.0;\nbool pred=true,laneActive=true,wroteOutput=false,killed=false; bool activeStack[32]; uint "
+                    "pc=0u;\n";
             bool exported = false, terminated = false, ignoredColorExports = false;
             bool terminalUnconditionalColor = false;
             bool varyingWholeQuadUsed = false, implicitSamples = false;
@@ -649,6 +680,13 @@ namespace Core::Gfx::Latte {
                                 body += std::format("nextActive=p{};\n", i);
                             if (in.writeMask)
                                 body += std::format("r[{}][{}]=t{};\n", in.dstGpr, in.dstChan, i);
+                            if (in.isKill()) {
+                                if (vertexStage)
+                                    throw std::runtime_error("pixel kill in a vertex program");
+                                // Discard at the end so helper lanes keep feeding derivatives.
+                                body += std::format("if(floatBitsToUint(t{})!=0u) killed=true;\n", i);
+                                result.kills = true;
+                            }
                             if (in.isAddressWrite()) {
                                 body += std::format("ar[{}]=floatBitsToInt(t{});\n", in.dstChan, i);
                                 constants.addressValid[in.dstChan] = true;
@@ -727,8 +765,10 @@ namespace Core::Gfx::Latte {
                         // final word is padding, not additional instruction flags.
                         // 0x18/0x1B: SAMPLE_C/SAMPLE_C_LZ depth comparison against src.w.
                         const bool compare = texOp == 0x18 || texOp == 0x1B;
-                        if ((texOp != 0x0F && texOp != 0x10 && texOp != 0x11 && texOp != 0x13 && !compare) || (t0 & ~tex0Mask) || (t1 & ~tex1Mask) ||
-                            (t1 & 0x30000000) != 0x30000000 || (t2 & 0x7FFF))
+                        // 0x06: GET_COMP_TEX_LOD.
+                        const bool lodQuery = texOp == 0x06;
+                        if ((texOp != 0x0F && texOp != 0x10 && texOp != 0x11 && texOp != 0x13 && !compare && !lodQuery) || (t0 & ~tex0Mask) ||
+                            (t1 & ~tex1Mask) || (t1 & 0x30000000) != 0x30000000 || (t2 & 0x7FFF))
                             throw std::runtime_error(std::format("unsupported texture instruction: cf={} slot={} op={} words={:08X},{:08X},{:08X}",
                                                                  cf / 2, i, texOp, t0, t1, t2));
                         if (texOp == 0x10 || texOp == 0x0F || texOp == 0x18)
@@ -750,8 +790,8 @@ namespace Core::Gfx::Latte {
                         }
                         binding->implicitLod |= !explicitLod;
                         binding->explicitLod |= texOp == 0x11;
-                        if (compare && binding->type != TextureType::TwoD && std::getenv("WEMU_ARRAYDIAG") == nullptr) // TEMP-ARRAYDIAG
-                            throw std::runtime_error("array depth-compare sampling not yet supported");
+                        if (compare && binding->type != TextureType::TwoD && binding->type != TextureType::TwoDArray)
+                            throw std::runtime_error("cube/3D depth-compare sampling not yet supported");
                         const auto reg = std::format("r[{}]", (t0 >> 16) & 127);
                         for (unsigned c = 0; c < 4; ++c) {
                             const auto selector = (t2 >> (20 + c * 3)) & 7;
@@ -767,11 +807,30 @@ namespace Core::Gfx::Latte {
                             throw std::runtime_error("cube gather/depth-compare sampling not yet supported");
                         if (volume && (compare || texOp == 0x0F || texOp == 0x11))
                             throw std::runtime_error("3D gather/depth-compare/mip sampling not yet supported");
+                        const auto planar = coords;
                         if (volume)
                             coords += std::format(",{}", select(reg, (t2 >> 26) & 7));
                         if (array)
                             coords += std::format(",arrayLayerReference({},textureSize(tex{},0).z)", select(reg, (t2 >> 26) & 7), binding->binding);
-                        if (cube) {
+                        if (lodQuery) {
+                            // x: the computed LOD relative to the base level, before clamping; y: the
+                            // level it selects (GLSL's textureQueryLod returns them in the other order).
+                            // Implicit derivatives need the whole quad to reach the query: every lane
+                            // active (no open stack region or root mask update) and no forward jump
+                            // pending past this clause. Registers written under an earlier mask differ
+                            // per lane exactly as on the GPU, whose derivatives read all four lanes.
+                            // Cube faces are addressed by (s, t, face) like samples: the direction
+                            // rebuilt with a unit major axis has face-coordinate derivatives equal to
+                            // s and t's.
+                            if (depth || !allActive ||
+                                std::any_of(jumpTargets.begin(), jumpTargets.end(), [&](const auto &target) { return target.first > cf / 2; }))
+                                throw std::runtime_error("LOD query under a varying execute mask");
+                            const auto point = cube     ? std::format("cubeDirectionReference(vec3({},{}))", planar, select(reg, (t2 >> 26) & 7))
+                                               : volume ? std::format("vec3({})", coords)
+                                                        : std::format("vec2({})", planar);
+                            body += std::format("{{ vec2 lod=textureQueryLod(tex{},{}); vec4 sampled=vec4(lod.y,lod.x,0.0,0.0);\n", binding->binding,
+                                                point);
+                        } else if (cube) {
                             cubeIndices.insert(resource);
                             body += std::format("{{ vec3 coord=vec3({},{}); vec4 sampled; "
                                                 "if(any(isnan(coord))||any(isinf(coord))||coord.z<0.0||coord.z>=6.0||isnan({})||isinf({})||isnan("
@@ -791,6 +850,17 @@ namespace Core::Gfx::Latte {
                                                 "if(any(isnan(coord))||any(isinf(coord))) sampled=vec4(u.borders[{}].r); "
                                                 "else sampled=textureGather(tex{},coord,0);\n",
                                                 coords, binding->binding - 1, binding->binding);
+                        } else if (compare) {
+                            // Shadow sample: (reference FUNC texel) with the sampler's
+                            // DEPTH_COMPARE_FUNCTION, stored in u.sampling[].w by the backend.
+                            // Array coordinates already carry the rounded layer.
+                            body += std::format("{{ float reference={}; float texel=textureLod(tex{},vec{}({}),0.0).r; "
+                                                "int compareFunction=int(u.sampling[{}].w); bool pass="
+                                                "compareFunction==1?reference<texel:compareFunction==2?reference==texel:"
+                                                "compareFunction==3?reference<=texel:compareFunction==4?reference>texel:"
+                                                "compareFunction==5?reference!=texel:compareFunction==6?reference>=texel:compareFunction==7; "
+                                                "vec4 sampled=vec4(pass?1.0:0.0);\n",
+                                                select(reg, (t2 >> 29) & 7), binding->binding, array ? 3 : 2, coords, binding->binding - 1);
                         } else if (array && texOp == 0x11) {
                             body += std::format("{{ vec4 sampled=textureLod(tex{},vec3({}),{});\n", binding->binding, coords, lod);
                         } else if (array) {
@@ -799,16 +869,6 @@ namespace Core::Gfx::Latte {
                                                 "else sampled=sampleArrayReference(tex{},vec3({}),u.sampling[{}]);\n",
                                                 select(reg, (t2 >> 20) & 7), select(reg, (t2 >> 23) & 7), select(reg, (t2 >> 26) & 7),
                                                 binding->binding - 1, binding->binding, coords, binding->binding - 1);
-                        } else if (compare) {
-                            // Shadow sample: (reference FUNC texel) with the sampler's
-                            // DEPTH_COMPARE_FUNCTION, stored in u.sampling[].w by the backend.
-                            body += std::format("{{ float reference={}; float texel=textureLod(tex{},vec2({}),0.0).r; "
-                                                "int compareFunction=int(u.sampling[{}].w); bool pass="
-                                                "compareFunction==1?reference<texel:compareFunction==2?reference==texel:"
-                                                "compareFunction==3?reference<=texel:compareFunction==4?reference>texel:"
-                                                "compareFunction==5?reference!=texel:compareFunction==6?reference>=texel:compareFunction==7; "
-                                                "vec4 sampled=vec4(pass?1.0:0.0);\n",
-                                                select(reg, (t2 >> 29) & 7), binding->binding, coords, binding->binding - 1);
                         } else {
                             body += std::format("{{ vec4 sampled=textureLod(tex{},vec{}({}),{});\n", binding->binding, volume ? 3 : 2, coords, lod);
                         }
@@ -965,14 +1025,14 @@ namespace Core::Gfx::Latte {
             if (ignoredColorExports && (maskedControl || rootMaskChanged || !jumpTargets.empty()))
                 throw std::runtime_error("inactive color export specialization requires unconditional exports");
             result.requiresOnlyColorZero = ignoredColorExports;
-            result.alwaysWritesColor = !vertexStage && result.exportsColor && !result.writesDepth &&
+            result.alwaysWritesColor = !vertexStage && result.exportsColor && !result.writesDepth && !result.kills &&
                                        (terminalUnconditionalColor || (!maskedControl && jumpTargets.empty()));
             // Reserve the remaining existing UBO slots for dynamic buffer reads.
             // Replay proves each bound block fits before native dispatch; larger
             // blocks retain reference execution rather than truncating a palette.
             if (!uniformBuffers.empty()) {
-                const auto capacity = unsigned((512 - result.uniforms.size()) / uniformBuffers.size());
-                if (!capacity)
+                const auto capacity = bufferWindow ? bufferWindow : unsigned((512 - result.uniforms.size()) / uniformBuffers.size());
+                if (!capacity || result.uniforms.size() + std::size_t(capacity) * uniformBuffers.size() > kUniformVectors)
                     throw std::runtime_error("dynamic uniform buffer budget exceeded");
                 for (const auto bank: uniformBuffers) {
                     result.uniformBuffers.push_back({bank, unsigned(result.uniforms.size()), capacity});
@@ -1004,15 +1064,18 @@ namespace Core::Gfx::Latte {
                 const auto end = result.source.find("float arrayLayerReference");
                 result.source.replace(
                         0, end,
-                        "#version 450\nlayout(location=1) in vec4 attributes[16];\nlayout(location=0) out vec4 inputs[16];\n"
-                        "layout(location=16) noperspective out float windowDepth;\n"
-                        "invariant gl_Position; precise gl_Position; precise windowDepth;\n"
-                        "layout(set=0,binding=17,std140) uniform Constants { vec4 c[256]; vec4 borders[16]; vec4 sampling[16]; vec4 k[512]; } u;\n"
-                        "layout(push_constant) uniform Viewport { vec2 scale; float depthEnabled; float unused; vec4 window; vec2 depth; "
-                        "layout(offset=48) ivec4 inputParams[4]; } viewport;\n");
+                        std::format(
+                                "#version 450\nlayout(location=1) in vec4 attributes[16];\nlayout(location=0) out vec4 inputs[16];\n"
+                                "layout(location=16) noperspective out float windowDepth;\n"
+                                "invariant gl_Position; precise gl_Position; precise windowDepth;\n"
+                                "layout(set=0,binding=17,std140) uniform Constants {{ vec4 c[256]; vec4 borders[16]; vec4 sampling[16]; "
+                                "vec4 k[{}]; }} u;\n"
+                                "layout(push_constant) uniform Viewport {{ vec2 scale; float depthEnabled; float unused; vec4 window; vec2 depth; "
+                                "layout(offset=48) ivec4 inputParams[4]; }} viewport;\n",
+                                kUniformVectors));
             } else if (!result.uniforms.empty()) {
                 const auto end = result.source.find(" } u;");
-                result.source.insert(end, " vec4 k[512];");
+                result.source.insert(end, std::format(" vec4 k[{}];", kUniformVectors));
             }
             result.source += R"(
 // R700 truncates finite values and retains the low integer bits. Decode the
@@ -1121,11 +1184,13 @@ vec3 cubeDirectionReference(vec3 coord) {
 }
 )";
             else
-                result.source += "if(!wroteOutput) discard;\n}\n";
+                result.source += "if(!wroteOutput||killed) discard;\n}\n";
         } catch (const std::runtime_error &error) {
             result = {};
             result.error = error.what();
         }
+        if (result)
+            result.sourceHash = std::hash<std::string_view>{}(result.source) | 1u;
         return result;
     }
     FragmentShader lowerFragmentShader(const Program &program, std::span<const TextureType> resourceTypes, bool onlyColorZero, unsigned colorExport)
@@ -1180,14 +1245,21 @@ vec3 cubeDirectionReference(vec3 coord) {
             m_colorOnlyEffects.emplace(words, safe);
         return safe;
     }
-    VertexShader lowerVertexShader(const Program &program, std::span<const TextureType> resourceTypes)
+    VertexShader lowerVertexShader(const Program &program, std::span<const TextureType> resourceTypes, unsigned bufferWindow)
     {
         VertexShader shader;
-        static_cast<FragmentShader &>(shader) = lowerShader(program, resourceTypes, true);
+        static_cast<FragmentShader &>(shader) = lowerShader(program, resourceTypes, true, false, 0, bufferWindow);
         return shader;
     }
-    std::shared_ptr<const VertexShader> VertexShaderCache::get(const std::vector<std::uint32_t> &words)
+    std::shared_ptr<const VertexShader> VertexShaderCache::get(const std::vector<std::uint32_t> &words, unsigned bufferWindow)
     {
+        if (bufferWindow) {
+            // Rare: only programs whose blocks outgrow the default budget, a few window sizes each.
+            auto &shader = m_windowed[{bufferWindow, words}];
+            if (!shader)
+                shader = std::make_shared<const VertexShader>(lowerVertexShader(*decodeProgram(words), {}, bufferWindow));
+            return shader;
+        }
         if (const auto it = m_entries.find(words); it != m_entries.end())
             return it->second;
         auto shader = std::make_shared<const VertexShader>(lowerVertexShader(*decodeProgram(words)));

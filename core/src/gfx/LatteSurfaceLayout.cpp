@@ -49,6 +49,7 @@ namespace Core::Gfx {
                            : hwFormat == 0x31 || hwFormat == 0x34                                        ? 8u
                            : hwFormat >= 0x32 && hwFormat <= 0x35                                        ? 16u
                            : hwFormat == 0x22 || hwFormat == 0x23                                        ? 16u
+                           : hwFormat == 0x1F || hwFormat == 0x20                                        ? 8u
                            : hwFormat == 0xE || hwFormat == 0x16 || hwFormat == 0x19 || hwFormat == 0x1A ? 4u
                                                                                                          : 0u;
         if (!bytes)
