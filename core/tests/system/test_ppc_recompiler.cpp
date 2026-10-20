@@ -57,7 +57,9 @@ TEST_F(PpcFetchInterpreterTest, ObservedPcsBoundNativeLookaheadAndPreventCollaps
     cpu->m_observedPcs = {app};
     const auto &start = cpu->getBlock(reader, 0, true);
     EXPECT_TRUE(start.nativeWords.empty());
-    EXPECT_EQ(start.instrs.size(), 2u);
+    // Without lookahead the interpreted block runs past the store to the loop branch: runBlock()
+    // leaves it after a store into decoded code.
+    EXPECT_EQ(start.instrs.size(), 6u);
 }
 
 TEST_F(PpcFetchInterpreterTest, RecordsUnsupportedPrefixBoundaryWithoutNativeExecution)
@@ -179,8 +181,8 @@ TEST_F(PpcFetchInterpreterTest, NativePrefixFollowsLiveCodeAndHookBoundaries)
     cpu->m_memory.write<std::uint32_t>(app + 4, 0x38630002);
     cpu->m_memory.write<std::uint32_t>(app + 8, 0x48000004);
     EXPECT_EQ(cpu->getBlock(reader, 0).nativeWords, (std::vector<std::uint32_t>{0x38600001, 0x38630002, 0x48000004}));
-    cpu->m_memory.write<std::uint32_t>(app + 4, 0x90640000); // store ends the decoded version
-    EXPECT_EQ(cpu->getBlock(reader, 0).nativeWords, (std::vector<std::uint32_t>{0x38600001, 0x90640000}));
+    cpu->m_memory.write<std::uint32_t>(app + 4, 0x90640000); // a new decoded version, which continues past the store
+    EXPECT_EQ(cpu->getBlock(reader, 0).nativeWords, (std::vector<std::uint32_t>{0x38600001, 0x90640000, 0x48000004}));
     cpu->m_memory.write<std::uint32_t>(app + 4, 0x38630003);
     EXPECT_EQ(cpu->getBlock(reader, 0).nativeWords, (std::vector<std::uint32_t>{0x38600001, 0x38630003, 0x48000004}));
 
@@ -856,8 +858,9 @@ TEST_F(PpcFetchInterpreterTest, NativeLookaheadRetainsReferenceStoreBoundariesAn
     const std::array words{0x90640000u, 0x38630001u, 0x2C03000Au, 0x4180FFF4u};
     for (unsigned i = 0; i < words.size(); ++i)
         cpu->m_memory.write<std::uint32_t>(app + i * 4, words[i]);
+    // Interpreted blocks continue past stores; only the lookahead reference stops at them.
     const auto &reference = cpu->getBlock(reader, 0);
-    ASSERT_EQ(reference.instrs.size(), 1u);
+    ASSERT_EQ(reference.instrs.size(), 4u);
     const auto &native = cpu->getBlock(reader, 0, true);
     EXPECT_EQ(native.instrs.size(), 1u);
     EXPECT_EQ(native.nativeWords, (std::vector<std::uint32_t>(words.begin(), words.end())));
