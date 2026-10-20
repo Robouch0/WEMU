@@ -9,6 +9,7 @@
 #include <mutex>
 #include <pthread.h>
 #include <thread>
+#include <unordered_map>
 
 #include "AsyncCallbacks.hpp"
 #include "Coreinit.hpp"
@@ -515,6 +516,9 @@ namespace {
         // Uniform BLOCKS are bound before the game fills them (the GPU reads at submission), so
         // their call-time payload snapshot is premature — refresh from memory now, at frame end.
         static const bool regProbe = std::getenv("WEMU_GX2_REG_PROBE") != nullptr;
+        // Every refresh reads memory at this same point, so commands binding the same block
+        // (address and size) share one snapshot: draws rebind a few blocks hundreds of times.
+        static std::unordered_map<std::uint64_t, Core::Gfx::Gx2Payload> refreshed;
         for (auto &c: Core::Gfx::gx2Stream().mutableCommands()) {
             // Probe (WEMU_GX2_REG_PROBE): if a reg upload's source memory holds different data at
             // frame end than it did at call time, the title fills the buffer after binding (would
@@ -546,6 +550,11 @@ namespace {
             if (!c.gpr[2] || !words)
                 continue;
             if (const auto *source = std::as_const(cpu.m_memory).hostPtr(c.gpr[2], std::size_t(words) * 4)) {
+                const auto key = (std::uint64_t(c.gpr[2]) << 32) | words;
+                if (const auto found = refreshed.find(key); found != refreshed.end()) {
+                    c.payload = found->second;
+                    continue;
+                }
                 // Blocks spliced from display lists share their recorded words: detach once.
                 auto &payload = c.payload.overwrite(words);
                 for (std::uint32_t i = 0; i < words; i++) {
@@ -553,6 +562,7 @@ namespace {
                     std::memcpy(&word, source + std::size_t(i) * 4, 4);
                     payload[i] = std::byteswap(word);
                 }
+                refreshed.emplace(key, c.payload);
                 continue;
             }
             c.payload.clear();
@@ -563,6 +573,7 @@ namespace {
                 c.payload.clear();
             }
         }
+        refreshed.clear(); // The stream owns this frame's snapshots now.
         auto &host = hostReplayState();
         if (!host.replayer)
             host.replayer = std::make_unique<Core::Gfx::Gx2Replayer>();
