@@ -5,8 +5,10 @@
 ** FloatArith -- scalar floating-point arithmetic (single + double), conversions, select
 */
 
+#include <bit>
 #include <cfenv>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 
 #include "cpu/interpreter/Interpreter.hpp"
@@ -16,6 +18,10 @@ namespace Core::Instruction {
 
     // Round a double result to single precision (the storage format is still double in the FPR).
     static inline double toSingle(const double v) { return static_cast<double>(static_cast<float>(v)); }
+
+    // Sign flip of a fused result. With FMA enabled, GCC folds -std::fma(...) into fnmadd/fnmsub,
+    // which round an exact zero to +0 where the Espresso negates it to -0.
+    static inline double negated(const double v) { return std::bit_cast<double>(std::bit_cast<std::uint64_t>(v) ^ 0x8000000000000000ull); }
 
     static inline void storeSingleResult(Interpreter &cpu, const EncodedInstruction &i, const double value)
     {
@@ -86,12 +92,12 @@ namespace Core::Instruction {
     }
     void FNMADD(Interpreter &cpu, const EncodedInstruction &i)
     {
-        cpu.m_fpr[i.frt] = -std::fma(cpu.m_fpr[i.fra], cpu.m_fpr[i.frc], cpu.m_fpr[i.frb]);
+        cpu.m_fpr[i.frt] = negated(std::fma(cpu.m_fpr[i.fra], cpu.m_fpr[i.frc], cpu.m_fpr[i.frb]));
         cpu.updateCR1(i);
     }
     void FNMSUB(Interpreter &cpu, const EncodedInstruction &i)
     {
-        cpu.m_fpr[i.frt] = -std::fma(cpu.m_fpr[i.fra], cpu.m_fpr[i.frc], -cpu.m_fpr[i.frb]);
+        cpu.m_fpr[i.frt] = negated(std::fma(cpu.m_fpr[i.fra], cpu.m_fpr[i.frc], -cpu.m_fpr[i.frb]));
         cpu.updateCR1(i);
     }
 
@@ -119,11 +125,11 @@ namespace Core::Instruction {
     }
     void FNMADDS(Interpreter &cpu, const EncodedInstruction &i)
     {
-        storeSingleResult(cpu, i, -std::fma(cpu.m_fpr[i.fra], cpu.m_fpr[i.frc], cpu.m_fpr[i.frb]));
+        storeSingleResult(cpu, i, negated(std::fma(cpu.m_fpr[i.fra], cpu.m_fpr[i.frc], cpu.m_fpr[i.frb])));
     }
     void FNMSUBS(Interpreter &cpu, const EncodedInstruction &i)
     {
-        storeSingleResult(cpu, i, -std::fma(cpu.m_fpr[i.fra], cpu.m_fpr[i.frc], -cpu.m_fpr[i.frb]));
+        storeSingleResult(cpu, i, negated(std::fma(cpu.m_fpr[i.fra], cpu.m_fpr[i.frc], -cpu.m_fpr[i.frb])));
     }
 
     // ---- Round / convert (op63 X-form) ----

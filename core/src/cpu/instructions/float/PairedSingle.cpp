@@ -13,6 +13,7 @@
 #include <array>
 #include <bit>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 
 #include "cpu/interpreter/Interpreter.hpp"
@@ -21,6 +22,9 @@
 namespace Core::Instruction {
 
     static inline double single(const double v) { return static_cast<double>(static_cast<float>(v)); }
+    // Sign flip of a fused result. With FMA enabled, GCC folds -std::fma(...) into fnmadd/fnmsub,
+    // which round an exact zero to +0 where the Espresso negates it to -0.
+    static inline double negated(const double v) { return std::bit_cast<double>(std::bit_cast<std::uint64_t>(v) ^ 0x8000000000000000ull); }
 
     // Apply a paired op lane-wise then round both lanes to single precision.
     template<typename F>
@@ -59,11 +63,11 @@ namespace Core::Instruction {
     }
     void PS_NMADD(Interpreter &c, const EncodedInstruction &i)
     {
-        pairLanes(c, i, [](double a, double b, double cc) { return -std::fma(a, cc, b); });
+        pairLanes(c, i, [](double a, double b, double cc) { return negated(std::fma(a, cc, b)); });
     }
     void PS_NMSUB(Interpreter &c, const EncodedInstruction &i)
     {
-        pairLanes(c, i, [](double a, double b, double cc) { return -std::fma(a, cc, -b); });
+        pairLanes(c, i, [](double a, double b, double cc) { return negated(std::fma(a, cc, -b)); });
     }
     void PS_RES(Interpreter &c, const EncodedInstruction &i)
     {
