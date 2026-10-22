@@ -31,7 +31,7 @@ namespace Core::Gfx {
     };
     // Synchronous reference-raster ABI. All borrowed data expires when render returns.
     // Positions include window depth and reciprocal clip W. Varyings interpolate
-    // perspectively for positive W; full clipping, stencil and multisampling are
+    // perspectively for positive W; full clipping and multisampling are
     // outside this ABI's validated native subset.
     // Texture views expose only reference base-level texels. Shader output is
     // rounded to RGBA8 before integer blending on UNORM targets. RGBA32 float
@@ -138,6 +138,15 @@ namespace Core::Gfx {
                     // The guest disabled Z clipping: window depth outside [0, 1] is clamped per
                     // fragment, as the reference rasterizer does, instead of clipping the primitive.
                     bool clamp{};
+                    struct Stencil {
+                            bool test{};
+                            // GX2 DB_DEPTH_CONTROL and front/back DB_STENCILREFMASK.
+                            std::uint32_t control{};
+                            std::array<std::uint32_t, 2> masks{};
+                            std::span<const std::uint8_t> target; // canonical byte plane, same pitch as depth
+                            std::shared_ptr<RasterReadback> rendered;
+                            std::optional<std::uint8_t> clear;
+                    } stencil;
             } depth;
             enum class Topology { Triangles, Points };
             Topology topology{Topology::Triangles};
@@ -227,6 +236,7 @@ namespace Core::Gfx {
             std::size_t unchangedTarget{};
             std::vector<float> depth;
             std::shared_ptr<RasterReadback> depthReadback;
+            std::shared_ptr<RasterReadback> stencilReadback;
             std::size_t size() const { return readback ? readback->size() : unchangedTarget ? unchangedTarget : rgba.size(); }
             void resolve()
             {
@@ -259,6 +269,8 @@ namespace Core::Gfx {
             virtual bool supportsRenderedTextures() const { return false; }
             virtual bool supportsRenderedTargets() const { return false; }
             virtual bool supportsDepth() const { return false; }
+            // Fixed-function stencil on canonical UNORM24 depth/stencil storage.
+            virtual bool supportsStencil() const { return false; }
             virtual bool supportsPoints() const { return false; }
             virtual bool supportsFloatTargets() const { return false; }
             virtual bool supportsVertexStage() const { return false; }

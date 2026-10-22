@@ -18,6 +18,7 @@ namespace Core::Jit {
             case E_EIEIO:
             case E_DCBST:
             case E_DCBF:
+            case E_DCBI:
             case E_DCBT:
             case E_ICBI:
                 return true;

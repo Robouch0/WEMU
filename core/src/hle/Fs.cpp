@@ -11,14 +11,17 @@
 #include "cpu/interpreter/Interpreter.hpp"
 #include "cpu/interpreter/SyscallHandler.hpp"
 #include "cpu/memory/Memory.hpp"
+#include "hle/AsyncCallbacks.hpp"
+#include "hle/MessageQueue.hpp"
 #include "utils/Diagnostics.hpp"
 #include "utils/Logger.hpp"
 
 // Cafe filesystem HLE, backed by the host filesystem.
 //
 // Wii U titles read assets through paths like "/vol/content/ui/...". We translate that prefix to the
-// extracted game's content directory on the host and service the synchronous FS* calls (the only
-// variants MK8 imports) with real fopen/fread. File handles are small integers we hand out and track
+// extracted game's content directory on the host and service FS* calls with real fopen/fread.
+// Async calls publish their results through guest callbacks or message queues.
+// File handles are small integers we hand out and track
 // host-side. FSStatus: 0 = OK, negative = error (we use NOT_FOUND = -6).
 
 namespace {
@@ -361,6 +364,53 @@ namespace {
         cpu.m_gpr[3] = FS_STATUS_OK;
     }
 
+    // FSGetStatAsync(client, cmd, path, stat, errMask, FSAsyncData*).
+    // Submission succeeds independently of the eventual operation status.
+    void fs_GetStatAsync(Core::Interpreter &cpu)
+    {
+        const auto client = cpu.m_gpr[3], block = cpu.m_gpr[4], data = cpu.m_gpr[8];
+        if (!data || !block) {
+            cpu.m_gpr[3] = FS_STATUS_FATAL_ERROR;
+            return;
+        }
+        const auto callback = cpu.m_memory.read<std::uint32_t>(data);
+        const auto param = cpu.m_memory.read<std::uint32_t>(data + 4);
+        const auto queue = cpu.m_memory.read<std::uint32_t>(data + 8);
+        if (!callback && !queue) {
+            cpu.m_gpr[3] = FS_STATUS_FATAL_ERROR;
+            return;
+        }
+        fs_GetStat(cpu);
+        const auto status = cpu.m_gpr[3];
+        // FSCmdBlockBody is 64-byte aligned inside the public FSCmdBlock.
+        const auto result = ((block + 0x3Fu) & ~0x3Fu) + 0x96C;
+        cpu.m_memory.write<std::uint32_t>(result, callback);
+        cpu.m_memory.write<std::uint32_t>(result + 4, param);
+        cpu.m_memory.write<std::uint32_t>(result + 8, queue);
+        cpu.m_memory.write<std::uint32_t>(result + 0x0C, result);
+        cpu.m_memory.write<std::uint32_t>(result + 0x10, 0);
+        cpu.m_memory.write<std::uint32_t>(result + 0x14, 0);
+        cpu.m_memory.write<std::uint32_t>(result + 0x18, 8); // OS_FUNCTION_TYPE_FS_CMD_ASYNC
+        cpu.m_memory.write<std::uint32_t>(result + 0x1C, client);
+        cpu.m_memory.write<std::uint32_t>(result + 0x20, block);
+        cpu.m_memory.write<std::uint32_t>(result + 0x24, status);
+        if (queue) {
+            cpu.m_gpr[3] = Core::enqueueMessage(cpu, queue, result + 0x0C) ? FS_STATUS_OK : FS_STATUS_FATAL_ERROR;
+        } else {
+            Core::Async::enqueue(callback, client, block, status, param);
+            cpu.m_gpr[3] = FS_STATUS_OK;
+        }
+        if (fsTrace())
+            std::fprintf(stderr, "[FSTRACE] statasync client=%08X block=%08X status=%d callback=%08X queue=%08X\n", client, block,
+                         static_cast<std::int32_t>(status), callback, queue);
+    }
+
+    void fs_GetAsyncResult(Core::Interpreter &cpu)
+    {
+        const auto message = cpu.m_gpr[3];
+        cpu.m_gpr[3] = message && cpu.m_memory.read<std::uint32_t>(message + 0x0C) == 8 ? cpu.m_memory.read<std::uint32_t>(message) : 0;
+    }
+
     // FSCloseFile(client, cmd, FSFileHandle handle, errMask)
     void fs_CloseFile(Core::Interpreter &cpu)
     {
@@ -649,6 +699,8 @@ void RegisterFsFunctions()
     Core::syscallHandler.registerSyscall("FSSetPosFile", fs_SetPosFile);
     Core::syscallHandler.registerSyscall("FSGetStatFile", fs_GetStatFile);
     Core::syscallHandler.registerSyscall("FSGetStat", fs_GetStat);
+    Core::syscallHandler.registerSyscall("FSGetStatAsync", fs_GetStatAsync);
+    Core::syscallHandler.registerSyscall("FSGetAsyncResult", fs_GetAsyncResult);
     Core::syscallHandler.registerSyscall("FSCloseFile", fs_CloseFile);
     Core::syscallHandler.registerSyscall("FSGetCwd", fs_GetCwd);
     Core::syscallHandler.registerSyscall("FSChangeDir", fs_ChangeDir);

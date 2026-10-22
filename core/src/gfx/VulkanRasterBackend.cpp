@@ -207,9 +207,27 @@ namespace Core::Gfx {
             // UNORM writes are quantized in a GPU buffer pass after comparison.
             return VK_FORMAT_D32_SFLOAT;
         }
-        std::array<unsigned, 5> depthKey(const RasterDraw::Depth &depth)
+        bool stencilStorage(VkFormat format) { return format == VK_FORMAT_D32_SFLOAT_S8_UINT; }
+        bool nativeDepthFormat(VkFormat format) { return format == VK_FORMAT_D32_SFLOAT || stencilStorage(format); }
+        VkImageAspectFlags depthAspects(VkFormat format)
         {
-            return {depth.test ? unsigned(depth.format) + 1 : 0, unsigned(depth.test), unsigned(depth.write), depth.compare, unsigned(depth.clamp)};
+            return VK_IMAGE_ASPECT_DEPTH_BIT | (stencilStorage(format) ? VK_IMAGE_ASPECT_STENCIL_BIT : 0);
+        }
+        VkFormat directDepthFormat(DepthFormat format)
+        {
+            return format == DepthFormat::UNorm24 ? VK_FORMAT_D32_SFLOAT_S8_UINT : depthVkFormat(format);
+        }
+        std::array<unsigned, 9> depthKey(const RasterDraw::Depth &depth)
+        {
+            return {depth.test ? unsigned(depth.format) + 1 : 0,
+                    unsigned(depth.test),
+                    unsigned(depth.write),
+                    depth.compare,
+                    unsigned(depth.clamp),
+                    depth.stencil.test ? depth.stencil.control : 0,
+                    depth.stencil.test ? depth.stencil.masks[0] : 0,
+                    depth.stencil.test ? depth.stencil.masks[1] : 0,
+                    0};
         }
         struct TextureMemoryUsage {
                 std::atomic<std::uint64_t> bytes{};
@@ -328,7 +346,7 @@ namespace Core::Gfx {
                         std::vector<std::uint32_t> bindings;
                         unsigned channelMask{};
                         std::array<unsigned, 11> blend{};
-                        std::array<unsigned, 5> depth{};
+                        std::array<unsigned, 9> depth{};
                         unsigned topology{}, colorFormat{}, cull{};
                         bool depthBias{};
                         unsigned attributeStride{}; // compact program inputs (0: full RasterDraw::Vertex)
@@ -532,6 +550,22 @@ namespace Core::Gfx {
                     depthState.depthTestEnable = draw.depth.test;
                     depthState.depthWriteEnable = draw.depth.test && draw.depth.write;
                     depthState.depthCompareOp = VkCompareOp(draw.depth.compare);
+                    depthState.stencilTestEnable = draw.depth.stencil.test;
+                    if (draw.depth.stencil.test) {
+                        const auto face = [&](unsigned shift, std::uint32_t mask) {
+                            VkStencilOpState state{};
+                            state.compareOp = VkCompareOp((draw.depth.stencil.control >> shift) & 7);
+                            state.failOp = VkStencilOp((draw.depth.stencil.control >> (shift + 3)) & 7);
+                            state.passOp = VkStencilOp((draw.depth.stencil.control >> (shift + 6)) & 7);
+                            state.depthFailOp = VkStencilOp((draw.depth.stencil.control >> (shift + 9)) & 7);
+                            state.compareMask = (mask >> 8) & 255;
+                            state.writeMask = (mask >> 16) & 255;
+                            state.reference = mask & 255;
+                            return state;
+                        };
+                        depthState.front = face(8, draw.depth.stencil.masks[0]);
+                        depthState.back = (draw.depth.stencil.control & (1u << 7)) ? face(20, draw.depth.stencil.masks[1]) : depthState.front;
+                    }
                     gp.pDepthStencilState = &depthState;
                     gp.layout = created.layout;
                     gp.renderPass = pass;
@@ -2032,7 +2066,7 @@ void main() {
                                          VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
                     if (source)
                         ++context.residentTextureCopies;
-                    if (source && source->format == VK_FORMAT_D32_SFLOAT) {
+                    if (source && nativeDepthFormat(source->format)) {
                         auto found = depthTextureTransfers.find(staging);
                         if (found == depthTextureTransfers.end()) {
                             VkDeviceMemory memory{};
@@ -2321,7 +2355,8 @@ void main() {
                     const bool colorInPlace = hasColor && in.targetSource && in.targetSource->direct && in.supersedes;
                     const bool colorCopy = hasColor && in.targetSource && !colorInPlace;
                     const bool colorUpload = hasColor && !in.targetSource && !in.overwriteTarget;
-                    const bool depthInPlace = draw.depth.test && in.depthSource && in.depthSource->direct && (in.supersedes || !draw.depth.write);
+                    const bool depthInPlace = draw.depth.test && in.depthSource && in.depthSource->direct &&
+                                              (in.supersedes || (!draw.depth.write && !draw.depth.stencil.test));
                     const bool depthCopy = draw.depth.test && in.depthSource && !depthInPlace;
                     const bool depthUpload = draw.depth.test && !in.depthSource;
 
@@ -2365,6 +2400,8 @@ void main() {
                         reserve(draw.target.size());
                     if (depthUpload && !draw.depth.clear)
                         reserve(draw.depth.target.size_bytes());
+                    if (depthUpload && draw.depth.format == DepthFormat::UNorm24 && !draw.depth.stencil.clear)
+                        reserve(draw.depth.stencil.target.size());
                     static const bool directTextures = [] {
                         const auto *value = std::getenv("WEMU_NATIVE_DIRECT_TEXTURES");
                         return !value || value[0] != '0';
@@ -2400,7 +2437,8 @@ void main() {
                     // A draw recording no transfer or layout change, into the attachments of the render
                     // pass left open, continues it: a pass and two full barriers per draw were most of
                     // the driver's time in a MK8 race (4500 draws per frame).
-                    bool passFree = (colorInPlace || !hasColor) && (depthInPlace || !draw.depth.test) && !(vertexOwner && !residentVertices);
+                    bool passFree = (colorInPlace || !hasColor) && (depthInPlace || !draw.depth.test) && !draw.depth.stencil.clear &&
+                                    !(vertexOwner && !residentVertices);
                     for (std::size_t i = 0; passFree && i < sources.size(); ++i)
                         passFree = sources[i] == Source::Shared && shared[i];
                     auto &segment = open(need);
@@ -2556,7 +2594,7 @@ void main() {
                             depth = in.depthSource;
                             depthLayout = depth->initialized ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED;
                         } else {
-                            depth = createImage(draw.depth.width, draw.depth.height, depthVkFormat(draw.depth.format), true);
+                            depth = createImage(draw.depth.width, draw.depth.height, directDepthFormat(draw.depth.format), true);
                             depth->depthFormat = draw.depth.format;
                             if (depthCopy) {
                                 copyImage(command, *in.depthSource, *depth, true);
@@ -2569,6 +2607,22 @@ void main() {
                                 uploadImage(command, *depth, segment.buffer, offset, draw.depth.pitch, true);
                             }
                             depthLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                            if (stencilStorage(depth->format) && !depthCopy && !draw.depth.stencil.clear) {
+                                const auto offset = pushUpload(draw.depth.stencil.target.data(), draw.depth.stencil.target.size(), 0);
+                                VkBufferImageCopy copy{};
+                                copy.bufferOffset = offset;
+                                copy.bufferRowLength = draw.depth.pitch;
+                                copy.imageSubresource = {VK_IMAGE_ASPECT_STENCIL_BIT, 0, 0, 1};
+                                copy.imageExtent = {draw.depth.width, draw.depth.height, 1};
+                                vkCmdCopyBufferToImage(command, segment.buffer, depth->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+                            }
+                        }
+                        if (stencilStorage(depth->format) && draw.depth.stencil.clear) {
+                            imageBarrier(command, depth->image, depthAspects(depth->format), depthLayout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+                            const VkClearDepthStencilValue value{0, *draw.depth.stencil.clear};
+                            const VkImageSubresourceRange range{VK_IMAGE_ASPECT_STENCIL_BIT, 0, 1, 0, 1};
+                            vkCmdClearDepthStencilImage(command, depth->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &value, 1, &range);
+                            depthLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
                         }
                     }
                     std::vector<VkImageMemoryBarrier> barriers;
@@ -2576,8 +2630,9 @@ void main() {
                         VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
                         barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
                         barrier.image = image.image;
-                        barrier.subresourceRange = {VkImageAspectFlags(depthAspect ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT), 0, 1, 0,
-                                                    1};
+                        barrier.subresourceRange = {depthAspect || nativeDepthFormat(image.format) ? depthAspects(image.format)
+                                                                                                   : VkImageAspectFlags(VK_IMAGE_ASPECT_COLOR_BIT),
+                                                    0, 1, 0, 1};
                         barrier.oldLayout = from;
                         barrier.newLayout = to;
                         barrier.srcAccessMask = from == VK_IMAGE_LAYOUT_UNDEFINED ? 0 : VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT;
@@ -2597,10 +2652,11 @@ void main() {
                                              copiedVertices ? 1 : 0, &vertexCopy, 0, nullptr, unsigned(barriers.size()), barriers.data());
 
                     const auto pass = renderPass(hasColor ? colorVkFormat(draw.colorFormat) : VK_FORMAT_UNDEFINED,
-                                                 draw.depth.test ? depthVkFormat(draw.depth.format) : VK_FORMAT_UNDEFINED);
+                                                 draw.depth.test ? directDepthFormat(draw.depth.format) : VK_FORMAT_UNDEFINED);
                     Context::PipelineKey key{in.vertex.id, in.fragment.id, {}, draw.channelMask};
                     key.blend = blendKey(draw.blend);
                     key.depth = depthKey(draw.depth);
+                    key.depth[8] = unsigned(draw.depth.test && draw.depth.format == DepthFormat::UNorm24);
                     key.depthBias = draw.depthBias.enabled;
                     key.topology = unsigned(draw.topology);
                     key.colorFormat = unsigned(draw.colorFormat);
@@ -2710,8 +2766,8 @@ void main() {
                         segment.retained.push_back(depth);
                         // A read-only draw that had to upload or copy its depth still returns the new
                         // image, so later draws find the surface resident instead of uploading again.
-                        if (draw.depth.write || !depthInPlace) {
-                            if (draw.depth.write)
+                        if (draw.depth.write || draw.depth.stencil.test || draw.depth.stencil.clear || !depthInPlace) {
+                            if (draw.depth.write || draw.depth.stencil.test || draw.depth.stencil.clear)
                                 ++depth->version;
                             const auto padding = depthPadding(draw.depth);
                             result.depthReadback = std::make_shared<RasterReadback>(
@@ -2719,6 +2775,21 @@ void main() {
                                     [self = shared_from_this(), image = depth, width = draw.depth.width, height = draw.depth.height,
                                      pitch = draw.depth.pitch, padding] { return self->read(image, true, width, height, pitch, padding); },
                                     std::make_shared<NativeImage>(depth, draw.depth.pitch, padding));
+                            if (stencilStorage(depth->format)) {
+                                auto stencilPadding = std::make_shared<std::vector<std::uint8_t>>();
+                                if (draw.depth.pitch > draw.depth.width && !draw.depth.stencil.target.empty())
+                                    for (unsigned y = 0; y < draw.depth.height; ++y) {
+                                        const auto rowPadding = draw.depth.stencil.target.subspan(
+                                                std::size_t(y) * draw.depth.pitch + draw.depth.width, draw.depth.pitch - draw.depth.width);
+                                        stencilPadding->insert(stencilPadding->end(), rowPadding.begin(), rowPadding.end());
+                                    }
+                                result.stencilReadback = std::make_shared<RasterReadback>(
+                                        draw.depth.stencil.target.size(),
+                                        [self = shared_from_this(), image = depth, width = draw.depth.width, height = draw.depth.height,
+                                         pitch = draw.depth.pitch,
+                                         stencilPadding] { return self->read(image, true, width, height, pitch, stencilPadding, true); },
+                                        std::make_shared<NativeImage>(depth, draw.depth.pitch, nullptr));
+                            }
                         }
                     }
                     if (++segment.draws >= drawsPerSegment)
@@ -3060,7 +3131,7 @@ void main() {
                     view.image = image->image;
                     view.viewType = VK_IMAGE_VIEW_TYPE_2D;
                     view.format = format;
-                    view.subresourceRange = {VkImageAspectFlags(depthAspect ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT), 0, 1, 0, 1};
+                    view.subresourceRange = {depthAspect ? depthAspects(format) : VkImageAspectFlags(VK_IMAGE_ASPECT_COLOR_BIT), 0, 1, 0, 1};
                     check(vkCreateImageView(device, &view, nullptr, &image->attachmentView), "create direct attachment view");
                     return image;
                 }
@@ -3080,19 +3151,27 @@ void main() {
                 }
                 void copyImage(VkCommandBuffer command, const ColorImage &source, const ColorImage &destination, bool depthAspect)
                 {
-                    const VkImageAspectFlags aspect = depthAspect ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
-                    imageBarrier(command, destination.image, aspect, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-                    VkImageCopy copy{};
-                    copy.srcSubresource = copy.dstSubresource = {aspect, 0, 0, 1};
-                    copy.extent = {std::min(source.width, destination.width), std::min(source.height, destination.height), 1};
+                    const VkImageAspectFlags aspects = depthAspect ? depthAspects(destination.format) : VkImageAspectFlags(VK_IMAGE_ASPECT_COLOR_BIT);
+                    imageBarrier(command, destination.image, aspects, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+                    std::array<VkImageCopy, 2> copies{};
+                    copies[0].srcSubresource = copies[0].dstSubresource = {
+                            depthAspect ? VkImageAspectFlags(VK_IMAGE_ASPECT_DEPTH_BIT) : VkImageAspectFlags(VK_IMAGE_ASPECT_COLOR_BIT), 0, 0, 1};
+                    copies[0].extent = {std::min(source.width, destination.width), std::min(source.height, destination.height), 1};
+                    unsigned count = 1;
+                    if (depthAspect && stencilStorage(destination.format)) {
+                        copies[1] = copies[0];
+                        copies[1].srcSubresource.aspectMask = copies[1].dstSubresource.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
+                        count = 2;
+                    }
                     vkCmdCopyImage(command, source.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, destination.image,
-                                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+                                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, count, copies.data());
                 }
                 void uploadImage(VkCommandBuffer command, const ColorImage &destination, VkBuffer buffer, VkDeviceSize offset, unsigned pitch,
                                  bool depthAspect)
                 {
                     const VkImageAspectFlags aspect = depthAspect ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
-                    imageBarrier(command, destination.image, aspect, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+                    imageBarrier(command, destination.image, depthAspect ? depthAspects(destination.format) : aspect, VK_IMAGE_LAYOUT_UNDEFINED,
+                                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
                     VkBufferImageCopy copy{};
                     copy.bufferOffset = offset;
                     copy.bufferRowLength = pitch;
@@ -3115,7 +3194,7 @@ void main() {
                 // The depth counterpart of clearImage(): a stored (quantized) value, exact in D32.
                 void clearDepthImage(VkCommandBuffer command, const ColorImage &destination, float depth)
                 {
-                    imageBarrier(command, destination.image, VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                    imageBarrier(command, destination.image, depthAspects(destination.format), VK_IMAGE_LAYOUT_UNDEFINED,
                                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
                     const VkClearDepthStencilValue value{depth, 0};
                     const VkImageSubresourceRange range{VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
@@ -3170,7 +3249,7 @@ void main() {
                             continue;
                         }
                         const auto &source = texture.renderedLayers.empty() ? *texture.rendered : *texture.renderedLayers[entry];
-                        if (source.format == VK_FORMAT_D32_SFLOAT) {
+                        if (nativeDepthFormat(source.format)) {
                             const VkDeviceSize bytes = VkDeviceSize(width) * height * sizeof(float);
                             if (scratchCapacity < bytes) {
                                 destroyBuffer(scratchBuffer, scratchMemory);
@@ -3419,6 +3498,10 @@ void main() {
                     }
                     if (depthFormat != VK_FORMAT_UNDEFINED) {
                         depthReference.attachment = unsigned(attachments.size());
+                        if (stencilStorage(depthFormat)) {
+                            attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+                            attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_STORE;
+                        }
                         attachment.format = depthFormat;
                         attachment.initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
                         attachments.push_back(attachment);
@@ -3508,11 +3591,12 @@ void main() {
                 }
 
                 std::vector<std::uint8_t> read(const std::shared_ptr<ColorImage> &image, bool depthAspect, unsigned width, unsigned height,
-                                               unsigned pitch, const std::shared_ptr<const std::vector<std::uint8_t>> &padding)
+                                               unsigned pitch, const std::shared_ptr<const std::vector<std::uint8_t>> &padding,
+                                               bool stencilAspect = false)
                 {
                     Profile::Scope reading(Profile::Stage::Readback);
                     submit();
-                    const auto elementBytes = depthAspect ? sizeof(float) : imageElementBytes(image->format);
+                    const auto elementBytes = stencilAspect ? 1 : depthAspect ? sizeof(float) : imageElementBytes(image->format);
                     const VkDeviceSize bytes = VkDeviceSize(pitch) * height * elementBytes;
                     context.wait(readbackFence);
                     if (readbackCapacity < bytes) {
@@ -3541,7 +3625,10 @@ void main() {
                     check(vkBeginCommandBuffer(readbackCommand, &begin), "begin direct readback");
                     VkBufferImageCopy copy{};
                     copy.bufferRowLength = pitch;
-                    copy.imageSubresource = {VkImageAspectFlags(depthAspect ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT), 0, 0, 1};
+                    copy.imageSubresource = {VkImageAspectFlags(stencilAspect ? VK_IMAGE_ASPECT_STENCIL_BIT
+                                                                : depthAspect ? VK_IMAGE_ASPECT_DEPTH_BIT
+                                                                              : VK_IMAGE_ASPECT_COLOR_BIT),
+                                             0, 0, 1};
                     copy.imageExtent = {width, height, 1};
                     vkCmdCopyImageToBuffer(readbackCommand, image->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readbackBuffer, 1, &copy);
                     VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
@@ -3778,7 +3865,8 @@ void main() {
                 return reject("Nonfinite vertex position");
         if (draw.renderedTarget && draw.renderedTarget->size() != draw.target.size())
             return reject("Invalid rendered target size");
-        if (!vertices || (!draw.channelMask && !(draw.depth.test && draw.depth.write)) || draw.scissor[2] <= 0 || draw.scissor[3] <= 0) {
+        if (!vertices || (!draw.channelMask && !(draw.depth.test && (draw.depth.write || draw.depth.stencil.test))) || draw.scissor[2] <= 0 ||
+            draw.scissor[3] <= 0) {
             RasterResult result;
             if (deferReadback) {
                 // Nothing is drawn: keep the target's current version. Resolving it waited for the
@@ -3977,6 +4065,17 @@ void main() {
         }();
         // GPU timing uses bundle queries.
         const bool direct = directDraws && m_impl->directDraws && !gpuTiming && deferReadback && m_impl->lazyReadback;
+        if (draw.depth.stencil.test && (!direct || !draw.depth.test || draw.depth.format != DepthFormat::UNorm24))
+            return reject("Stencil requires the direct UNORM24 depth/stencil path");
+        std::vector<std::uint8_t> initialStencil;
+        if (direct && draw.depth.test && draw.depth.format == DepthFormat::UNorm24 && draw.depth.stencil.target.empty() && !draw.depth.stencil.test) {
+            initialStencil.resize(std::size_t(draw.depth.pitch) * draw.depth.height);
+            draw.depth.stencil.target = initialStencil;
+        }
+        if (direct && draw.depth.test && draw.depth.format == DepthFormat::UNorm24 &&
+            draw.depth.stencil.target.size() != std::size_t(draw.depth.pitch) * draw.depth.height)
+            return reject("Missing canonical stencil storage");
+
         const auto *vertexShader = draw.vertexStage.shader.get();
         const auto vertex = cachedModule(vertexShader ? vertexShader->sourceHash ? mixKey(0x5653, vertexShader->sourceHash) : 0 : 0x5650,
                                          [&]() -> std::shared_ptr<const SpirvModule> {
@@ -4077,7 +4176,8 @@ void main() {
         }
         if (draw.depth.test) {
             VkFormatProperties properties{};
-            vkGetPhysicalDeviceFormatProperties(m_impl->context->physical, depthVkFormat(draw.depth.format), &properties);
+            vkGetPhysicalDeviceFormatProperties(m_impl->context->physical,
+                                                (direct ? directDepthFormat(draw.depth.format) : depthVkFormat(draw.depth.format)), &properties);
             if (!(properties.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT))
                 return reject("Device lacks the requested depth attachment format");
             if (draw.depth.format != DepthFormat::Float32 && draw.depth.write && !m_impl->context->computeQueue)
@@ -4089,7 +4189,8 @@ void main() {
             const auto native = std::dynamic_pointer_cast<const NativeImage>(draw.depth.rendered->image());
             if (native && native->storage->context == m_impl->context && native->storage->version == native->version &&
                 native->storage->width == draw.depth.width && native->storage->height == draw.depth.height &&
-                native->storage->format == depthVkFormat(draw.depth.format) && native->storage->depthFormat == draw.depth.format)
+                native->storage->format == (direct ? directDepthFormat(draw.depth.format) : depthVkFormat(draw.depth.format)) &&
+                native->storage->depthFormat == draw.depth.format)
                 depthSource = native->storage;
             else {
                 const auto &bytes = draw.depth.rendered->resolve();
@@ -4097,6 +4198,23 @@ void main() {
                 std::memcpy(resolvedDepth.data(), bytes.data(), bytes.size());
                 draw.depth.target = resolvedDepth;
             }
+        }
+        if (depthSource && stencilStorage(depthSource->format) && !draw.depth.stencil.clear) {
+            const auto stencil =
+                    draw.depth.stencil.rendered ? std::dynamic_pointer_cast<const NativeImage>(draw.depth.stencil.rendered->image()) : nullptr;
+            if (!stencil || stencil->storage != depthSource || stencil->version != depthSource->version) {
+                const auto &bytes = draw.depth.rendered->resolve();
+                resolvedDepth.resize(draw.depth.target.size());
+                std::memcpy(resolvedDepth.data(), bytes.data(), bytes.size());
+                draw.depth.target = resolvedDepth;
+                depthSource.reset();
+            }
+        }
+        std::vector<std::uint8_t> resolvedStencil;
+        if (direct && draw.depth.test && draw.depth.format == DepthFormat::UNorm24 && !depthSource && draw.depth.stencil.rendered &&
+            !draw.depth.stencil.clear) {
+            resolvedStencil = draw.depth.stencil.rendered->resolve();
+            draw.depth.stencil.target = resolvedStencil;
         }
         // Only direct draws clear their depth image on the GPU; the other paths upload values.
         if (draw.depth.test && draw.depth.clear && !direct) {
@@ -4129,7 +4247,8 @@ void main() {
                 const auto native = std::dynamic_pointer_cast<const NativeImage>(texture.rendered->image());
                 if (native && native->storage->context == m_impl->context && native->storage->version == native->version &&
                     native->storage->width == texture.width && native->storage->height == texture.height &&
-                    native->storage->format == (texture.renderedDepth ? VK_FORMAT_D32_SFLOAT : colorVkFormat(texture.renderedFormat)))
+                    (texture.renderedDepth ? nativeDepthFormat(native->storage->format)
+                                           : native->storage->format == colorVkFormat(texture.renderedFormat)))
                     resident = native->storage;
                 if (texture.renderedDepth) {
                     texture.r32Bytes = resident ? std::span<const std::uint8_t>{} : texture.rendered->resolve();
@@ -4165,7 +4284,8 @@ void main() {
                         const auto native = std::dynamic_pointer_cast<const NativeImage>(texture.renderedLayers[entry]->image());
                         if (native && native->storage->context == m_impl->context && native->storage->version == native->version &&
                             native->storage->width == std::max(1u, texture.width >> level) &&
-                            native->storage->height == std::max(1u, texture.height >> level) && native->storage->format == layerFormat) {
+                            native->storage->height == std::max(1u, texture.height >> level) &&
+                            (texture.renderedDepth ? nativeDepthFormat(native->storage->format) : native->storage->format == layerFormat)) {
                             residentLayers.push_back(native->storage);
                             layerBytes.emplace_back();
                         } else if (texture.renderedLevels > 1)

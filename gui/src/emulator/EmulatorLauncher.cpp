@@ -173,11 +173,17 @@ void EmulatorLauncher::launch(const QString &rpxPath, const QString &title, cons
     }
     const auto font = QSettings().value("emulation/sharedFont").toString();
     bool nativeCpu = false;
-#ifdef WEMU_GUI_HAS_LLVM
+#if defined(WEMU_GUI_HAS_LLVM) || defined(WEMU_GUI_HAS_X64_JIT)
     nativeCpu = QSettings().value("emulation/nativeCpu", true).toBool();
 #endif
+    bool x64Cpu = false;
+#ifdef WEMU_GUI_HAS_X64_JIT
+    // Prefer the complete chained backend when this core includes it. The core
+    // checks host instruction support and retains interpreter fallback.
+    x64Cpu = nativeCpu;
+#endif
     QString nativeCache;
-    if (nativeCpu) {
+    if (nativeCpu && !x64Cpu) {
         const auto cacheRoot = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
         // ObjectCache creates/checks the leaf directory with private permissions.
         // A missing/unusable cache falls back to JIT; it never prevents launch.
@@ -186,8 +192,8 @@ void EmulatorLauncher::launch(const QString &rpxPath, const QString &title, cons
     const auto titleRegion = titleRegionForLaunch(rpxPath);
     const auto region = systemRegion() ? unsigned(systemRegion()) : titleRegion;
     const auto environment = desktopLaunchEnvironment(QProcessEnvironment::systemEnvironment(), contentPath, font,
-                                                     nativeCpu, nativeCache, unsigned(systemLanguage()), region, titleRegion);
-    qInfo() << "[SESSION_CPU]" << (nativeCpu ? "native with interpreter fallback" : "interpreter")
+                                                     nativeCpu, nativeCache, unsigned(systemLanguage()), region, titleRegion, x64Cpu);
+    qInfo() << "[SESSION_CPU]" << (x64Cpu ? "x86-64 JIT with interpreter fallback" : nativeCpu ? "LLVM with interpreter fallback" : "interpreter")
             << "cache=" << nativeCache;
     const auto logs = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation) + "/logs";
     if (!QDir().mkpath(logs)) {

@@ -5,6 +5,8 @@
 
 #include "TestFixture.hpp"
 #include "cpu/interpreter/SyscallHandler.hpp"
+#include "hle/AsyncCallbacks.hpp"
+#include "hle/Coreinit.hpp"
 #include "hle/Fs.hpp"
 
 // Host-backed Cafe filesystem HLE: open/stat/read/close against a temp content root.
@@ -84,6 +86,81 @@ TEST_F(FsTest, OpenMissingFileFails)
     cpu->m_gpr[7] = OUT;
     call("FSOpenFile");
     EXPECT_LT(static_cast<std::int32_t>(cpu->m_gpr[3]), 0); // negative FSStatus
+}
+
+TEST_F(FsTest, AsyncStatDeliversSuccessAndErrorsThroughCallbacksAndQueues)
+{
+    RegisterCoreinitFunctions();
+    cpu->m_scheduler = Core::Scheduler{};
+    cpu->m_scheduler.bootstrap(*cpu);
+    const auto main = cpu->m_scheduler.mainHandle();
+    constexpr unsigned CLIENT = 0x02101000, BLOCK = 0x02103004, DATA = 0x02104000;
+    constexpr unsigned PATH = 0x02100000, STAT = 0x02100300, CALLBACK = 0x02000800;
+    constexpr unsigned QUEUE = 0x02104100, STORAGE = 0x02104200, MESSAGE = 0x02104300;
+    constexpr unsigned RESULT = ((BLOCK + 0x3F) & ~0x3Fu) + 0x96C;
+    const auto submit = [&] {
+        cpu->m_gpr[3] = CLIENT;
+        cpu->m_gpr[4] = BLOCK;
+        cpu->m_gpr[5] = PATH;
+        cpu->m_gpr[6] = STAT;
+        cpu->m_gpr[7] = ~0u;
+        cpu->m_gpr[8] = DATA;
+        call("FSGetStatAsync");
+    };
+    cpu->m_memory.write<unsigned>(DATA, CALLBACK);
+    cpu->m_memory.write<unsigned>(DATA + 4, 0x12345678);
+    cpu->m_memory.write<unsigned>(DATA + 8, 0);
+    for (const bool exists: {true, false}) {
+        putStr(PATH, exists ? "/vol/content/ui/hello.bin" : "/vol/content/missing.bin");
+        const unsigned status = exists ? 0u : static_cast<unsigned>(-6);
+        submit();
+        ASSERT_EQ(cpu->m_gpr[3], 0u); // accepted even when the operation reports NOT_FOUND
+        EXPECT_EQ(cpu->m_scheduler.currentHandle(), main); // callback is deferred
+        if (exists)
+            EXPECT_EQ(cpu->m_memory.read<unsigned>(STAT + 0x10), 8u);
+        Core::Async::OnTick(*cpu);
+        ASSERT_TRUE(cpu->m_scheduler.yield(*cpu));
+        ASSERT_NE(cpu->m_scheduler.currentHandle(), main);
+        EXPECT_EQ(cpu->m_pc, CALLBACK - Core::Memory::MemoryMap::ApplicationCode);
+        EXPECT_EQ(cpu->m_gpr[3], CLIENT);
+        EXPECT_EQ(cpu->m_gpr[4], BLOCK);
+        EXPECT_EQ(cpu->m_gpr[5], status);
+        EXPECT_EQ(cpu->m_gpr[6], 0x12345678u);
+        EXPECT_EQ(cpu->m_memory.read<unsigned>(RESULT + 0x24), status);
+        Core::Async::OnSentinelReturn(*cpu);
+        ASSERT_EQ(cpu->m_scheduler.currentHandle(), main);
+    }
+    cpu->m_gpr[3] = QUEUE;
+    cpu->m_gpr[4] = STORAGE;
+    cpu->m_gpr[5] = 1;
+    call("OSInitMessageQueue");
+    cpu->m_memory.write<unsigned>(DATA, 0);
+    cpu->m_memory.write<unsigned>(DATA + 8, QUEUE);
+    putStr(PATH, "/vol/content/ui/hello.bin");
+    submit();
+    ASSERT_EQ(cpu->m_gpr[3], 0u);
+    EXPECT_EQ(cpu->m_scheduler.currentHandle(), main);
+    submit(); // a full queue must report failure rather than silently lose completion
+    EXPECT_EQ(static_cast<int>(cpu->m_gpr[3]), -0x400);
+    cpu->m_gpr[3] = QUEUE;
+    cpu->m_gpr[4] = MESSAGE;
+    cpu->m_gpr[5] = 0;
+    call("OSReceiveMessage");
+    ASSERT_EQ(cpu->m_gpr[3], 1u);
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(MESSAGE + 0x0C), 8u);
+    cpu->m_gpr[3] = MESSAGE;
+    call("FSGetAsyncResult");
+    ASSERT_EQ(cpu->m_gpr[3], RESULT);
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(RESULT + 0x1C), CLIENT);
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(RESULT + 0x20), BLOCK);
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(RESULT + 0x24), 0u);
+    cpu->m_memory.write<unsigned>(MESSAGE + 0x0C, 9);
+    cpu->m_gpr[3] = MESSAGE;
+    call("FSGetAsyncResult");
+    EXPECT_EQ(cpu->m_gpr[3], 0u);
+    cpu->m_memory.write<unsigned>(DATA + 8, 0);
+    submit();
+    EXPECT_EQ(static_cast<int>(cpu->m_gpr[3]), -0x400);
 }
 
 TEST_F(FsTest, VolumeIsReadyWhenContentIsMounted)

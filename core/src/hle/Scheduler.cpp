@@ -173,7 +173,26 @@ namespace Core {
 
     bool Scheduler::yield(Interpreter &cpu)
     {
-        ThreadContext *next = pickRunnable(m_current);
+        // Explicit yields must let this emulated core make progress. Selecting
+        // globally by priority can repeatedly run busy workers on other cores
+        // while a ready controller on the yielding core never resumes.
+        ThreadContext *next = nullptr;
+        const auto coreMask = 1u << currentCoreId();
+        const auto count = m_threads.size();
+        std::size_t nextIndex = 0;
+        for (std::size_t i = 0; i < count; ++i) {
+            const auto index = (m_rrIndex + 1 + i) % count;
+            auto *candidate = m_threads[index].get();
+            if (candidate != m_current && candidate->state == ThreadContext::State::Ready && (candidate->affinity & coreMask) &&
+                (!next || candidate->priority < next->priority)) {
+                next = candidate;
+                nextIndex = index;
+            }
+        }
+        if (next)
+            m_rrIndex = nextIndex;
+        else
+            next = pickRunnable(m_current);
         if (!next || next == m_current)
             return false; // nobody else runnable -> keep running current
 
@@ -200,23 +219,31 @@ namespace Core {
         cpu.m_hle_redirected = true;
     }
 
-    bool Scheduler::join(Interpreter &cpu, const std::uint32_t osThread)
+    bool Scheduler::join(Interpreter &cpu, const std::uint32_t osThread, const std::uint32_t resultAddress)
     {
         ThreadContext *target = find(osThread);
-        if (!target || target->state == ThreadContext::State::Finished)
+        if (!target)
+            return false;
+        if (target->state == ThreadContext::State::Finished) {
+            if (resultAddress)
+                cpu.m_memory.write<std::uint32_t>(resultAddress, target->exitValue);
             return false; // already done -> return immediately
+        }
 
         ThreadContext *prev = m_current;
         prev->state = ThreadContext::State::Waiting;
         prev->joinTarget = osThread;
+        prev->joinResultAddress = resultAddress;
 
         ThreadContext *next = pickRunnable(prev);
         if (!next || next == prev) { // would deadlock; avoid hanging by just continuing
             prev->state = ThreadContext::State::Running;
             prev->joinTarget = 0;
+            prev->joinResultAddress = 0;
             return false;
         }
         save(cpu, prev, cpu.m_lr);
+        prev->gpr[3] = 1; // OSJoinThread returns TRUE when the target finishes.
         load(cpu, next);
         cpu.m_hle_redirected = true;
         return true;
@@ -265,12 +292,29 @@ namespace Core {
         return true;
     }
 
+    std::uint64_t Scheduler::frameDeadline(const std::uint64_t period)
+    {
+        // Keep the display deadline anchored. Resetting it to each present's
+        // completion time accumulates CPU/wait overshoots as extra movie time.
+        if (!m_frameClockStarted) {
+            m_lastFrameTick = std::max(m_now, period);
+            m_frameClockStarted = true;
+        } else
+            m_lastFrameTick += std::min(period, std::numeric_limits<std::uint64_t>::max() - m_lastFrameTick);
+        return m_lastFrameTick;
+    }
+
     void Scheduler::advanceFrame(const std::uint64_t period)
     {
-        // CPU execution and waits may already have accounted for this frame's time.
-        const auto elapsed = m_now - m_lastFrameTick;
-        advanceTicks(elapsed < period ? period - elapsed : 0);
-        m_lastFrameTick = m_now;
+        const auto deadline = frameDeadline(period);
+        advanceTicks(deadline > m_now ? deadline - m_now : 0);
+    }
+
+    void Scheduler::waitForFrame(Interpreter &cpu, const std::uint64_t period)
+    {
+        const auto deadline = frameDeadline(period);
+        if (deadline > m_now)
+            sleep(cpu, deadline - m_now);
     }
 
     void Scheduler::advanceTicks(const std::uint64_t ticks)
@@ -345,6 +389,31 @@ namespace Core {
         m.owner = self;
         m.count++;
         return true;
+    }
+
+    bool Scheduler::waitCondition(Interpreter &cpu, const std::uint32_t condition, const std::uint32_t mutex)
+    {
+        auto *thread = m_current;
+        if (!thread->conditionMutex) {
+            thread->conditionMutex = mutex;
+            thread->conditionMutexDepth = 1;
+            if (const auto found = m_mutexes.find(mutex); found != m_mutexes.end() && found->second.owner == thread->osThreadPtr) {
+                thread->conditionMutexDepth = found->second.count;
+                m_mutexes.erase(found);
+                wakeAll(mutex);
+            }
+            // Retrying the condition's HLE instruction on wake lets normal mutex
+            // contention block again before the guest returns from OSWaitCond.
+            if (blockOn(cpu, condition, true))
+                return true;
+        }
+        if (!mutexLock(cpu, mutex))
+            return true;
+        for (std::uint32_t depth = 1; depth < thread->conditionMutexDepth; ++depth)
+            mutexTryLock(mutex);
+        thread->conditionMutex = thread->conditionMutexDepth = 0;
+        cpu.m_gpr[3] = 0;
+        return false;
     }
 
     void Scheduler::mutexUnlock(const std::uint32_t addr)
@@ -508,12 +577,17 @@ namespace Core {
 
     bool Scheduler::exitCurrent(Interpreter &cpu)
     {
+        m_current->exitValue = cpu.m_gpr[3];
         m_current->state = ThreadContext::State::Finished;
         // Wake anyone joining this thread.
         for (auto &up: m_threads)
             if (up->state == ThreadContext::State::Waiting && up->joinTarget == m_current->osThreadPtr) {
+                if (up->joinResultAddress)
+                    cpu.m_memory.write<std::uint32_t>(up->joinResultAddress, m_current->exitValue);
                 up->state = ThreadContext::State::Ready;
+                up->gpr[3] = 1;
                 up->joinTarget = 0;
+                up->joinResultAddress = 0;
             }
         ThreadContext *next = pickRunnable(m_current);
         if (!next || next == m_current)

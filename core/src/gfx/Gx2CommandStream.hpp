@@ -53,6 +53,7 @@ namespace Core::Gfx {
         SetPolygonControl,
         SetRasterizerClipControl,
         SetPolygonOffset,
+        SetStencilMask,
         // Library video rendering, ordered with guest GX2 commands. Payload:
         // 16 clip-transform floats, 16 UV-transform floats, then RGBA8 words.
         DrawImage,

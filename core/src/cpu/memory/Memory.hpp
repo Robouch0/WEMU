@@ -44,8 +44,10 @@ namespace Core {
                 GraphicsResourcesEnd = 0xF6000000
             };
 
-            static constexpr uint32_t STACK_BASE = 0xC0FF0000;
             static constexpr uint32_t STACK_SIZE = 0x100000; // 1 MB
+            // The initial SP is 0xC0FFFFF0 and the stack grows down. Back the full
+            // megabyte below that top; 0xC0FF0000 provided only 64 KB of usable stack.
+            static constexpr uint32_t STACK_BASE = 0xC1000000 - STACK_SIZE;
             // Internal HLE pool (0x26000000..0x28000000). The guest-visible MEM2 arena that the
             // title allocates from starts at 0x28000000 (see hle/MemHeap.cpp) — keep out of it.
             static constexpr uint32_t HEAP_BASE = 0x26000000;

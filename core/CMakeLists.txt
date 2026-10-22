@@ -50,6 +50,7 @@ add_library(core STATIC
         src/utils/Diagnostics.cpp
         src/hle/MemHeap.hpp
         src/hle/MemHeap.cpp
+        src/hle/ApplicationBoot.cpp
         src/hle/CoreinitExtra.hpp
         src/hle/CoreinitExtra.cpp
         src/hle/MvPlayer.cpp

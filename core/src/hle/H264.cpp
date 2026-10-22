@@ -251,9 +251,10 @@ namespace {
                     low = std::min(low, *bounds.first);
                     high = std::max(high, *bounds.second);
                 }
-                Utils::Log::error("[H264] output #{} {}x{} stride={} timestamp={} buffer=0x{:08X} callback=0x{:08X} luma={}..{} wall_ms={} tick={}",
-                                  s.outputCount, frame.width, frame.height, frame.stride, frame.timestamp, frame.guestBuffer, s.callback, low, high,
-                                  elapsed, cpu.m_scheduler.now());
+                Utils::Log::error(
+                        "[H264] output #{} {}x{} stride={} timestamp={} buffer=0x{:08X} callback=0x{:08X} luma={}..{} wall_ms={} tick={} presents={}",
+                        s.outputCount, frame.width, frame.height, frame.stride, frame.timestamp, frame.guestBuffer, s.callback, low, high, elapsed,
+                        cpu.m_scheduler.now(), cpu.m_renderer ? cpu.m_renderer->guest_present_count() : 0);
             }
             ++s.outputCount;
             if (cpu.m_renderer)

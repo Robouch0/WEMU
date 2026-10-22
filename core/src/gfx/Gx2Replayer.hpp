@@ -166,6 +166,9 @@ namespace Core::Gfx {
                     std::optional<float> clear;
                     // Every pixel holds this value; a repeated clear then needs no fill.
                     std::optional<float> uniform;
+                    std::vector<std::uint8_t> stencil;
+                    std::shared_ptr<RasterReadback> pendingStencil;
+                    std::optional<std::uint8_t> stencilClear;
                     // Identity of the current pixels for the backend's upload cache (snapshotOwner).
                     // Dropped whenever pixels change, so an unchanged depth texture skips re-upload
                     // and byte comparison.
@@ -185,7 +188,7 @@ namespace Core::Gfx {
             // Level-major pending GPU versions of every (level, slice) of a 2D, array or cube view,
             // or empty unless all of them are still on the GPU.
             std::vector<std::shared_ptr<RasterReadback>> renderedSubresources(const Surface &surface, unsigned levels) const;
-            void clearDepthSurface(const Surface &s, float depth, unsigned flags);
+            void clearDepthSurface(const Surface &s, float depth, unsigned flags, unsigned stencil = 0);
             void drawImage(const Gx2Command &cmd);
             void drawPrimitives(const Gx2Command &cmd, bool indexed, int selectedColor = -1);
             // The bound fetch shader resolved against the attribute buffers once per draw, so
@@ -394,6 +397,8 @@ namespace Core::Gfx {
             Surface m_depth;
             std::array<Surface, 8> m_colorBuffers{};
             bool m_depthTest{}, m_depthWrite{}, m_stencilTest{};
+            std::optional<std::uint32_t> m_stencilControl;
+            std::optional<std::array<std::uint32_t, 2>> m_stencilMasks;
             unsigned m_depthCompare{7};
             mutable std::unordered_map<SurfaceKey, DepthBacking, SurfaceKeyHash> m_depthBackings;
             std::uint32_t m_colorTarget{0}; // GX2 render target slot for the bound colour target
@@ -474,6 +479,8 @@ namespace Core::Gfx {
                     Surface color, depth;
                     std::array<Surface, 8> colorBuffers{};
                     bool depthTest{}, depthWrite{}, stencilTest{};
+                    std::optional<std::uint32_t> stencilControl;
+                    std::optional<std::array<std::uint32_t, 2>> stencilMasks;
                     unsigned depthCompare{7};
                     std::uint32_t colorTarget{};
                     std::array<Surface, 16> pixelTextures{}, vertexTextures{};

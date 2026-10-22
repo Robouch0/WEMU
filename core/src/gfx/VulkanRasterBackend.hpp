@@ -19,6 +19,7 @@ namespace Core::Gfx {
             bool supportsRenderedTextures() const override { return true; }
             bool supportsRenderedTargets() const override { return true; }
             bool supportsDepth() const override { return true; }
+            bool supportsStencil() const override { return true; }
             bool supportsPoints() const override { return true; }
             bool supportsFloatTargets() const override { return true; }
             bool supportsVertexStage() const override { return true; }

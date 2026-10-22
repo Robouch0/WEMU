@@ -109,8 +109,17 @@ cmake -S . -B build-llvm -DCMAKE_BUILD_TYPE=Release -DWEMU_ENABLE_LLVM=ON
 cmake --build build-llvm --parallel 2
 ```
 
-This requires LLVM 19.1 development files. `WEMU_NATIVE_CPU=1` opts into native CPU
-execution for direct core launches; GUI launches use the default cached interpreter.
+This requires LLVM 19.1 development files. `WEMU_NATIVE_CPU=1` opts into LLVM CPU
+execution for direct core launches. Desktop launches prefer the existing x86-64
+recompiler when the core includes it, then LLVM when available. Disabling the
+`emulation/nativeCpu` setting selects the cached interpreter. The x86-64 backend
+checks host instruction support and falls back to interpretation when unavailable.
+Direct core launches can select it with `WEMU_X64_JIT=1`.
+
+GX2 strip assembly, resource-backed shaders and tiled depth allocations now let
+Smash's intro render its complete movie quad with colour and keep the supported
+depth passes on Vulkan. Measurements and the reusable capture tool are described
+in [GX2 movie rendering](docs/features/gx2-movie-rendering.md).
 
 ### Running Tests
 

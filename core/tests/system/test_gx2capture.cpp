@@ -9,8 +9,10 @@
 #include "gfx/SurfaceLayout.hpp"
 #include "gfx/TextureFormat.hpp"
 #include "gfx/VulkanRasterBackend.hpp"
+#include "hle/CoreinitExtra.hpp"
 #include "hle/Gx2.hpp"
 #include "hle/Libc.hpp"
+#include "hle/MemHeap.hpp"
 
 // GX2 command capture: render calls are recorded into the command stream for later Vulkan replay.
 class Gx2CaptureTest : public InstructionTest {
@@ -48,6 +50,239 @@ class Gx2CaptureTest : public InstructionTest {
             call("GX2CopySurface");
         }
 };
+
+TEST_F(Gx2CaptureTest, DepthStencilControlCapturesStackArgumentsInDirectAndRegisterForms)
+{
+    constexpr unsigned reg = 0x28001000;
+    cpu->m_gpr[1] = 0x2800F000;
+    const auto invoke = [&](const char *name, const auto &args) {
+        for (unsigned i = 0; i < args.size(); ++i)
+            if (i < 8)
+                cpu->m_gpr[3 + i] = args[i];
+            else
+                cpu->m_memory.write<unsigned>(cpu->m_gpr[1] + 8 + (i - 8) * 4, args[i]);
+        call(name);
+    };
+    const std::array<unsigned, 13> args{1, 0, 3, 1, 1, 7, 0, 0, 4, 2, 6, 3, 5};
+    const unsigned expected = 1u | (1u << 1) | (3u << 4) | (1u << 7) | (7u << 8) | (4u << 11) | (2u << 20) | (5u << 23) | (6u << 26) | (3u << 29);
+    invoke("GX2SetDepthStencilControl", args);
+    ASSERT_EQ(Core::Gfx::gx2Stream().size(), 1u);
+    EXPECT_EQ(Core::Gfx::gx2Stream().commands().back().payload, (std::vector<unsigned>{expected}));
+    std::array<unsigned, 14> initArgs{reg};
+    std::copy(args.begin(), args.end(), initArgs.begin() + 1);
+    invoke("GX2InitDepthStencilControlReg", initArgs);
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(reg), expected);
+    cpu->m_gpr[3] = reg;
+    call("GX2SetDepthStencilControlReg");
+    cpu->m_memory.write<unsigned>(reg, 0);
+    EXPECT_EQ(Core::Gfx::gx2Stream().commands().back().payload, (std::vector<unsigned>{expected}));
+}
+
+TEST_F(Gx2CaptureTest, ResourceBufferSizeRoundsUpAndRejectsOverflow)
+{
+    constexpr unsigned buffer = 0x28001000;
+    cpu->m_gpr[3] = 0x3110;
+    call("GX2RGetBufferAlignment");
+    EXPECT_EQ(cpu->m_gpr[3], 256u);
+    cpu->m_memory.write<unsigned>(buffer + 4, 13);
+    cpu->m_memory.write<unsigned>(buffer + 8, 5);
+    cpu->m_gpr[3] = buffer;
+    call("GX2RGetBufferAllocationSize");
+    EXPECT_EQ(cpu->m_gpr[3], 128u);
+    cpu->m_memory.write<unsigned>(buffer + 4, 0x80000001);
+    cpu->m_memory.write<unsigned>(buffer + 8, 2);
+    cpu->m_gpr[3] = buffer;
+    call("GX2RGetBufferAllocationSize");
+    EXPECT_EQ(cpu->m_gpr[3], 0u);
+}
+
+TEST_F(Gx2CaptureTest, UserBufferCreationAndLockExposeCallerStorage)
+{
+    constexpr unsigned buffer = 0x28001000, storage = 0x28002000;
+    cpu->m_memory.write<unsigned>(buffer, 0x3110);
+    cpu->m_memory.write<unsigned>(buffer + 4, 4);
+    cpu->m_memory.write<unsigned>(buffer + 8, 32);
+    cpu->m_gpr[3] = buffer;
+    cpu->m_gpr[4] = storage;
+    cpu->m_gpr[5] = 64;
+    call("GX2RCreateBufferUserMemory");
+    EXPECT_EQ(cpu->m_gpr[3], 0u);
+    cpu->m_gpr[3] = buffer;
+    cpu->m_gpr[4] = storage;
+    cpu->m_gpr[5] = 128;
+    call("GX2RCreateBufferUserMemory");
+    ASSERT_EQ(cpu->m_gpr[3], 1u);
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(buffer + 12), storage);
+    cpu->m_gpr[3] = buffer;
+    cpu->m_gpr[4] = 1u << 22;
+    call("GX2RLockBufferEx");
+    ASSERT_EQ(cpu->m_gpr[3], storage);
+    cpu->m_memory.write<unsigned>(cpu->m_gpr[3], 0x12345678);
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(storage), 0x12345678u);
+    cpu->m_gpr[3] = buffer;
+    call("GX2RUnlockBufferEx");
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(buffer), 0x3110u);
+    cpu->m_gpr[3] = buffer;
+    cpu->m_gpr[4] = 2;
+    cpu->m_gpr[5] = 16;
+    cpu->m_gpr[6] = 32;
+    call("GX2RSetAttributeBuffer");
+    const auto &binding = Core::Gfx::gx2Stream().commands().back();
+    EXPECT_EQ(binding.type, Core::Gfx::Gx2Cmd::SetAttribBuffer);
+    EXPECT_EQ(binding.gpr[0], 2u);
+    EXPECT_EQ(binding.gpr[1], 128u);
+    EXPECT_EQ(binding.gpr[2], 16u);
+    EXPECT_EQ(binding.gpr[3], storage + 32);
+    cpu->m_gpr[3] = buffer;
+    cpu->m_gpr[4] = 0;
+    call("GX2RDestroyBufferEx");
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(buffer + 12), storage); // caller still owns the memory
+}
+
+TEST_F(Gx2CaptureTest, OwnedResourceBuffersAllocateAlignedStorageAndReleaseIt)
+{
+    RegisterMemHeapFunctions();
+    constexpr unsigned buffer = 0x28001000;
+    cpu->m_memory.write<unsigned>(buffer, 0x3110 | (1u << 30));
+    cpu->m_memory.write<unsigned>(buffer + 4, 13);
+    cpu->m_memory.write<unsigned>(buffer + 8, 5);
+    cpu->m_memory.write<unsigned>(buffer + 12, 0);
+    cpu->m_gpr[3] = buffer;
+    call("GX2RCreateBuffer");
+    ASSERT_EQ(cpu->m_gpr[3], 1u);
+    const auto storage = cpu->m_memory.read<unsigned>(buffer + 12);
+    ASSERT_NE(storage, 0u);
+    EXPECT_EQ(storage % 256, 0u);
+    ASSERT_NE(cpu->m_memory.hostPtr(storage, 128), nullptr);
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(buffer), 0x3110u | (1u << 29));
+    cpu->m_gpr[3] = buffer;
+    call("GX2RBufferExists");
+    EXPECT_EQ(cpu->m_gpr[3], 1u);
+    cpu->m_gpr[3] = buffer;
+    call("GX2RCreateBuffer");
+    EXPECT_EQ(cpu->m_gpr[3], 0u); // an existing buffer is not leaked/replaced
+    cpu->m_gpr[3] = buffer;
+    cpu->m_gpr[4] = 1u << 19;
+    call("GX2RDestroyBufferEx");
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(buffer + 12), storage);
+    cpu->m_gpr[3] = buffer;
+    cpu->m_gpr[4] = 0;
+    call("GX2RDestroyBufferEx");
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(buffer + 12), 0u);
+    cpu->m_gpr[3] = buffer;
+    call("GX2RBufferExists");
+    EXPECT_EQ(cpu->m_gpr[3], 0u);
+    cpu->m_gpr[3] = buffer;
+    call("GX2RCreateBuffer");
+    ASSERT_EQ(cpu->m_gpr[3], 1u);
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(buffer + 12), storage); // freed range is reusable
+    cpu->m_gpr[3] = buffer;
+    cpu->m_gpr[4] = 0;
+    call("GX2RDestroyBufferEx");
+    cpu->m_memory.write<unsigned>(buffer + 4, 0x80000001);
+    cpu->m_memory.write<unsigned>(buffer + 8, 2);
+    cpu->m_gpr[3] = buffer;
+    call("GX2RCreateBuffer");
+    EXPECT_EQ(cpu->m_gpr[3], 0u);
+}
+
+TEST_F(Gx2CaptureTest, ResourceBuffersCallReplacementGuestAllocatorsAndResumeTheirCaller)
+{
+    constexpr unsigned app = Core::Memory::ApplicationCode, buffer = 0x28001000, storage = 0x28002000;
+    constexpr unsigned slots = 0x28005000, output = 0x28006000, stack = 0xC0FFFFF0;
+    const auto savedSymbols = cpu->m_binary.symbols;
+    for (const auto &[name, slot, function]:
+         {std::tuple{"MEMAllocFromDefaultHeapEx", slots, app + 0x100}, std::tuple{"MEMFreeToDefaultHeap", slots + 4, app + 0x120}}) {
+        Core::Symbol symbol{};
+        symbol.name = name;
+        symbol.meta.type = STT_OBJECT;
+        symbol.meta.virtAddress = slot;
+        cpu->m_binary.symbols.push_back(symbol);
+        cpu->m_memory.write<unsigned>(slot, function);
+    }
+    const auto write = [&](unsigned address, std::initializer_list<unsigned> words) {
+        for (const auto word: words) {
+            cpu->m_memory.write<unsigned>(address, word);
+            address += 4;
+        }
+    };
+    // Preserve the original LR/buffer in nonvolatile registers, create, then destroy.
+    write(app, {0x7FC802A6, 0x7C7F1B78, 0x48000079, 0x90690000, 0x7FE3FB78, 0x38800000, 0x48000089, 0x7FC803A6, 0x4E800020});
+    for (const auto &[name, address]: {std::pair{"GX2RCreateBuffer", app + 0x80}, std::pair{"GX2RDestroyBufferEx", app + 0xA0}}) {
+        const auto sentinel = Core::Hle::exportFunction(*cpu, name);
+        write(address, {0x3D800000u | (sentinel >> 16), 0x618C0000u | (sentinel & 0xFFFF), 0x7D8903A6, 0x4E800420});
+    }
+    // Allocator captures its size/alignment and returns caller-owned test storage.
+    write(app + 0x100, {0x90690004, 0x90890008, 0x3C600000u | (storage >> 16), 0x60630000u | (storage & 0xFFFF), 0x4E800020});
+    write(app + 0x120, {0x9069000C, 0x4E800020}); // free captures the exact allocated pointer
+    cpu->m_memory.write<unsigned>(buffer, 0x3110);
+    cpu->m_memory.write<unsigned>(buffer + 4, 13);
+    cpu->m_memory.write<unsigned>(buffer + 8, 5);
+    cpu->m_memory.write<unsigned>(buffer + 12, 0);
+    cpu->m_gpr[1] = stack;
+    cpu->m_gpr[3] = buffer;
+    cpu->m_gpr[9] = output;
+    cpu->m_lr = Core::RETURN_SENTINEL - app;
+    cpu->m_binary.header.e_entry = app;
+    cpu->run();
+    EXPECT_FALSE(cpu->failed());
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(output), 1u);
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(output + 4), 128u);
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(output + 8), 256u);
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(output + 12), storage);
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(buffer + 12), 0u);
+    EXPECT_EQ(cpu->m_gpr[1], stack);
+    EXPECT_EQ(cpu->m_lr, Core::RETURN_SENTINEL - app);
+    cpu->m_binary.symbols = savedSymbols;
+}
+
+TEST_F(Gx2CaptureTest, GeometryRingSizingDoesNotRequireStorageForNonGeometryShaders)
+{
+    for (const auto *name: {"GX2CalcGeometryShaderInputRingBufferSize", "GX2CalcGeometryShaderOutputRingBufferSize"}) {
+        cpu->m_gpr[3] = 0;
+        call(name);
+        EXPECT_EQ(cpu->m_gpr[3], 0u);
+        cpu->m_gpr[3] = 12;
+        call(name);
+        EXPECT_EQ(cpu->m_gpr[3], 12u * 0x4000);
+    }
+}
+
+TEST_F(Gx2CaptureTest, BlendAndDepthRegistersCaptureStackArguments)
+{
+    constexpr unsigned reg = 0x28001000, stack = 0x28002000;
+    cpu->m_gpr[1] = stack;
+    const auto arguments = [&](const auto &args) {
+        for (unsigned i = 0; i < args.size(); ++i)
+            if (i < 8)
+                cpu->m_gpr[3 + i] = args[i];
+            else
+                cpu->m_memory.write<unsigned>(stack + 8 + (i - 8) * 4, args[i]);
+    };
+    arguments(std::array<unsigned, 9>{reg, 2, 4, 5, 1, 1, 6, 7, 2});
+    call("GX2InitBlendControlReg");
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(reg + 4), 4u | (1u << 5) | (5u << 8) | (6u << 16) | (2u << 21) | (7u << 24) | (1u << 29));
+    cpu->m_gpr[3] = reg;
+    call("GX2SetBlendControlReg");
+    EXPECT_EQ(Core::Gfx::gx2Stream().commands().back().gpr, (std::array<std::uint32_t, 8>{2, 4, 5, 1, 1, 6, 7, 2}));
+    arguments(std::array<unsigned, 14>{reg, 1, 1, 3, 1, 1, 2, 3, 4, 5, 6, 7, 1, 2});
+    call("GX2InitDepthStencilControlReg");
+    const auto depth = 1u | 2u | 4u | (3u << 4) | (1u << 7) | (2u << 8) | (5u << 11) | (3u << 14) | (4u << 17) | (6u << 20) | (2u << 23) |
+                       (7u << 26) | (1u << 29);
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(reg), depth);
+    cpu->m_gpr[3] = reg;
+    call("GX2SetDepthStencilControlReg");
+    EXPECT_EQ(Core::Gfx::gx2Stream().commands().back().payload, (std::vector<std::uint32_t>{depth}));
+    arguments(std::array<unsigned, 5>{reg, 0xCC, 5, 1, 1});
+    call("GX2InitColorControlReg");
+    cpu->m_gpr[3] = reg;
+    call("GX2SetColorControlReg");
+    const auto &color = Core::Gfx::gx2Stream().commands().back();
+    EXPECT_EQ(color.gpr[0], 0xCCu);
+    EXPECT_EQ(color.gpr[1], 5u);
+    EXPECT_EQ(color.gpr[2], 1u);
+    EXPECT_EQ(color.gpr[3], 1u);
+}
 
 TEST_F(Gx2CaptureTest, SamplerInitializationAndCapturePreserveIndependentFields)
 {
@@ -318,6 +553,36 @@ TEST_F(Gx2CaptureTest, BaseSurfaceAllocationResolvesDefaultAndPadsTiles)
     }
 }
 
+TEST_F(Gx2CaptureTest, DepthAllocationsContainEveryTexelInTheFinalTileRow)
+{
+    constexpr unsigned header = 0x28001000;
+    for (const unsigned format: {0x80Eu, 5u, 0x11u})
+        for (const unsigned tile: {1u, 2u, 4u, 16u})
+            for (const auto dimensions: {std::array{33u, 17u}, std::array{640u, 360u}, std::array{1440u, 810u}}) {
+                SCOPED_TRACE(format);
+                SCOPED_TRACE(tile);
+                SCOPED_TRACE(dimensions[0]);
+                surface(header, 0, 0, dimensions[0], dimensions[1], 0, tile);
+                cpu->m_memory.write<unsigned>(header + 0x14, format);
+                cpu->m_memory.write<unsigned>(header + 0x1C, 5); // texture and depth attachment
+                cpu->m_gpr[3] = header;
+                call("GX2CalcSurfaceSizeAndAlignment");
+                const auto pitch = cpu->m_memory.read<unsigned>(header + 0x3C);
+                const auto bytes = cpu->m_memory.read<unsigned>(header + 0x20);
+                const auto actualTile = cpu->m_memory.read<unsigned>(header + 0x30);
+                const auto elementBytes = format == 5 ? 2u : 4u;
+                ASSERT_GE(pitch, dimensions[0]);
+                // Allocation must contain every address the replay sampler can reach,
+                // including non-contiguous addresses in the partially used final tile.
+                unsigned maximum = 0;
+                for (unsigned y = 0; y < dimensions[1]; ++y)
+                    for (unsigned x = 0; x < dimensions[0]; ++x)
+                        maximum = std::max(maximum, Core::Gfx::tiledElementOffset(x, y, pitch, elementBytes * 8, actualTile, 0));
+                EXPECT_LE(std::uint64_t(maximum) + elementBytes, bytes);
+                EXPECT_EQ(cpu->m_memory.read<unsigned>(header + 0x10), 1u);
+            }
+}
+
 TEST_F(Gx2CaptureTest, CubeMipmapAllocationIncludesPaddedFacesAndClearsUnusedOffsets)
 {
     constexpr unsigned S = 0x28001000;
@@ -420,6 +685,143 @@ TEST_F(Gx2CaptureTest, FetchDeclarationSurvivesCallerReuse)
     const auto &commands = Core::Gfx::gx2Stream().commands();
     ASSERT_EQ(commands.size(), 1u);
     EXPECT_EQ(commands[0].payload, (std::vector<std::uint32_t>(attr.begin(), attr.end())));
+}
+
+TEST_F(Gx2CaptureTest, StripsFansAndResourceShadersCoverTheWholeRectangle)
+{
+    using namespace Core::Gfx;
+    constexpr unsigned vs = 0x28001000, ps = 0x28002000, color = 0x28003000;
+    constexpr unsigned vsCode = 0x28004000, psCode = 0x28005000, vertices = 0x28006000, indices = 0x28007000;
+    const std::vector<unsigned> vertexProgram{60u | (1u << 13) | (1u << 15), (0x27u << 23) | 0x688u, (2u << 13) | (2u << 15),
+                                              (0x28u << 23) | (1u << 21) | 0x688u};
+    const std::vector<unsigned> pixelProgram{0, (0x28u << 23) | (1u << 21) | 0x688u};
+    const auto shader = [&](unsigned header, unsigned offset, unsigned resource, unsigned code, const auto &words, bool resourceBacked) {
+        for (unsigned off = 0; off < 0x140; off += 4)
+            cpu->m_memory.write<unsigned>(header + off, 0);
+        // The resource size, rather than the unused direct size, selects the bytecode.
+        cpu->m_memory.write<unsigned>(header + offset, resourceBacked ? 0 : words.size() * 4);
+        cpu->m_memory.write<unsigned>(header + offset + 4, resourceBacked ? 0 : code);
+        cpu->m_memory.write<unsigned>(header + resource + 4, 8);
+        cpu->m_memory.write<unsigned>(header + resource + 8, words.size() / 2);
+        cpu->m_memory.write<unsigned>(header + resource + 12, resourceBacked ? code : 0);
+        for (unsigned i = 0; i < words.size(); ++i)
+            cpu->m_memory.write<unsigned>(code + i * 4, std::byteswap(words[i]));
+    };
+    const auto record = [&](const char *name, std::initializer_list<unsigned> args) {
+        unsigned r = 3;
+        for (const auto arg: args)
+            cpu->m_gpr[r++] = arg;
+        call(name);
+    };
+    std::shared_ptr<VulkanRasterBackend> backend;
+    if (std::getenv("WEMU_TEST_VULKAN") && SpirvCompiler::available())
+        backend = std::make_shared<VulkanRasterBackend>();
+    for (const bool resourceBacked: {false, true})
+        for (const bool indexed: {false, true})
+            for (const unsigned mode: {4u, 5u, 6u, 0x13u, 0x14u}) {
+                SCOPED_TRACE(resourceBacked);
+                SCOPED_TRACE(indexed);
+                SCOPED_TRACE(mode);
+                gx2Stream().clear();
+                shader(vs, 0xD0, 0x124, vsCode, vertexProgram, resourceBacked);
+                shader(ps, 0xA4, 0xD8, psCode, pixelProgram, resourceBacked);
+                cpu->m_memory.write<unsigned>(vs + 0x40, 2);
+                cpu->m_memory.write<unsigned>(vs + 0x44, 0);
+                cpu->m_memory.write<unsigned>(vs + 0x48, 1);
+                cpu->m_memory.write<unsigned>(vs + 0xC, 1);
+                cpu->m_memory.write<unsigned>(vs + 0x10, 0xFFFFFF00);
+                cpu->m_memory.write<unsigned>(ps + 0x10, 1);
+                surface(color, 0x28010000, 8 * 8 * 4, 8, 8, 8, 1);
+                record("GX2SetColorBuffer", {color, 0});
+                record("GX2SetColorControl", {0xCC, 0, 0, 1});
+                cpu->m_fpr[1] = cpu->m_fpr[2] = cpu->m_fpr[5] = 0;
+                cpu->m_fpr[3] = cpu->m_fpr[4] = 8;
+                cpu->m_fpr[6] = 1;
+                record("GX2SetViewport", {});
+                record("GX2SetScissor", {0, 0, 8, 8});
+                Gx2Command polygon{Gx2Cmd::SetPolygonControl};
+                polygon.gpr[0] = 6; // clockwise front, cull back: both strip triangles must survive
+                gx2Stream().push(polygon);
+                Gx2Command fetch{Gx2Cmd::SetFetchShader};
+                fetch.payload = {0, 0, 0, 0x813, 0, 0, 0x00010203, 3, 1, 0, 16, 0x813, 0, 0, 0x00010203, 3};
+                gx2Stream().push(fetch);
+                record("GX2SetVertexShader", {vs});
+                record("GX2SetPixelShader", {ps});
+                const float positions[4][2]{{-1, 1}, {1, 1}, {-1, -1}, {1, -1}};
+                const std::vector<unsigned> order = mode == 4                   ? std::vector<unsigned>{0, 1, 2, 2, 1, 3}
+                                                    : mode == 5 || mode == 0x13 ? std::vector<unsigned>{0, 1, 3, 2}
+                                                                                : std::vector<unsigned>{0, 1, 2, 3};
+                // Nonzero first/base vertex and reordered indices must use the same topology.
+                for (unsigned i = 0; i < order.size(); ++i) {
+                    const auto corner = positions[order[i]];
+                    const std::array<float, 8> data{corner[0], corner[1], 0, 1, .25f, .625f, .75f, 1};
+                    for (unsigned c = 0; c < data.size(); ++c)
+                        cpu->m_memory.write<unsigned>(vertices + (i + 2) * 32 + c * 4, std::bit_cast<unsigned>(data[c]));
+                    cpu->m_memory.write<std::uint16_t>(indices + i * 2, i);
+                }
+                record("GX2SetAttribBuffer", {0, 8 * 32, 32, vertices});
+                if (indexed && resourceBacked) {
+                    constexpr unsigned buffer = 0x28008000;
+                    cpu->m_memory.write<unsigned>(buffer + 4, 2);
+                    cpu->m_memory.write<unsigned>(buffer + 8, order.size() + 3);
+                    cpu->m_memory.write<unsigned>(buffer + 12, indices - 6);
+                    record("GX2RDrawIndexed", {mode, buffer, 4, unsigned(order.size()), 3, 2, 1});
+                } else if (indexed)
+                    record("GX2DrawIndexedEx", {mode, unsigned(order.size()), 4, indices, 2, 1});
+                else
+                    record("GX2DrawEx", {mode, unsigned(order.size()), 2, 1});
+                record("GX2CopyColorBufferToScanBuffer", {color, 1});
+                gx2Stream().push(Gx2Command{Gx2Cmd::SwapScanBuffers});
+                Gx2Replayer reference;
+                reference.replay(gx2Stream(), &cpu->m_memory);
+                const auto &pixels = reference.framebuffer();
+                for (unsigned y = 0; y < 8; ++y)
+                    for (unsigned x = 0; x < 8; ++x) {
+                        const auto offset = (y * Gx2Replayer::kWidth + x) * 4;
+                        ASSERT_EQ((std::array{pixels[offset], pixels[offset + 1], pixels[offset + 2]}), (std::array<std::uint8_t, 3>{64, 159, 191}))
+                                << x << ',' << y;
+                    }
+                if (backend) {
+                    const auto draws = backend->completedDraws();
+                    Gx2Replayer native;
+                    native.setRasterBackend(backend);
+                    native.setNativeVerificationInterval(0); // exercise direct GPU vertex/index assembly
+                    native.replay(gx2Stream(), &cpu->m_memory);
+                    EXPECT_EQ(backend->completedDraws(), draws + 1) << backend->lastError();
+                    EXPECT_EQ(native.framebuffer(), pixels);
+                    // Explicitly enabled stencil whose front/back faces always
+                    // pass and keep their values must not force CPU rasterization.
+                    auto identity = gx2Stream();
+                    Gx2Command stencil{Gx2Cmd::SetDepthStencilControl};
+                    stencil.gpr[2] = 7;
+                    stencil.gpr[3] = 1;
+                    stencil.payload = {1u | (1u << 7) | (7u << 8) | (7u << 20)};
+                    auto &commands = identity.mutableCommands();
+                    commands.insert(
+                            std::find_if(commands.begin(), commands.end(),
+                                         [](const auto &command) { return command.type == Gx2Cmd::DrawEx || command.type == Gx2Cmd::DrawIndexedEx; }),
+                            stencil);
+                    Gx2Replayer stencilNative;
+                    stencilNative.setRasterBackend(backend);
+                    stencilNative.setNativeVerificationInterval(0);
+                    stencilNative.replay(identity, &cpu->m_memory);
+                    EXPECT_EQ(backend->completedDraws(), draws + 2) << backend->lastError();
+                    EXPECT_EQ(stencilNative.framebuffer(), pixels);
+                    // Real stencil comparisons/updates remain outside the
+                    // validated native subset and must retain the fallback.
+                    for (const unsigned active: {1u << 14, 1u << 26, 1u << 8, 1u << 20}) {
+                        auto nonIdentity = identity;
+                        for (auto &command: nonIdentity.mutableCommands())
+                            if (command.type == Gx2Cmd::SetDepthStencilControl)
+                                command.payload[0] ^= active;
+                        Gx2Replayer fallback;
+                        fallback.setRasterBackend(backend);
+                        fallback.setNativeVerificationInterval(0);
+                        fallback.replay(nonIdentity, &cpu->m_memory);
+                        EXPECT_EQ(backend->completedDraws(), draws + 2);
+                    }
+                }
+            }
 }
 
 TEST_F(Gx2CaptureTest, VertexTextureBindingSnapshotsSurface)
@@ -1194,12 +1596,21 @@ TEST_F(Gx2CaptureTest, DepthClearsExportsOcclusionAndSamplingMatchNative)
                 cpu->m_memory.write<std::uint32_t>(vertices + v * 32 + c * 4, std::bit_cast<std::uint32_t>(data[c]));
         }
     };
-    for (const unsigned format: {0x80Eu, 5u}) {
+    for (const auto config:
+         {std::array{0x80Eu, 0u}, std::array{5u, 0u}, std::array{0x80Eu, 4u}, std::array{5u, 4u}, std::array{0x11u, 0u}, std::array{0x11u, 4u}}) {
+        const auto format = config[0];
+        const auto tile = config[1];
+        SCOPED_TRACE(tile);
         SCOPED_TRACE(format);
         gx2Stream().clear();
         surface(colorHeader, colorImage, 256, 8, 8, 8, 1);
         surface(depthHeader, depthImage, 10 * 8 * (format == 5 ? 2 : 4), 8, 8, 10, 0);
         cpu->m_memory.write<std::uint32_t>(depthHeader + 0x14, format);
+        if (tile) {
+            cpu->m_memory.write<unsigned>(depthHeader + 0x30, tile);
+            cpu->m_memory.write<unsigned>(depthHeader + 0x1C, 5);
+            record("GX2CalcSurfaceSizeAndAlignment", {depthHeader});
+        }
         cpu->m_memory.write<std::uint32_t>(depthHeader + 0x80, 1);
         cpu->m_memory.write<std::uint32_t>(depthHeader + 0x84, 0x00040505); // depth,0,1,1
         for (auto &f: cpu->m_fpr)
@@ -1227,7 +1638,7 @@ TEST_F(Gx2CaptureTest, DepthClearsExportsOcclusionAndSamplingMatchNative)
         Gx2Replayer reference, native;
         std::shared_ptr<VulkanRasterBackend> backend;
         if (std::getenv("WEMU_TEST_VULKAN") && SpirvCompiler::available()) {
-            backend = std::make_shared<VulkanRasterBackend>();
+            backend = std::make_shared<VulkanRasterBackend>(true, true);
             native.setRasterBackend(backend);
             native.setNativeVerificationInterval(1);
         }
@@ -1297,6 +1708,96 @@ TEST_F(Gx2CaptureTest, DepthClearsExportsOcclusionAndSamplingMatchNative)
         EXPECT_EQ(reference.framebuffer()[0], 32);
         EXPECT_EQ(reference.framebuffer()[1], 0);
         EXPECT_EQ(native.framebuffer(), reference.framebuffer());
+        if (format == 0x11u) {
+            const auto control = [&](unsigned compare, unsigned operation, unsigned depthCompare = 7) {
+                const unsigned word = 1u | (1u << 1) | (depthCompare << 4) | (1u << 7) | (compare << 8) | (operation << 11) | (operation << 14) |
+                                      (operation << 17) | (compare << 20) | (operation << 23) | (operation << 26) | (operation << 29);
+                cpu->m_memory.write<unsigned>(0x2800D000, word);
+                record("GX2SetDepthStencilControlReg", {0x2800D000});
+            };
+            const auto replay = [&] {
+                record("GX2CopyColorBufferToScanBuffer", {colorHeader, 1});
+                gx2Stream().push(Gx2Command{Gx2Cmd::SwapScanBuffers});
+                reference.replay(gx2Stream(), &cpu->m_memory);
+                native.replay(gx2Stream(), &cpu->m_memory);
+                EXPECT_EQ(native.framebuffer(), reference.framebuffer());
+            };
+            gx2Stream().clear();
+            for (unsigned c = 1; c <= 4; ++c)
+                cpu->m_fpr[c] = c == 4 ? 1 : 0;
+            record("GX2ClearColor", {colorHeader});
+            cpu->m_fpr[1] = 1;
+            record("GX2ClearDepthStencilEx", {depthHeader, 0, 3});
+            record("GX2SetScissor", {0, 0, 4, 8});
+            record("GX2SetColorControl", {0xCC, 0, 0, 0});
+            record("GX2SetStencilMask", {255, 255, 1, 255, 255, 1});
+            control(7, 2); // ALWAYS/REPLACE, writing stencil without color or depth
+            record("GX2SetPixelShader", {psColorHeader});
+            record("GX2DrawEx", {4, 6, 0, 1});
+            mesh(0, {0, 1, 0, 1});
+            const auto beforeStencil = backend ? backend->completedDraws() : 0;
+            replay();
+            gx2Stream().clear();
+            record("GX2SetColorControl", {0xCC, 0, 0, 1});
+            record("GX2SetScissor", {0, 0, 8, 8});
+            control(2, 0); // EQUAL/KEEP, color only on the written half
+            record("GX2DrawEx", {4, 6, 0, 1});
+            replay();
+            for (unsigned y = 0; y < 8; ++y)
+                for (unsigned x = 0; x < 8; ++x)
+                    EXPECT_EQ(reference.framebuffer()[(y * Gx2Replayer::kWidth + x) * 4 + 1], x < 4 ? 255 : 0);
+            gx2Stream().clear();
+            record("GX2SetColorControl", {0xCC, 0, 0, 0});
+            record("GX2SetStencilMask", {255, 0, 9, 255, 0, 9});
+            control(7, 2); // zero write mask preserves the stored stencil
+            record("GX2DrawEx", {4, 6, 0, 1});
+            replay();
+            gx2Stream().clear();
+            record("GX2SetColorControl", {0xCC, 0, 0, 1});
+            record("GX2SetStencilMask", {255, 255, 0, 255, 255, 0});
+            control(2, 0);
+            record("GX2DrawEx", {4, 6, 0, 1});
+            mesh(0, {0, 0, 1, 1});
+            replay();
+            for (unsigned y = 0; y < 8; ++y)
+                for (unsigned x = 0; x < 8; ++x) {
+                    const auto pixel = (y * Gx2Replayer::kWidth + x) * 4;
+                    EXPECT_EQ(reference.framebuffer()[pixel + 1], x < 4 ? 255 : 0);
+                    EXPECT_EQ(reference.framebuffer()[pixel + 2], x < 4 ? 0 : 255);
+                }
+            if (backend && std::getenv("WEMU_NATIVE_DEFER_READBACK"))
+                EXPECT_EQ(backend->completedDraws(), beforeStencil + 4) << backend->lastError();
+            // Check all operations through stencil-fail, depth-fail and pass,
+            // including clamp/wrap boundaries, against fixed expected bytes.
+            for (const auto values:
+                 {std::array{0u, 5u, 9u, 5u}, std::array{1u, 5u, 9u, 0u}, std::array{2u, 5u, 9u, 9u}, std::array{3u, 255u, 9u, 255u},
+                  std::array{3u, 5u, 9u, 6u}, std::array{4u, 0u, 9u, 0u}, std::array{4u, 5u, 9u, 4u}, std::array{5u, 0xAAu, 9u, 0x55u},
+                  std::array{6u, 255u, 9u, 0u}, std::array{7u, 0u, 9u, 255u}})
+                for (unsigned outcome = 0; outcome < 3; ++outcome) {
+                    SCOPED_TRACE(::testing::PrintToString(values));
+                    SCOPED_TRACE(outcome);
+                    gx2Stream().clear();
+                    cpu->m_fpr[1] = cpu->m_fpr[2] = cpu->m_fpr[3] = 0;
+                    cpu->m_fpr[4] = 1;
+                    record("GX2ClearColor", {colorHeader});
+                    record("GX2ClearDepthStencilEx", {depthHeader, values[1], 2});
+                    record("GX2SetColorControl", {0xCC, 0, 0, 0});
+                    record("GX2SetStencilMask", {255, 255, values[2], 255, 255, values[2]});
+                    control(outcome == 0 ? 0 : 7, values[0], outcome == 1 ? 0 : 7);
+                    record("GX2DrawEx", {4, 6, 0, 1});
+                    replay();
+                    gx2Stream().clear();
+                    record("GX2SetColorControl", {0xCC, 0, 0, 1});
+                    record("GX2SetStencilMask", {255, 255, values[3], 255, 255, values[3]});
+                    control(2, 0);
+                    record("GX2DrawEx", {4, 6, 0, 1});
+                    mesh(0, {1, 1, 1, 1});
+                    replay();
+                    for (unsigned y = 0; y < 8; ++y)
+                        for (unsigned x = 0; x < 8; ++x)
+                            EXPECT_EQ(reference.framebuffer()[(y * Gx2Replayer::kWidth + x) * 4], 255);
+                }
+        }
         if (backend)
             EXPECT_EQ(native.differingNativeDraws(), 0u);
     }
@@ -2846,7 +3347,7 @@ TEST_F(Gx2CaptureTest, PolygonRegisterCapturePreservesStackArgumentsAndRoundTrip
         if (index < 8)
             cpu->m_gpr[index + 3] = args[index];
         else
-            cpu->m_memory.write<unsigned>(STACK + 8 + index * 4, args[index]);
+            cpu->m_memory.write<unsigned>(STACK + 8 + (index - 8) * 4, args[index]);
     call("GX2InitPolygonControlReg");
     const auto word = 2u | 4u | (1u << 3) | (2u << 5) | (1u << 8) | (1u << 11) | (1u << 13);
     ASSERT_EQ(cpu->m_memory.read<unsigned>(REG), word);
@@ -2861,7 +3362,7 @@ TEST_F(Gx2CaptureTest, PolygonRegisterCapturePreservesStackArgumentsAndRoundTrip
         if (index + 1 < 8)
             cpu->m_gpr[index + 4] = OUT + index * 4;
         else
-            cpu->m_memory.write<unsigned>(STACK + 8 + (index + 1) * 4, OUT + index * 4);
+            cpu->m_memory.write<unsigned>(STACK + 8 + (index + 1 - 8) * 4, OUT + index * 4);
     call("GX2GetPolygonControlReg");
     for (unsigned index = 0; index < 9; ++index)
         EXPECT_EQ(cpu->m_memory.read<unsigned>(OUT + index * 4), args[index + 1]);

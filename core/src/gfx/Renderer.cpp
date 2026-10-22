@@ -4,6 +4,7 @@
 #include "Renderer.hpp"
 
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <stdexcept>
 #include <thread>
@@ -228,8 +229,12 @@ void Renderer::pacePresentation()
 {
     Core::Profile::Scope pacing(Core::Profile::Stage::Pacing);
     using Clock = std::chrono::steady_clock;
+    static const bool unthrottled = [] {
+        const auto *setting = std::getenv("WEMU_UNTHROTTLED");
+        return setting && setting[0] == '1';
+    }();
     const auto elapsed = Clock::now() - m_lastFlip;
-    if (m_pacingReady && elapsed < kTargetFrameTime)
+    if (!unthrottled && m_pacingReady && elapsed < kTargetFrameTime)
         std::this_thread::sleep_for(kTargetFrameTime - elapsed);
     m_lastFlip = Clock::now();
     m_pacingReady = true;

@@ -118,9 +118,11 @@ TEST_F(X64JitFloatTest, QuantizedLoadsAndStoresMatchInterpreter)
     for (int round = 0; round < kRounds * 2; ++round) {
         for (unsigned i = 0; i < kDataBytes; i += 4)
             cpu->m_memory.write<std::uint32_t>(kData + i, (rng() & 1) ? rng() : static_cast<std::uint32_t>(floatBits(rng) >> 32));
-        const std::uint32_t ra = rng() & 7 ? 1 + rng() % 31 : 0;
+        std::uint32_t ra = rng() & 7 ? 1 + rng() % 31 : 0;
         const std::uint32_t gqrIndex = rng() & 7, disp = rng() & 0xFFF;
-        const std::uint32_t op = (rng() & 1) ? 56 : 60; // psq_l / psq_st
+        const std::uint32_t op = std::array{56u, 57u, 60u, 61u}[rng() & 3];
+        if ((op & 1) && !ra)
+            ra = 8; // update forms require a nonzero base register
         const std::uint32_t word = op << 26 | reg(rng) << 21 | ra << 16 | (rng() & 1) << 15 | gqrIndex << 12 | disp;
         const auto signedDisp =
                 static_cast<std::uint32_t>((disp & 0x800) ? static_cast<std::int32_t>(disp) - 0x1000 : static_cast<std::int32_t>(disp));
@@ -171,6 +173,21 @@ TEST_F(X64JitFloatTest, MixedFloatBlocksMatchInterpreter)
             cpu->m_gqr[0] = 0;
         });
     }
+}
+
+TEST_F(X64JitFloatTest, QuantizedUpdateCopyLoopWithCacheInvalidationMatchesInterpreter)
+{
+    std::vector<std::uint32_t> words{(31u << 26) | (8u << 11) | (470u << 1)}; // dcbi 0,r8
+    for (unsigned block = 0; block < 4; ++block)
+        for (const unsigned raw: {0xE0080008u, 0xF00A0008u, 0xE0080010u, 0xF00A0010u, 0xE0080018u, 0xF00A0018u, 0xE4080020u, 0xF40A0020u})
+            words.push_back(raw);
+    expectSameBlock(words, [&] {
+        for (unsigned i = 0; i < 32; ++i)
+            cpu->m_memory.write<std::uint32_t>(kData + i * 4, std::bit_cast<std::uint32_t>(float(i) + .25f));
+        cpu->m_gpr[8] = kData - 8;
+        cpu->m_gpr[10] = kData + 0x400 - 8;
+        cpu->m_gqr[0] = 0;
+    });
 }
 
 #endif

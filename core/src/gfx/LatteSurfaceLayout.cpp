@@ -44,14 +44,14 @@ namespace Core::Gfx {
             (tileMode != 0 && tileMode != 1 && tileMode != 2 && tileMode != 4 && tileMode != 16))
             return {};
         const auto hwFormat = format & 63u;
-        const auto bytes = hwFormat == 1                                                                 ? 1u
-                           : hwFormat == 5 || hwFormat == 7 || hwFormat == 6 || hwFormat == 8            ? 2u
-                           : hwFormat == 0x31 || hwFormat == 0x34                                        ? 8u
-                           : hwFormat >= 0x32 && hwFormat <= 0x35                                        ? 16u
-                           : hwFormat == 0x22 || hwFormat == 0x23                                        ? 16u
-                           : hwFormat == 0x1F || hwFormat == 0x20                                        ? 8u
-                           : hwFormat == 0xE || hwFormat == 0x16 || hwFormat == 0x19 || hwFormat == 0x1A ? 4u
-                                                                                                         : 0u;
+        const auto bytes = hwFormat == 1                                                                                     ? 1u
+                           : hwFormat == 5 || hwFormat == 7 || hwFormat == 6 || hwFormat == 8                                ? 2u
+                           : hwFormat == 0x31 || hwFormat == 0x34                                                            ? 8u
+                           : hwFormat >= 0x32 && hwFormat <= 0x35                                                            ? 16u
+                           : hwFormat == 0x22 || hwFormat == 0x23                                                            ? 16u
+                           : hwFormat == 0x1F || hwFormat == 0x20                                                            ? 8u
+                           : hwFormat == 0xE || hwFormat == 0x11 || hwFormat == 0x16 || hwFormat == 0x19 || hwFormat == 0x1A ? 4u
+                                                                                                                             : 0u;
         if (!bytes)
             return {};
         width = std::max(1u, width >> level);

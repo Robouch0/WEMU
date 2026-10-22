@@ -12,6 +12,17 @@ static_assert(!std::is_copy_assignable_v<Core::Memory>);
 static_assert(std::is_nothrow_move_constructible_v<Core::Memory>);
 static_assert(std::is_nothrow_move_assignable_v<Core::Memory>);
 
+TEST(MemoryTest, MainStackSupportsFramesLargerThan64KiB)
+{
+    Core::Memory memory(16);
+    // A 0x10018-byte frame below a normal main-thread SP, as used during title startup.
+    constexpr unsigned previousSp = 0xC0FFFD58, frame = previousSp - 0x10018;
+    ASSERT_NO_THROW(memory.write<unsigned>(frame, previousSp));
+    EXPECT_EQ(memory.read<unsigned>(frame), previousSp);
+    EXPECT_NE(memory.hostPtr(0xC0F00000, 0x100000), nullptr);
+    EXPECT_EQ(memory.hostPtr(0xC1000000), nullptr);
+}
+
 namespace {
     constexpr std::uint32_t app = Core::Memory::ApplicationCode;
     constexpr std::array<std::pair<std::uint32_t, std::uint32_t>, 6> regions{{

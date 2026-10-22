@@ -17,6 +17,7 @@
 #include "gfx/CubeSampler.hpp"
 #include "gfx/LatteSurfaceLayout.hpp"
 #include "gfx/LatteVsInterp.hpp"
+#include "gfx/PrimitiveAssembly.hpp"
 #include "gfx/Renderer.hpp" // full definition: the GPU path calls Renderer::gpu* methods
 #include "gfx/SurfaceLayout.hpp"
 #include "gfx/TextureFormat.hpp"
@@ -507,6 +508,8 @@ namespace Core::Gfx {
             DepthBacking backing;
             backing.format = format;
             backing.pixels.resize(std::size_t(s.pitch) * s.height);
+            if (format == DepthFormat::UNorm24)
+                backing.stencil.resize(backing.pixels.size());
             const auto elementBytes = depthElementBytes(format);
             for (unsigned y = 0; y < s.height; ++y)
                 for (unsigned x = 0; x < s.width; ++x) {
@@ -517,10 +520,24 @@ namespace Core::Gfx {
                     for (unsigned b = 0; b < elementBytes; ++b)
                         word |= std::uint32_t(base[offset + b]) << (b * 8);
                     backing.pixels[std::size_t(y) * s.pitch + x] = unpackDepth(word, format);
+                    if (format == DepthFormat::UNorm24)
+                        backing.stencil[std::size_t(y) * s.pitch + x] = word >> 24;
                 }
             found = m_depthBackings.emplace(key, std::move(backing)).first;
         }
         auto &backing = found->second;
+        if (backing.stencilClear && applyClear) {
+            for (unsigned y = 0; y < s.height; ++y)
+                std::fill_n(backing.stencil.data() + std::size_t(y) * s.pitch, s.width, *backing.stencilClear);
+            backing.stencilClear.reset();
+        }
+        if (resolve && backing.pendingStencil) {
+            const auto &bytes = backing.pendingStencil->resolve();
+            if (bytes.size() != backing.stencil.size())
+                throw std::runtime_error("Stencil backend returned an incomplete surface");
+            backing.stencil = bytes;
+            backing.pendingStencil.reset();
+        }
         if (backing.clear && applyClear) {
             if (backing.uniform != backing.clear) {
                 for (unsigned y = 0; y < s.height; ++y)
@@ -541,15 +558,21 @@ namespace Core::Gfx {
         return &backing;
     }
 
-    void Gx2Replayer::clearDepthSurface(const Surface &original, float depth, unsigned flags)
+    void Gx2Replayer::clearDepthSurface(const Surface &original, float depth, unsigned flags, unsigned stencil)
     {
         const auto s = attachmentSurface(original);
-        if (!(flags & 1))
+        if (!(flags & 3))
             return;
         // A clear still pending is replaced, never written.
         if (auto *backing = depthBacking(s, false, false)) {
-            backing->pending.reset();
-            backing->clear = quantizeDepth(depth, backing->format);
+            if (flags & 1) {
+                backing->pending.reset();
+                backing->clear = quantizeDepth(depth, backing->format);
+            }
+            if ((flags & 2) && backing->format == DepthFormat::UNorm24) {
+                backing->pendingStencil.reset();
+                backing->stencilClear = std::uint8_t(stencil);
+            }
         }
     }
 
@@ -2427,7 +2450,7 @@ namespace Core::Gfx {
         m_stats.draws++;
         // Triangle culling precedes fragment work and has no memory effects.
         // Avoid fetching/skinning hidden meshes or touching their attachments.
-        if ((m_polygonControl & 3) == 3 && (cmd.gpr[0] == 4 || cmd.gpr[0] == 0x13))
+        if ((m_polygonControl & 3) == 3 && triangleCount(cmd.gpr[0], cmd.gpr[1]))
             return;
         // The software pixel path samples one resource. Use the shader's resource ID,
         // not the last unit-zero binding (post-process passes commonly bind other units).
@@ -2567,6 +2590,7 @@ namespace Core::Gfx {
         // A pending clear goes to native draws as a value (cleared on the GPU, not uploaded);
         // CPU readers below apply it first (prepareSoftwareInputs).
         auto *drawDepth = m_depthTest ? depthBacking(m_depth, false, false) : nullptr;
+        auto *drawStencil = m_stencilTest ? depthBacking(m_depth, false, false) : nullptr;
         // Software raster and copied-back native results write drawDepth->pixels during this call.
         struct DepthWrites {
                 DepthBacking *backing;
@@ -3199,7 +3223,7 @@ namespace Core::Gfx {
         // the late test until their effects are understood.
         const auto depthShader = drawDepth && pixelProgram && m_depthCompare != 7 ? colorShader : nullptr;
         const bool earlyDepth =
-                drawDepth && m_depthCompare != 7 &&
+                drawDepth && !m_stencilTest && m_depthCompare != 7 &&
                 (skipColorShader || (depthShader && *depthShader && !depthShader->writesDepth) || (pixelProgram && colorOnlyEffects()));
         std::optional<std::array<float, 2>> depthBounds;
         const auto rejectConstantDepth = [&](float incoming) {
@@ -3251,6 +3275,23 @@ namespace Core::Gfx {
                 (*depthBounds)[1] = std::max((*depthBounds)[1], stored);
             }
         };
+        const auto stencilPass = [&](unsigned x, unsigned y, bool front, bool depthPassed) {
+            if (!m_stencilTest || !drawStencil || drawStencil->stencil.empty() || !m_stencilControl || !m_stencilMasks)
+                return true;
+            if (x >= m_depth.width || y >= m_depth.height)
+                return false;
+            const unsigned face = !front && (*m_stencilControl & (1u << 7)) ? 1u : 0u;
+            const unsigned shift = face ? 20u : 8u;
+            const auto mask = (*m_stencilMasks)[face];
+            auto &stored = drawStencil->stencil[std::size_t(y) * m_depth.pitch + x];
+            const auto reference = std::uint8_t(mask);
+            const auto readMask = std::uint8_t(mask >> 8), writeMask = std::uint8_t(mask >> 16);
+            const bool passed = depthCompare(float(reference & readMask), float(stored & readMask), (*m_stencilControl >> shift) & 7);
+            const unsigned opShift = !passed ? 3u : depthPassed ? 6u : 9u;
+            const auto value = stencilOperation((*m_stencilControl >> (shift + opShift)) & 7, stored, reference);
+            stored = std::uint8_t((stored & ~writeMask) | (value & writeMask));
+            return passed;
+        };
         std::array<int, 32> pixelInputParams;
         pixelInputParams.fill(-1);
         for (unsigned i = 0; i < m_pixelInputCount; i++) {
@@ -3294,6 +3335,8 @@ namespace Core::Gfx {
         const auto prepareSoftwareInputs = [&] {
             if (softwareInputsReady)
                 return;
+            if (drawStencil)
+                depthBacking(m_depth);
             if (skipColorShader) {
                 resolveViewBacking(m_color);
                 if (drawDepth && (drawDepth->pending || drawDepth->clear))
@@ -3519,9 +3562,10 @@ namespace Core::Gfx {
         // Array slices can alias a target without matching its base-view key.
         // Keep those draws and raw guest-memory targets serial until all aliases
         // participate in the same pre-draw snapshot scheme.
-        const bool parallelSafe = useViewBacking() && !m_trace && !drawDepth && m_color.pitch >= m_color.width && m_texture.dimension != 5 &&
-                                  std::none_of(m_pixelTextures.begin(), m_pixelTextures.end(),
-                                               [](const auto &surface) { return surface.imagePtr && surface.dimension == 5; });
+        const bool parallelSafe = useViewBacking() && !m_trace && !drawDepth && !drawStencil && m_color.pitch >= m_color.width &&
+                                  m_texture.dimension != 5 && std::none_of(m_pixelTextures.begin(), m_pixelTextures.end(), [](const auto &surface) {
+                                      return surface.imagePtr && surface.dimension == 5;
+                                  });
         const auto workerCount = [&] {
             if (m_rasterWorkerCount)
                 return m_rasterWorkerCount;
@@ -3585,17 +3629,28 @@ namespace Core::Gfx {
                 (frontBias != backBias || (frontBias && (m_polygonOffset[0] != m_polygonOffset[2] || m_polygonOffset[1] != m_polygonOffset[3])));
         const bool useBackBias = (m_polygonControl & 1) != 0;
         const bool nativeBias = useBackBias ? backBias : frontBias;
-        const bool collectBackend = m_rasterBackend && !m_gpuRenderer && !rawTarget && !m_stencilTest && !m_multiWriteEnable &&
+        const bool stencilIdentity = !m_stencilTest || (m_stencilControl && identityStencil(*m_stencilControl));
+        const bool nativeStencil = m_stencilTest && !stencilIdentity && drawDepth && drawDepth->format == DepthFormat::UNorm24 && m_stencilControl &&
+                                   m_stencilMasks && m_rasterBackend && m_rasterBackend->supportsStencil();
+        const bool collectBackend = m_rasterBackend && !m_gpuRenderer && !rawTarget && (stencilIdentity || nativeStencil) && !m_multiWriteEnable &&
                                     (!drawDepth || !splitBias) && (!m_depthTest || !m_depth.imagePtr || drawDepth) &&
                                     (!drawDepth || (nativeDepthEnabled && m_rasterBackend->supportsDepth())) && pixelProgram && useViewBacking() &&
                                     m_pixelInputCount <= 16 && m_color.pitch >= m_color.width && !m_color.aa && m_color.dimension == 1 &&
                                     !m_color.firstMip && !m_color.firstSlice && (mode != 1 || m_rasterBackend->supportsPoints()) &&
                                     (targetFormat == ColorFormat::RGBA8 || m_rasterBackend->supportsFloatTargets()) &&
                                     std::none_of(m_vertexTextures.begin(), m_vertexTextures.end(), vertexFeedback);
-        if (nativeAudit && m_rasterBackend && !collectBackend)
+        if (nativeAudit && m_rasterBackend && !collectBackend) {
+            if (m_stencilTest)
+                Utils::Log::error("[NATIVE_STENCIL] known={} control={:08X} identity={}", m_stencilControl.has_value(), m_stencilControl.value_or(0),
+                                  stencilIdentity);
             Utils::Log::error("[NATIVE_GATE] split_bias={} stencil={} multi={} inputs={} dim={} mip={} slice={} pitch={} vertex_feedback={}",
                               splitBias, m_stencilTest, m_multiWriteEnable, m_pixelInputCount, m_color.dimension, m_color.firstMip,
                               m_color.firstSlice, m_color.pitch, std::any_of(m_vertexTextures.begin(), m_vertexTextures.end(), vertexFeedback));
+            if (m_depthTest && !drawDepth)
+                Utils::Log::error("[NATIVE_GATE_DEPTH] size={}x{} pitch={} bytes={} dim={} depth={} aa={} mip={} slice={} tile={} swizzle={:X}",
+                                  m_depth.width, m_depth.height, m_depth.pitch, m_depth.imageSize, m_depth.dimension, m_depth.depth, m_depth.aa,
+                                  m_depth.firstMip, m_depth.firstSlice, m_depth.tileMode, m_depth.swizzle);
+        }
         std::shared_ptr<const Latte::VertexShader> nativeVertexShader;
         static const bool gpuVertexEnabled = [] {
             const auto *v = std::getenv("WEMU_NATIVE_VERTEX");
@@ -3606,8 +3661,8 @@ namespace Core::Gfx {
             const auto *v = std::getenv("WEMU_NATIVE_TRIANGLE_VERTEX");
             return !v || v[0] != '0';
         }();
-        if (collectBackend && (mode == 1 || mode == 4 || mode == 0x13) && gpuVertexEnabled && m_rasterBackend->supportsVertexStage() &&
-            !m_fetchLayout.empty()) {
+        if (collectBackend && (mode == 1 || mode == 4 || mode == 5 || mode == 6 || mode == 0x13 || mode == 0x14) && gpuVertexEnabled &&
+            m_rasterBackend->supportsVertexStage() && !m_fetchLayout.empty()) {
             auto candidate = vertexShader();
             // The current Vulkan vertex payload contains sixteen attributes.
             // Wider fetch inputs must use the complete reference register file.
@@ -3742,7 +3797,7 @@ namespace Core::Gfx {
         std::vector<PreparedTriangle> preparedTriangles;
         std::deque<RasterVertex> clippedCorners;
         if (collectBackend && mode != 1) {
-            const auto triangles = mode == 0x13 ? idx.size() / 4 * 2 : idx.size() / 3;
+            const auto triangles = triangleCount(mode, std::uint32_t(idx.size()));
             preparedTriangles.reserve(triangles);
         }
         const auto rasterProjected = [&](const RasterVertex(&rv)[3]) {
@@ -3832,17 +3887,14 @@ namespace Core::Gfx {
                                                       interpolateParams(rv, w0, w1, w2), &pixel);
                         if (pixel.discarded)
                             continue;
-                        if (drawDepth) {
-                            if (unsigned(xx) >= m_depth.width || unsigned(yy) >= m_depth.height)
-                                continue;
-                            auto &stored = drawDepth->pixels[std::size_t(yy) * m_depth.pitch + xx];
-                            const float incoming = clampDepth(
-                                    pixel.depthValid ? pixel.depth : interpolateValue(rv[0].z, rv[1].z, rv[2].z, w0, w1, w2) + triangleBias);
-                            if (!depthCompare(incoming, stored, m_depthCompare))
-                                continue;
-                            if (m_depthWrite)
-                                writeDepth(stored, incoming);
-                        }
+                        const float incoming =
+                                clampDepth(pixel.depthValid ? pixel.depth : interpolateValue(rv[0].z, rv[1].z, rv[2].z, w0, w1, w2) + triangleBias);
+                        const bool depthPassed =
+                                !drawDepth || depthCompare(incoming, drawDepth->pixels[std::size_t(yy) * m_depth.pitch + xx], m_depthCompare);
+                        if (!stencilPass(unsigned(xx), unsigned(yy), front, depthPassed) || !depthPassed)
+                            continue;
+                        if (drawDepth && m_depthWrite)
+                            writeDepth(drawDepth->pixels[std::size_t(yy) * m_depth.pitch + xx], incoming);
                         result.pixels++;
                         result.alphaSum += texel[3];
                         if (colorOutputEnabled) {
@@ -3939,16 +3991,12 @@ namespace Core::Gfx {
             const auto texel = shadeTexel(rv.u, rv.v, rv.params, &pixel);
             if (pixel.discarded)
                 return;
-            if (drawDepth) {
-                if (x >= m_depth.width || y >= m_depth.height)
-                    return;
-                auto &stored = drawDepth->pixels[std::size_t(y) * m_depth.pitch + x];
-                const auto incoming = clampDepth(pixel.depthValid ? pixel.depth : rv.z);
-                if (!depthCompare(incoming, stored, m_depthCompare))
-                    return;
-                if (m_depthWrite)
-                    writeDepth(stored, incoming);
-            }
+            const auto incoming = clampDepth(pixel.depthValid ? pixel.depth : rv.z);
+            const bool depthPassed = !drawDepth || depthCompare(incoming, drawDepth->pixels[std::size_t(y) * m_depth.pitch + x], m_depthCompare);
+            if (!stencilPass(x, y, true, depthPassed) || !depthPassed)
+                return;
+            if (drawDepth && m_depthWrite)
+                writeDepth(drawDepth->pixels[std::size_t(y) * m_depth.pitch + x], incoming);
             if (colorOutputEnabled) {
                 writeColor(target + (std::size_t(y) * m_color.pitch + x) * targetElementBytes, texel, pixel);
                 if (rawTarget)
@@ -4163,17 +4211,6 @@ namespace Core::Gfx {
                     rasterPoint(rv);
             }
         }
-        const auto assembleTriangles = [&] {
-            if (mode == 0x13) { // QUADS
-                for (std::uint32_t i = 0; i + 3 < idx.size(); i += 4) {
-                    rasterTri(i, i + 1, i + 2);
-                    rasterTri(i, i + 2, i + 3);
-                }
-            } else { // treat everything else as a triangle list
-                for (std::uint32_t i = 0; i + 2 < idx.size(); i += 3)
-                    rasterTri(i, i + 1, i + 2);
-            }
-        };
         // Only the program's declared inputs are stored per vertex (compact attributes); the
         // backend supplies the reference defaults for the other attribute slots.
         std::vector<std::array<float, 4>> directAttributes;
@@ -4246,7 +4283,7 @@ namespace Core::Gfx {
             std::vector<std::uint32_t> denseSlots(dense ? span : 0, ~0u);
             std::unordered_map<std::uint32_t, std::uint32_t> sparseSlots;
             directAttributes.reserve(std::min<std::size_t>(idx.size(), dense ? span : idx.size()) * stride);
-            directIndices.reserve(idx.size() / 2 * 3);
+            directIndices.reserve(std::size_t(triangleCount(mode, std::uint32_t(idx.size()))) * 3);
             // ~0u: not fetched yet; ~1u: unavailable, which drops its triangles like a failed corner.
             const auto slotOf = [&](std::uint32_t vi) {
                 auto &slot = dense ? denseSlots[vi - low] : sparseSlots.try_emplace(vi, ~0u).first->second;
@@ -4269,14 +4306,7 @@ namespace Core::Gfx {
                 if (slots[0] != ~1u && slots[1] != ~1u && slots[2] != ~1u)
                     directIndices.insert(directIndices.end(), std::begin(slots), std::end(slots));
             };
-            if (mode == 0x13)
-                for (std::uint32_t i = 0; i + 3 < idx.size(); i += 4) {
-                    triangle(i, i + 1, i + 2);
-                    triangle(i, i + 2, i + 3);
-                }
-            else
-                for (std::uint32_t i = 0; i + 2 < idx.size(); i += 3)
-                    triangle(i, i + 1, i + 2);
+            assembleTriangles(mode, std::uint32_t(idx.size()), triangle);
             if (cacheDirect) {
                 constexpr std::uint64_t budget = 192ull * 1024 * 1024;
                 DirectVertexEntry entry;
@@ -4320,7 +4350,7 @@ namespace Core::Gfx {
                 m_directVertexCache.emplace(directKey, std::move(entry));
             }
         } else if (mode != 1 && !directVertices)
-            assembleTriangles();
+            assembleTriangles(mode, std::uint32_t(idx.size()), rasterTri);
         const std::span<const std::array<float, 4>> directAttributeView =
                 directArrays ? std::span(directArrays->attributes) : std::span(directAttributes);
         const std::span<const std::uint32_t> directIndexView = directArrays ? std::span(directArrays->indices) : std::span(directIndices);
@@ -4914,6 +4944,9 @@ namespace Core::Gfx {
                 if (drawDepth)
                     draw.depth = {true,          m_depthWrite,   m_depthCompare, drawDepth->format,  drawDepth->pixels,
                                   m_depth.width, m_depth.height, m_depth.pitch,  drawDepth->pending, drawDepth->clear};
+                if (drawDepth && drawDepth->format == DepthFormat::UNorm24)
+                    draw.depth.stencil = {nativeStencil,      m_stencilControl.value_or(0), m_stencilMasks.value_or(std::array<std::uint32_t, 2>{}),
+                                          drawDepth->stencil, drawDepth->pendingStencil,    drawDepth->stencilClear};
                 draw.depth.clamp = !m_zClipEnabled;
                 static const bool deferReadback = [] {
                     const auto *value = std::getenv("WEMU_NATIVE_DEFER_READBACK");
@@ -4984,6 +5017,8 @@ namespace Core::Gfx {
                         for (const auto &point: preparedPoints)
                             rasterPoint(point);
                         m_stats = savedStats;
+                        if (nativeStencil && result->stencilReadback && result->stencilReadback->resolve() != drawStencil->stencil)
+                            throw std::runtime_error("Native stencil verification mismatch");
                         if (drawDepth && m_depthWrite) {
                             unsigned differences{};
                             float maximum{};
@@ -5116,6 +5151,12 @@ namespace Core::Gfx {
                         if (!drawDepth->pending)
                             std::copy(result->depth.begin(), result->depth.end(), drawDepth->pixels.begin());
                     }
+                    if (drawDepth && result->stencilReadback) {
+                        if (result->stencilReadback->size() != drawDepth->stencil.size())
+                            throw std::runtime_error("Raster backend returned an incomplete stencil surface");
+                        drawDepth->pendingStencil = std::move(result->stencilReadback);
+                        drawDepth->stencilClear.reset();
+                    }
                     if (mode == 1)
                         m_stats.points += vertices.size();
                     else
@@ -5128,7 +5169,7 @@ namespace Core::Gfx {
             if (!committed) {
                 const auto fallbackStart = (profile || nativeAudit) ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
                 if (directVertices)
-                    assembleTriangles();
+                    assembleTriangles(mode, std::uint32_t(idx.size()), rasterTri);
                 for (const auto &triangle: preparedTriangles) {
                     const RasterVertex rv[]{triangle[0], triangle[1], triangle[2]};
                     rasterPrepared(rv);
@@ -5309,6 +5350,8 @@ namespace Core::Gfx {
         state.depthTest = m_depthTest;
         state.depthWrite = m_depthWrite;
         state.stencilTest = m_stencilTest;
+        state.stencilControl = m_stencilControl;
+        state.stencilMasks = m_stencilMasks;
         state.depthCompare = m_depthCompare;
         state.colorTarget = m_colorTarget;
         state.pixelTextures = m_pixelTextures;
@@ -5354,6 +5397,8 @@ namespace Core::Gfx {
         m_depthTest = state.depthTest;
         m_depthWrite = state.depthWrite;
         m_stencilTest = state.stencilTest;
+        m_stencilControl = state.stencilControl;
+        m_stencilMasks = state.stencilMasks;
         m_depthCompare = state.depthCompare;
         m_colorTarget = state.colorTarget;
         m_pixelTextures = state.pixelTextures;
@@ -5697,6 +5742,12 @@ namespace Core::Gfx {
                     if (m_trace)
                         Utils::Log::error("[GX2TRACE] rasterizer={} zclip={} halfZ={}", m_rasterizerEnabled, m_zClipEnabled, m_halfZ);
                     break;
+                case Gx2Cmd::SetStencilMask:
+                    if (cmd.payload.size() == 2)
+                        m_stencilMasks = std::array{cmd.payload[0], cmd.payload[1]};
+                    else
+                        m_stencilMasks.reset();
+                    break;
                 case Gx2Cmd::SetDepthStencilControl:
                     if (std::getenv("WEMU_SCAN_TRACE")) // TEMP-SCANTRACE
                         Utils::Log::error("[DEPTHCTL] frame={} after_draw={} test={} write={} cmp={} lr={:08X}", m_presentCount, m_stats.draws,
@@ -5705,12 +5756,13 @@ namespace Core::Gfx {
                     m_depthWrite = cmd.gpr[1] != 0;
                     m_depthCompare = cmd.gpr[2];
                     m_stencilTest = cmd.gpr[3] != 0;
+                    m_stencilControl = cmd.payload.size() == 1 ? std::optional{cmd.payload[0]} : std::nullopt;
                     break;
                 case Gx2Cmd::ClearDepthStencilEx:
                     if (std::getenv("WEMU_SCAN_TRACE")) // TEMP-SCANTRACE
                         Utils::Log::error("[DEPTHCLR] frame={} after_draw={} surface={:08X} depth={} flags={}", m_presentCount, m_stats.draws,
                                           parseSurface(cmd).imagePtr, cmd.fpr[0], cmd.gpr[2]);
-                    clearDepthSurface(parseSurface(cmd), float(cmd.fpr[0]), cmd.gpr[2]);
+                    clearDepthSurface(parseSurface(cmd), float(cmd.fpr[0]), cmd.gpr[2], cmd.gpr[1]);
                     break;
                 case Gx2Cmd::ClearColor:
                 case Gx2Cmd::ClearBuffersEx: {
@@ -5735,7 +5787,7 @@ namespace Core::Gfx {
                             depthCmd.payload.assign(depthWords.begin(), depthWords.end());
                         } else
                             depthCmd.payload.clear();
-                        clearDepthSurface(parseSurface(depthCmd), float(cmd.fpr[4]), cmd.gpr[3]);
+                        clearDepthSurface(parseSurface(depthCmd), float(cmd.fpr[4]), cmd.gpr[3], cmd.gpr[2]);
                     }
                     break;
                 }
@@ -5857,6 +5909,11 @@ namespace Core::Gfx {
                         try {
                             size = m_mem->read<std::uint32_t>(sh + 0xD0);
                             ptr = m_mem->read<std::uint32_t>(sh + 0xD4);
+                            if (!ptr) {
+                                const auto bytes = std::uint64_t(m_mem->read<std::uint32_t>(sh + 0x128)) * m_mem->read<std::uint32_t>(sh + 0x12C);
+                                size = bytes <= 0x10000 ? std::uint32_t(bytes) : 0;
+                                ptr = m_mem->read<std::uint32_t>(sh + 0x130);
+                            }
                             // Shader bytecode is little-endian in guest memory; read<> assumes
                             // big-endian, so swap back.
                             if (ptr && size >= 8 && size <= 0x10000)
@@ -5903,6 +5960,11 @@ namespace Core::Gfx {
                         try {
                             size = m_mem->read<std::uint32_t>(sh + 0xA4);
                             ptr = m_mem->read<std::uint32_t>(sh + 0xA8);
+                            if (!ptr) {
+                                const auto bytes = std::uint64_t(m_mem->read<std::uint32_t>(sh + 0xDC)) * m_mem->read<std::uint32_t>(sh + 0xE0);
+                                size = bytes <= 0x10000 ? std::uint32_t(bytes) : 0;
+                                ptr = m_mem->read<std::uint32_t>(sh + 0xE4);
+                            }
                             if (ptr && size >= 8 && size <= 0x10000)
                                 for (std::uint32_t i = 0; i < size / 4; i++)
                                     prog.push_back(std::byteswap(m_mem->read<std::uint32_t>(ptr + i * 4)));

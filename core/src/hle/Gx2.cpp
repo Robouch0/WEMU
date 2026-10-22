@@ -108,6 +108,11 @@ namespace {
     };
 
     struct HostReplayState {
+            struct BufferAllocatorCall {
+                    std::uint32_t stack, lr, buffer;
+                    bool freeing;
+            };
+            std::unordered_map<std::uint32_t, std::vector<BufferAllocatorCall>> bufferCalls;
             std::unique_ptr<Core::Gfx::Gx2Replayer> replayer;
             bool nativeInitialized{};
             // Asynchronous replay: the frame owned by the worker while it is in flight.
@@ -118,6 +123,28 @@ namespace {
     {
         static HostReplayState state;
         return state;
+    }
+
+    // Cafe exports its default allocators as writable data pointers. Application
+    // preinit may replace them after reserving the base heap for its own arena.
+    bool callBufferAllocator(Core::Interpreter &cpu, const char *name, std::uint32_t buffer, bool freeing)
+    {
+        for (const auto &symbol: cpu.m_binary.symbols) {
+            if (symbol.name != name || symbol.meta.type != STT_OBJECT)
+                continue;
+            const auto function = cpu.m_memory.read<std::uint32_t>(symbol.meta.virtAddress);
+            if (!function || function >= 0xC0000000u || (function & 3))
+                return false;
+            const auto stack = cpu.m_gpr[1];
+            hostReplayState().bufferCalls[cpu.m_scheduler.currentHandle()].push_back({stack, cpu.m_lr, buffer, freeing});
+            cpu.m_gpr[1] = stack - 0x20;
+            cpu.m_memory.write<std::uint32_t>(cpu.m_gpr[1], stack);
+            cpu.m_lr = Core::Gx2::bufferAllocatorReturn - Core::Memory::ApplicationCode;
+            cpu.m_nextPc = function - Core::Memory::ApplicationCode;
+            cpu.m_hle_redirected = true;
+            return true;
+        }
+        return false;
     }
 
     constexpr std::uint32_t alignUp(std::uint32_t v, std::uint32_t a) { return (v + a - 1) & ~(a - 1); }
@@ -511,8 +538,6 @@ namespace {
     void gx2_swap(Core::Interpreter &cpu)
     {
         recordCmd(cpu, Core::Gfx::Gx2Cmd::SwapScanBuffers);
-        // Advance the guest clock one frame so time-driven animations (title intro, fades) progress.
-        Core::advanceGuestFrameClock(cpu);
         // Uniform BLOCKS are bound before the game fills them (the GPU reads at submission), so
         // their call-time payload snapshot is premature — refresh from memory now, at frame end.
         static const bool regProbe = std::getenv("WEMU_GX2_REG_PROBE") != nullptr;
@@ -891,6 +916,7 @@ namespace {
         g_flipCount = g_swapCount;
         g_lastFlip = cpu.m_scheduler.now();
         cpu.m_gpr[3] = 0;
+        Core::advanceGuestFrameClock(cpu);
     }
 
     // GX2GetSwapStatus(u32* swapCount, u32* flipCount, OSTime* lastFlip, OSTime* lastVsync)
@@ -1058,7 +1084,7 @@ namespace {
             std::uint32_t pitch = tileMode == 16 ? std::max(width, 1u) : alignUp(width ? width : 1, 64);
             std::uint32_t imageSize = alignUp(pitch * (height ? height : 1) * depth * bytesPerElement(format), surfaceAlign);
             // Base 2D layouts remain independent of the requested mip count.
-            // Other dimensions, depth/scan usage and AA still use the legacy calculation.
+            // Other dimensions, scan usage and AA still use the legacy calculation.
             if ((dim == 1 || dim == 5) && !aa && !(use & (4u | 8u))) {
                 if (const auto layout = Core::Gfx::baseSurfaceLayout(width, height, dim == 1 ? 1 : depth, bytesPerElement(format), tileMode, rawWidth,
                                                                      rawHeight)) {
@@ -1073,11 +1099,23 @@ namespace {
                         cpu.m_memory.write<std::uint32_t>(s + 0x10, 1);
                 }
             }
+            // Depth planes need padded tile rows too. An unpadded height made
+            // the final tile exceed imageSize, rejecting otherwise valid depth
+            // views and repeating their full CPU decode on every draw.
+            if ((dim == 1 || dim == 5) && !aa && (use & 4u) && !(use & 8u)) {
+                if (const auto layout = Core::Gfx::latteSurfaceLayout(rawWidth, rawHeight, dim == 1 ? 1 : depth, format, dim, tileMode, 0, use)) {
+                    tileMode = layout->tileMode;
+                    pitch = layout->pitch;
+                    imageSize = layout->imageSize;
+                    surfaceAlign = layout->alignment;
+                    cpu.m_memory.write<unsigned>(s + 0x30, tileMode);
+                }
+            }
             cpu.m_memory.write<std::uint32_t>(s + SURF_PITCH, pitch);
             cpu.m_memory.write<std::uint32_t>(s + SURF_IMAGE_SIZE, imageSize);
             cpu.m_memory.write<std::uint32_t>(s + SURF_MIPMAP_SIZE, 0);
             cpu.m_memory.write<std::uint32_t>(s + SURF_ALIGNMENT, surfaceAlign);
-            if (!aa && (dim == 1 || dim == 3 || dim == 5) && !(use & (4u | 8u))) {
+            if (!aa && (dim == 1 || dim == 3 || dim == 5) && !(use & 8u)) {
                 // Keep established base layouts for 2D/array resources. Cube
                 // layouts and every smaller mip use the shared Latte calculator.
                 const auto levels = std::min(std::max(1u, mipLevels), unsigned(std::bit_width(std::max(rawWidth, rawHeight))));
@@ -1288,8 +1326,20 @@ namespace {
 
     unsigned integerArgument(Core::Interpreter &cpu, unsigned index)
     {
-        return index < 8 ? cpu.m_gpr[index + 3] : cpu.m_memory.read<unsigned>(cpu.m_gpr[1] + 8 + index * 4);
+        return index < 8 ? cpu.m_gpr[index + 3] : cpu.m_memory.read<unsigned>(cpu.m_gpr[1] + 8 + (index - 8) * 4);
     }
+    unsigned depthStencilControlWord(Core::Interpreter &cpu, unsigned first)
+    {
+        const auto arg = [&](unsigned i) { return integerArgument(cpu, first + i); };
+        auto word = unsigned(arg(3) != 0) | (unsigned(arg(0) != 0) << 1) | (unsigned(arg(1) != 0) << 2) | ((arg(2) & 7) << 4) |
+                    (unsigned(arg(4) != 0) << 7);
+        constexpr unsigned arguments[]{5, 8, 6, 7, 9, 12, 10, 11};
+        constexpr unsigned shifts[]{8, 11, 14, 17, 20, 23, 26, 29};
+        for (unsigned i = 0; i < 8; ++i)
+            word |= (arg(arguments[i]) & 7) << shifts[i];
+        return word;
+    }
+
     unsigned polygonControlWord(Core::Interpreter &cpu, unsigned first)
     {
         const auto arg = [&](unsigned index) { return integerArgument(cpu, first + index); };
@@ -1426,15 +1476,8 @@ namespace {
     };
 
     const char *const kRetSize[] = {
-            "GX2CalcGeometryShaderInputRingBufferSize",
-            "GX2CalcGeometryShaderOutputRingBufferSize",
-            "GX2GetGeometryShaderGPRs",
-            "GX2GetGeometryShaderStackEntries",
-            "GX2GetPixelShaderGPRs",
-            "GX2GetPixelShaderStackEntries",
-            "GX2GetVertexShaderGPRs",
-            "GX2GetVertexShaderStackEntries",
-            "GX2GPUTimeToCPUTime",
+            "GX2GetGeometryShaderGPRs", "GX2GetGeometryShaderStackEntries", "GX2GetPixelShaderGPRs", "GX2GetPixelShaderStackEntries",
+            "GX2GetVertexShaderGPRs",   "GX2GetVertexShaderStackEntries",   "GX2GPUTimeToCPUTime",
     };
 
 } // namespace
@@ -1452,6 +1495,7 @@ void ReleaseGx2HostResources() noexcept
     // Drop worker/image/readback owners while Vulkan, renderer and guest memory
     // are still alive, rather than during process-static destruction.
     auto &host = hostReplayState();
+    host.bufferCalls.clear();
     host.worker.reset(); // finish the frame in flight before its replayer goes away
     host.replayer.reset();
     host.frame.clear();
@@ -1479,13 +1523,145 @@ void CopyGx2DisplayListState(std::uint32_t destination, std::uint32_t source, st
                           commands->size());
 }
 
+void Core::Gx2::onBufferAllocatorReturn(Interpreter &cpu)
+{
+    auto &calls = hostReplayState().bufferCalls;
+    const auto it = calls.find(cpu.m_scheduler.currentHandle());
+    if (it == calls.end() || it->second.empty())
+        throw std::runtime_error("GX2R allocator returned without a pending buffer operation");
+    const auto call = it->second.back();
+    it->second.pop_back();
+    if (it->second.empty())
+        calls.erase(it);
+    const auto memory = cpu.m_gpr[3];
+    if (call.freeing) {
+        cpu.m_memory.write<std::uint32_t>(call.buffer + 12, 0);
+        cpu.m_gpr[3] = 0;
+    } else {
+        if (memory) {
+            const auto flags = (cpu.m_memory.read<std::uint32_t>(call.buffer) & ~(1u << 30)) | (1u << 29);
+            cpu.m_memory.write<std::uint32_t>(call.buffer, flags);
+            cpu.m_memory.write<std::uint32_t>(call.buffer + 12, memory);
+        }
+        cpu.m_gpr[3] = memory ? 1 : 0;
+    }
+    cpu.m_gpr[1] = call.stack;
+    cpu.m_lr = call.lr;
+    cpu.m_pc = cpu.m_nextPc = call.lr;
+}
+
 void RegisterGx2Functions()
 {
+    Core::syscallHandler.registerSyscall("GX2RGetBufferAlignment", [](Core::Interpreter &cpu) { cpu.m_gpr[3] = 256; });
+    Core::syscallHandler.registerSyscall("GX2RGetBufferAllocationSize", [](Core::Interpreter &cpu) {
+        const auto buffer = cpu.m_gpr[3];
+        const auto bytes = std::uint64_t{cpu.m_memory.read<std::uint32_t>(buffer + 4)} * cpu.m_memory.read<std::uint32_t>(buffer + 8);
+        cpu.m_gpr[3] = bytes <= 0xFFFFFFC0u ? static_cast<std::uint32_t>((bytes + 63) & ~std::uint64_t{63}) : 0;
+    });
+    Core::syscallHandler.registerSyscall("GX2RBufferExists", [](Core::Interpreter &cpu) {
+        cpu.m_gpr[3] = cpu.m_gpr[3] && cpu.m_memory.read<std::uint32_t>(cpu.m_gpr[3] + 12) ? 1 : 0;
+    });
+    Core::syscallHandler.registerSyscall("GX2RCreateBuffer", [](Core::Interpreter &cpu) {
+        const auto buffer = cpu.m_gpr[3];
+        const auto bytes = std::uint64_t{cpu.m_memory.read<std::uint32_t>(buffer + 4)} * cpu.m_memory.read<std::uint32_t>(buffer + 8);
+        if (!bytes || bytes > 0xFFFFFFC0u || cpu.m_memory.read<std::uint32_t>(buffer + 12)) {
+            cpu.m_gpr[3] = 0;
+            return;
+        }
+        cpu.m_gpr[3] = static_cast<std::uint32_t>((bytes + 63) & ~std::uint64_t{63});
+        cpu.m_gpr[4] = 256;
+        if (callBufferAllocator(cpu, "MEMAllocFromDefaultHeapEx", buffer, false))
+            return;
+        Core::syscallHandler.get("MEMAllocFromDefaultHeapEx")(cpu);
+        const auto memory = cpu.m_gpr[3];
+        if (memory) {
+            auto flags = cpu.m_memory.read<std::uint32_t>(buffer);
+            flags = (flags & ~(1u << 30)) | (1u << 29);
+            cpu.m_memory.write<std::uint32_t>(buffer, flags);
+            cpu.m_memory.write<std::uint32_t>(buffer + 12, memory);
+        }
+        cpu.m_gpr[3] = memory ? 1 : 0;
+    });
+    Core::syscallHandler.registerSyscall("GX2RDestroyBufferEx", [](Core::Interpreter &cpu) {
+        const auto buffer = cpu.m_gpr[3], options = cpu.m_gpr[4];
+        if (buffer && (cpu.m_memory.read<std::uint32_t>(buffer) & (1u << 29)) && !(options & (1u << 19))) {
+            const auto memory = cpu.m_memory.read<std::uint32_t>(buffer + 12);
+            if (memory) {
+                cpu.m_gpr[3] = memory;
+                if (callBufferAllocator(cpu, "MEMFreeToDefaultHeap", buffer, true))
+                    return;
+                Core::syscallHandler.get("MEMFreeToDefaultHeap")(cpu);
+                cpu.m_memory.write<std::uint32_t>(buffer + 12, 0);
+            }
+        }
+        cpu.m_gpr[3] = 0;
+    });
+    Core::syscallHandler.registerSyscall("GX2RCreateBufferUserMemory", [](Core::Interpreter &cpu) {
+        const auto buffer = cpu.m_gpr[3], memory = cpu.m_gpr[4], size = cpu.m_gpr[5];
+        const auto bytes = std::uint64_t{cpu.m_memory.read<std::uint32_t>(buffer + 4)} * cpu.m_memory.read<std::uint32_t>(buffer + 8);
+        if (!memory || !bytes || bytes > size || !cpu.m_memory.hostPtr(memory, size)) {
+            cpu.m_gpr[3] = 0;
+            return;
+        }
+        auto flags = cpu.m_memory.read<std::uint32_t>(buffer);
+        flags &= ~((1u << 29) | (1u << 30)); // caller owns the storage; initially unlocked
+        cpu.m_memory.write<std::uint32_t>(buffer, flags);
+        cpu.m_memory.write<std::uint32_t>(buffer + 12, memory);
+        cpu.m_gpr[3] = 1;
+    });
+    Core::syscallHandler.registerSyscall("GX2RLockBufferEx", [](Core::Interpreter &cpu) {
+        const auto buffer = cpu.m_gpr[3];
+        auto flags = cpu.m_memory.read<std::uint32_t>(buffer);
+        flags |= (1u << 30) | (cpu.m_gpr[4] & (1u << 22));
+        cpu.m_memory.write<std::uint32_t>(buffer, flags);
+        cpu.m_gpr[3] = cpu.m_memory.read<std::uint32_t>(buffer + 12);
+    });
+    Core::syscallHandler.registerSyscall("GX2RUnlockBufferEx", [](Core::Interpreter &cpu) {
+        const auto buffer = cpu.m_gpr[3];
+        cpu.m_memory.write<std::uint32_t>(buffer, cpu.m_memory.read<std::uint32_t>(buffer) & ~((1u << 30) | (1u << 22)));
+        cpu.m_gpr[3] = 0;
+    });
+    // CPU and captured GPU commands share the same coherent guest storage.
+    Core::syscallHandler.registerSyscall("GX2RInvalidateBuffer", gx2_noop);
+    Core::syscallHandler.registerSyscall("GX2RSetAttributeBuffer", [](Core::Interpreter &cpu) {
+        const auto buffer = cpu.m_gpr[3], index = cpu.m_gpr[4], stride = cpu.m_gpr[5], offset = cpu.m_gpr[6];
+        const auto bytes = std::uint64_t{cpu.m_memory.read<unsigned>(buffer + 4)} * cpu.m_memory.read<unsigned>(buffer + 8);
+        const auto address = cpu.m_memory.read<unsigned>(buffer + 12);
+        if (bytes > 0xFFFFFFFFu || offset > bytes || !cpu.m_memory.hostPtr(address, bytes)) {
+            cpu.m_gpr[3] = 0;
+            return;
+        }
+        cpu.m_gpr[3] = index;
+        cpu.m_gpr[4] = static_cast<unsigned>(bytes);
+        cpu.m_gpr[5] = stride;
+        cpu.m_gpr[6] = address + offset;
+        recordCmd(cpu, Core::Gfx::Gx2Cmd::SetAttribBuffer);
+        cpu.m_gpr[3] = 0;
+    });
+    Core::syscallHandler.registerSyscall("GX2RDrawIndexed", [](Core::Interpreter &cpu) {
+        const auto mode = cpu.m_gpr[3], buffer = cpu.m_gpr[4], type = cpu.m_gpr[5], count = cpu.m_gpr[6];
+        const auto indexOffset = cpu.m_gpr[7], vertexOffset = cpu.m_gpr[8], instances = cpu.m_gpr[9];
+        const auto elementSize = cpu.m_memory.read<std::uint32_t>(buffer + 4);
+        const auto data = cpu.m_memory.read<std::uint32_t>(buffer + 12);
+        const auto offset = std::uint64_t(indexOffset) * elementSize + data;
+        if (offset > UINT32_MAX)
+            return;
+        cpu.m_gpr[3] = mode;
+        cpu.m_gpr[4] = count;
+        cpu.m_gpr[5] = type;
+        cpu.m_gpr[6] = static_cast<std::uint32_t>(offset);
+        cpu.m_gpr[7] = vertexOffset;
+        cpu.m_gpr[8] = instances;
+        recordCmd(cpu, Core::Gfx::Gx2Cmd::DrawIndexedEx);
+        cpu.m_gpr[3] = 0;
+    });
     using C = Core::Gfx::Gx2Cmd;
     for (const char *name: kNoops)
         Core::syscallHandler.registerSyscall(name, gx2_noop);
     for (const char *name: kRetSize)
         Core::syscallHandler.registerSyscall(name, gx2_RetSize);
+    for (const auto *name: {"GX2CalcGeometryShaderInputRingBufferSize", "GX2CalcGeometryShaderOutputRingBufferSize"})
+        Core::syscallHandler.registerSyscall(name, [](Core::Interpreter &cpu) { cpu.m_gpr[3] *= 0x4000u; });
 
     Core::syscallHandler.registerSyscall("GX2Init", gx2_Init);
     for (const auto *name: {"GX2GetPixelShaderGPRs", "GX2GetVertexShaderGPRs", "GX2GetGeometryShaderGPRs"})
@@ -1541,8 +1717,50 @@ void RegisterGx2Functions()
     Core::syscallHandler.registerSyscall("GX2InitSamplerBorderType", [](Core::Interpreter &cpu) { samplerField(cpu, 0, 22, 2, cpu.m_gpr[4]); });
     Core::syscallHandler.registerSyscall("GX2InitSamplerDepthCompare", [](Core::Interpreter &cpu) { samplerField(cpu, 0, 26, 3, cpu.m_gpr[4]); });
     Core::syscallHandler.registerSyscall("GX2SetBlendConstantColor", gx2_rec<C::SetBlendConstantColor>);
+    Core::syscallHandler.registerSyscall("GX2InitBlendConstantColorReg", [](Core::Interpreter &cpu) {
+        for (unsigned i = 0; i < 4; ++i)
+            cpu.m_memory.write<unsigned>(cpu.m_gpr[3] + i * 4, std::bit_cast<unsigned>(static_cast<float>(cpu.m_fpr[i + 1])));
+        cpu.m_gpr[3] = 0;
+    });
+    Core::syscallHandler.registerSyscall("GX2SetBlendConstantColorReg", [](Core::Interpreter &cpu) {
+        Core::Gfx::Gx2Command command{Core::Gfx::Gx2Cmd::SetBlendConstantColor};
+        for (unsigned i = 0; i < 4; ++i)
+            command.fpr[i] = std::bit_cast<float>(cpu.m_memory.read<unsigned>(cpu.m_gpr[3] + i * 4));
+        pushCmd(cpu, command);
+        cpu.m_gpr[3] = 0;
+    });
     Core::syscallHandler.registerSyscall("GX2SetBlendControl", gx2_rec<C::SetBlendControl>);
+    Core::syscallHandler.registerSyscall("GX2InitBlendControlReg", [](Core::Interpreter &cpu) {
+        const auto address = cpu.m_gpr[3];
+        const auto arg = [&](unsigned i) { return integerArgument(cpu, i); };
+        const auto word = (arg(2) & 31) | ((arg(4) & 7) << 5) | ((arg(3) & 31) << 8) | ((arg(6) & 31) << 16) | ((arg(8) & 7) << 21) |
+                          ((arg(7) & 31) << 24) | (unsigned(arg(5) != 0) << 29);
+        cpu.m_memory.write<unsigned>(address, arg(1));
+        cpu.m_memory.write<unsigned>(address + 4, word);
+        cpu.m_gpr[3] = 0;
+    });
+    Core::syscallHandler.registerSyscall("GX2SetBlendControlReg", [](Core::Interpreter &cpu) {
+        const auto address = cpu.m_gpr[3], word = cpu.m_memory.read<unsigned>(address + 4);
+        Core::Gfx::Gx2Command command{Core::Gfx::Gx2Cmd::SetBlendControl};
+        command.gpr = {cpu.m_memory.read<unsigned>(address),
+                       word & 31,
+                       (word >> 8) & 31,
+                       (word >> 5) & 7,
+                       (word >> 29) & 1,
+                       (word >> 16) & 31,
+                       (word >> 24) & 31,
+                       (word >> 21) & 7};
+        command.callerLr = cpu.m_lr + Core::Memory::ApplicationCode;
+        pushCmd(cpu, command);
+        cpu.m_gpr[3] = 0;
+    });
     Core::syscallHandler.registerSyscall("GX2SetColorControl", gx2_rec<C::SetColorControl>);
+    Core::syscallHandler.registerSyscall("GX2InitColorControlReg", [](Core::Interpreter &cpu) {
+        const auto word =
+                ((cpu.m_gpr[4] & 255) << 16) | ((cpu.m_gpr[5] & 255) << 8) | 0x80u | (unsigned(cpu.m_gpr[6] != 0) << 1) | (cpu.m_gpr[7] ? 0u : 0x10u);
+        cpu.m_memory.write<unsigned>(cpu.m_gpr[3], word);
+        cpu.m_gpr[3] = 0;
+    });
     Core::syscallHandler.registerSyscall("GX2SetColorControlReg", [](Core::Interpreter &cpu) {
         const auto word = cpu.m_memory.read<std::uint32_t>(cpu.m_gpr[3]);
         Core::Gfx::Gx2Command command{Core::Gfx::Gx2Cmd::SetColorControl};
@@ -1607,7 +1825,20 @@ void RegisterGx2Functions()
         pushCmd(cpu, cmd);
         cpu.m_gpr[3] = 0;
     });
-    Core::syscallHandler.registerSyscall("GX2SetDepthStencilControl", gx2_rec<C::SetDepthStencilControl>);
+    Core::syscallHandler.registerSyscall("GX2SetDepthStencilControl", [](Core::Interpreter &cpu) {
+        const auto arg = [&](unsigned i) { return integerArgument(cpu, i); };
+        Core::Gfx::Gx2Command command{Core::Gfx::Gx2Cmd::SetDepthStencilControl};
+        for (unsigned i = 0; i < command.gpr.size(); ++i)
+            command.gpr[i] = arg(i);
+        command.payload = {depthStencilControlWord(cpu, 0)};
+        command.callerLr = cpu.m_lr + Core::Memory::MemoryMap::ApplicationCode;
+        pushCmd(cpu, command);
+        cpu.m_gpr[3] = 0;
+    });
+    Core::syscallHandler.registerSyscall("GX2InitDepthStencilControlReg", [](Core::Interpreter &cpu) {
+        cpu.m_memory.write<unsigned>(cpu.m_gpr[3], depthStencilControlWord(cpu, 1));
+        cpu.m_gpr[3] = 0;
+    });
     Core::syscallHandler.registerSyscall("GX2SetDepthOnlyControl", [](Core::Interpreter &cpu) {
         const auto saved = cpu.m_gpr[6];
         cpu.m_gpr[6] = 0; // This entry point disables stencil testing.
@@ -1626,6 +1857,32 @@ void RegisterGx2Functions()
         cpu.m_gpr[3] = 0;
     });
     Core::syscallHandler.registerSyscall("GX2SetTargetChannelMasks", gx2_rec<C::SetTargetChannelMasks>);
+    Core::syscallHandler.registerSyscall("GX2InitStencilMaskReg", [](Core::Interpreter &cpu) {
+        const auto address = cpu.m_gpr[3];
+        for (unsigned face = 0; face < 2; ++face) {
+            const auto r = 4 + face * 3;
+            const auto word = (cpu.m_gpr[r + 2] & 255) | ((cpu.m_gpr[r] & 255) << 8) | ((cpu.m_gpr[r + 1] & 255) << 16);
+            cpu.m_memory.write<unsigned>(address + face * 4, word);
+        }
+        cpu.m_gpr[3] = 0;
+    });
+    Core::syscallHandler.registerSyscall("GX2SetStencilMask", [](Core::Interpreter &cpu) {
+        Core::Gfx::Gx2Command command{Core::Gfx::Gx2Cmd::SetStencilMask};
+        for (unsigned face = 0; face < 2; ++face) {
+            const auto r = 3 + face * 3;
+            command.payload.push_back((cpu.m_gpr[r + 2] & 255) | ((cpu.m_gpr[r] & 255) << 8) | ((cpu.m_gpr[r + 1] & 255) << 16));
+        }
+        command.callerLr = cpu.m_lr + Core::Memory::ApplicationCode;
+        pushCmd(cpu, command);
+        cpu.m_gpr[3] = 0;
+    });
+    Core::syscallHandler.registerSyscall("GX2SetStencilMaskReg", [](Core::Interpreter &cpu) {
+        Core::Gfx::Gx2Command command{Core::Gfx::Gx2Cmd::SetStencilMask};
+        command.payload = {cpu.m_memory.read<unsigned>(cpu.m_gpr[3]), cpu.m_memory.read<unsigned>(cpu.m_gpr[3] + 4)};
+        command.callerLr = cpu.m_lr + Core::Memory::ApplicationCode;
+        pushCmd(cpu, command);
+        cpu.m_gpr[3] = 0;
+    });
     Core::syscallHandler.registerSyscall("GX2SetTargetChannelMasksReg", [](Core::Interpreter &cpu) {
         const auto word = cpu.m_memory.read<std::uint32_t>(cpu.m_gpr[3]);
         Core::Gfx::Gx2Command command{Core::Gfx::Gx2Cmd::SetTargetChannelMasks};
