@@ -65,6 +65,10 @@ def main():
     parser.add_argument("--press-at", type=int, action="append", default=[], metavar="FRAME")
     parser.add_argument("--press-buttons", type=lambda value: int(value, 0), default=0x8000, metavar="MASK")
     parser.add_argument("--hold-frames", type=int, default=6)
+    parser.add_argument("--control-file", type=Path,
+                        help="Live JSON input state: buttons, left_stick/right_stick, touched, touch_x/touch_y")
+    parser.add_argument("--input-script", type=Path, help="JSON list of input states with a frame number; each replaces the previous state")
+    parser.add_argument("--env", action="append", default=[], metavar="WEMU_NAME=VALUE")
     args = parser.parse_args()
     if args.frames < 1 or args.seconds <= 0 or args.measure_from < 1 or args.capture_every < 0:
         parser.error("frame/time limits and measurement start must be positive; capture interval must be nonnegative")
@@ -74,6 +78,8 @@ def main():
     if not rpx.is_file() or not core.is_file():
         parser.error("RPX and core executable must exist")
     output.mkdir(parents=True, exist_ok=True)
+    inputs = sorted(json.loads(args.input_script.read_text()), key=lambda event: event["frame"]) if args.input_script else []
+    input_index, scripted_controls = 0, {}
     environment = {key: value for key, value in os.environ.items() if not key.startswith("WEMU_")}
     environment.update({key: "1" for key in (
         "WEMU_NATIVE_RASTER", "WEMU_NATIVE_DEFER_READBACK", "WEMU_NATIVE_LAZY_READBACK",
@@ -106,11 +112,17 @@ def main():
     if args.draw_profile_from is not None:
         environment.update(WEMU_RASTER_PROFILE="1", WEMU_NATIVE_SHADER_AUDIT="1",
                            WEMU_RASTER_PROFILE_FROM=str(args.draw_profile_from))
+    for setting in args.env:
+        key, separator, value = setting.partition("=")
+        if not separator or not key.startswith("WEMU_"):
+            parser.error("--env requires WEMU_NAME=VALUE")
+        environment[key] = value
 
     rows = []
     error = None
     limited = False
     last_buttons = 0
+    last_gamepad = None
     with tempfile.TemporaryDirectory(prefix="wemu-probe-") as temporary, \
             socket.socket(socket.AF_UNIX) as server, (output / "core.log").open("w") as log:
         channel = str(Path(temporary) / "window")
@@ -143,12 +155,31 @@ def main():
                         raise ValueError("invalid framebuffer dimensions")
                     elapsed = time.monotonic() - started
                     buttons = args.press_buttons if any(first <= sequence < first + args.hold_frames for first in args.press_at) else 0
+                    controls = {}
+                    while input_index < len(inputs) and inputs[input_index]["frame"] <= sequence:
+                        scripted_controls = {key: value for key, value in inputs[input_index].items() if key != "frame"}
+                        print(f"input={scripted_controls} frame={sequence}", flush=True)
+                        input_index += 1
+                    controls.update(scripted_controls)
+                    if args.control_file and args.control_file.exists():
+                        controls.update(json.loads(args.control_file.read_text()))
+                    buttons = controls.get("buttons", buttons)
+                    gamepad = struct.pack("<I4dBHH6d", 7, *controls.get("left_stick", (0, 0)),
+                                          *controls.get("right_stick", (0, 0)), controls.get("touched", False),
+                                          controls.get("touch_x", 0), controls.get("touch_y", 0),
+                                          *controls.get("accel", (0, -1, 0)), *controls.get("gyro", (0, 0, 0)))
+                    if gamepad != last_gamepad:
+                        send(connection, gamepad)
+                        print(f"gamepad={controls} frame={sequence}", flush=True)
+                        last_gamepad = gamepad
                     if buttons != last_buttons:
                         send(connection, struct.pack("<III", 4, 4, buttons))
                         print(f"buttons={buttons:#x} frame={sequence}", flush=True)
                         last_buttons = buttons
                     rows.append((sequence, elapsed, presents, movies, fps, movie_fps))
                     send(connection, struct.pack("<IQ", 5, sequence))
+                    if controls.get("stop", False):
+                        break
                     if args.capture_every and sequence % args.capture_every == 0:
                         save_frame(output / f"frame_{sequence:05}.ppm", width, height, body[52:])
                     if sequence % 50 == 0:

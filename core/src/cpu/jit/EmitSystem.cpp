@@ -44,8 +44,8 @@ namespace Core::Jit {
                 // Time base and processor id read the scheduler: call-out. Other unknown SPRs do
                 // nothing, as in the interpreter.
                 std::int32_t reg = m_layout.xer;
-                if (spr >= 912 && spr <= 919)
-                    reg = m_layout.gqr + static_cast<std::int32_t>((spr - 912) * 4);
+                if ((spr >= 896 && spr <= 903) || (spr >= 912 && spr <= 919))
+                    reg = m_layout.gqr + static_cast<std::int32_t>((spr & 7) * 4);
                 else if (spr == 8)
                     reg = m_layout.lr;
                 else if (spr == 9)

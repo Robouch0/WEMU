@@ -1,10 +1,12 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <map>
 #include <memory>
 #include <span>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 
 #include "gfx/LatteProgram.hpp"
@@ -75,15 +77,18 @@ namespace Core::Gfx::Latte {
     FragmentShader lowerFragmentShader(const Program &program, std::span<const TextureType> resourceTypes = {}, bool onlyColorZero = false,
                                        unsigned colorExport = 0);
     struct VertexShader : FragmentShader {};
+    using UniformBufferWindows = std::array<unsigned, 16>;
     // bufferWindow: vectors per dynamically indexed uniform block (0: the shared default budget).
-    VertexShader lowerVertexShader(const Program &program, std::span<const TextureType> resourceTypes = {}, unsigned bufferWindow = 0);
+    VertexShader lowerVertexShader(const Program &program, std::span<const TextureType> resourceTypes = {}, unsigned bufferWindow = 0,
+                                   const UniformBufferWindows &bufferWindows = {});
     class VertexShaderCache {
         public:
-            std::shared_ptr<const VertexShader> get(const std::vector<std::uint32_t> &words, unsigned bufferWindow = 0);
+            std::shared_ptr<const VertexShader> get(const std::vector<std::uint32_t> &words, unsigned bufferWindow = 0,
+                                                    const UniformBufferWindows &bufferWindows = {});
 
         private:
             std::unordered_map<std::vector<std::uint32_t>, std::shared_ptr<const VertexShader>, ProgramWordsHash, ProgramWordsEqual> m_entries;
-            std::map<std::pair<unsigned, std::vector<std::uint32_t>>, std::shared_ptr<const VertexShader>> m_windowed;
+            std::map<std::tuple<unsigned, UniformBufferWindows, std::vector<std::uint32_t>>, std::shared_ptr<const VertexShader>> m_windowed;
     };
 
     // Replayer-owned, single-threaded cache. Exact keys include resource specialization.

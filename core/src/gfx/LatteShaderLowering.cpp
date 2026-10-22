@@ -501,7 +501,8 @@ namespace Core::Gfx::Latte {
     } // namespace
 
     static FragmentShader lowerShader(const Program &program, std::span<const TextureType> resourceTypes, bool vertexStage,
-                                      bool onlyColorZero = false, unsigned colorExport = 0, unsigned bufferWindow = 0)
+                                      bool onlyColorZero = false, unsigned colorExport = 0, unsigned bufferWindow = 0,
+                                      const UniformBufferWindows &bufferWindows = {})
     {
         FragmentShader result;
         result.exportsColor = false;
@@ -1031,10 +1032,11 @@ namespace Core::Gfx::Latte {
             // Replay proves each bound block fits before native dispatch; larger
             // blocks retain reference execution rather than truncating a palette.
             if (!uniformBuffers.empty()) {
-                const auto capacity = bufferWindow ? bufferWindow : unsigned((512 - result.uniforms.size()) / uniformBuffers.size());
-                if (!capacity || result.uniforms.size() + std::size_t(capacity) * uniformBuffers.size() > kUniformVectors)
-                    throw std::runtime_error("dynamic uniform buffer budget exceeded");
+                const auto defaultCapacity = bufferWindow ? bufferWindow : unsigned((512 - result.uniforms.size()) / uniformBuffers.size());
                 for (const auto bank: uniformBuffers) {
+                    const auto capacity = bank < bufferWindows.size() && bufferWindows[bank] ? bufferWindows[bank] : defaultCapacity;
+                    if (!capacity || result.uniforms.size() + std::size_t(capacity) > kUniformVectors)
+                        throw std::runtime_error("dynamic uniform buffer budget exceeded");
                     result.uniformBuffers.push_back({bank, unsigned(result.uniforms.size()), capacity});
                     for (unsigned index = 0; index < capacity; ++index)
                         result.uniforms.push_back({bank, index});
@@ -1245,19 +1247,21 @@ vec3 cubeDirectionReference(vec3 coord) {
             m_colorOnlyEffects.emplace(words, safe);
         return safe;
     }
-    VertexShader lowerVertexShader(const Program &program, std::span<const TextureType> resourceTypes, unsigned bufferWindow)
+    VertexShader lowerVertexShader(const Program &program, std::span<const TextureType> resourceTypes, unsigned bufferWindow,
+                                   const UniformBufferWindows &bufferWindows)
     {
         VertexShader shader;
-        static_cast<FragmentShader &>(shader) = lowerShader(program, resourceTypes, true, false, 0, bufferWindow);
+        static_cast<FragmentShader &>(shader) = lowerShader(program, resourceTypes, true, false, 0, bufferWindow, bufferWindows);
         return shader;
     }
-    std::shared_ptr<const VertexShader> VertexShaderCache::get(const std::vector<std::uint32_t> &words, unsigned bufferWindow)
+    std::shared_ptr<const VertexShader> VertexShaderCache::get(const std::vector<std::uint32_t> &words, unsigned bufferWindow,
+                                                               const UniformBufferWindows &bufferWindows)
     {
-        if (bufferWindow) {
+        if (bufferWindow || std::ranges::any_of(bufferWindows, [](unsigned size) { return size != 0; })) {
             // Rare: only programs whose blocks outgrow the default budget, a few window sizes each.
-            auto &shader = m_windowed[{bufferWindow, words}];
+            auto &shader = m_windowed[{bufferWindow, bufferWindows, words}];
             if (!shader)
-                shader = std::make_shared<const VertexShader>(lowerVertexShader(*decodeProgram(words), {}, bufferWindow));
+                shader = std::make_shared<const VertexShader>(lowerVertexShader(*decodeProgram(words), {}, bufferWindow, bufferWindows));
             return shader;
         }
         if (const auto it = m_entries.find(words); it != m_entries.end())

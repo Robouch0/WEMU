@@ -101,6 +101,7 @@ class EmulatorLauncher : public QObject {
         quint32 m_buttons{}, m_remoteButtons{}, m_controllerButtons{}, m_suppressedControllerButtons{};
         Core::Gfx::GamepadState m_remoteGamepad;
         std::array<float, 2> m_controllerLeftStick{}, m_controllerRightStick{};
+        std::array<float, 2> m_keyboardLeftStick{};
         bool m_gamepadDirty{}, m_drcStreaming{};
         QTimer m_gamepadTimer;
         QSet<int> m_heldKeys, m_suppressedKeys;

@@ -36,6 +36,27 @@ namespace Core::Gfx {
         };
     } // namespace
 
+    std::optional<LatteHtileLayout> latteHtileLayout(unsigned pitch, unsigned height, unsigned slices)
+    {
+        if (!pitch || !height || !slices || pitch > 8192 || height > 8192 || slices > 2048)
+            return {};
+        thread_local const AddressLibrary library;
+        if (!library.handle)
+            return {};
+        ADDR_COMPUTE_HTILE_INFO_INPUT input{};
+        ADDR_COMPUTE_HTILE_INFO_OUTPUT output{};
+        input.size = sizeof(input);
+        output.size = sizeof(output);
+        input.pitch = pitch;
+        input.height = height;
+        input.numSlices = slices;
+        input.blockWidth = input.blockHeight = ADDR_HTILE_BLOCKSIZE_8;
+        input.tileIndex = -1;
+        if (AddrComputeHtileInfo(library.handle, &input, &output) != ADDR_OK || output.htileBytes > std::numeric_limits<std::uint32_t>::max())
+            return {};
+        return LatteHtileLayout{output.baseAlign, static_cast<std::uint32_t>(output.htileBytes)};
+    }
+
     std::optional<LatteSurfaceLayout> latteSurfaceLayout(unsigned width, unsigned height, unsigned depth, unsigned format, unsigned dimension,
                                                          unsigned tileMode, unsigned level, unsigned use)
     {

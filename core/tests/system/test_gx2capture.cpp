@@ -51,6 +51,169 @@ class Gx2CaptureTest : public InstructionTest {
         }
 };
 
+TEST_F(Gx2CaptureTest, RenderedImageSurvivesCompatibleFormatViews)
+{
+    using namespace Core::Gfx;
+    constexpr unsigned color = 0x28001000, scan = 0x28002000, image = 0x28010000;
+    surface(color, image, 256, 8, 8, 8, 1);
+    surface(scan, image, 256, 8, 8, 8, 1);
+    cpu->m_memory.write<unsigned>(color + 0x14, 0x219);
+    cpu->m_memory.write<unsigned>(scan + 0x14, 0x19);
+    cpu->m_gpr[3] = color;
+    cpu->m_fpr[1] = .25;
+    cpu->m_fpr[2] = .5;
+    cpu->m_fpr[3] = .75;
+    cpu->m_fpr[4] = 1;
+    call("GX2ClearColor");
+    cpu->m_gpr[3] = scan;
+    cpu->m_gpr[4] = 1;
+    call("GX2CopyColorBufferToScanBuffer");
+    gx2Stream().push(Gx2Command{Gx2Cmd::SwapScanBuffers});
+    Gx2Replayer reference;
+    reference.replay(gx2Stream(), &cpu->m_memory);
+    const auto &pixels = reference.framebuffer();
+    ASSERT_GE(pixels.size(), 4u);
+    EXPECT_EQ((std::array{pixels[0], pixels[1], pixels[2]}), (std::array<std::uint8_t, 3>{64, 128, 191}));
+    if (std::getenv("WEMU_TEST_VULKAN") && SpirvCompiler::available()) {
+        Gx2Replayer native;
+        native.setRasterBackend(std::make_shared<VulkanRasterBackend>(true, true));
+        native.replay(gx2Stream(), &cpu->m_memory);
+        EXPECT_EQ(native.framebuffer(), pixels);
+    }
+}
+
+TEST_F(Gx2CaptureTest, HiZSizeCoversDepthTilesAndScalesWithSurfaceSize)
+{
+    constexpr unsigned header = 0x28001000, sizeOut = 0x28002000, alignOut = 0x28002004;
+    unsigned small{};
+    for (const auto shape: {std::array{8u, 8u, 1u}, std::array{1440u, 810u, 1u}, std::array{1440u, 810u, 2u}}) {
+        surface(header, 0x28010000, 256, shape[0], shape[1], shape[0], 4);
+        cpu->m_memory.write<unsigned>(header + 0xC, shape[2]);
+        cpu->m_memory.write<unsigned>(header + 0x14, 0x80E);
+        cpu->m_gpr[3] = header;
+        cpu->m_gpr[4] = sizeOut;
+        cpu->m_gpr[5] = alignOut;
+        call("GX2CalcDepthBufferHiZInfo");
+        const auto bytes = cpu->m_memory.read<unsigned>(sizeOut);
+        const auto alignment = cpu->m_memory.read<unsigned>(alignOut);
+        ASSERT_GE(alignment, 256u);
+        EXPECT_TRUE(std::has_single_bit(alignment));
+        EXPECT_EQ(bytes % alignment, 0u);
+        EXPECT_GE(bytes, ((shape[0] + 7) / 8) * ((shape[1] + 7) / 8) * shape[2] * 4);
+        if (shape[0] == 8)
+            small = bytes;
+        else
+            EXPECT_GT(bytes, small);
+    }
+    cpu->m_memory.write<unsigned>(header + 8, 0);
+    cpu->m_gpr[3] = header;
+    cpu->m_gpr[4] = sizeOut;
+    cpu->m_gpr[5] = alignOut;
+    call("GX2CalcDepthBufferHiZInfo");
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(sizeOut), 0u);
+}
+
+TEST_F(Gx2CaptureTest, StreamOutWritesMaskedComponentsWithoutRasterizingAndRestoresOffsets)
+{
+    using namespace Core::Gfx;
+    constexpr unsigned shader = 0x2B001000, program = 0x2B002000, vertices = 0x2B003000;
+    constexpr unsigned buffer0 = 0x2B004000, buffer1 = 0x2B004100, context0 = 0x2B005000, context1 = 0x2B005100;
+    constexpr unsigned data0 = 0x2B010000, data1 = 0x2B011000;
+    const auto record = [&](const char *name, std::initializer_list<unsigned> args) {
+        unsigned reg = 3;
+        for (const auto arg: args)
+            cpu->m_gpr[reg++] = arg;
+        call(name);
+    };
+    for (unsigned off = 0; off < 0x140; off += 4)
+        cpu->m_memory.write<unsigned>(shader + off, 0);
+    const unsigned words[]{1u << 15, (0x20u << 23) | (5u << 12) | 3u, 0, (0x21u << 23) | (1u << 21) | (3u << 12) | 1u};
+    for (unsigned i = 0; i < 4; ++i)
+        cpu->m_memory.write<unsigned>(program + i * 4, std::byteswap(words[i]));
+    cpu->m_memory.write<unsigned>(shader + 0xD0, sizeof(words));
+    cpu->m_memory.write<unsigned>(shader + 0xD4, program);
+    cpu->m_memory.write<unsigned>(shader + 0x40, 1);
+    cpu->m_memory.write<unsigned>(shader + 0x110, 1);
+    cpu->m_memory.write<unsigned>(shader + 0x114, 16);
+    cpu->m_memory.write<unsigned>(shader + 0x118, 8);
+    for (unsigned i = 0; i < 12; ++i)
+        cpu->m_memory.write<unsigned>(vertices + i * 4, std::bit_cast<unsigned>(float(i + 1)));
+    for (unsigned offset = 0; offset < 64; offset += 4)
+        cpu->m_memory.write<unsigned>(data0 + offset, 0xCDCDCDCD);
+    for (const auto config: {std::array{buffer0, data0, context0, 64u}, std::array{buffer1, data1, context1, 32u}}) {
+        for (unsigned off = 0; off < 32; off += 4)
+            cpu->m_memory.write<unsigned>(config[0] + off, 0);
+        cpu->m_memory.write<unsigned>(config[0], config[3]);
+        cpu->m_memory.write<unsigned>(config[0] + 4, config[1]);
+        cpu->m_memory.write<unsigned>(config[0] + 28, config[2]);
+    }
+    Gx2Command fetch{Gx2Cmd::SetFetchShader};
+    fetch.payload = {0, 0, 0, 0x813, 0, 0, 0x00010203, 3};
+    gx2Stream().push(fetch);
+    record("GX2SetVertexShader", {shader});
+    record("GX2SetAttribBuffer", {0, 48, 16, vertices});
+    record("GX2SetStreamOutBuffer", {0, buffer0});
+    record("GX2SetStreamOutBuffer", {1, buffer1});
+    record("GX2SetStreamOutContext", {0, buffer0, 1});
+    record("GX2SetStreamOutContext", {1, buffer1, 1});
+    record("GX2SetStreamOutEnable", {1});
+    Gx2Command discard{Gx2Cmd::SetRasterizerClipControl};
+    discard.gpr = {0, 1, 1};
+    gx2Stream().push(discard);
+    record("GX2DrawEx", {1, 3, 0, 1});
+    record("GX2SaveStreamOutContext", {0, buffer0});
+    record("GX2SaveStreamOutContext", {1, buffer1});
+    Gx2Replayer replay;
+    replay.replay(gx2Stream(), &cpu->m_memory);
+    const auto word = [&](unsigned address) { return std::byteswap(cpu->m_memory.read<unsigned>(address)); };
+    for (unsigned vertex = 0; vertex < 3; ++vertex) {
+        EXPECT_EQ(word(data0 + vertex * 16), std::bit_cast<unsigned>(float(vertex * 4 + 1)));
+        EXPECT_EQ(word(data0 + vertex * 16 + 4), 0xCDCDCDCDu);
+        EXPECT_EQ(word(data0 + vertex * 16 + 8), std::bit_cast<unsigned>(float(vertex * 4 + 3)));
+        EXPECT_EQ(word(data0 + vertex * 16 + 12), 0xCDCDCDCDu);
+        EXPECT_EQ(word(data1 + vertex * 8), vertex);
+    }
+    EXPECT_EQ(word(context0), 12u);
+    EXPECT_EQ(word(context1), 6u);
+    gx2Stream().clear();
+    record("GX2SetStreamOutContext", {0, buffer0, 0});
+    record("GX2SetStreamOutContext", {1, buffer1, 0});
+    record("GX2DrawEx", {1, 1, 2, 1});
+    record("GX2SaveStreamOutContext", {0, buffer0});
+    replay.replay(gx2Stream(), &cpu->m_memory);
+    EXPECT_EQ(word(data0 + 48), std::bit_cast<unsigned>(9.f));
+    EXPECT_EQ(word(data1 + 24), 2u);
+    EXPECT_EQ(word(context0), 16u);
+
+    // Exercise the worker path with disjoint output records, then reject an overflowing append atomically.
+    gx2Stream().clear();
+    for (unsigned i = 0; i < 64 * 4; ++i)
+        cpu->m_memory.write<unsigned>(vertices + i * 4, std::bit_cast<unsigned>(float(i + 1)));
+    cpu->m_memory.write<unsigned>(buffer0, 64 * 16);
+    cpu->m_memory.write<unsigned>(buffer1, 64 * 8);
+    record("GX2SetAttribBuffer", {0, 64 * 16, 16, vertices});
+    record("GX2SetStreamOutBuffer", {0, buffer0});
+    record("GX2SetStreamOutBuffer", {1, buffer1});
+    record("GX2SetStreamOutContext", {0, buffer0, 1});
+    record("GX2SetStreamOutContext", {1, buffer1, 1});
+    record("GX2DrawEx", {1, 64, 0, 1});
+    record("GX2SaveStreamOutContext", {0, buffer0});
+    replay.replay(gx2Stream(), &cpu->m_memory);
+    for (unsigned vertex = 0; vertex < 64; ++vertex) {
+        EXPECT_EQ(word(data0 + vertex * 16), std::bit_cast<unsigned>(float(vertex * 4 + 1)));
+        EXPECT_EQ(word(data0 + vertex * 16 + 8), std::bit_cast<unsigned>(float(vertex * 4 + 3)));
+        EXPECT_EQ(word(data1 + vertex * 8), vertex);
+    }
+    EXPECT_EQ(word(context0), 256u);
+    gx2Stream().clear();
+    cpu->m_memory.write<unsigned>(data0 + 64 * 16, 0xABABABAB);
+    record("GX2DrawEx", {1, 1, 0, 1});
+    record("GX2SaveStreamOutContext", {0, buffer0});
+    replay.replay(gx2Stream(), &cpu->m_memory);
+    EXPECT_EQ(word(data0 + 64 * 16), 0xABABABABu);
+    EXPECT_EQ(word(context0), 256u);
+}
+
 TEST_F(Gx2CaptureTest, DepthStencilControlCapturesStackArgumentsInDirectAndRegisterForms)
 {
     constexpr unsigned reg = 0x28001000;

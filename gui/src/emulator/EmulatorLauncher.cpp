@@ -20,37 +20,6 @@
 #include "SessionFrame.hpp"
 #include "frontend/QtSessionProtocol.hpp"
 
-namespace {
-    quint32 buttonForKey(int key)
-    {
-        switch (key) {
-            case Qt::Key_Up:
-            case Qt::Key_W:
-                return 0x0200;
-            case Qt::Key_Down:
-            case Qt::Key_S:
-                return 0x0100;
-            case Qt::Key_Left:
-            case Qt::Key_A:
-                return 0x0800;
-            case Qt::Key_Right:
-            case Qt::Key_D:
-                return 0x0400;
-            case Qt::Key_Return:
-            case Qt::Key_Enter:
-                return 0x8000;
-            case Qt::Key_Backspace:
-                return 0x4000;
-            case Qt::Key_P:
-                return 0x0008;
-            case Qt::Key_M:
-                return 0x0004;
-            default:
-                return 0;
-        }
-    }
-} // namespace
-
 EmulatorLauncher::EmulatorLauncher(QObject *parent) : QObject(parent)
 {
     QCoreApplication::instance()->installEventFilter(this);
@@ -250,6 +219,7 @@ void EmulatorLauncher::clearChannel()
     m_buttons = 0;
     m_remoteButtons = 0;
     m_remoteGamepad = {};
+    m_keyboardLeftStick = {};
     m_gamepadDirty = false;
     m_gamepadTimer.stop();
     m_heldKeys.clear();
@@ -391,8 +361,7 @@ void EmulatorLauncher::togglePause()
     m_suppressedKeys.unite(m_heldKeys);
     m_suppressedControllerButtons |= m_controllerButtons;
     m_pausePending = true;
-    m_buttons = 0;
-    sendCommand(4, 0);
+    sendButtons();
     sendCommand(1);
     emit sessionChanged();
 }
@@ -461,6 +430,7 @@ void EmulatorLauncher::sendGamepad()
     // Touch and motion come from the phone only.
     auto gamepad = m_remoteGamepad;
     gamepad.leftStick = ControllerMapping::stronger(m_remoteGamepad.leftStick, m_controllerLeftStick);
+    gamepad.leftStick = ControllerMapping::stronger(gamepad.leftStick, m_keyboardLeftStick);
     gamepad.rightStick = ControllerMapping::stronger(m_remoteGamepad.rightStick, m_controllerRightStick);
     if (qEnvironmentVariableIntValue("QT_WEMU_INPUT_TRACE") == 1)
         qInfo("[SESSION_GAMEPAD] left=%.2f,%.2f right=%.2f,%.2f touched=%d", gamepad.leftStick[0], gamepad.leftStick[1], gamepad.rightStick[0],
@@ -485,10 +455,17 @@ void EmulatorLauncher::setDrcStreaming(bool enabled)
 void EmulatorLauncher::sendButtons()
 {
     quint32 buttons{};
+    const auto keyboard = ControllerMapping::keyboard([&](int key) {
+        return !m_paused && !m_pausePending && !m_stopping && m_heldKeys.contains(key) && !m_suppressedKeys.contains(key);
+    });
+    if (keyboard.leftStick != m_keyboardLeftStick) {
+        m_keyboardLeftStick = keyboard.leftStick;
+        m_gamepadDirty = true;
+        if (!m_gamepadTimer.isActive())
+            m_gamepadTimer.start();
+    }
     if (!m_paused && !m_pausePending && !m_stopping) {
-        for (const auto key: m_heldKeys)
-            if (!m_suppressedKeys.contains(key))
-                buttons |= buttonForKey(key);
+        buttons = keyboard.buttons;
         buttons |= m_remoteButtons;
         buttons |= m_controllerButtons & ~m_suppressedControllerButtons;
     }

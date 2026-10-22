@@ -191,6 +191,7 @@ namespace Core::Gfx {
             void clearDepthSurface(const Surface &s, float depth, unsigned flags, unsigned stencil = 0);
             void drawImage(const Gx2Command &cmd);
             void drawPrimitives(const Gx2Command &cmd, bool indexed, int selectedColor = -1);
+            bool streamOut(const Gx2Command &cmd, bool indexed);
             // The bound fetch shader resolved against the attribute buffers once per draw, so
             // fetching a vertex no longer decodes formats, semantics or memory regions.
             struct AttributeFetch {
@@ -366,15 +367,15 @@ namespace Core::Gfx {
             };
             struct DecodedKey {
                     SurfaceKey surface;
-                    std::uint32_t componentMap{}, imageSize{};
+                    std::uint32_t format{}, componentMap{}, imageSize{};
                     bool blocksOnly{}, floatTexels{};
                     bool operator==(const DecodedKey &) const = default;
             };
             struct DecodedKeyHash {
                     std::size_t operator()(const DecodedKey &key) const
                     {
-                        return SurfaceKeyHash{}(key.surface) ^ std::size_t(key.componentMap) ^ std::size_t(key.imageSize) ^
-                               std::size_t(key.blocksOnly) ^ (std::size_t(key.floatTexels) << 1);
+                        return SurfaceKeyHash{}(key.surface) ^ (std::size_t(key.format) << 16) ^ std::size_t(key.componentMap) ^
+                               std::size_t(key.imageSize) ^ std::size_t(key.blocksOnly) ^ (std::size_t(key.floatTexels) << 1);
                     }
             };
             std::unordered_map<DecodedKey, std::shared_ptr<DecodedTexture>, DecodedKeyHash> m_decodedTextures;
@@ -429,7 +430,7 @@ namespace Core::Gfx {
                     std::vector<std::uint32_t> words;
                     std::shared_ptr<const Latte::Program> declaration;
                     std::shared_ptr<const Latte::VertexShader> vertexShader;
-                    std::map<unsigned, std::shared_ptr<const Latte::VertexShader>> windowedVertexShaders; // by uniform block window
+                    std::map<std::pair<unsigned, Latte::UniformBufferWindows>, std::shared_ptr<const Latte::VertexShader>> windowedVertexShaders;
                     std::optional<bool> colorOnlyEffects, rejectsEveryPixel;
                     // Resource types (two bits each), onlyColorZero, colorExport.
                     std::map<std::tuple<std::uint64_t, bool, unsigned>, std::shared_ptr<const Latte::FragmentShader>> fragmentShaders;
@@ -440,7 +441,8 @@ namespace Core::Gfx {
             [[nodiscard]] static std::shared_ptr<const Latte::Program> declaration(const std::shared_ptr<ShaderProgram> &program);
             [[nodiscard]] std::shared_ptr<const Latte::FragmentShader> fragmentShader(std::span<const Latte::TextureType> resourceTypes,
                                                                                       bool onlyColorZero, unsigned colorExport);
-            [[nodiscard]] std::shared_ptr<const Latte::VertexShader> vertexShader(unsigned bufferWindow = 0);
+            [[nodiscard]] std::shared_ptr<const Latte::VertexShader> vertexShader(unsigned bufferWindow = 0,
+                                                                                  const Latte::UniformBufferWindows &bufferWindows = {});
             [[nodiscard]] bool colorOnlyEffects();
             [[nodiscard]] bool rejectsEveryPixel();
             // Current vertex shader + cache keyed by the guest GX2VertexShader struct address.
@@ -461,6 +463,13 @@ namespace Core::Gfx {
             Latte::FragmentShaderCache m_fragmentShaderCache;
             std::array<std::vector<std::uint32_t>, 16> m_psBlocks{};
             std::array<Attrib, 8> m_attribs{};
+            struct StreamOutBuffer {
+                    std::uint32_t address{}, size{}, context{}, offset{};
+            };
+            std::array<StreamOutBuffer, 4> m_streamOutBuffers{};
+            std::array<std::uint32_t, 4> m_streamOutStrides{};
+            bool m_streamOutEnabled{};
+            std::vector<std::pair<std::uint32_t, std::uint32_t>> m_streamOutWrites;
             std::vector<std::uint32_t> m_fetchLayout;
             std::array<std::uint32_t, 32> m_vertexSemantics{0, 1, 2, 3};
             std::uint32_t m_vertexInputCount{4};
@@ -499,6 +508,9 @@ namespace Core::Gfx {
                     std::vector<std::uint32_t> fetchLayout;
                     std::array<std::vector<std::uint32_t>, 16> vsBlocks{}, psBlocks{};
                     std::array<Attrib, 8> attribs{};
+                    std::array<StreamOutBuffer, 4> streamOutBuffers{};
+                    std::array<std::uint32_t, 4> streamOutStrides{};
+                    bool streamOutEnabled{};
                     std::array<std::uint32_t, 32> vertexSemantics{};
                     std::uint32_t vertexInputCount{4}, pixelInputCount{4};
                     std::array<std::uint32_t, 32> vertexOutputSemantics{}, pixelInputSemantics{};

@@ -169,9 +169,10 @@ namespace Core::Gfx {
     }
 
     LatteVsInterp::Output LatteVsInterp::runVertex(const Program &program, std::span<const std::array<float, 4>> attribs, const float *consts,
-                                                   std::uint32_t constCount, const KcacheFetch &kcache, const TextureSample &textureSample)
+                                                   std::uint32_t constCount, const KcacheFetch &kcache, const TextureSample &textureSample,
+                                                   unsigned vertexIndex)
     {
-        return execute(program, attribs, consts, constCount, kcache, textureSample, false);
+        return execute(program, attribs, consts, constCount, kcache, textureSample, false, {}, {}, 0, vertexIndex);
     }
 
     LatteVsInterp::Output LatteVsInterp::runPixel(const Program &program, std::span<const std::array<float, 4>> inputs, const float *consts,
@@ -184,7 +185,7 @@ namespace Core::Gfx {
     LatteVsInterp::Output LatteVsInterp::execute(const Program &compiled, std::span<const std::array<float, 4>> attribs, const float *consts,
                                                  std::uint32_t constCount, const KcacheFetch &kcache, const TextureSample &textureSample,
                                                  bool pixelStage, const TextureGather &textureGather, const TextureFetch &textureFetch,
-                                                 unsigned colorExport)
+                                                 unsigned colorExport, unsigned vertexIndex)
     {
         const auto &program = compiled.words;
         Output out;
@@ -193,6 +194,8 @@ namespace Core::Gfx {
 
         Regs regs;
         std::memset(regs.gpr, 0, compiled.registerCount * sizeof(regs.gpr[0]));
+        if (!pixelStage)
+            regs.gpr[0][0] = std::bit_cast<float>(vertexIndex);
         bool pred = true;
         bool active = true;
         std::array<int, 4> address{};
@@ -721,6 +724,23 @@ namespace Core::Gfx {
             const std::uint32_t inst = cfInst(w1);
             if (vsDebug())
                 std::fprintf(stderr, "CF%u: inst=0x%02X w0=%08X pred=%d\n", cf, inst, w0, pred);
+            if (inst >= 0x20 && inst <= 0x23) {
+                if (pixelStage || (w0 & ((3u << 13) | (255u << 22))) || ((w1 >> 17) & 15) || (w1 & 0xFFF) > 3)
+                    return {};
+                if (active) {
+                    Output::StreamWrite write;
+                    write.buffer = inst - 0x20;
+                    write.offset = w0 & 0x1FFF;
+                    write.mask = ((w1 >> 12) & 15) & ((1u << ((w1 & 0xFFF) + 1)) - 1);
+                    std::copy_n(regs.gpr[(w0 >> 15) & 127], 4, write.value.begin());
+                    if (out.streamWrites.empty())
+                        out.streamWrites.reserve(4);
+                    out.streamWrites.push_back(write);
+                }
+                if (cfEop(w1))
+                    break;
+                continue;
+            }
             if (inst == CF_EXP || inst == CF_EXP_DONE) {
                 if (!active) {
                     if (pixelStage && ((w0 >> 13) & 3) == 0 &&
@@ -901,6 +921,7 @@ namespace Core::Gfx {
         out.discarded = (skippedPixelExport && !out.colorValid && !out.depthValid) || killed;
         if (killed)
             out.colorValid = out.depthValid = false;
+        out.completed = true;
         return out;
     }
 

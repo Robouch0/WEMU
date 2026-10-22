@@ -1,6 +1,7 @@
 #include "gfx/Gx2Replayer.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <bit>
 #include <chrono>
 #include <cmath>
@@ -578,7 +579,9 @@ namespace Core::Gfx {
 
     Gx2Replayer::SurfaceKey Gx2Replayer::makeSurfaceKey(const Surface &s)
     {
-        return {s.imagePtr, s.width, s.height, s.pitch, s.format, s.tileMode, s.swizzle};
+        // Views of the same image share the renderer's storage representation.
+        // Keeping guest numeric-format flags here hides rendered data from aliasing views.
+        return {s.imagePtr, s.width, s.height, s.pitch, (s.format & 63u) | (unsigned(colorFormat(s.format)) << 16), s.tileMode, s.swizzle};
     }
 
     std::shared_ptr<const void> Gx2Replayer::backingOwner(const SurfaceKey &key) const
@@ -1287,7 +1290,8 @@ namespace Core::Gfx {
         const auto *last = m_mem->hostPtr(surface.imagePtr + surface.imageSize - 1);
         if (!base || !last || std::uintptr_t(last) - std::uintptr_t(base) != surface.imageSize - 1)
             return {};
-        const DecodedKey key{makeSurfaceKey(surface), floating && !blocksOnly ? surface.compMap : 0u, surface.imageSize, blocksOnly, floatTexels};
+        const DecodedKey key{makeSurfaceKey(surface), surface.format, floating && !blocksOnly ? surface.compMap : 0u,
+                             surface.imageSize,       blocksOnly,     floatTexels};
         auto &entry = m_decodedTextures[key];
         if (!entry)
             if (const auto retained = m_retainedDecodedTextures.find(key); retained != m_retainedDecodedTextures.end()) {
@@ -1735,14 +1739,15 @@ namespace Core::Gfx {
         return shader;
     }
 
-    std::shared_ptr<const Latte::VertexShader> Gx2Replayer::vertexShader(const unsigned bufferWindow)
+    std::shared_ptr<const Latte::VertexShader> Gx2Replayer::vertexShader(const unsigned bufferWindow,
+                                                                         const Latte::UniformBufferWindows &bufferWindows)
     {
         if (!m_vsShader)
-            return m_vertexShaderCache.get(vsProgram(), bufferWindow);
-        if (bufferWindow) {
-            auto &shader = m_vsShader->windowedVertexShaders[bufferWindow];
+            return m_vertexShaderCache.get(vsProgram(), bufferWindow, bufferWindows);
+        if (bufferWindow || std::ranges::any_of(bufferWindows, [](unsigned size) { return size != 0; })) {
+            auto &shader = m_vsShader->windowedVertexShaders[{bufferWindow, bufferWindows}];
             if (!shader)
-                shader = m_vertexShaderCache.get(m_vsShader->words, bufferWindow);
+                shader = m_vertexShaderCache.get(m_vsShader->words, bufferWindow, bufferWindows);
             return shader;
         }
         if (!m_vsShader->vertexShader)
@@ -2426,8 +2431,139 @@ namespace Core::Gfx {
         }
     }
 
+    bool Gx2Replayer::streamOut(const Gx2Command &cmd, bool indexed)
+    {
+        if (!m_mem || !m_writableMem || !m_vsShader || cmd.gpr[0] != 1 || indexed || cmd.gpr[3] != 1)
+            return false;
+        const auto count = cmd.gpr[1];
+        if (!count || count > 0x10000)
+            return false;
+        std::array<std::vector<std::uint8_t>, 4> pending;
+        std::array<bool, 4> used{};
+        for (unsigned i = 0; i < 4; ++i) {
+            const auto &buffer = m_streamOutBuffers[i];
+            const auto bytes = std::uint64_t(count) * m_streamOutStrides[i];
+            if (!bytes)
+                continue;
+            if (!buffer.address || buffer.offset > buffer.size || bytes > buffer.size - buffer.offset ||
+                std::uint64_t(buffer.address) + buffer.offset + bytes > 0x100000000ull)
+                return false;
+            const auto *source = m_mem->hostPtr(buffer.address + buffer.offset, bytes);
+            if (!source)
+                return false;
+            pending[i].assign(source, source + bytes);
+        }
+        const auto fetch = prepareAttributeFetch();
+        const auto program = declaration(m_vsShader);
+        const auto constants = [&](unsigned bank, unsigned index, unsigned channel) {
+            const auto offset = std::uint64_t(index) * 4 + channel;
+            return bank < m_vsBlocks.size() && offset < m_vsBlocks[bank].size() ? asFloat(m_vsBlocks[bank][offset]) : 0.f;
+        };
+        const auto sampleVertex = [&](unsigned resource, unsigned sampler, const std::array<float, 4> &coords, std::array<float, 4> &rgba) {
+            if (resource >= m_vertexTextures.size() || sampler >= m_vertexSamplers.size())
+                return false;
+            rgba = sampleTexture(m_vertexTextures[resource], m_vertexSamplers[sampler], coords[0], coords[1], coords[2]);
+            return true;
+        };
+        std::atomic<bool> valid{true};
+        std::atomic<unsigned> usedMask{};
+        const auto shade = [&](unsigned first, unsigned end) {
+            unsigned localUsed{};
+            std::array<std::array<float, 4>, 32> attributes{};
+            for (unsigned vertex = first; vertex < end; ++vertex) {
+                const auto index = vertex + cmd.gpr[2];
+                if (!fetchAttributes(fetch, index, std::span(attributes).first(m_vertexInputCount))) {
+                    valid.store(false, std::memory_order_relaxed);
+                    return;
+                }
+                const auto result = LatteVsInterp::runVertex(*program, std::span(attributes).first(m_vertexInputCount), m_vsRegs, 64, constants,
+                                                             sampleVertex, index);
+                if (!result.completed) {
+                    valid.store(false, std::memory_order_relaxed);
+                    return;
+                }
+                for (const auto &write: result.streamWrites) {
+                    auto &bytes = pending[write.buffer];
+                    localUsed |= 1u << write.buffer;
+                    for (unsigned channel = 0; channel < 4; ++channel) {
+                        if (!(write.mask & (1u << channel)))
+                            continue;
+                        const auto offset = std::uint64_t(vertex) * m_streamOutStrides[write.buffer] + (std::uint64_t(write.offset) + channel) * 4;
+                        if (offset + 4 > bytes.size() || (write.offset + channel + 1) * 4 > m_streamOutStrides[write.buffer]) {
+                            valid.store(false, std::memory_order_relaxed);
+                            return;
+                        }
+                        const auto bits = std::bit_cast<std::uint32_t>(write.value[channel]);
+                        for (unsigned b = 0; b < 4; ++b)
+                            bytes[offset + b] = bits >> (b * 8);
+                    }
+                }
+            }
+            usedMask.fetch_or(localUsed, std::memory_order_relaxed);
+        };
+        bool uniformOnly = true;
+        const auto &words = vsProgram();
+        for (unsigned cf = 0; cf + 1 < words.size(); cf += 2) {
+            const auto w0 = words[cf], w1 = words[cf + 1];
+            if (Latte::isAluClause(w1))
+                continue;
+            const auto op = Latte::cfInst(w1);
+            if (op == Latte::CF_TEX || op == Latte::CF_VTX || op == Latte::CF_VTX_TC) {
+                const auto slots = (((w1 >> 10) & 7) | ((w1 >> 16) & 8)) + 1;
+                for (unsigned slot = 0; slot < slots; ++slot) {
+                    const auto offset = std::uint64_t(w0) * 2 + std::uint64_t(slot) * 4;
+                    uniformOnly &=
+                            offset + 3 < words.size() && bool(Latte::decodeUniformBufferFetch(words[offset], words[offset + 1], words[offset + 2]));
+                }
+            }
+            if (Latte::cfEop(w1) || op == Latte::CF_RETURN)
+                break;
+        }
+        if (uniformOnly && count >= 64) {
+            if (!m_vertexWorkers)
+                m_vertexWorkers = std::make_unique<RasterWorkers>(std::clamp(std::thread::hardware_concurrency() / 2, 1u, 8u));
+            m_vertexWorkers->run(count, shade);
+        } else
+            shade(0, count);
+        if (!valid.load(std::memory_order_relaxed))
+            return false;
+        for (unsigned i = 0; i < 4; ++i)
+            used[i] = (usedMask.load(std::memory_order_relaxed) & (1u << i)) != 0;
+        for (unsigned i = 0; i < 4; ++i) {
+            if (!used[i])
+                continue;
+            auto &buffer = m_streamOutBuffers[i];
+            const auto address = buffer.address + buffer.offset;
+            const auto bytes = static_cast<std::uint32_t>(pending[i].size());
+            std::memcpy(m_writableMem->hostPtr(address, bytes), pending[i].data(), bytes);
+            m_streamOutWrites.emplace_back(address, bytes);
+            buffer.offset += bytes;
+        }
+        return true;
+    }
+
     void Gx2Replayer::drawPrimitives(const Gx2Command &cmd, const bool indexed, int selectedColor)
     {
+        if (m_streamOutEnabled && selectedColor < 0 && !streamOut(cmd, indexed)) {
+            static std::unordered_set<std::uint32_t> reported;
+            if (reported.insert(shaderHash(vsProgram())).second)
+                Utils::Log::error("[STREAMOUT] unsupported draw mode={} count={} shader={:08X}", cmd.gpr[0], cmd.gpr[1], shaderHash(vsProgram()));
+        }
+        if (m_streamOutEnabled && m_trace) {
+            Utils::Log::error("[STREAMOUT] mode={} count={} indexed={} shader={} stride={},{},{},{}", cmd.gpr[0], cmd.gpr[1], indexed,
+                              vsProgram().size(), m_streamOutStrides[0], m_streamOutStrides[1], m_streamOutStrides[2], m_streamOutStrides[3]);
+            for (unsigned i = 0; i < 4; ++i) {
+                const auto &buffer = m_streamOutBuffers[i];
+                Utils::Log::error("[STREAMOUT] buffer={} address={:08X} size={} offset={}", i, buffer.address, buffer.size, buffer.offset);
+            }
+            if (const auto *dir = std::getenv("WEMU_FB_DUMP_DIR")) {
+                const auto path = std::format("{}/streamout_{}_{}.bin", dir, cmd.gpr[1], vsProgram().size());
+                if (FILE *f = std::fopen(path.c_str(), "wb")) {
+                    std::fwrite(vsProgram().data(), 4, vsProgram().size(), f);
+                    std::fclose(f);
+                }
+            }
+        }
         if (!m_rasterizerEnabled)
             return;
         static const bool nativeAuditEnabled = [] {
@@ -2877,7 +3013,8 @@ namespace Core::Gfx {
                 o = cached->output;
                 ++m_vertexShaderCacheHits;
             } else {
-                o = LatteVsInterp::runVertex(*vertexDeclaration, std::span(attribs).first(m_vertexInputCount), m_vsRegs, 64, kcache, vertexSample);
+                o = LatteVsInterp::runVertex(*vertexDeclaration, std::span(attribs).first(m_vertexInputCount), m_vsRegs, 64, kcache, vertexSample,
+                                             vi);
                 ++m_vertexShaderExecutions;
                 if (cached) {
                     cached->index = vi;
@@ -2899,7 +3036,7 @@ namespace Core::Gfx {
                     const auto path = std::format("{}/vs_inputs_draw{:03}.txt", directory, m_stats.draws);
                     if (FILE *file = std::fopen(path.c_str(), "w")) {
                         std::array<std::array<float, 4>, 32> first{};
-                        const bool fetched = fetchAttributes(0, std::span(first).first(m_vertexInputCount));
+                        const bool fetched = fetchAttributes(vi, std::span(first).first(m_vertexInputCount));
                         std::fprintf(file, "%u %u %u\n", vi, m_vertexInputCount, unsigned(fetched));
                         for (const auto &attribute: first)
                             for (const auto value: attribute)
@@ -2913,6 +3050,15 @@ namespace Core::Gfx {
                         }
                         std::fclose(file);
                     }
+                    const auto dumpProgram = [&](const auto &words, const char *stage) {
+                        const auto programPath = std::format("{}/{}_program_draw{:03}.bin", directory, stage, m_stats.draws);
+                        if (FILE *file = std::fopen(programPath.c_str(), "wb")) {
+                            std::fwrite(words.data(), sizeof(std::uint32_t), words.size(), file);
+                            std::fclose(file);
+                        }
+                    };
+                    dumpProgram(vsProgram(), "vs");
+                    dumpProgram(psProgram(), "ps");
                 }
             }
             if (sum) {
@@ -3131,10 +3277,10 @@ namespace Core::Gfx {
                 }
             }
             Utils::Log::error("[GX2TRACE] draw#{} mode={} cnt={} stride={} tex=0x{:08X}(f{:02X},t{},{}x{}) tgt=0x{:08X}({}x{}) "
-                              "v0=({:.2f},{:.2f})uv({:.2f},{:.2f})->({:.0f},{:.0f}) midTexel=({},{},{},{})",
+                              "v0=({:.2f},{:.2f})uv({:.2f},{:.2f})->({:.0f},{:.0f}) midTexel=({},{},{},{}) caller={:08X}",
                               m_stats.draws, mode, count, ab.stride, m_texture.imagePtr, m_texture.format & 0x3F, m_texture.tileMode, m_texture.width,
                               m_texture.height, m_color.imagePtr, m_color.width, m_color.height, tx0, ty0, tu0, tv0, s0x, s0y, mid[0], mid[1], mid[2],
-                              mid[3]);
+                              mid[3], cmd.callerLr);
             if (!psProgram().empty()) {
                 std::size_t psBlockWords = 0;
                 for (const auto &blk: m_psBlocks)
@@ -3673,17 +3819,22 @@ namespace Core::Gfx {
                 });
             };
             if (*candidate && !blocksFit(*candidate)) {
-                // Blocks larger than the default windows (Pikmin 3's shadow casters index two
-                // 544-vector palettes) get a lowering with windows sized for them, in steps of 64.
-                std::size_t largest = 0;
+                // Size each dynamic window independently. Giving every bank the
+                // largest block's size can exceed the shared UBO budget even
+                // when the bound blocks fit together (e.g. 384 and 1024 vectors).
+                Latte::UniformBufferWindows windows{};
                 for (const auto &buffer: candidate->uniformBuffers)
                     if (buffer.bank < m_vsBlocks.size())
-                        largest = std::max(largest, (m_vsBlocks[buffer.bank].size() + 3) / 4);
-                if (largest <= Latte::kUniformVectors)
-                    if (const auto windowed = vertexShader(unsigned((largest + 63) / 64 * 64)); *windowed)
-                        candidate = windowed;
+                        windows[buffer.bank] = std::max(64u, unsigned((m_vsBlocks[buffer.bank].size() + 255) / 256 * 64));
+                if (const auto windowed = vertexShader(0, windows); *windowed)
+                    candidate = windowed;
             }
             const bool buffersSupported = blocksFit(*candidate);
+            if (nativeAudit && !buffersSupported)
+                for (const auto &buffer: candidate->uniformBuffers)
+                    Utils::Log::error("[NATIVEVS_BUFFER] frame={} draw={} bank={} words={} capacity={} static={}", m_presentCount, m_stats.draws,
+                                      buffer.bank, buffer.bank < m_vsBlocks.size() ? m_vsBlocks[buffer.bank].size() : 0, buffer.count,
+                                      candidate->uniforms.size());
             const bool resourcesSupported = std::all_of(candidate->textures.begin(), candidate->textures.end(), [&](const auto &binding) {
                 if (binding.resource >= m_vertexTextures.size() || binding.sampler >= m_vertexSamplers.size())
                     return false;
@@ -4180,8 +4331,8 @@ namespace Core::Gfx {
                             preshadedReady[slot] = 0; // runShader reports the failure as before
                             continue;
                         }
-                        preshaded[slot] =
-                                LatteVsInterp::runVertex(*vertexDeclaration, std::span(attribs).first(m_vertexInputCount), m_vsRegs, 64, kcache);
+                        preshaded[slot] = LatteVsInterp::runVertex(*vertexDeclaration, std::span(attribs).first(m_vertexInputCount), m_vsRegs, 64,
+                                                                   kcache, {}, unique[k]);
                         preshadedReady[slot] = 1;
                     }
                 };
@@ -5377,6 +5528,9 @@ namespace Core::Gfx {
         state.vsBlocks = m_vsBlocks;
         state.psBlocks = m_psBlocks;
         state.attribs = m_attribs;
+        state.streamOutBuffers = m_streamOutBuffers;
+        state.streamOutStrides = m_streamOutStrides;
+        state.streamOutEnabled = m_streamOutEnabled;
         state.vertexSemantics = m_vertexSemantics;
         state.vertexInputCount = m_vertexInputCount;
         state.pixelInputCount = m_pixelInputCount;
@@ -5424,6 +5578,9 @@ namespace Core::Gfx {
         m_vsBlocks = state.vsBlocks;
         m_psBlocks = state.psBlocks;
         m_attribs = state.attribs;
+        m_streamOutBuffers = state.streamOutBuffers;
+        m_streamOutStrides = state.streamOutStrides;
+        m_streamOutEnabled = state.streamOutEnabled;
         m_vertexSemantics = state.vertexSemantics;
         m_vertexInputCount = state.vertexInputCount;
         m_pixelInputCount = state.pixelInputCount;
@@ -5653,6 +5810,7 @@ namespace Core::Gfx {
 
     void Gx2Replayer::replay(const Gx2CommandStream &stream, Core::Memory *mem)
     {
+        m_streamOutWrites.clear();
         Profile::Scope replay(Profile::Stage::Replay);
         m_mem = m_writableMem = mem;
         m_lastDrawColor = {};
@@ -5864,6 +6022,29 @@ namespace Core::Gfx {
                     }
                     break;
                 }
+                case Gx2Cmd::SetStreamOutEnable:
+                    m_streamOutEnabled = cmd.gpr[0] != 0;
+                    break;
+                case Gx2Cmd::SetStreamOutBuffer:
+                    if (cmd.gpr[0] < 4 && cmd.payload.size() == 8) {
+                        auto &buffer = m_streamOutBuffers[cmd.gpr[0]];
+                        buffer.address = cmd.payload[1] ? cmd.payload[1] : cmd.payload[6];
+                        const auto size = cmd.payload[1] ? std::uint64_t(cmd.payload[0]) : std::uint64_t(cmd.payload[4]) * cmd.payload[5];
+                        buffer.size = size <= UINT32_MAX ? static_cast<std::uint32_t>(size) : 0;
+                        buffer.context = cmd.payload[7];
+                    }
+                    break;
+                case Gx2Cmd::SetStreamOutContext:
+                    if (cmd.gpr[0] < 4 && cmd.payload.size() == 8) {
+                        auto &buffer = m_streamOutBuffers[cmd.gpr[0]];
+                        const auto words = cmd.gpr[2] == 1 || !cmd.payload[7] ? 0 : std::byteswap(m_mem->read<unsigned>(cmd.payload[7]));
+                        buffer.offset = words <= UINT32_MAX / 4 ? words * 4 : UINT32_MAX;
+                    }
+                    break;
+                case Gx2Cmd::SaveStreamOutContext:
+                    if (cmd.gpr[0] < 4 && cmd.payload.size() == 8 && cmd.payload[7])
+                        m_writableMem->write<unsigned>(cmd.payload[7], std::byteswap(m_streamOutBuffers[cmd.gpr[0]].offset / 4));
+                    break;
                 case Gx2Cmd::SetAttribBuffer:
                     // GX2SetAttribBuffer(index, size, stride, data)
                     if (cmd.gpr[0] < m_attribs.size())
@@ -5884,6 +6065,8 @@ namespace Core::Gfx {
                     m_vsShader.reset();
                     if (!m_mem || !sh)
                         break;
+                    for (unsigned i = 0; i < 4; ++i)
+                        m_streamOutStrides[i] = m_mem->read<unsigned>(sh + 0x114 + i * 4);
                     const auto semanticCount = std::min(m_mem->read<std::uint32_t>(sh + 0x40), 32u);
                     m_vertexInputCount = semanticCount ? semanticCount : 4;
                     m_vertexSemantics.fill(0xFF);
@@ -5999,14 +6182,32 @@ namespace Core::Gfx {
                     if (cmd.gpr[0] < m_vsBlocks.size() && !cmd.payload.empty()) {
                         auto &block = m_vsBlocks[cmd.gpr[0]];
                         block.resize(cmd.payload.size());
-                        std::ranges::transform(cmd.payload, block.begin(), [](std::uint32_t word) { return std::byteswap(word); });
+                        const auto address = cmd.gpr[2];
+                        const auto bytes = std::uint64_t(block.size()) * 4;
+                        const bool produced = std::any_of(m_streamOutWrites.begin(), m_streamOutWrites.end(), [&](const auto &range) {
+                            return std::uint64_t(address) < std::uint64_t(range.first) + range.second && range.first < std::uint64_t(address) + bytes;
+                        });
+                        if (produced)
+                            for (unsigned i = 0; i < block.size(); ++i)
+                                block[i] = std::byteswap(m_mem->read<std::uint32_t>(address + i * 4));
+                        else
+                            std::ranges::transform(cmd.payload, block.begin(), [](std::uint32_t word) { return std::byteswap(word); });
                     }
                     break;
                 case Gx2Cmd::SetPixelUniformBlock:
                     if (cmd.gpr[0] < m_psBlocks.size() && !cmd.payload.empty()) {
                         auto &block = m_psBlocks[cmd.gpr[0]];
                         block.resize(cmd.payload.size());
-                        std::ranges::transform(cmd.payload, block.begin(), [](std::uint32_t word) { return std::byteswap(word); });
+                        const auto address = cmd.gpr[2];
+                        const auto bytes = std::uint64_t(block.size()) * 4;
+                        const bool produced = std::any_of(m_streamOutWrites.begin(), m_streamOutWrites.end(), [&](const auto &range) {
+                            return std::uint64_t(address) < std::uint64_t(range.first) + range.second && range.first < std::uint64_t(address) + bytes;
+                        });
+                        if (produced)
+                            for (unsigned i = 0; i < block.size(); ++i)
+                                block[i] = std::byteswap(m_mem->read<std::uint32_t>(address + i * 4));
+                        else
+                            std::ranges::transform(cmd.payload, block.begin(), [](std::uint32_t word) { return std::byteswap(word); });
                         if (m_trace)
                             Utils::Log::error("[GX2TRACE] setPsBlock loc={} bytes={} words={}", cmd.gpr[0], cmd.gpr[1], block.size());
                     }

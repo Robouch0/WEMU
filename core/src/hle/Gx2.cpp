@@ -430,7 +430,11 @@ namespace {
         }
         // Uniform data lives in stack/ring memory the game reuses immediately — copy it now.
         std::uint32_t ptr = 0, words = 0;
-        if (type == Core::Gfx::Gx2Cmd::SetVertexUniformReg || type == Core::Gfx::Gx2Cmd::SetPixelUniformReg) {
+        if (type == Core::Gfx::Gx2Cmd::SetStreamOutBuffer || type == Core::Gfx::Gx2Cmd::SetStreamOutContext ||
+            type == Core::Gfx::Gx2Cmd::SaveStreamOutContext) {
+            ptr = c.gpr[1];
+            words = 8;
+        } else if (type == Core::Gfx::Gx2Cmd::SetVertexUniformReg || type == Core::Gfx::Gx2Cmd::SetPixelUniformReg) {
             ptr = c.gpr[2]; // (offset, count, data)
             words = std::min<std::uint32_t>(c.gpr[1], 0x400);
         } else if (type == Core::Gfx::Gx2Cmd::SetVertexUniformBlock || type == Core::Gfx::Gx2Cmd::SetPixelUniformBlock) {
@@ -821,7 +825,12 @@ namespace {
                                                         "SetPolygonControl",
                                                         "SetRasterizerClipControl",
                                                         "SetPolygonOffset",
-                                                        "DrawImage"};
+                                                        "DrawImage",
+                                                        "SetStencilMask",
+                                                        "SetStreamOutEnable",
+                                                        "SetStreamOutBuffer",
+                                                        "SetStreamOutContext",
+                                                        "SaveStreamOutContext"};
             std::size_t idx = 0;
             for (const auto &c: Core::Gfx::gx2Stream().commands()) {
                 const auto ti = static_cast<std::size_t>(c.type);
@@ -1421,7 +1430,6 @@ namespace {
             "GX2QueryEndConditionalRender",
             "GX2SampleBottomGPUCycle",
             "GX2SampleTopGPUCycle",
-            "GX2SaveStreamOutContext",
             "GX2SetAlphaTest",
             "GX2SetAlphaTestReg",
             "GX2SetAlphaToMask",
@@ -1458,9 +1466,6 @@ namespace {
             "GX2SetShaderModeEx",
             "GX2SetStencilMask",
             "GX2SetStencilMaskReg",
-            "GX2SetStreamOutBuffer",
-            "GX2SetStreamOutContext",
-            "GX2SetStreamOutEnable",
             "GX2SetSurfaceSwizzle",
             "GX2SetSwapInterval",
             "GX2SetTargetChannelMasksReg",
@@ -1675,7 +1680,18 @@ void RegisterGx2Functions()
     Core::syscallHandler.registerSyscall("GX2CalcFetchShaderSizeEx", gx2_CalcFetchShaderSizeEx);
     Core::syscallHandler.registerSyscall("GX2InitFetchShaderEx", gx2_InitFetchShaderEx);
     Core::syscallHandler.registerSyscall("GX2CalcColorBufferAuxInfo", gx2_CalcAuxInfoNone);
-    Core::syscallHandler.registerSyscall("GX2CalcDepthBufferHiZInfo", gx2_CalcAuxInfoNone);
+    Core::syscallHandler.registerSyscall("GX2CalcDepthBufferHiZInfo", [](Core::Interpreter &cpu) {
+        const auto buffer = cpu.m_gpr[3];
+        const auto pitch = cpu.m_memory.read<unsigned>(buffer + SURF_PITCH);
+        const auto height = cpu.m_memory.read<unsigned>(buffer + SURF_HEIGHT);
+        const auto slices = cpu.m_memory.read<unsigned>(buffer + 0xC);
+        const auto layout = Core::Gfx::latteHtileLayout(pitch, height, slices);
+        if (cpu.m_gpr[4])
+            cpu.m_memory.write<unsigned>(cpu.m_gpr[4], layout ? layout->imageSize : 0);
+        if (cpu.m_gpr[5])
+            cpu.m_memory.write<unsigned>(cpu.m_gpr[5], layout ? layout->alignment : GX2_BUFFER_ALIGN);
+        cpu.m_gpr[3] = 0;
+    });
     Core::syscallHandler.registerSyscall("GX2GetCurrentDisplayList", gx2_GetCurrentDisplayList);
     Core::syscallHandler.registerSyscall("GX2BeginDisplayListEx", gx2_BeginDisplayListEx);
     Core::syscallHandler.registerSyscall("GX2EndDisplayList", gx2_EndDisplayList);
@@ -1700,6 +1716,10 @@ void RegisterGx2Functions()
     Core::syscallHandler.registerSyscall("GX2SetGeometryShader", gx2_rec<C::SetGeometryShader>);
     Core::syscallHandler.registerSyscall("GX2SetAttribBuffer", gx2_rec<C::SetAttribBuffer>);
     Core::syscallHandler.registerSyscall("GX2SetVertexUniformBlock", gx2_rec<C::SetVertexUniformBlock>);
+    Core::syscallHandler.registerSyscall("GX2SetStreamOutEnable", gx2_rec<C::SetStreamOutEnable>);
+    Core::syscallHandler.registerSyscall("GX2SetStreamOutBuffer", gx2_rec<C::SetStreamOutBuffer>);
+    Core::syscallHandler.registerSyscall("GX2SetStreamOutContext", gx2_rec<C::SetStreamOutContext>);
+    Core::syscallHandler.registerSyscall("GX2SaveStreamOutContext", gx2_rec<C::SaveStreamOutContext>);
     Core::syscallHandler.registerSyscall("GX2SetPixelUniformBlock", gx2_rec<C::SetPixelUniformBlock>);
     Core::syscallHandler.registerSyscall("GX2SetVertexUniformReg", gx2_rec<C::SetVertexUniformReg>);
     Core::syscallHandler.registerSyscall("GX2SetPixelUniformReg", gx2_rec<C::SetPixelUniformReg>);

@@ -143,6 +143,79 @@ TEST(LatteBufferTest, SizedWindowsReachPaletteRowsBeyondTheDefaultBudget)
         EXPECT_EQ(readFloatColor(result->rgba.data() + index * 16), palette[(200 + index) * 3]) << index;
 }
 
+TEST(LatteBufferTest, IndependentlySizedWindowsPreserveUnequalPalettesAndCacheIdentity)
+{
+    using namespace Latte;
+    const auto fetchWord = [](unsigned bank, unsigned channel) {
+        return (2u << 5) | ((128u + bank) << 8) | (1u << 16) | (channel << 24) | (15u << 26);
+    };
+    const std::vector<unsigned> words{
+            4u | (3u << 22) | (1u << 30),
+            8u << 26,
+            5,
+            (CF_VTX << 23) | (1u << 10),
+            60u | (1u << 13) | (2u << 15),
+            (CF_EXP << 23) | 0x688u,
+            (2u << 13) | (3u << 15),
+            (CF_EXP_DONE << 23) | (1u << 21) | 0x688u,
+            0x80000080u,
+            (OP2_MOV << 7) | 16u,
+            fetchWord(10, 0),
+            0x002D1002,
+            0x00080000,
+            0,
+            fetchWord(11, 1),
+            0x002D1003,
+            0x00080000,
+            0,
+    };
+    const auto program = decodeProgram(words);
+    ASSERT_TRUE(program->valid);
+    EXPECT_FALSE(lowerVertexShader(*program, {}, 1024)); // Two maximum-sized windows plus a static reference exceed the budget.
+    UniformBufferWindows windows{};
+    windows[10] = 384;
+    windows[11] = 1024;
+    VertexShaderCache cache;
+    const auto shader = cache.get(words, 0, windows);
+    ASSERT_TRUE(*shader) << shader->error;
+    EXPECT_EQ(cache.get(words, 0, windows), shader);
+    ASSERT_EQ(shader->uniformBuffers.size(), 2u);
+    EXPECT_EQ(shader->uniformBuffers[0].count, 384u);
+    EXPECT_EQ(shader->uniformBuffers[1].count, 1024u);
+    EXPECT_EQ(shader->uniforms.size(), 1409u);
+    auto different = windows;
+    different[11] = 960;
+    EXPECT_NE(cache.get(words, 0, different), shader);
+    different[11] = kUniformVectors;
+    EXPECT_FALSE(lowerVertexShader(*program, {}, 0, different));
+    const std::array<float, 4> position{-.5f, 0, .25f, 1}, color{.25f, .5f, .75f, 1};
+    const LatteVsInterp::KcacheFetch fetch = [&](unsigned bank, unsigned index, unsigned channel) {
+        return bank == 10 && index == 383 ? position[channel] : bank == 11 && index == 1023 ? color[channel] : 0.f;
+    };
+    std::array<RasterDraw::Vertex, 1> vertices{};
+    vertices[0].inputs[0] = {std::bit_cast<float>(383u), std::bit_cast<float>(1023u), 0, 0};
+    const auto reference = LatteVsInterp::runVertex(*program, std::span(vertices[0].inputs).first(1), nullptr, 0, fetch);
+    ASSERT_TRUE(reference.valid);
+    EXPECT_EQ(reference.pos, position);
+    EXPECT_EQ(reference.params[0], color);
+    if (!std::getenv("WEMU_TEST_VULKAN"))
+        return;
+    std::vector<float> uniforms;
+    for (const auto &ref: shader->uniforms)
+        for (unsigned channel = 0; channel < 4; ++channel)
+            uniforms.push_back(fetch(ref.bank, ref.index, channel));
+    const auto fragment = lowerFragmentShader(*decodeProgram({0, (CF_EXP_DONE << 23) | (1u << 21) | 0x688u}));
+    std::vector<std::uint8_t> target(2 * 16);
+    RasterDraw draw{fragment, vertices, {}, {}, target, 2, 1, 2, {0, 0, 2, 1}, 15, {}};
+    draw.colorFormat = ColorFormat::RGBA32Float;
+    draw.topology = RasterDraw::Topology::Points;
+    draw.vertexStage = {shader, {}, uniforms, {0, -1, -1, -1}, {0, 0, 2, 1, 0, 1}};
+    VulkanRasterBackend backend;
+    const auto result = backend.render(draw);
+    ASSERT_TRUE(result) << backend.lastError();
+    EXPECT_EQ(readFloatColor(result->rgba.data()), color);
+}
+
 TEST(LatteBufferTest, UniformFetchRejectsUnsupportedFlagsAndPreservesMaskedChannels)
 {
     auto words = paletteProgram();
