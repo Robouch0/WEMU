@@ -230,12 +230,32 @@ static constexpr std::uint32_t kCoreClockSpeed = 1243125000u; // busSpeed * 5
 namespace Core {
     void advanceGuestFrameClock(Interpreter &cpu)
     {
+        static const bool profile = [] {
+            const auto *setting = std::getenv("WEMU_CLOCK_PROFILE");
+            return setting && setting[0] == '1';
+        }();
+        if (profile) {
+            static const std::uint64_t every = [] {
+                const auto *setting = std::getenv("WEMU_CLOCK_PROFILE_EVERY");
+                if (!setting || *setting < '0' || *setting > '9')
+                    return 120ull;
+                char *end{};
+                const auto value = std::strtoull(setting, &end, 10);
+                return value && !*end ? value : 120ull;
+            }();
+            static const auto started = std::chrono::steady_clock::now();
+            static std::uint64_t presents{};
+            ++presents;
+            if (presents == 1 || presents % every == 0)
+                Utils::Log::error("[CLOCK] presents={} ticks={} wall={:.6f} interval={}", presents, cpu.m_scheduler.now(),
+                                  std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count(), cpu.m_scheduler.swapInterval());
+        }
         static const bool on = []() {
             const char *e = std::getenv("WEMU_FRAME_CLOCK");
             return e && e[0] == '1';
         }();
         if (on)
-            cpu.m_scheduler.waitForFrame(cpu, 1035937ull); // busSpeed / 4 / 60
+            cpu.m_scheduler.waitForSwap(cpu);
     }
 } // namespace Core
 

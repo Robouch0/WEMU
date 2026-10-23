@@ -178,10 +178,12 @@ namespace Core::Gfx {
                     // Dropped whenever pixels change, so an unchanged depth texture skips re-upload
                     // and byte comparison.
                     std::shared_ptr<const void> version;
+                    std::shared_ptr<RasterReadback> snapshot;
                     void changed()
                     {
                         uniform.reset();
                         version.reset();
+                        snapshot.reset();
                     }
                     DepthFormat format{DepthFormat::Float32};
             };
@@ -190,6 +192,14 @@ namespace Core::Gfx {
             // Current versions of an array view's layers when at least one was rendered as its own
             // surface (a pending GPU version); layers never rendered come from guest memory.
             std::vector<std::shared_ptr<RasterReadback>> renderedArrayLayers(const Surface &surface);
+            struct CpuLayerVersion {
+                    std::uint64_t generation{};
+                    std::shared_ptr<const void> owner;
+                    std::shared_ptr<RasterReadback> readback;
+                    std::size_t bytes{};
+            };
+            std::unordered_map<SurfaceKey, CpuLayerVersion, SurfaceKeyHash> m_cpuLayerVersions;
+            std::uint64_t m_cpuLayerVersionBytes{};
             // Level-major pending GPU versions of every (level, slice) of a 2D, array or cube view,
             // or empty unless all of them are still on the GPU.
             std::vector<std::shared_ptr<RasterReadback>> renderedSubresources(const Surface &surface, unsigned levels) const;
@@ -216,6 +226,8 @@ namespace Core::Gfx {
                     bool valid{};
             };
             AttributeFetch prepareAttributeFetch() const;
+            const std::uint8_t *bufferBytes(std::uint32_t address, std::size_t bytes = 1) const;
+            std::vector<Gx2BufferSnapshot> m_bufferSnapshots;
             // Compact inputs and triangle indices of a draw with a GPU vertex program.
             struct DirectVertices {
                     std::vector<std::array<float, 4>> attributes;

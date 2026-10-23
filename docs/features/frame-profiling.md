@@ -29,3 +29,10 @@ exclude Qt texture upload and desktop vsync; displayed-game performance requires
 separate GUI verification. Present FPS measures delivered guest presents; movie
 FPS measures decoded/delivered movie frames. Real-time movie progress must also
 match the media timestamps, even if guest presents repeat each movie image.
+
+`WEMU_CLOCK_PROFILE=1` separately samples guest ticks versus host elapsed time;
+see [emulation timing](emulation-timing.md) for speed and swap-interval diagnosis.
+`WEMU_NATIVE_DIRECT_PROFILE=1` breaks down expensive direct Vulkan draws on the
+CPU, including texture preparation and command recording; see
+[texture layer reuse](texture-layer-reuse.md) for fields and a Balloon Battle
+investigation. Neither diagnostic is a GPU timestamp measurement.

@@ -10,6 +10,7 @@ import csv
 import json
 import os
 from pathlib import Path
+import re
 import socket
 import struct
 import subprocess
@@ -51,8 +52,12 @@ def main():
     parser.add_argument("--seconds", type=float, default=120)
     parser.add_argument("--measure-from", type=int, default=150)
     parser.add_argument("--capture-every", type=int, default=0)
+    parser.add_argument("--capture-from", type=int, default=1)
     parser.add_argument("--language", type=int, default=1)
     parser.add_argument("--profile", action="store_true")
+    parser.add_argument("--clock-profile", action="store_true",
+                        help="Record guest ticks versus host time and summarize the emulation speed ratio")
+    parser.add_argument("--clock-profile-every", type=int, default=120)
     parser.add_argument("--draw-profile-from", type=int)
     parser.add_argument("--h264-trace", action="store_true")
     parser.add_argument("--thread-dump-ms", type=int)
@@ -70,8 +75,10 @@ def main():
     parser.add_argument("--input-script", type=Path, help="JSON list of input states with a frame number; each replaces the previous state")
     parser.add_argument("--env", action="append", default=[], metavar="WEMU_NAME=VALUE")
     args = parser.parse_args()
-    if args.frames < 1 or args.seconds <= 0 or args.measure_from < 1 or args.capture_every < 0:
+    if args.frames < 1 or args.seconds <= 0 or args.measure_from < 1 or args.capture_every < 0 or args.capture_from < 1:
         parser.error("frame/time limits and measurement start must be positive; capture interval must be nonnegative")
+    if args.clock_profile_every < 1:
+        parser.error("clock sample interval must be positive")
     if args.hold_frames < 1 or any(frame < 1 for frame in args.press_at) or not 0 <= args.press_buttons <= 0xFFFFFFFF:
         parser.error("button frame numbers/duration must be positive and the mask must fit 32 bits")
     rpx, core, output = args.rpx.resolve(), args.core.resolve(), args.output.resolve()
@@ -94,6 +101,9 @@ def main():
         environment["WEMU_X64_JIT"] = "1"
     if args.profile:
         environment["WEMU_FRAME_PROFILE"] = "1"
+    if args.clock_profile:
+        environment["WEMU_CLOCK_PROFILE"] = "1"
+        environment["WEMU_CLOCK_PROFILE_EVERY"] = str(args.clock_profile_every)
     if args.h264_trace:
         environment["WEMU_H264_TRACE"] = "1"
     if args.thread_dump_ms is not None:
@@ -180,7 +190,7 @@ def main():
                     send(connection, struct.pack("<IQ", 5, sequence))
                     if controls.get("stop", False):
                         break
-                    if args.capture_every and sequence % args.capture_every == 0:
+                    if args.capture_every and sequence >= args.capture_from and sequence % args.capture_every == 0:
                         save_frame(output / f"frame_{sequence:05}.ppm", width, height, body[52:])
                     if sequence % 50 == 0:
                         print(f"frame={sequence} elapsed={elapsed:.2f}s presents={presents} movies={movies}", flush=True)
@@ -213,12 +223,31 @@ def main():
     measured = [row for row in rows if row[0] >= args.measure_from]
     summary = dict(rpx=str(rpx), cpu=args.cpu, frames=len(rows), exit_code=process.returncode,
                    time_limit_reached=limited, error=error, measure_from=args.measure_from,
-                   core_delivery_only=True)
+                   core_delivery_only=True, unthrottled=environment.get("WEMU_UNTHROTTLED", "").startswith("1"),
+                   frame_clock=environment.get("WEMU_FRAME_CLOCK") == "1")
     if len(measured) > 1:
         first, last = measured[0], measured[-1]
         seconds = last[1] - first[1]
         summary.update(measured_seconds=seconds, present_fps=(last[2] - first[2]) / seconds,
                        movie_fps=(last[3] - first[3]) / seconds, movie_frames=last[3] - first[3])
+    clock_rows = [(int(frame), int(ticks), float(wall), int(interval) if interval else None)
+                  for frame, ticks, wall, interval in re.findall(
+                      r"\[CLOCK\] presents=(\d+) ticks=(\d+) wall=([\d.]+)(?: interval=(\d+))?",
+                      (output / "core.log").read_text(errors="replace"))]
+    if clock_rows:
+        with (output / "clock.csv").open("w", newline="") as csv_file:
+            writer = csv.writer(csv_file)
+            writer.writerow(("presents", "guest_ticks", "wall_seconds", "swap_interval"))
+            writer.writerows(clock_rows)
+        clock_window = [row for row in clock_rows if args.measure_from <= row[0] <= len(rows)]
+        if len(clock_window) > 1:
+            first, last = clock_window[0], clock_window[-1]
+            wall = last[2] - first[2]
+            guest = (last[1] - first[1]) / 62156250
+            if wall > 0:
+                summary["guest_clock"] = dict(first_present=first[0], last_present=last[0],
+                                              wall_seconds=wall, guest_seconds=guest, rate=guest / wall,
+                                              swap_intervals=sorted({row[3] for row in clock_window if row[3] is not None}))
     (output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     print(json.dumps(summary, indent=2))
     return 1 if error or not rows or process.returncode else 0

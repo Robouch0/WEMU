@@ -16,6 +16,7 @@
 #include "cpu/interpreter/Interpreter.hpp"
 #include "cpu/memory/Memory.hpp"
 #include "utils/Diagnostics.hpp"
+#include "utils/DisplayTiming.hpp"
 #include "utils/Logger.hpp"
 
 namespace Core {
@@ -315,6 +316,12 @@ namespace Core {
         const auto deadline = frameDeadline(period);
         if (deadline > m_now)
             sleep(cpu, deadline - m_now);
+    }
+
+    void Scheduler::waitForSwap(Interpreter &cpu)
+    {
+        if (m_swapInterval)
+            waitForFrame(cpu, Timing::swapTicks(m_swapInterval));
     }
 
     void Scheduler::advanceTicks(const std::uint64_t ticks)

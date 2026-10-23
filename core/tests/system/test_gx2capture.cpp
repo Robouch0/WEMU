@@ -3,6 +3,7 @@
 
 #include "TestFixture.hpp"
 #include "cpu/interpreter/SyscallHandler.hpp"
+#include "gfx/Gx2BufferSnapshots.hpp"
 #include "gfx/Gx2CommandStream.hpp"
 #include "gfx/Gx2Replayer.hpp"
 #include "gfx/LatteSurfaceLayout.hpp"
@@ -14,6 +15,7 @@
 #include "hle/Gx2.hpp"
 #include "hle/Libc.hpp"
 #include "hle/MemHeap.hpp"
+#include "utils/DisplayTiming.hpp"
 
 // GX2 command capture: render calls are recorded into the command stream for later Vulkan replay.
 class Gx2CaptureTest : public InstructionTest {
@@ -164,6 +166,9 @@ TEST_F(Gx2CaptureTest, StreamOutWritesMaskedComponentsWithoutRasterizingAndResto
     record("GX2DrawEx", {1, 3, 0, 1});
     record("GX2SaveStreamOutContext", {0, buffer0});
     record("GX2SaveStreamOutContext", {1, buffer1});
+    Gx2BufferSnapshots submitted;
+    submitted.capture(gx2Stream(), cpu->m_memory);
+    cpu->m_memory.write<unsigned>(vertices, std::bit_cast<unsigned>(999.f));
     Gx2Replayer replay;
     replay.replay(gx2Stream(), &cpu->m_memory);
     const auto word = [&](unsigned address) { return std::byteswap(cpu->m_memory.read<unsigned>(address)); };
@@ -176,6 +181,7 @@ TEST_F(Gx2CaptureTest, StreamOutWritesMaskedComponentsWithoutRasterizingAndResto
     }
     EXPECT_EQ(word(context0), 12u);
     EXPECT_EQ(word(context1), 6u);
+    cpu->m_memory.write<unsigned>(vertices, std::bit_cast<unsigned>(1.f));
     gx2Stream().clear();
     record("GX2SetStreamOutContext", {0, buffer0, 0});
     record("GX2SetStreamOutContext", {1, buffer1, 0});
@@ -560,6 +566,96 @@ TEST_F(Gx2CaptureTest, NoopsAreNotCaptured)
     EXPECT_TRUE(Core::Gfx::gx2Stream().empty());
 }
 
+TEST_F(Gx2CaptureTest, SubmittedBuffersKeepTheirBytesWhenTheCpuBuildsTheNextFrame)
+{
+    constexpr std::uint32_t address = 0x28010000;
+    cpu->m_memory.write<std::uint32_t>(address, 0x12345678u);
+    Core::Gfx::Gx2Command bind{Core::Gfx::Gx2Cmd::SetAttribBuffer};
+    bind.gpr = {0, 16, 4, address};
+    Core::Gfx::Gx2CommandStream stream;
+    stream.push(bind);
+    Core::Gfx::Gx2BufferSnapshots cache;
+    cache.capture(stream, cpu->m_memory);
+    ASSERT_EQ(stream.bufferSnapshots().size(), 1u);
+    const auto submitted = stream.bufferSnapshots();
+    const auto hash = stream.contentHash();
+    const auto *old = reinterpret_cast<const std::uint8_t *>(submitted[0].data.data());
+    EXPECT_EQ(old[0], 0x12);
+    cache.capture(stream, cpu->m_memory);
+    EXPECT_EQ(submitted[0].data.data(), std::as_const(stream).bufferSnapshots()[0].data.data());
+    EXPECT_EQ(stream.contentHash(), hash);
+    cpu->m_memory.write<std::uint32_t>(address, 0x98765432u);
+    cache.capture(stream, cpu->m_memory);
+    EXPECT_NE(stream.contentHash(), hash);
+    const auto *next = reinterpret_cast<const std::uint8_t *>(stream.bufferSnapshots()[0].data.data());
+    EXPECT_EQ(next[0], 0x98);
+    EXPECT_EQ(old[0], 0x12);
+}
+
+TEST_F(Gx2CaptureTest, SubmittedBuffersDetectStoresWithoutWriteTracking)
+{
+    constexpr std::uint32_t address = 0x28010000;
+    cpu->m_memory.setUntrackedStores(true);
+    Core::Gfx::Gx2Command bind{Core::Gfx::Gx2Cmd::SetAttribBuffer};
+    bind.gpr = {0, 16, 4, address};
+    Core::Gfx::Gx2CommandStream stream;
+    stream.push(bind);
+    Core::Gfx::Gx2BufferSnapshots cache;
+    cache.capture(stream, cpu->m_memory);
+    auto *bytes = cpu->m_memory.hostPtr(address, 16);
+    bytes[0] = 91;
+    cache.capture(stream, cpu->m_memory);
+    const auto *snapshot = reinterpret_cast<const std::uint8_t *>(stream.bufferSnapshots()[0].data.data());
+    EXPECT_EQ(snapshot[0], 91);
+}
+
+TEST_F(Gx2CaptureTest, SubmittedBuffersRefreshInheritedAndRestoredContextBindings)
+{
+    constexpr std::uint32_t first = 0x28010000, second = 0x28020000;
+    Core::Gfx::Gx2CommandStream stream;
+    Core::Gfx::Gx2Command context{Core::Gfx::Gx2Cmd::SetContextState};
+    context.gpr[0] = 0x1000;
+    stream.push(context);
+    Core::Gfx::Gx2Command bind{Core::Gfx::Gx2Cmd::SetAttribBuffer};
+    bind.gpr = {0, 16, 4, first};
+    stream.push(bind);
+    context.gpr[0] = 0x2000;
+    stream.push(context);
+    bind.gpr[3] = second;
+    stream.push(bind);
+    Core::Gfx::Gx2BufferSnapshots cache;
+    cache.capture(stream, cpu->m_memory);
+    stream.clear();
+    context.gpr[0] = 0x1000;
+    stream.push(context);
+    cpu->m_memory.write<std::uint32_t>(first, 0x55000000u);
+    cache.capture(stream, cpu->m_memory);
+    const auto &snapshots = std::as_const(stream).bufferSnapshots();
+    const auto restored = std::find_if(snapshots.begin(), snapshots.end(), [&](const auto &snapshot) { return snapshot.address == first; });
+    ASSERT_NE(restored, snapshots.end());
+    EXPECT_EQ(reinterpret_cast<const std::uint8_t *>(restored->data.data())[0], 0x55);
+    stream.clear(); // the next frame need not bind the same buffer again
+    cpu->m_memory.write<std::uint32_t>(first, 0x66000000u);
+    cache.capture(stream, cpu->m_memory);
+    ASSERT_EQ(stream.bufferSnapshots().size(), 1u);
+    EXPECT_EQ(reinterpret_cast<const std::uint8_t *>(std::as_const(stream).bufferSnapshots()[0].data.data())[0], 0x66);
+}
+
+TEST_F(Gx2CaptureTest, SubmittedBuffersLeaveStreamOutputForReplayToProduce)
+{
+    constexpr std::uint32_t address = 0x28010000;
+    Core::Gfx::Gx2CommandStream stream;
+    Core::Gfx::Gx2Command bind{Core::Gfx::Gx2Cmd::SetAttribBuffer};
+    bind.gpr = {0, 16, 4, address};
+    stream.push(bind);
+    Core::Gfx::Gx2Command output{Core::Gfx::Gx2Cmd::SetStreamOutBuffer};
+    output.payload = {64, address, 0, 0, 0, 0, 0, 0};
+    stream.push(output);
+    Core::Gfx::Gx2BufferSnapshots cache;
+    cache.capture(stream, cpu->m_memory);
+    EXPECT_TRUE(stream.bufferSnapshots().empty());
+}
+
 class Gx2TimingTest : public Gx2CaptureTest {
     protected:
         static constexpr std::uint64_t PERIOD = 62156250ull / 60;
@@ -600,6 +696,69 @@ TEST_F(Gx2TimingTest, VsyncSleepsUntilBoundaryAndResumesAfterCall)
     ASSERT_TRUE(sch.rescheduleAfterHle(*cpu));
     EXPECT_EQ(sch.currentHandle(), main->osThreadPtr);
     EXPECT_EQ(cpu->m_pc, 0x1234u);
+}
+
+TEST_F(Gx2TimingTest, SwapIntervalUsesMatchingGuestAndHostFrameDurations)
+{
+    auto &sch = cpu->m_scheduler;
+    call("GX2GetSwapInterval");
+    EXPECT_EQ(cpu->m_gpr[3], 1u);
+    cpu->m_gpr[3] = 2;
+    call("GX2SetSwapInterval");
+    call("GX2GetSwapInterval");
+    ASSERT_EQ(cpu->m_gpr[3], 2u);
+    sch.waitForSwap(*cpu);
+    const auto first = sch.now();
+    sch.advanceTicks(5000); // CPU work consumes part of the display interval
+    sch.waitForSwap(*cpu);
+    EXPECT_EQ(sch.now() - first, Core::Timing::timeBaseHz / 30);
+    EXPECT_DOUBLE_EQ(Core::Timing::swapDuration(sch.swapInterval()).count(), 1.0 / 30);
+    cpu->m_gpr[3] = 1;
+    call("GX2SetSwapInterval");
+    sch.waitForSwap(*cpu);
+    EXPECT_EQ(sch.now(), first + Core::Timing::timeBaseHz / 30 + PERIOD);
+    EXPECT_DOUBLE_EQ(Core::Timing::swapDuration(sch.swapInterval()).count(), 1.0 / 60);
+}
+
+TEST_F(Gx2TimingTest, DisabledSwapWaitDoesNotAdvanceClockAndReenablingReanchorsIt)
+{
+    auto &sch = cpu->m_scheduler;
+    sch.waitForSwap(*cpu);
+    cpu->m_gpr[3] = 0;
+    call("GX2SetSwapInterval");
+    const auto before = sch.now();
+    sch.waitForSwap(*cpu);
+    EXPECT_EQ(sch.now(), before);
+    EXPECT_DOUBLE_EQ(Core::Timing::swapDuration(sch.swapInterval()).count(), 0.0);
+    sch.advanceTicks(10 * PERIOD);
+    cpu->m_gpr[3] = 1;
+    call("GX2SetSwapInterval");
+    sch.waitForSwap(*cpu); // first present anchors at the current guest tick
+    sch.waitForSwap(*cpu);
+    EXPECT_EQ(sch.now(), before + 11 * PERIOD);
+}
+
+TEST_F(Gx2TimingTest, SwapIntervalDoesNotChangeVsyncFrequency)
+{
+    cpu->m_gpr[3] = 2;
+    call("GX2SetSwapInterval");
+    call("GX2WaitForVsync");
+    EXPECT_EQ(cpu->m_scheduler.now(), PERIOD);
+    call("GX2GetSwapInterval");
+    EXPECT_EQ(cpu->m_gpr[3], 2u);
+}
+
+TEST_F(Gx2TimingTest, InvalidSwapIntervalsPreserveTheLastValidValue)
+{
+    for (const auto interval: {2u, 20u, 0xFFFFFFFFu}) {
+        cpu->m_gpr[3] = interval;
+        call("GX2SetSwapInterval");
+        call("GX2GetSwapInterval");
+        EXPECT_EQ(cpu->m_gpr[3], 2u);
+    }
+    cpu->m_scheduler = Core::Scheduler{};
+    call("GX2GetSwapInterval");
+    EXPECT_EQ(cpu->m_gpr[3], 1u);
 }
 
 TEST_F(Gx2TimingTest, VsyncWaitersShareTheSameDisplayTick)

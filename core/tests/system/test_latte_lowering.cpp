@@ -1164,7 +1164,7 @@ TEST(VulkanRasterBackendTest, ArrayLayersMixResidentAndCpuVersions)
     std::array<RasterDraw::Vertex, 3> vertices{{{0, 0, {}}, {8, 0, {}}, {0, 8, {}}}};
     std::vector<std::uint8_t> target(4 * 4 * 4);
     RasterDraw draw{shader, vertices, {}, {&texture, 1}, target, 4, 4, 4, {0, 0, 4, 4}, 15, {}};
-    for (const auto layer: {0.f, 1.f}) {
+    for (const auto layer: {0.f, 1.f, 0.f, 1.f}) {
         SCOPED_TRACE(layer);
         for (auto &vertex: vertices)
             vertex.inputs[0] = {.5f, .5f, layer, 0};
@@ -1174,7 +1174,21 @@ TEST(VulkanRasterBackendTest, ArrayLayersMixResidentAndCpuVersions)
         EXPECT_EQ((std::array{result->rgba[0], result->rgba[1], result->rgba[2], result->rgba[3]}),
                   (layer == 0 ? std::array<std::uint8_t, 4>{255, 0, 0, 255} : std::array<std::uint8_t, 4>{0, 255, 0, 255}));
     }
-    EXPECT_EQ(backend.readbackTransfers(), 2u); // the resident layer was copied on the GPU, never read back
+    EXPECT_EQ(backend.readbackTransfers(), 4u); // only consumer results, not the resident source
+    EXPECT_EQ(backend.residentTextureCopies(), 1u);
+    EXPECT_EQ(backend.assembledTextureHits(), 3u);
+    auto blue = green;
+    for (unsigned i = 0; i < 16; ++i) {
+        blue[i * 4 + 1] = 0;
+        blue[i * 4 + 2] = 255;
+    }
+    texture.renderedLayers[1] = std::make_shared<RasterReadback>(blue.size(), [blue] { return blue; });
+    auto changed = backend.renderDeferred(draw);
+    ASSERT_TRUE(changed) << backend.lastError();
+    changed->resolve();
+    EXPECT_EQ((std::array{changed->rgba[0], changed->rgba[1], changed->rgba[2], changed->rgba[3]}), (std::array<std::uint8_t, 4>{0, 0, 255, 255}));
+    EXPECT_EQ(backend.residentTextureCopies(), 2u);
+    EXPECT_EQ(backend.assembledTextureHits(), 3u);
 }
 
 TEST(VulkanRasterBackendTest, RenderedArraysAreAssembledOncePerSourceVersion)

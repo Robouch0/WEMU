@@ -796,29 +796,61 @@ namespace Core::Gfx {
                     rendered = true;
                     continue;
                 }
-                const auto size = backing->pixels.size() * sizeof(float);
-                std::vector<std::uint8_t> bytes(size);
-                std::memcpy(bytes.data(), backing->pixels.data(), size);
-                layers.push_back(std::make_shared<RasterReadback>(size, [bytes = std::move(bytes)] { return bytes; }));
+                if (!backing->snapshot) {
+                    const auto size = backing->pixels.size() * sizeof(float);
+                    std::vector<std::uint8_t> bytes(size);
+                    std::memcpy(bytes.data(), backing->pixels.data(), size);
+                    backing->snapshot = std::make_shared<RasterReadback>(size, [bytes = std::move(bytes)]() mutable { return std::move(bytes); });
+                }
+                layers.push_back(backing->snapshot);
                 continue;
             }
             if (const auto *pending = renderedVersion(*view)) {
                 layers.push_back(*pending);
                 rendered = true;
-            } else if (const auto backing = m_viewBackings.find(key); backing != m_viewBackings.end())
-                layers.push_back(std::make_shared<RasterReadback>(backing->second.size(), [bytes = backing->second] { return bytes; }));
-            else {
+            } else {
+                // CPU-backed layers also have immutable versions. Rebuilding their readback on
+                // every sampler binding copied large arrays hundreds of times in an open scene.
+                const auto snapshot = [&](std::uint64_t generation, std::shared_ptr<const void> owner, auto &&build) {
+                    const auto found = m_cpuLayerVersions.find(key);
+                    if (found != m_cpuLayerVersions.end() && found->second.generation == generation && found->second.owner == owner)
+                        return found->second.readback;
+                    auto bytes = build();
+                    const auto size = bytes.size();
+                    auto readback = std::make_shared<RasterReadback>(size, [bytes = std::move(bytes)]() mutable { return std::move(bytes); });
+                    constexpr std::uint64_t budget = 128ull * 1024 * 1024;
+                    if (size <= budget) {
+                        if (found != m_cpuLayerVersions.end()) {
+                            m_cpuLayerVersionBytes -= found->second.bytes;
+                            m_cpuLayerVersions.erase(found);
+                        }
+                        if (m_cpuLayerVersionBytes + size > budget || m_cpuLayerVersions.size() >= 512) {
+                            m_cpuLayerVersions.clear();
+                            m_cpuLayerVersionBytes = 0;
+                        }
+                        m_cpuLayerVersions.emplace(key, CpuLayerVersion{generation, std::move(owner), readback, size});
+                        m_cpuLayerVersionBytes += size;
+                    }
+                    return readback;
+                };
+                if (const auto backing = m_viewBackings.find(key); backing != m_viewBackings.end()) {
+                    const auto written = m_cpuWrittenSurfaces.find(view->imagePtr);
+                    const auto generation = written == m_cpuWrittenSurfaces.end() ? 0 : written->second.writes;
+                    layers.push_back(snapshot(generation, {}, [&] { return backing->second; }));
+                    continue;
+                }
                 // A layer never rendered keeps its guest data (MK8 renders 17 of a 32-slice
                 // R8 volume array and samples all of them): decode it like an ordinary texture.
                 const auto decoded = view->format == surface.format ? decodedTexture(*view) : nullptr;
                 const auto rowBytes = std::size_t(surface.width) * 4;
                 if (!decoded || decoded->rgba.size() != rowBytes * surface.height || surface.pitch < surface.width)
                     return {};
-                std::vector<std::uint8_t> bytes(std::size_t(surface.pitch) * surface.height * 4);
-                for (unsigned y = 0; y < surface.height; ++y)
-                    std::memcpy(bytes.data() + std::size_t(y) * surface.pitch * 4, decoded->rgba.data() + y * rowBytes, rowBytes);
-                const auto size = bytes.size();
-                layers.push_back(std::make_shared<RasterReadback>(size, [bytes = std::move(bytes)] { return bytes; }));
+                layers.push_back(snapshot(0, decoded, [&] {
+                    std::vector<std::uint8_t> bytes(std::size_t(surface.pitch) * surface.height * 4);
+                    for (unsigned y = 0; y < surface.height; ++y)
+                        std::memcpy(bytes.data() + std::size_t(y) * surface.pitch * 4, decoded->rgba.data() + y * rowBytes, rowBytes);
+                    return bytes;
+                }));
             }
         }
         // Without a GPU layer, layerSnapshot() (CPU-rendered layers, possibly with guest ones) or
@@ -2150,6 +2182,19 @@ namespace Core::Gfx {
         return {px[0], px[1], px[2], px[3]};
     }
 
+    const std::uint8_t *Gx2Replayer::bufferBytes(std::uint32_t address, std::size_t bytes) const
+    {
+        const auto found = std::upper_bound(m_bufferSnapshots.begin(), m_bufferSnapshots.end(), address,
+                                            [](std::uint32_t value, const Gx2BufferSnapshot &snapshot) { return value < snapshot.address; });
+        if (found != m_bufferSnapshots.begin()) {
+            const auto &snapshot = *std::prev(found);
+            const auto offset = std::uint64_t(address) - snapshot.address;
+            if (offset < snapshot.bytes && bytes <= snapshot.bytes - offset)
+                return reinterpret_cast<const std::uint8_t *>(snapshot.data.data()) + offset;
+        }
+        return m_mem ? m_mem->hostPtr(address, bytes) : nullptr;
+    }
+
     Gx2Replayer::AttributeFetch Gx2Replayer::prepareAttributeFetch() const
     {
         AttributeFetch plan;
@@ -2252,7 +2297,7 @@ namespace Core::Gfx {
                 e.count = e.stride ? (binding.size - 1 - e.offset) / e.stride + 1 : ~std::uint64_t{};
                 const std::uint64_t last = std::uint64_t(binding.addr) + e.offset + (e.stride ? (e.count - 1) * e.stride : 0) + extent;
                 if (last <= 0x100000000ull)
-                    e.host = m_mem->hostPtr(binding.addr + e.offset, last - binding.addr - e.offset);
+                    e.host = bufferBytes(binding.addr + e.offset, last - binding.addr - e.offset);
             }
         }
         return plan;
@@ -2279,8 +2324,8 @@ namespace Core::Gfx {
                 if (start >= e.size || std::uint64_t(e.address) + start + extent > 0x100000000ull)
                     return false;
                 const auto addr = e.address + static_cast<std::uint32_t>(start);
-                p = m_mem->hostPtr(addr);
-                if (!p || !m_mem->hostPtr(addr + extent - 1))
+                p = bufferBytes(addr, extent);
+                if (!p)
                     return false;
             }
             std::array<float, 4> value{0, 0, 0, 1};
@@ -2949,7 +2994,7 @@ namespace Core::Gfx {
             const std::uint32_t indexBytes = type == 9 || type == 1 ? 4 : 2;
             // Whole buffers in one mapped range decode without per-index lookups.
             const std::uint8_t *indices = std::uint64_t(cmd.gpr[3]) + std::uint64_t(count) * indexBytes <= 0x100000000ull
-                                                  ? m_mem->hostPtr(cmd.gpr[3], std::size_t(count) * indexBytes)
+                                                  ? bufferBytes(cmd.gpr[3], std::size_t(count) * indexBytes)
                                                   : nullptr;
             if (indices) {
                 // One loop per index type, so the decode vectorizes: every draw decodes all its indices.
@@ -3020,8 +3065,8 @@ namespace Core::Gfx {
             }
             if (!m_fetchLayout.empty())
                 return false;
-            const std::uint8_t *p = m_mem->hostPtr(ab.addr + vi * ab.stride);
-            if (!p || !m_mem->hostPtr(ab.addr + vi * ab.stride + ab.stride - 1))
+            const std::uint8_t *p = bufferBytes(ab.addr + vi * ab.stride, ab.stride);
+            if (!p)
                 return false;
             auto f = [&](std::uint32_t i) {
                 return asFloat(static_cast<std::uint32_t>(p[std::size_t(i) * 4]) << 24 | p[std::size_t(i) * 4 + 1] << 16 |
@@ -3107,8 +3152,8 @@ namespace Core::Gfx {
                 if (!fetchAttributes(attributeFetch, vi, std::span(attribs).first(m_vertexInputCount)))
                     return false;
             } else {
-                const std::uint8_t *p = m_mem->hostPtr(ab.addr + vi * ab.stride);
-                if (!p || !m_mem->hostPtr(ab.addr + vi * ab.stride + ab.stride - 1))
+                const std::uint8_t *p = bufferBytes(ab.addr + vi * ab.stride, ab.stride);
+                if (!p)
                     return false;
                 auto f = [&](std::uint32_t i) {
                     return asFloat(static_cast<std::uint32_t>(p[std::size_t(i) * 4]) << 24 | p[std::size_t(i) * 4 + 1] << 16 |
@@ -4585,7 +4630,7 @@ namespace Core::Gfx {
                     bool bytesMatch = inputsMatch && entry.validatedFrame == m_presentCount;
                     for (std::size_t i = 0; inputsMatch && !bytesMatch && i < directSources.size(); ++i) {
                         const auto &[address, bytes] = entry.sources[i];
-                        const auto *current = m_mem->hostPtr(address, bytes.size());
+                        const auto *current = bufferBytes(address, bytes.size());
                         if (address != directSources[i].first || bytes.size() != directSources[i].second || !current ||
                             std::memcmp(current, bytes.data(), bytes.size()) != 0)
                             break;
@@ -4654,7 +4699,7 @@ namespace Core::Gfx {
                 entry.attributeStride = attributeStride;
                 entry.mode = mode;
                 for (const auto &[address, size]: directSources) {
-                    const auto *bytes = m_mem->hostPtr(address, size);
+                    const auto *bytes = bufferBytes(address, size);
                     entry.sources.emplace_back(address, std::vector<std::uint8_t>(bytes, bytes + size));
                 }
                 entry.vertices = directArrays =
@@ -6031,6 +6076,7 @@ namespace Core::Gfx {
         m_streamOutWrites.clear();
         Profile::Scope replay(Profile::Stage::Replay);
         m_mem = m_writableMem = mem;
+        m_bufferSnapshots = stream.bufferSnapshots();
         m_lastDrawColor = {};
         // GPU path: open a fresh GPU frame; draws append triangles, the present writes back to m_fb.
         if (m_gpuRenderer) {

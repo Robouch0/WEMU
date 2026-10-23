@@ -1095,6 +1095,7 @@ void main() {
                         // Levels x layers for direct draws: resident images, or null with the layer's CPU
                         // bytes (rows of layerPitch bytes) in layerBytes.
                         std::vector<std::shared_ptr<ColorImage>> renderedLayers;
+                        std::vector<std::shared_ptr<const void>> layerOwners; // immutable CPU readback versions, parallel to renderedLayers
                         std::vector<std::span<const std::uint8_t>> layerBytes;
                         std::size_t layerPitch{};
                         unsigned renderedLevels{1};
@@ -2639,6 +2640,16 @@ void main() {
 
                 RasterResult render(const Inputs &in)
                 {
+                    static const bool profile = [] {
+                        const auto *setting = std::getenv("WEMU_NATIVE_DIRECT_PROFILE");
+                        return setting && setting[0] == '1';
+                    }();
+                    std::array<std::chrono::steady_clock::time_point, 10> marks;
+                    const auto mark = [&](unsigned slot) {
+                        if (profile)
+                            marks[slot] = std::chrono::steady_clock::now();
+                    };
+                    mark(0);
                     const auto &draw = in.draw;
                     const bool hasColor = !depthOnly(draw);
                     const bool colorInPlace = hasColor && in.targetSource && in.targetSource->direct && in.supersedes;
@@ -2730,7 +2741,9 @@ void main() {
                                     !(vertexOwner && !residentVertices);
                     for (std::size_t i = 0; passFree && i < sources.size(); ++i)
                         passFree = sources[i] == Source::Shared && shared[i];
+                    mark(1);
                     auto &segment = open(need);
+                    mark(2);
                     const auto command = segment.command;
                     const auto extent = attachmentExtent(draw);
                     const bool continuesPass = passFree && openPass && openPass->color == (hasColor ? in.targetSource.get() : nullptr) &&
@@ -2777,6 +2790,7 @@ void main() {
                         segment.retained.push_back(residentVertices);
 
                     // Textures first: their transfers must precede the render pass.
+                    mark(3);
                     std::vector<VkDescriptorImageInfo> imageInfos(in.textures.size());
                     std::vector<std::shared_ptr<ColorImage>> sampled;
                     for (std::size_t i = 0; i < in.textures.size(); ++i) {
@@ -2806,7 +2820,8 @@ void main() {
                                 if (assembled)
                                     if (const auto found = assembledTextures.find(*assembled);
                                         found != assembledTextures.end() &&
-                                        std::ranges::none_of(found->second.sources, [](const auto &source) { return source.expired(); })) {
+                                        std::ranges::none_of(found->second.sources, [](const auto &source) { return source.expired(); }) &&
+                                        std::ranges::none_of(found->second.cpuSources, [](const auto &source) { return source.expired(); })) {
                                         found->second.used = ++assembledClock;
                                         imageInfos[i].imageView = found->second.image->view;
                                         segment.retained.push_back(found->second.image);
@@ -2834,9 +2849,15 @@ void main() {
                                     }
                                     auto &entry = assembledTextures[*assembled];
                                     entry.sources.clear();
+                                    entry.cpuSources.clear();
                                     if (texture.rendered)
                                         entry.sources.push_back(texture.rendered);
-                                    entry.sources.insert(entry.sources.end(), texture.renderedLayers.begin(), texture.renderedLayers.end());
+                                    for (const auto &layer: texture.renderedLayers)
+                                        if (layer)
+                                            entry.sources.push_back(layer);
+                                    for (const auto &owner: texture.layerOwners)
+                                        if (owner)
+                                            entry.cpuSources.push_back(owner);
                                     entry.image = scratch;
                                     entry.used = ++assembledClock;
                                 }
@@ -2855,6 +2876,7 @@ void main() {
                     }
 
                     // Attachments: render in place, or start a direct image from a copy or CPU bytes.
+                    mark(4);
                     std::shared_ptr<ColorImage> color, depth;
                     VkImageLayout colorLayout = VK_IMAGE_LAYOUT_UNDEFINED, depthLayout = VK_IMAGE_LAYOUT_UNDEFINED;
                     if (hasColor) {
@@ -2917,6 +2939,7 @@ void main() {
                             depthLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
                         }
                     }
+                    mark(5);
                     std::vector<VkImageMemoryBarrier> barriers;
                     const auto transition = [&](const ColorImage &image, bool depthAspect, VkImageLayout from, VkImageLayout to) {
                         VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
@@ -2961,6 +2984,7 @@ void main() {
                     }
                     const auto &pipeline = context.pipelineFor(key, in.vertex, in.fragment, draw, textureBindings, pass);
 
+                    mark(6);
                     const auto descriptor = allocateDescriptor(segment, pipeline.setLayout);
                     std::vector<VkWriteDescriptorSet> writes;
                     const VkDescriptorBufferInfo constantsInfo{segment.buffer, constantsOffset, sizeof(in.constants)};
@@ -2984,6 +3008,7 @@ void main() {
                         writes.push_back(write);
                     }
                     vkUpdateDescriptorSets(device, unsigned(writes.size()), writes.data(), 0, nullptr);
+                    mark(7);
 
                     if (continuesPass)
                         ++mergedDraws;
@@ -3052,6 +3077,21 @@ void main() {
                         vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0,
                                              nullptr, unsigned(barriers.size()), barriers.data());
 
+                    mark(8);
+                    const auto report = [&] {
+                        mark(9);
+                        if (!profile)
+                            return;
+                        const auto us = [&](unsigned first, unsigned last) {
+                            return std::chrono::duration_cast<std::chrono::microseconds>(marks[last] - marks[first]).count();
+                        };
+                        if (us(0, 9) >= 100)
+                            Utils::Log::error("[NATIVE_DIRECT_PROFILE] ps={:016X} total_us={} setup_us={} open_us={} uploads_us={} textures_us={} "
+                                              "attachments_us={} pipeline_us={} descriptors_us={} commands_us={} tickets_us={} textures={} "
+                                              "sampled={} merged={}",
+                                              draw.shader.sourceHash, us(0, 9), us(0, 1), us(1, 2), us(2, 3), us(3, 4), us(4, 5), us(5, 6), us(6, 7),
+                                              us(7, 8), us(8, 9), in.textures.size(), sampled.size(), continuesPass);
+                    };
                     RasterResult result;
                     if (depth) {
                         depth->initialized = true;
@@ -3092,6 +3132,7 @@ void main() {
                         result.readback = draw.renderedTarget;
                         if (!result.readback)
                             result.unchangedTarget = draw.target.size();
+                        report();
                         return result;
                     }
                     color->initialized = true;
@@ -3115,6 +3156,7 @@ void main() {
                                 return self->read(image, false, width, height, pitch, padding);
                             },
                             std::make_shared<NativeImage>(color, draw.pitch, padding));
+                    report();
                     return result;
                 }
 
@@ -3645,8 +3687,8 @@ void main() {
                     return result;
                 }
 
-                // Shape plus (image, version) of every rendered source, or nothing when a layer comes
-                // from CPU bytes, whose buffers can change without a version.
+                // Shape and GPU image versions or immutable CPU readback identities. Raw CPU
+                // bytes without an owner cannot establish an unchanged assembled image.
                 static std::optional<std::vector<std::uint64_t>> assembledKey(const DrawResources::Texture &texture)
                 {
                     std::vector<std::uint64_t> key{texture.width,
@@ -3660,10 +3702,14 @@ void main() {
                                                            unsigned(texture.components.b) << 16 | std::uint64_t(texture.components.a) << 24};
                     if (texture.rendered)
                         key.insert(key.end(), {reinterpret_cast<std::uintptr_t>(texture.rendered.get()), texture.rendered->version});
-                    for (const auto &layer: texture.renderedLayers) {
-                        if (!layer)
+                    for (std::size_t i = 0; i < texture.renderedLayers.size(); ++i) {
+                        const auto &layer = texture.renderedLayers[i];
+                        if (layer)
+                            key.insert(key.end(), {1, reinterpret_cast<std::uintptr_t>(layer.get()), layer->version});
+                        else if (i < texture.layerOwners.size() && texture.layerOwners[i])
+                            key.insert(key.end(), {2, reinterpret_cast<std::uintptr_t>(texture.layerOwners[i].get()), 0});
+                        else
                             return std::nullopt;
-                        key.insert(key.end(), {reinterpret_cast<std::uintptr_t>(layer.get()), layer->version});
                     }
                     return key;
                 }
@@ -3853,7 +3899,7 @@ void main() {
                 {
                     if (depth.rendered)
                         if (const auto native = std::dynamic_pointer_cast<const NativeImage>(depth.rendered->image());
-                            native && native->storage->format == depthVkFormat(depth.format))
+                            native && native->storage->format == directDepthFormat(depth.format))
                             return native->padding;
                     if (depth.pitch == depth.width)
                         return {};
@@ -3971,6 +4017,7 @@ void main() {
                 std::map<std::array<std::uint64_t, 10>, std::vector<std::shared_ptr<ScratchTexture>>> scratchTextures;
                 struct AssembledTexture {
                         std::vector<std::weak_ptr<ColorImage>> sources; // expired: the key's addresses may be reused
+                        std::vector<std::weak_ptr<const void>> cpuSources;
                         std::shared_ptr<ScratchTexture> image;
                         std::uint64_t used{};
                 };
@@ -4716,6 +4763,12 @@ void main() {
             }
             uploaded.rendered = resident;
             uploaded.renderedLayers = std::move(residentLayers);
+            if (!uploaded.renderedLayers.empty()) {
+                uploaded.layerOwners.resize(uploaded.renderedLayers.size());
+                for (std::size_t i = 0; i < uploaded.layerOwners.size(); ++i)
+                    if (!uploaded.renderedLayers[i])
+                        uploaded.layerOwners[i] = texture.renderedLayers[i];
+            }
             uploaded.layerBytes = std::move(layerBytes);
             uploaded.layerPitch = std::size_t(texture.unorm8Pitch) * (texture.renderedDepth ? 4u : colorElementBytes(texture.renderedFormat));
             uploaded.renderedLevels = uploaded.renderedLayers.empty() ? 1u : texture.renderedLevels;
@@ -4845,9 +4898,21 @@ void main() {
         if (direct) {
             if (!m_impl->direct)
                 m_impl->direct = std::make_shared<DirectRenderer>(m_impl->context);
+            static const bool profile = [] {
+                const auto *setting = std::getenv("WEMU_NATIVE_DIRECT_PROFILE");
+                return setting && setting[0] == '1';
+            }();
+            const auto started = profile ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
             auto result =
                     m_impl->direct->render({draw, *vertex, *fragment, constants, vertexConstants, constantFloats, vertexConstantFloats, textures,
                                             targetSource, targetSnapshot, depthSource, overwriteTarget, draw.supersedesTarget, targetClear});
+            if (profile) {
+                const auto end = std::chrono::steady_clock::now();
+                const auto us = [](auto first, auto last) { return std::chrono::duration_cast<std::chrono::microseconds>(last - first).count(); };
+                if (us(t0, end) >= 100)
+                    Utils::Log::error("[NATIVE_BACKEND_PROFILE] ps={:016X} total_us={} modules_us={} context_us={} inputs_us={} direct_us={}",
+                                      draw.shader.sourceHash, us(t0, end), us(t0, t1), us(t1, t2), us(t2, started), us(started, end));
+            }
             ++m_impl->completed;
             return result;
         }

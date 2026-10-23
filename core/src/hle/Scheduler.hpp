@@ -81,6 +81,16 @@ namespace Core {
             void advanceTicks(std::uint64_t ticks);
             void advanceFrame(std::uint64_t period);
             void waitForFrame(Interpreter &cpu, std::uint64_t period);
+            void waitForSwap(Interpreter &cpu);
+            void setSwapInterval(std::uint32_t interval)
+            {
+                if (interval < 20) {
+                    if (!m_swapInterval && interval)
+                        m_frameClockStarted = false;
+                    m_swapInterval = interval;
+                }
+            }
+            [[nodiscard]] std::uint32_t swapInterval() const { return m_swapInterval; }
 
             // OSMutex / OSFastMutex / spinlock backing: recursive, owner = OSThread handle, keyed
             // by the guest address of the lock object. mutexLock returns true when the lock is
@@ -146,6 +156,7 @@ namespace Core {
             std::uint64_t m_now{0};
             std::uint64_t m_lastFrameTick{0};
             bool m_frameClockStarted{false};
+            std::uint32_t m_swapInterval{1};
             std::uint32_t m_mainHandle{0xEFF00000}; // synthetic handle for the implicit main thread
     };
 } // namespace Core

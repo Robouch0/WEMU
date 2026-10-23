@@ -16,6 +16,7 @@
 #include "cpu/interpreter/Interpreter.hpp"
 #include "cpu/interpreter/SyscallHandler.hpp"
 #include "cpu/memory/Memory.hpp"
+#include "gfx/Gx2BufferSnapshots.hpp"
 #include "gfx/Gx2CommandStream.hpp"
 #include "gfx/Gx2Replayer.hpp"
 #include "gfx/LatteProgram.hpp"
@@ -24,6 +25,7 @@
 #include "gfx/SurfaceLayout.hpp"
 #include "gfx/VulkanRasterBackend.hpp"
 #include "utils/Diagnostics.hpp"
+#include "utils/DisplayTiming.hpp"
 #include "utils/FrameProfiler.hpp"
 #include "utils/Logger.hpp"
 
@@ -117,6 +119,7 @@ namespace {
             bool nativeInitialized{};
             // Asynchronous replay: the frame owned by the worker while it is in flight.
             std::unique_ptr<ReplayWorker> worker;
+            std::unique_ptr<Core::Gfx::Gx2BufferSnapshots> bufferSnapshots;
             Core::Gfx::Gx2CommandStream frame;
     };
     HostReplayState &hostReplayState()
@@ -529,7 +532,7 @@ namespace {
     std::uint32_t g_swapCount = 0;
     std::uint32_t g_flipCount = 0;
     std::uint64_t g_lastFlip = 0;
-    constexpr std::uint64_t kVsyncPeriod = 62156250ull / 60;
+    constexpr std::uint64_t kVsyncPeriod = Core::Timing::swapTicks(1);
 
     std::uint64_t lastVsync(const Core::Interpreter &cpu)
     {
@@ -542,6 +545,26 @@ namespace {
     void gx2_swap(Core::Interpreter &cpu)
     {
         recordCmd(cpu, Core::Gfx::Gx2Cmd::SwapScanBuffers);
+        auto &frameHost = hostReplayState();
+        static const bool asyncReplay = [] {
+            const char *e = std::getenv("WEMU_ASYNC_REPLAY");
+            return !e || e[0] != '0';
+        }();
+        if (asyncReplay) {
+            if (!frameHost.worker)
+                frameHost.worker = std::make_unique<ReplayWorker>();
+            Core::Profile::Scope waiting(Core::Profile::Stage::GpuWait);
+            frameHost.worker->wait();
+        }
+        static const bool snapshotBuffers = [] {
+            const auto *setting = std::getenv("WEMU_FRAME_BUFFER_SNAPSHOTS");
+            return !setting || setting[0] != '0';
+        }();
+        if (snapshotBuffers) {
+            if (!frameHost.bufferSnapshots)
+                frameHost.bufferSnapshots = std::make_unique<Core::Gfx::Gx2BufferSnapshots>();
+            frameHost.bufferSnapshots->capture(Core::Gfx::gx2Stream(), cpu.m_memory);
+        }
         // Uniform BLOCKS are bound before the game fills them (the GPU reads at submission), so
         // their call-time payload snapshot is premature — refresh from memory now, at frame end.
         static const bool regProbe = std::getenv("WEMU_GX2_REG_PROBE") != nullptr;
@@ -882,22 +905,13 @@ namespace {
         // while the guest built this one, is finished and presented here, and this frame goes
         // to the replay thread: presentation trails the guest by one frame. Replay only reads
         // guest memory (uniform blocks were snapshotted above), like the GPU it stands for.
-        static const bool asyncReplay = [] {
-            const char *e = std::getenv("WEMU_ASYNC_REPLAY");
-            return !e || e[0] != '0';
-        }();
-        if (asyncReplay) {
-            if (!host.worker)
-                host.worker = std::make_unique<ReplayWorker>();
-            Core::Profile::Scope waiting(Core::Profile::Stage::GpuWait);
-            host.worker->wait();
-        }
         const auto present = [&] {
             const bool drcShown = cpu.m_renderer && cpu.m_renderer->drc_wanted();
             if (drcShown && !replayer.drcFramebuffer().empty())
                 cpu.m_renderer->flip_drc(replayer.drcFramebuffer().data(), Core::Gfx::Gx2Replayer::kDrcWidth, Core::Gfx::Gx2Replayer::kDrcHeight);
             if (cpu.m_renderer)
-                cpu.m_renderer->flip_tv(replayer.framebuffer().data(), Core::Gfx::Gx2Replayer::kWidth, Core::Gfx::Gx2Replayer::kHeight);
+                cpu.m_renderer->flip_tv(replayer.framebuffer().data(), Core::Gfx::Gx2Replayer::kWidth, Core::Gfx::Gx2Replayer::kHeight,
+                                        cpu.m_scheduler.swapInterval());
         };
         if (asyncReplay && s_haveFrame)
             present();
@@ -1467,7 +1481,6 @@ namespace {
             "GX2SetStencilMask",
             "GX2SetStencilMaskReg",
             "GX2SetSurfaceSwizzle",
-            "GX2SetSwapInterval",
             "GX2SetTargetChannelMasksReg",
             "GX2SetTessellation",
             "GX2SetTVBuffer",
@@ -1502,6 +1515,7 @@ void ReleaseGx2HostResources() noexcept
     auto &host = hostReplayState();
     host.bufferCalls.clear();
     host.worker.reset(); // finish the frame in flight before its replayer goes away
+    host.bufferSnapshots.reset();
     host.replayer.reset();
     host.frame.clear();
     host.nativeInitialized = false;
@@ -1917,6 +1931,11 @@ void RegisterGx2Functions()
     Core::syscallHandler.registerSyscall("GX2CopyColorBufferToScanBuffer", gx2_rec<C::CopyColorBufferToScanBuffer>);
     Core::syscallHandler.registerSyscall("GX2SwapScanBuffers", gx2_swap); // replays + presents the frame
     Core::syscallHandler.registerSyscall("GX2GetSwapStatus", gx2_GetSwapStatus);
+    Core::syscallHandler.registerSyscall("GX2SetSwapInterval", [](Core::Interpreter &cpu) {
+        cpu.m_scheduler.setSwapInterval(cpu.m_gpr[3]);
+        cpu.m_gpr[3] = 0;
+    });
+    Core::syscallHandler.registerSyscall("GX2GetSwapInterval", [](Core::Interpreter &cpu) { cpu.m_gpr[3] = cpu.m_scheduler.swapInterval(); });
     Core::syscallHandler.registerSyscall("GX2WaitForVsync", gx2_WaitForVsync);
     Core::syscallHandler.registerSyscall("GX2WaitForFlip", gx2_WaitForFlip);
 }
