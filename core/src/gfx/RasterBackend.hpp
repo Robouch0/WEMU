@@ -17,7 +17,7 @@
 #include "gfx/TextureSampler.hpp"
 
 namespace Core::Gfx {
-    enum class TextureBlockFormat { None, BC1, BC4, BC4Signed, BC5Signed, BC2, BC3 };
+    enum class TextureBlockFormat { None, BC1, BC4, BC4Signed, BC5Signed, BC2, BC3, BC5 };
     class RasterReadback;
     // Backend-specific, versioned image identity. Never exposes a borrowed handle.
     struct RasterImage {
@@ -91,9 +91,10 @@ namespace Core::Gfx {
                     struct MipLevel {
                             unsigned width{}, height{};
                             std::span<const float> rgba32; // tightly packed, layer-major, component-mapped
+                            std::span<const std::uint8_t> blocks; // same compressed format as the base level
                     };
                     // Additional levels after the base snapshot. Multilevel uploads
-                    // currently use component-mapped RGBA32F for every level.
+                    // use either component-mapped RGBA32F or compressed blocks for every level.
                     std::span<const MipLevel> mips;
                     // Identity/lifetime of immutable snapshot bytes. A changed image
                     // must supply a new owner; permits sharing uploads across draws.

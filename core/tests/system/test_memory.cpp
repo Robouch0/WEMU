@@ -178,3 +178,29 @@ TEST(MemoryTest, WriteGenerationsTrackStoresIntoWatchedPages)
     memory.setUntrackedStores(true);
     EXPECT_FALSE(memory.writeGeneration(texture, 0x1000));
 }
+
+TEST(MemoryTest, WatchedRangesPreserveHolesAndExactBitmapWordBoundaries)
+{
+    Core::Memory memory(0x100000);
+    constexpr auto pageBytes = 0x1000u;
+    constexpr auto first = app + 63 * pageBytes;
+    memory.watchWrites(first, pageBytes);
+    memory.watchWrites(first + 2 * pageBytes, 65 * pageBytes);
+    EXPECT_FALSE(memory.writeGeneration(first, 67 * pageBytes)); // page 64 is still a hole
+    EXPECT_TRUE(memory.writeGeneration(first + 2 * pageBytes, 65 * pageBytes));
+    memory.watchWrites(first + pageBytes, pageBytes);
+    EXPECT_EQ(memory.slowPages()[0].load(), std::uint64_t{1} << 63);
+    EXPECT_EQ(memory.slowPages()[1].load(), ~std::uint64_t{0});
+    EXPECT_EQ(memory.slowPages()[2].load(), 3u);
+    const auto before = memory.writeGeneration(first, 67 * pageBytes);
+    ASSERT_TRUE(before);
+    for (unsigned page = 0; page < 67; ++page)
+        memory.write<std::uint32_t>(first + page * pageBytes, page);
+    EXPECT_EQ(memory.writeGeneration(first, 67 * pageBytes), *before + 67);
+    // Neighboring pages must remain unwatched and must not affect the range.
+    memory.write<std::uint32_t>(first - pageBytes, 1);
+    memory.write<std::uint32_t>(first + 67 * pageBytes, 2);
+    EXPECT_EQ(memory.writeGeneration(first, 67 * pageBytes), *before + 67);
+    EXPECT_FALSE(memory.writeGeneration(first - pageBytes, pageBytes));
+    EXPECT_FALSE(memory.writeGeneration(first + 67 * pageBytes, pageBytes));
+}

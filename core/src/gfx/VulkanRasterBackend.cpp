@@ -32,6 +32,20 @@ namespace Core::Gfx {
             if (result != VK_SUCCESS)
                 throw std::runtime_error(std::string(operation) + ": Vulkan result " + std::to_string(result));
         }
+        // The lowerer bounds all C-register reads. Keep the fixed UBO layout,
+        // copying its live register prefix and sampler/uniform tail only.
+        void copyStageConstants(void *destination, const std::array<float, Latte::kStageConstantFloats> &values, std::size_t definedFloats,
+                                unsigned registers)
+        {
+            constexpr std::size_t samplerStart = std::size_t{256} * 4;
+            const auto prefix = std::min({definedFloats, std::size_t(registers) * 4, samplerStart});
+            if (prefix)
+                std::memcpy(destination, values.data(), prefix * sizeof(float));
+            if (definedFloats > samplerStart)
+                std::memcpy(static_cast<std::byte *>(destination) + samplerStart * sizeof(float), values.data() + samplerStart,
+                            (definedFloats - samplerStart) * sizeof(float));
+        }
+
         bool depthOnly(const RasterDraw &draw) { return draw.depth.test && !draw.channelMask; }
         std::size_t vertexCount(const RasterDraw &draw)
         {
@@ -193,6 +207,8 @@ namespace Core::Gfx {
                     return VK_FORMAT_BC4_UNORM_BLOCK;
                 case TextureBlockFormat::BC4Signed:
                     return VK_FORMAT_BC4_SNORM_BLOCK;
+                case TextureBlockFormat::BC5:
+                    return VK_FORMAT_BC5_UNORM_BLOCK;
                 case TextureBlockFormat::BC5Signed:
                     return VK_FORMAT_BC5_SNORM_BLOCK;
                 default:
@@ -201,7 +217,8 @@ namespace Core::Gfx {
         }
         unsigned blockElementBytes(VkFormat format)
         {
-            if (format == VK_FORMAT_BC5_SNORM_BLOCK || format == VK_FORMAT_BC2_UNORM_BLOCK || format == VK_FORMAT_BC3_UNORM_BLOCK)
+            if (format == VK_FORMAT_BC5_UNORM_BLOCK || format == VK_FORMAT_BC5_SNORM_BLOCK || format == VK_FORMAT_BC2_UNORM_BLOCK ||
+                format == VK_FORMAT_BC3_UNORM_BLOCK)
                 return 16;
             return format == VK_FORMAT_BC1_RGBA_UNORM_BLOCK || format == VK_FORMAT_BC4_UNORM_BLOCK || format == VK_FORMAT_BC4_SNORM_BLOCK ? 8 : 0;
         }
@@ -265,9 +282,29 @@ namespace Core::Gfx {
                 }
         };
         struct KeyWordsHash {
-                std::size_t operator()(const std::vector<std::uint64_t> &words) const noexcept
+                using is_transparent = void;
+                std::size_t operator()(std::span<const std::uint64_t> words) const noexcept
                 {
                     return std::hash<std::string_view>{}({reinterpret_cast<const char *>(words.data()), words.size() * sizeof(words[0])});
+                }
+        };
+
+        struct KeyWordsEqual {
+                using is_transparent = void;
+                bool operator()(std::span<const std::uint64_t> a, std::span<const std::uint64_t> b) const noexcept
+                {
+                    return std::ranges::equal(a, b);
+                }
+        };
+        constexpr std::size_t kMaxTextureMips = 13;
+        struct TextureCacheKey {
+                std::array<std::uint64_t, 14 + kMaxTextureMips * 2> storage{};
+                std::size_t count{14};
+                std::span<const std::uint64_t> words() const { return std::span(storage).first(count); }
+                std::vector<std::uint64_t> owned() const
+                {
+                    const auto view = words();
+                    return {view.begin(), view.end()};
                 }
         };
 
@@ -379,15 +416,23 @@ namespace Core::Gfx {
                 bool computeQueue{};
                 bool cubeArrays{}, biasClamp{}, blockTextures{}, depthClamp{};
                 unsigned timestampBits{};
-                float timestampPeriod{};
+                float timestampPeriod{}, maxSamplerLodBias{};
+                std::unordered_map<VkFormat, VkFormatProperties> formatPropertiesCache;
+                const VkFormatProperties &formatProperties(VkFormat format)
+                {
+                    auto [entry, inserted] = formatPropertiesCache.try_emplace(format);
+                    if (inserted)
+                        vkGetPhysicalDeviceFormatProperties(physical, format, &entry->second);
+                    return entry->second;
+                }
                 std::map<PipelineKey, PipelineBundle> pipelines;
                 struct TextureEntry {
                         std::shared_ptr<CachedTexture> value;
                         std::uint64_t bytes{}, used{};
                 };
                 // Hashed: ordered maps compared key vectors word by word on every lookup.
-                std::unordered_map<std::vector<std::uint64_t>, TextureEntry, KeyWordsHash> textures;
-                std::unordered_map<std::vector<std::uint64_t>, std::weak_ptr<CachedTexture>, KeyWordsHash> retainedTextures;
+                std::unordered_map<std::vector<std::uint64_t>, TextureEntry, KeyWordsHash, KeyWordsEqual> textures;
+                std::unordered_map<std::vector<std::uint64_t>, std::weak_ptr<CachedTexture>, KeyWordsHash, KeyWordsEqual> retainedTextures;
                 std::uint64_t textureBytes{}, textureClock{}, textureUploads{}, textureHits{};
                 std::shared_ptr<TextureMemoryUsage> textureMemory = std::make_shared<TextureMemoryUsage>();
                 // Shared texture LRU. A race frame samples hundreds of distinct textures; evicting them
@@ -662,6 +707,7 @@ namespace Core::Gfx {
                     deviceName = props.deviceName;
                     discrete = props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU;
                     timestampPeriod = props.limits.timestampPeriod;
+                    maxSamplerLodBias = props.limits.maxSamplerLodBias;
                     Utils::Log::error("[NATIVE_VULKAN] device={}", deviceName);
                     const float priority = 1.0f;
                     VkDeviceQueueCreateInfo qi{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
@@ -1038,13 +1084,13 @@ void main() {
                         unsigned layers{1}; // depth slices for volume textures
                         bool array{}, volume{};
                         bool cube{};
-                        std::vector<std::span<const float>> mips;
+                        std::vector<std::span<const std::byte>> mips;
                         VkSamplerAddressMode addressU{}, addressV{}, addressW{VK_SAMPLER_ADDRESS_MODE_REPEAT};
                         VkBorderColor borderColor{VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK};
                         VkFilter filter = VK_FILTER_NEAREST;
                         VkFilter minFilter = VK_FILTER_NEAREST;
                         VkSamplerMipmapMode mipFilter{VK_SAMPLER_MIPMAP_MODE_NEAREST};
-                        float minLod{}, maxLod{};
+                        float minLod{}, maxLod{}, lodBias{};
                         std::shared_ptr<ColorImage> rendered;
                         // Levels x layers for direct draws: resident images, or null with the layer's CPU
                         // bytes (rows of layerPitch bytes) in layerBytes.
@@ -1054,6 +1100,31 @@ void main() {
                         unsigned renderedLevels{1};
                         unsigned levelCount() const { return std::max(unsigned(mips.size() + 1), renderedLevels); }
                         std::shared_ptr<const void> snapshotOwner;
+
+                        TextureCacheKey cacheKey() const
+                        {
+                            TextureCacheKey key;
+                            const std::array<std::uint64_t, 14> header{reinterpret_cast<std::uintptr_t>(snapshotOwner.get()),
+                                                                       reinterpret_cast<std::uintptr_t>(snapshot.data()),
+                                                                       width,
+                                                                       height,
+                                                                       layers,
+                                                                       unsigned(format),
+                                                                       sourcePitch,
+                                                                       unsigned(components.r),
+                                                                       unsigned(components.g),
+                                                                       unsigned(components.b),
+                                                                       unsigned(components.a),
+                                                                       unsigned(array),
+                                                                       unsigned(volume),
+                                                                       unsigned(cube)};
+                            std::copy(header.begin(), header.end(), key.storage.begin());
+                            for (const auto mip: mips) {
+                                key.storage[key.count++] = reinterpret_cast<std::uintptr_t>(mip.data());
+                                key.storage[key.count++] = mip.size();
+                            }
+                            return key;
+                        }
 
                         std::size_t rowBytes() const
                         {
@@ -1304,11 +1375,11 @@ void main() {
                     uniform = buffer(sizeof(constants), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, uniformMemory);
                     void *mapped = nullptr;
                     check(vkMapMemory(device, uniformMemory, 0, sizeof(constants), 0, &mapped), "map constants");
-                    std::memcpy(mapped, constants.data(), constantFloats * sizeof(float));
+                    copyStageConstants(mapped, constants, constantFloats, draw.shader.constantRegisters);
                     vkUnmapMemory(device, uniformMemory);
                     if (draw.vertexStage.shader) {
                         vertexUniform = buffer(sizeof(vertexConstants), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, vertexUniformMemory);
-                        upload(vertexUniformMemory, vertexConstants.data(), vertexConstantFloats * sizeof(float));
+                        uploadConstants(vertexUniformMemory, vertexConstants, vertexConstantFloats, draw.vertexStage.shader->constantRegisters);
                     }
                     if (!depthOnly(draw))
                         readback = buffer(draw.target.size(), VK_BUFFER_USAGE_TRANSFER_DST_BIT, readbackMemory, VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
@@ -1939,9 +2010,9 @@ void main() {
                     check(vkResetCommandPool(device, pool, 0), "reset commands");
                     VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
                     check(vkBeginCommandBuffer(command, &begin), "begin commands");
-                    upload(uniformMemory, constants.data(), constantFloats * sizeof(float));
+                    uploadConstants(uniformMemory, constants, constantFloats, draw.shader.constantRegisters);
                     if (draw.vertexStage.shader)
-                        upload(vertexUniformMemory, vertexConstants.data(), vertexConstantFloats * sizeof(float));
+                        uploadConstants(vertexUniformMemory, vertexConstants, vertexConstantFloats, draw.vertexStage.shader->constantRegisters);
                     upload(vertexMemory, draw.vertices.data(), draw.vertices.size_bytes());
                     if (!draw.indices.empty())
                         upload(indexMemory, draw.indices.data(), draw.indices.size_bytes());
@@ -1982,7 +2053,7 @@ void main() {
                         uploadTextureData(textureStagingMemories[i], texture);
                         textureStagingValid[i] = true;
                         recordTextureUpload(textureImages[i], textureStagingBuffers[i], texture.width, texture.height, !textureImageInitialized[i],
-                                            {}, texture.layers, texture.volume, unsigned(texture.mips.size() + 1));
+                                            {}, texture.layers, texture.volume, unsigned(texture.mips.size() + 1), texture.format);
                         textureImageInitialized[i] = true;
                     }
                     return retainedTarget;
@@ -2032,6 +2103,14 @@ void main() {
                     texture.copyTo(mapped);
                     vkUnmapMemory(device, memory);
                 }
+                void uploadConstants(VkDeviceMemory memory, const std::array<float, Latte::kStageConstantFloats> &values, std::size_t definedFloats,
+                                     unsigned registers)
+                {
+                    void *mapped = nullptr;
+                    check(vkMapMemory(device, memory, 0, definedFloats * sizeof(float), 0, &mapped), "map constants upload");
+                    copyStageConstants(mapped, values, definedFloats, registers);
+                    vkUnmapMemory(device, memory);
+                }
                 void upload(VkDeviceMemory memory, const void *data, std::size_t size)
                 {
                     void *mapped = nullptr;
@@ -2047,6 +2126,7 @@ void main() {
                     si.mipmapMode = texture.mipFilter;
                     si.minLod = texture.minLod;
                     si.maxLod = texture.maxLod;
+                    si.mipLodBias = texture.lodBias;
                     si.addressModeU = texture.addressU;
                     si.addressModeV = texture.addressV;
                     si.addressModeW = texture.addressW;
@@ -2059,29 +2139,12 @@ void main() {
 
                 std::shared_ptr<CachedTexture> cachedTexture(const Texture &texture, const std::shared_ptr<CachedTexture> &previous)
                 {
-                    std::vector<std::uint64_t> key{reinterpret_cast<std::uintptr_t>(texture.snapshotOwner.get()),
-                                                   reinterpret_cast<std::uintptr_t>(texture.snapshot.data()),
-                                                   texture.width,
-                                                   texture.height,
-                                                   texture.layers,
-                                                   unsigned(texture.format),
-                                                   texture.sourcePitch,
-                                                   unsigned(texture.components.r),
-                                                   unsigned(texture.components.g),
-                                                   unsigned(texture.components.b),
-                                                   unsigned(texture.components.a),
-                                                   unsigned(texture.array),
-                                                   unsigned(texture.volume),
-                                                   unsigned(texture.cube)};
-                    for (const auto mip: texture.mips) {
-                        key.push_back(reinterpret_cast<std::uintptr_t>(mip.data()));
-                        key.push_back(mip.size());
-                    }
-                    if (previous && previous->key == key && previous->ready) {
+                    auto key = texture.cacheKey();
+                    if (previous && std::ranges::equal(previous->key, key.words()) && previous->ready) {
                         ++context.textureHits;
                         return previous;
                     }
-                    if (auto found = context.textures.find(key); found != context.textures.end()) {
+                    if (auto found = context.textures.find(key.words()); found != context.textures.end()) {
                         if (found->second.value->ready || found->second.value->producer.lock().get() == this) {
                             found->second.used = ++context.textureClock;
                             ++context.textureHits;
@@ -2090,7 +2153,7 @@ void main() {
                         context.textureBytes -= found->second.bytes;
                         context.textures.erase(found);
                     }
-                    if (const auto retained = context.retainedTextures.find(key); retained != context.retainedTextures.end())
+                    if (const auto retained = context.retainedTextures.find(key.words()); retained != context.retainedTextures.end())
                         if (auto value = retained->second.lock(); value && (value->ready || value->producer.lock().get() == this)) {
                             ++context.textureHits;
                             return value;
@@ -2100,7 +2163,8 @@ void main() {
                     auto result = std::make_shared<CachedTexture>();
                     result->device = device;
                     result->owner = texture.snapshotOwner;
-                    result->key = key;
+                    auto ownedKey = key.owned();
+                    result->key = ownedKey;
                     result->producer = shared_from_this();
                     VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
                     ci.imageType = texture.volume ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D;
@@ -2134,11 +2198,11 @@ void main() {
                                              VK_MEMORY_PROPERTY_HOST_CACHED_BIT, false, false);
                     uploadTextureData(result->stagingMemory, texture);
                     recordTextureUpload(result->image, result->staging, texture.width, texture.height, true, {}, texture.layers, texture.volume,
-                                        ci.mipLevels);
+                                        ci.mipLevels, texture.format);
                     result->bytes = bytes;
                     result->usage = context.textureMemory;
                     result->usage->bytes.fetch_add(bytes, std::memory_order_relaxed);
-                    context.admitTexture(std::move(key), result);
+                    context.admitTexture(std::move(ownedKey), result);
                     return result;
                 }
 
@@ -2211,7 +2275,7 @@ void main() {
                         textureStagingValid[index] = true;
                     }
                     recordTextureUpload(textureImage, staging, texture.width, texture.height, true, texture.rendered, texture.layers, texture.volume,
-                                        ci.mipLevels);
+                                        ci.mipLevels, texture.format);
                     textureImageInitialized[index] = true;
                     bindTextureDescriptor(texture.binding, sampler, textureView);
                 }
@@ -2271,7 +2335,7 @@ void main() {
                 }
                 void recordTextureUpload(VkImage textureImage, VkBuffer staging, unsigned width, unsigned height, bool initial,
                                          const std::shared_ptr<ColorImage> &source = {}, unsigned layers = 1, bool volume = false,
-                                         unsigned levels = 1)
+                                         unsigned levels = 1, VkFormat format = VK_FORMAT_R32G32B32A32_SFLOAT)
                 {
                     const unsigned depth = volume ? layers : 1;
                     if (volume)
@@ -2338,9 +2402,10 @@ void main() {
                             copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, 0, layers};
                             copy.imageExtent = {std::max(1u, width >> level), std::max(1u, height >> level), depth};
                             copies.push_back(copy);
-                            // Multilevel snapshots are RGBA32F; existing single-level
-                            // formats do not need a following staging offset.
-                            offset += VkDeviceSize(copy.imageExtent.width) * copy.imageExtent.height * depth * layers * 16;
+                            // Block-compressed tails still occupy a complete 4x4 block.
+                            const auto blockBytes = blockElementBytes(format);
+                            offset += blockBytes ? VkDeviceSize((copy.imageExtent.width + 3) / 4) * ((copy.imageExtent.height + 3) / 4) * blockBytes
+                                                 : VkDeviceSize(copy.imageExtent.width) * copy.imageExtent.height * depth * layers * 16;
                         }
                         vkCmdCopyBufferToImage(command, staging, textureImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, unsigned(copies.size()),
                                                copies.data());
@@ -2680,11 +2745,14 @@ void main() {
                         segment.used += (std::max(bytes, reserved) + alignment - 1) / alignment * alignment;
                         return offset;
                     };
-                    const auto constantsOffset = pushUpload(in.constants.data(), in.constantFloats * sizeof(float), sizeof(in.constants));
-                    const auto vertexConstantsOffset =
-                            draw.vertexStage.shader
-                                    ? pushUpload(in.vertexConstants.data(), in.vertexConstantFloats * sizeof(float), sizeof(in.vertexConstants))
-                                    : VkDeviceSize{};
+                    const auto constantsOffset = pushUpload(nullptr, 0, sizeof(in.constants));
+                    copyStageConstants(segment.mapped + constantsOffset, in.constants, in.constantFloats, draw.shader.constantRegisters);
+                    VkDeviceSize vertexConstantsOffset{};
+                    if (draw.vertexStage.shader) {
+                        vertexConstantsOffset = pushUpload(nullptr, 0, sizeof(in.vertexConstants));
+                        copyStageConstants(segment.mapped + vertexConstantsOffset, in.vertexConstants, in.vertexConstantFloats,
+                                           draw.vertexStage.shader->constantRegisters);
+                    }
                     const auto verticesOffset = residentVertices ? VkDeviceSize{} : pushUpload(vertexData, vertexBytes, 0);
                     const auto defaultsOffset =
                             compact ? pushUpload(compactAttributeDefaults.data(), sizeof(compactAttributeDefaults), 0) : VkDeviceSize{};
@@ -3442,8 +3510,10 @@ void main() {
                         copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, 0, layers};
                         copy.imageExtent = {std::max(1u, texture.width >> level), std::max(1u, texture.height >> level), depth};
                         copies.push_back(copy);
-                        // Multilevel snapshots are RGBA32F; single-level formats need no following offset.
-                        offset += VkDeviceSize(copy.imageExtent.width) * copy.imageExtent.height * depth * layers * 16;
+                        // Block-compressed tails still occupy a complete 4x4 block.
+                        const auto blockBytes = blockElementBytes(texture.format);
+                        offset += blockBytes ? VkDeviceSize((copy.imageExtent.width + 3) / 4) * ((copy.imageExtent.height + 3) / 4) * blockBytes
+                                             : VkDeviceSize(copy.imageExtent.width) * copy.imageExtent.height * depth * layers * 16;
                     }
                     vkCmdCopyBufferToImage(command, buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, unsigned(copies.size()), copies.data());
                     imageBarrier(command, image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -3507,38 +3577,15 @@ void main() {
                                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, levels, layers);
                 }
 
-                std::vector<std::uint64_t> sharedKey(const DrawResources::Texture &texture) const
-                {
-                    // Same identity as DrawResources::cachedTexture, so both paths share uploads.
-                    std::vector<std::uint64_t> key{reinterpret_cast<std::uintptr_t>(texture.snapshotOwner.get()),
-                                                   reinterpret_cast<std::uintptr_t>(texture.snapshot.data()),
-                                                   texture.width,
-                                                   texture.height,
-                                                   texture.layers,
-                                                   unsigned(texture.format),
-                                                   texture.sourcePitch,
-                                                   unsigned(texture.components.r),
-                                                   unsigned(texture.components.g),
-                                                   unsigned(texture.components.b),
-                                                   unsigned(texture.components.a),
-                                                   unsigned(texture.array),
-                                                   unsigned(texture.volume),
-                                                   unsigned(texture.cube)};
-                    for (const auto mip: texture.mips) {
-                        key.push_back(reinterpret_cast<std::uintptr_t>(mip.data()));
-                        key.push_back(mip.size());
-                    }
-                    return key;
-                }
                 std::shared_ptr<CachedTexture> findSharedTexture(const DrawResources::Texture &texture)
                 {
-                    const auto key = sharedKey(texture);
-                    if (auto found = context.textures.find(key); found != context.textures.end() && found->second.value->ready) {
+                    const auto key = texture.cacheKey();
+                    if (auto found = context.textures.find(key.words()); found != context.textures.end() && found->second.value->ready) {
                         found->second.used = ++context.textureClock;
                         ++context.textureHits;
                         return found->second.value;
                     }
-                    if (const auto retained = context.retainedTextures.find(key); retained != context.retainedTextures.end())
+                    if (const auto retained = context.retainedTextures.find(key.words()); retained != context.retainedTextures.end())
                         if (auto value = retained->second.lock(); value && value->ready) {
                             ++context.textureHits;
                             return value;
@@ -3548,8 +3595,8 @@ void main() {
                 template<typename Upload>
                 std::shared_ptr<CachedTexture> createSharedTexture(const DrawResources::Texture &texture, Segment &segment, Upload &upload)
                 {
-                    auto key = sharedKey(texture);
-                    if (const auto found = context.textures.find(key); found != context.textures.end()) {
+                    auto key = texture.cacheKey();
+                    if (const auto found = context.textures.find(key.words()); found != context.textures.end()) {
                         context.textureBytes -= found->second.bytes;
                         context.textures.erase(found);
                     }
@@ -3558,7 +3605,8 @@ void main() {
                     auto result = std::make_shared<CachedTexture>();
                     result->device = device;
                     result->owner = texture.snapshotOwner;
-                    result->key = key;
+                    auto ownedKey = key.owned();
+                    result->key = ownedKey;
                     VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
                     info.imageType = texture.volume ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D;
                     info.flags = texture.cube ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0;
@@ -3593,7 +3641,7 @@ void main() {
                     result->bytes = bytes; // no staging copy is kept
                     result->usage = context.textureMemory;
                     result->usage->bytes.fetch_add(result->bytes, std::memory_order_relaxed);
-                    context.admitTexture(std::move(key), result);
+                    context.admitTexture(std::move(ownedKey), result);
                     return result;
                 }
 
@@ -3672,15 +3720,16 @@ void main() {
 
                 VkSampler sampler(const DrawResources::Texture &texture)
                 {
-                    const std::array<std::uint32_t, 9> key{unsigned(texture.filter),
-                                                           unsigned(texture.minFilter),
-                                                           unsigned(texture.mipFilter),
-                                                           std::bit_cast<std::uint32_t>(texture.minLod),
-                                                           std::bit_cast<std::uint32_t>(texture.maxLod),
-                                                           unsigned(texture.addressU),
-                                                           unsigned(texture.addressV),
-                                                           unsigned(texture.addressW),
-                                                           unsigned(texture.borderColor)};
+                    const std::array<std::uint32_t, 10> key{unsigned(texture.filter),
+                                                            unsigned(texture.minFilter),
+                                                            unsigned(texture.mipFilter),
+                                                            std::bit_cast<std::uint32_t>(texture.minLod),
+                                                            std::bit_cast<std::uint32_t>(texture.maxLod),
+                                                            std::bit_cast<std::uint32_t>(texture.lodBias),
+                                                            unsigned(texture.addressU),
+                                                            unsigned(texture.addressV),
+                                                            unsigned(texture.addressW),
+                                                            unsigned(texture.borderColor)};
                     if (const auto found = samplers.find(key); found != samplers.end())
                         return found->second;
                     VkSamplerCreateInfo info{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
@@ -3689,6 +3738,7 @@ void main() {
                     info.mipmapMode = texture.mipFilter;
                     info.minLod = texture.minLod;
                     info.maxLod = texture.maxLod;
+                    info.mipLodBias = texture.lodBias;
                     info.addressModeU = texture.addressU;
                     info.addressModeV = texture.addressV;
                     info.addressModeW = texture.addressW;
@@ -3914,7 +3964,7 @@ void main() {
                 VkBuffer scratchBuffer{};
                 VkDeviceMemory scratchMemory{};
                 VkDeviceSize scratchCapacity{};
-                std::map<std::array<std::uint32_t, 9>, VkSampler> samplers;
+                std::map<std::array<std::uint32_t, 10>, VkSampler> samplers;
                 std::map<std::pair<VkFormat, VkFormat>, VkRenderPass> passes;
                 std::map<std::tuple<VkRenderPass, VkImageView, VkImageView, unsigned, unsigned>, FramebufferEntry> framebuffers;
                 std::size_t framebufferPurgeAt{1024};
@@ -4180,11 +4230,11 @@ void main() {
             const auto compressedFormat = blockVkFormat(texture.blockFormat);
             const bool compressed = texture.blockFormat != TextureBlockFormat::None;
             if ((!compressed && !texture.blocks.empty()) ||
-                (compressed && (compressedFormat == VK_FORMAT_UNDEFINED || array || !texture.mips.empty() || texture.rendered ||
-                                !texture.unorm8.empty() || !texture.rgba32.empty() || !texture.r32.empty() || !texture.r32Bytes.empty() ||
-                                !texture.rgba32Bytes.empty() || !texture.r11g11b10Bytes.empty() ||
-                                texture.blocks.size() !=
-                                        std::uint64_t((texture.width + 3) / 4) * ((texture.height + 3) / 4) * blockElementBytes(compressedFormat))))
+                (compressed &&
+                 (compressedFormat == VK_FORMAT_UNDEFINED || array || texture.rendered || !texture.unorm8.empty() || !texture.rgba32.empty() ||
+                  !texture.r32.empty() || !texture.r32Bytes.empty() || !texture.rgba32Bytes.empty() || !texture.r11g11b10Bytes.empty() ||
+                  texture.blocks.size() !=
+                          std::uint64_t((texture.width + 3) / 4) * ((texture.height + 3) / 4) * blockElementBytes(compressedFormat))))
                 return reject("Invalid compressed base texture snapshot");
             if (cube && (texture.width != texture.height || texture.layers % 6))
                 return reject("Invalid cube texture dimensions or face count");
@@ -4238,17 +4288,22 @@ void main() {
                  texture.r32Pitch < texture.width || std::uint64_t(texture.r32Pitch) * texture.height * texture.layers * 4 > texture.r32Bytes.size()))
                 return reject("Invalid little-endian R32 texture snapshot");
             const auto r = texture.sampler.regs[0];
-            if (!texture.mips.empty() && (texture.rgba32.empty() || texture.rendered || binding.type == Latte::TextureType::ThreeD ||
-                                          texture.mips.size() >= std::bit_width(std::max(texture.width, texture.height)) || texture.mips.size() > 13))
+            if (!texture.mips.empty() &&
+                ((!compressed && texture.rgba32.empty()) || texture.rendered || binding.type == Latte::TextureType::ThreeD ||
+                 texture.mips.size() >= std::bit_width(std::max(texture.width, texture.height)) || texture.mips.size() > kMaxTextureMips))
                 return reject("Unsupported mip chain snapshot");
             for (unsigned level = 0; level < texture.mips.size(); ++level) {
                 const auto &mip = texture.mips[level];
                 if (mip.width != std::max(1u, texture.width >> (level + 1)) || mip.height != std::max(1u, texture.height >> (level + 1)) ||
-                    mip.rgba32.size() != std::uint64_t(mip.width) * mip.height * texture.layers * 4)
+                    (compressed ? !mip.rgba32.empty() || mip.blocks.size() != std::uint64_t((mip.width + 3) / 4) * ((mip.height + 3) / 4) *
+                                                                                      blockElementBytes(compressedFormat)
+                                : !mip.blocks.empty() || mip.rgba32.size() != std::uint64_t(mip.width) * mip.height * texture.layers * 4))
                     return reject("Incomplete mip chain snapshot");
-                textureBytes += mip.rgba32.size_bytes();
+                textureBytes += mip.rgba32.size_bytes() + mip.blocks.size_bytes();
             }
             const auto extraLevels = std::max<std::size_t>(texture.mips.size(), texture.renderedLevels - 1);
+            if (found->derivativeLod && (((r >> 12) & 7) > 1 || ((r >> 17) & 3) > 2))
+                return reject("Unsupported implicit minification or mip filter");
             if (found->explicitLod && (((r >> 12) & 7) > 1 || ((r >> 17) & 3) > 2 ||
                                        (((r >> 17) & 3) && (!texture.sourceMipCount || extraLevels + 1 < texture.sourceMipCount))))
                 return reject("Explicit LOD requires the complete texture view and supported filters");
@@ -4268,8 +4323,6 @@ void main() {
                 // channels that read a component must agree with the unmapped border.
                 for (unsigned c = 0; c < 4; ++c) {
                     auto selector = (map >> (24 - c * 8)) & 7;
-                    if (texture.blockFormat == TextureBlockFormat::BC4 && selector < 4)
-                        selector = 0; // Preserve the reference's luminance/alpha expansion.
                     if (selector < 4 && border[selector] != border[c])
                         return false;
                 }
@@ -4441,16 +4494,14 @@ void main() {
                                                         [](const auto &texture) { return texture.binding.type == Latte::TextureType::Cube; }))
             return reject("Device lacks cube array sampling support");
         {
-            VkFormatProperties properties{};
-            vkGetPhysicalDeviceFormatProperties(m_impl->context->physical, colorVkFormat(draw.colorFormat), &properties);
+            const auto &properties = m_impl->context->formatProperties(colorVkFormat(draw.colorFormat));
             const auto required = VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | (draw.blend.enabled ? VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT : 0);
             if ((properties.optimalTilingFeatures & required) != required)
                 return reject("Device lacks target attachment/blending support");
         }
         if (draw.depth.test) {
-            VkFormatProperties properties{};
-            vkGetPhysicalDeviceFormatProperties(m_impl->context->physical,
-                                                (direct ? directDepthFormat(draw.depth.format) : depthVkFormat(draw.depth.format)), &properties);
+            const auto &properties =
+                    m_impl->context->formatProperties(direct ? directDepthFormat(draw.depth.format) : depthVkFormat(draw.depth.format));
             if (!(properties.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT))
                 return reject("Device lacks the requested depth attachment format");
             if (draw.depth.format != DepthFormat::Float32 && draw.depth.write && !m_impl->context->computeQueue)
@@ -4512,6 +4563,7 @@ void main() {
                 draw.target = draw.renderedTarget->resolve();
         }
         std::vector<DrawResources::Texture> textures;
+        textures.reserve(draw.textures.size());
         std::vector<std::vector<std::uint8_t>> packedLayers; // CPU snapshots of non-resident array layers
         for (const auto &input: draw.textures) {
             auto texture = input;
@@ -4615,10 +4667,9 @@ void main() {
                                        : texture.unorm8Channels == 1                       ? VK_FORMAT_R8_UNORM
                                        : texture.unorm8Channels == 2                       ? VK_FORMAT_R8G8_UNORM
                                                                                            : VK_FORMAT_R8G8B8A8_UNORM;
-            VkFormatProperties format{};
-            vkGetPhysicalDeviceFormatProperties(m_impl->context->physical, textureFormat, &format);
+            const auto &format = m_impl->context->formatProperties(textureFormat);
             const auto r = texture.sampler.regs[0];
-            const bool linear = ((r >> 9) & 7) == 1 || (texture.binding.explicitLod && ((r >> 12) & 7) == 1);
+            const bool linear = ((r >> 9) & 7) == 1 || ((texture.binding.explicitLod || texture.binding.derivativeLod) && ((r >> 12) & 7) == 1);
             if (!(format.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) ||
                 (linear && !(format.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT)))
                 return reject("Host cannot sample float texture with requested filter");
@@ -4644,10 +4695,18 @@ void main() {
             uploaded.borderColor = borderColors[(r >> 22) & 3];
             uploaded.filter = linear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
             uploaded.minFilter = uploaded.filter;
+            uploaded.mips.reserve(texture.mips.size());
             for (const auto &mip: texture.mips)
-                uploaded.mips.push_back(mip.rgba32);
-            if (texture.binding.explicitLod) {
+                uploaded.mips.push_back(compressedFormat != VK_FORMAT_UNDEFINED ? std::as_bytes(mip.blocks) : std::as_bytes(mip.rgba32));
+            if (texture.binding.explicitLod || texture.binding.derivativeLod) {
+                uploaded.filter = ((r >> 9) & 7) ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
                 uploaded.minFilter = ((r >> 12) & 7) ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
+                if (texture.binding.derivativeLod) {
+                    const int bias = int(texture.sampler.regs[1]) >> 20;
+                    uploaded.lodBias = float(bias) / 64.f;
+                    if (std::abs(uploaded.lodBias) > m_impl->context->maxSamplerLodBias)
+                        return reject("Sampler LOD bias exceeds the host device limit");
+                }
                 uploaded.mipFilter = ((r >> 17) & 3) == 2 ? VK_SAMPLER_MIPMAP_MODE_LINEAR : VK_SAMPLER_MIPMAP_MODE_NEAREST;
                 if ((r >> 17) & 3) {
                     const auto extraLevels = std::max<std::size_t>(texture.mips.size(), texture.renderedLevels - 1);
@@ -4665,8 +4724,6 @@ void main() {
                     constexpr VkComponentSwizzle channels[]{VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G,    VK_COMPONENT_SWIZZLE_B,
                                                             VK_COMPONENT_SWIZZLE_A, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ONE};
                     auto selector = (texture.unorm8Map >> (24 - c * 8)) & 7;
-                    if (texture.blockFormat == TextureBlockFormat::BC4 && selector < 4)
-                        selector = 0;
                     return channels[selector < 6 ? selector : 4];
                 };
                 uploaded.components = {channel(0), channel(1), channel(2), channel(3)};
@@ -4828,6 +4885,8 @@ void main() {
                                     std::uint64_t(key.indexCapacity) * sizeof(std::uint32_t) + sizeof(constants) +
                                     (draw.vertexStage.shader ? sizeof(vertexConstants) : 0) +
                                     (draw.depth.test ? draw.depth.target.size_bytes() * 3 : 0);
+        key.pipeline.bindings.reserve(textures.size());
+        key.textureShape.reserve(textures.size() * 23);
         for (const auto &texture: textures) {
             key.pipeline.bindings.push_back(texture.binding);
             key.textureShape.insert(key.textureShape.end(), {texture.width,
@@ -4851,6 +4910,7 @@ void main() {
                                                              unsigned(texture.mipFilter),
                                                              std::bit_cast<unsigned>(texture.minLod),
                                                              std::bit_cast<unsigned>(texture.maxLod),
+                                                             std::bit_cast<unsigned>(texture.lodBias),
                                                              unsigned(texture.snapshotOwner && !texture.snapshot.empty() && !texture.rendered)});
         }
         const auto t3 = std::chrono::steady_clock::now();

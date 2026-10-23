@@ -346,6 +346,19 @@ namespace Core::Gfx {
                     std::uint64_t generation{};
                     std::vector<Surface> levels;
                     std::vector<std::vector<float>> texels;
+                    std::vector<std::vector<std::uint8_t>> blockTexels;
+                    bool blocksOnly{}, hasRenderedSources{};
+                    std::size_t writtenSurfaceCount{};
+                    WriteValidation baseWrites, mipWrites;
+                    std::size_t bytes() const
+                    {
+                        auto total = source.size();
+                        for (const auto &level: texels)
+                            total += level.size() * sizeof(float);
+                        for (const auto &level: blockTexels)
+                            total += level.size();
+                        return total;
+                    }
                     std::vector<RasterDraw::Texture::MipLevel> mips;
                     std::vector<std::uint8_t> source;
                     // Image range of every (level, slice) view: lets a later lookup in the same frame
@@ -353,8 +366,8 @@ namespace Core::Gfx {
                     std::vector<std::pair<std::uint32_t, std::uint32_t>> sliceRanges;
             };
             std::vector<std::shared_ptr<MipSnapshot>> m_mipSnapshots;
-            std::vector<std::weak_ptr<MipSnapshot>> m_retainedMipSnapshots;
-            std::shared_ptr<MipSnapshot> mipSnapshot(const Surface &surface, bool includeMips);
+            std::unordered_multimap<unsigned, std::weak_ptr<MipSnapshot>> m_retainedMipSnapshots;
+            std::shared_ptr<MipSnapshot> mipSnapshot(const Surface &surface, bool includeMips, bool blocksOnly = false);
             static bool sampleMipSnapshot(const MipSnapshot &snapshot, const TextureSampler &sampler, const std::array<float, 4> &coords,
                                           float cubeIndex, bool explicitLod, std::array<float, 4> &rgba);
             std::shared_ptr<ArraySnapshot> arraySnapshot(const Surface &surface);

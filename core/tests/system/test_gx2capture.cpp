@@ -5,6 +5,7 @@
 #include "cpu/interpreter/SyscallHandler.hpp"
 #include "gfx/Gx2CommandStream.hpp"
 #include "gfx/Gx2Replayer.hpp"
+#include "gfx/LatteSurfaceLayout.hpp"
 #include "gfx/SpirvCompiler.hpp"
 #include "gfx/SurfaceLayout.hpp"
 #include "gfx/TextureFormat.hpp"
@@ -3788,7 +3789,7 @@ TEST_F(Gx2CaptureTest, PackedAndBlockDecodeMatchReferenceForTilingPartialBlocksA
         if (std::getenv("WEMU_TEST_VULKAN")) {
             backend = std::make_shared<VulkanRasterBackend>(true, true);
             native.setRasterBackend(backend);
-            const bool hardwareBlocks = format >= 0x31 && format <= 0x34;
+            const bool hardwareBlocks = format >= 0x31 && format <= 0x35;
             if (!hardwareBlocks)
                 native.setNativeVerificationInterval(1);
         }
@@ -3854,7 +3855,15 @@ TEST_F(Gx2CaptureTest, PackedAndBlockDecodeMatchReferenceForTilingPartialBlocksA
                 for (unsigned channel = 0; channel < 4; ++channel)
                     EXPECT_EQ(reference.framebuffer()[channel], expected[channel]);
             }
-            if (backend && format >= 0x31 && format <= 0x34) {
+            if (format == 0x34 || format == 0x35) {
+                // BC4/BC5 supply R or RG. Missing color channels are zero and
+                // alpha is one before the texture view applies its swizzle.
+                EXPECT_EQ(reference.framebuffer()[2], 0);
+                EXPECT_EQ(reference.framebuffer()[3], 255);
+                if (format == 0x34)
+                    EXPECT_EQ(reference.framebuffer()[1], 0);
+            }
+            if (backend && format >= 0x31 && format <= 0x35) {
                 // BC1-5 hardware interpolation is approximate. D3D11 section
                 // 19.5.2 bounds it by absolute error + 3% of endpoint distance;
                 // NVIDIA's BC1 green interpolation actually exercises this bound.
@@ -3888,9 +3897,12 @@ TEST_F(Gx2CaptureTest, PackedAndBlockDecodeMatchReferenceForTilingPartialBlocksA
                                     tolerance[3] = unsigned(std::ceil(1.0 + .03 * distance));
                                 }
                             } else {
-                                const auto distance =
-                                        std::abs(int(cpu->m_memory.read<std::uint8_t>(block)) - int(cpu->m_memory.read<std::uint8_t>(block + 1)));
-                                tolerance.fill(unsigned(std::ceil(1.0 + .03 * distance)));
+                                for (unsigned c = 0; c < (format == 0x35 ? 2u : 1u); ++c) {
+                                    const auto channelBlock = block + c * 8;
+                                    const auto distance = std::abs(int(cpu->m_memory.read<std::uint8_t>(channelBlock)) -
+                                                                   int(cpu->m_memory.read<std::uint8_t>(channelBlock + 1)));
+                                    tolerance[c] = unsigned(std::ceil(1.0 + .03 * distance));
+                                }
                             }
                         }
                         for (unsigned c = 0; c < 4; ++c) {
@@ -4011,6 +4023,124 @@ TEST_F(Gx2CaptureTest, TrustedTextureSnapshotsStillSeeGuestStoresAndWritableView
         native.replay(gx2Stream(), &cpu->m_memory);
         ASSERT_EQ(backend->completedDraws(), frame + 1) << backend->lastError();
         EXPECT_EQ(native.framebuffer(), reference.framebuffer());
+    }
+}
+
+TEST_F(Gx2CaptureTest, ImplicitCompressedMipsReuseUploadsAndSeeGuestWrites)
+{
+    using namespace Core::Gfx;
+    if (!std::getenv("WEMU_TEST_VULKAN"))
+        GTEST_SKIP();
+    constexpr unsigned VS = 0x28001000, PS = 0x28002000, COLOR = 0x28003000, TEX = 0x28004000;
+    constexpr unsigned VSP = 0x28010000, PSP = 0x28011000, VERTS = 0x28012000, IMAGE = 0x28040000, BLOCKS = 0x28080000, MIPS = 0x28090000;
+    const auto record = [&](const char *name, std::initializer_list<unsigned> args) {
+        unsigned r = 3;
+        for (auto arg: args)
+            cpu->m_gpr[r++] = arg;
+        call(name);
+    };
+    const auto shader = [&](unsigned header, unsigned offset, unsigned pointer, const std::vector<unsigned> &words) {
+        for (unsigned i = 0; i < 0x200; i += 4)
+            cpu->m_memory.write<unsigned>(header + i, 0);
+        cpu->m_memory.write<unsigned>(header + offset, words.size() * 4);
+        cpu->m_memory.write<unsigned>(header + offset + 4, pointer);
+        for (unsigned i = 0; i < words.size(); ++i)
+            cpu->m_memory.write<unsigned>(pointer + i * 4, std::byteswap(words[i]));
+    };
+    shader(VS, 0xD0, VSP,
+           {60u | (1u << 13) | (1u << 15), (Latte::CF_EXP << 23) | 0x688u, (2u << 13) | (2u << 15),
+            (Latte::CF_EXP_DONE << 23) | (1u << 21) | 0x688u});
+    cpu->m_memory.write<unsigned>(VS + 0x40, 2);
+    cpu->m_memory.write<unsigned>(VS + 0x44, 0);
+    cpu->m_memory.write<unsigned>(VS + 0x48, 1);
+    shader(PS, 0xA4, PSP,
+           {2, Latte::CF_TEX << 23, 0, (Latte::CF_EXP_DONE << 23) | (1u << 21) | 0x688u, 0x10, 0x30000000u | (0x688u << 9), 1u << 23, 0});
+    cpu->m_memory.write<unsigned>(PS + 0x10, 1);
+    constexpr unsigned width = 7, height = 5;
+    const std::array<std::array<float, 4>, 6> corners{{{-1, 1, 0, 0}, {1, 1, 1, 0}, {-1, -1, 0, 1}, {1, 1, 1, 0}, {1, -1, 1, 1}, {-1, -1, 0, 1}}};
+    for (unsigned i = 0; i < corners.size(); ++i) {
+        const auto &v = corners[i];
+        const std::array<float, 8> data{v[0], v[1], 0, 1, v[2], v[3], 0, 1};
+        for (unsigned c = 0; c < data.size(); ++c)
+            cpu->m_memory.write<unsigned>(VERTS + i * 32 + c * 4, std::bit_cast<unsigned>(data[c]));
+    }
+    surface(COLOR, IMAGE, width * height * 4, width, height, width, 1);
+    surface(TEX, BLOCKS, 0, 16, 16, 0, 4);
+    cpu->m_memory.write<unsigned>(TEX + 0x10, 5);
+    cpu->m_memory.write<unsigned>(TEX + 0x14, 0x34);
+    cpu->m_gpr[3] = TEX;
+    call("GX2CalcSurfaceSizeAndAlignment");
+    cpu->m_memory.write<unsigned>(TEX + 0x2C, MIPS);
+    for (const unsigned header: {COLOR, TEX}) {
+        cpu->m_memory.write<unsigned>(header + 0x74, 0);
+        cpu->m_memory.write<unsigned>(header + 0x78, header == TEX ? 5 : 0);
+        cpu->m_memory.write<unsigned>(header + 0x7C, header == TEX ? 0 : 1);
+        cpu->m_memory.write<unsigned>(header + 0x80, 1);
+    }
+    cpu->m_memory.write<unsigned>(TEX + 0x84, 0x00010203);
+    std::array<unsigned, 5> pointers{}, sizes{};
+    for (unsigned level = 0; level < 5; ++level) {
+        const auto layout = latteSurfaceLayout(16, 16, 1, 0x34, 1, 4, level);
+        ASSERT_TRUE(layout);
+        pointers[level] = level == 0 ? BLOCKS : MIPS + (level == 1 ? 0 : cpu->m_memory.read<unsigned>(TEX + 0x40 + (level - 1) * 4));
+        sizes[level] = layout->imageSize;
+    }
+    const auto fill = [&](unsigned level, std::uint8_t red) {
+        for (unsigned i = 0; i < sizes[level]; ++i)
+            cpu->m_memory.write<std::uint8_t>(pointers[level] + i, i % 8 == 0 ? red : 0);
+    };
+    for (unsigned level = 0; level < 5; ++level)
+        fill(level, std::uint8_t(16 + level * 16));
+    Gx2Replayer native;
+    const auto backend = std::make_shared<VulkanRasterBackend>(true, true);
+    native.setRasterBackend(backend);
+    native.setNativeVerificationInterval(0);
+    for (unsigned frame = 0; frame < 24; ++frame) {
+        SCOPED_TRACE(frame);
+        // Unchanged frames let the snapshot become trusted; then a store and a writable view
+        // must each still reach the next draw.
+        if (frame == 6)
+            fill(2, 112);
+        if (frame == 10) {
+            auto *bytes = cpu->m_memory.hostPtr(pointers[2], sizes[2]);
+            ASSERT_NE(bytes, nullptr);
+            for (unsigned i = 0; i < sizes[2]; ++i)
+                bytes[i] = i % 8 == 0 ? 208 : 0;
+        }
+        if (frame == 20)
+            cpu->m_memory.write<unsigned>(TEX + 0x84, 0x00000405); // R,R,0,1 from the same compressed snapshot
+        if (frame == 22)
+            cpu->m_memory.write<unsigned>(TEX + 0x84, 0x00010203);
+        gx2Stream().clear();
+        record("GX2SetColorBuffer", {COLOR, 0});
+        record("GX2SetColorControl", {0xCC, 0, 0, 1});
+        cpu->m_fpr[1] = cpu->m_fpr[2] = 0;
+        cpu->m_fpr[3] = width;
+        cpu->m_fpr[4] = height;
+        record("GX2SetViewport", {});
+        record("GX2SetScissor", {0, 0, width, height});
+        Gx2Command fetch{Gx2Cmd::SetFetchShader};
+        fetch.payload = {0, 0, 0, 0x813, 0, 0, 0x00010203, 3, 1, 0, 16, 0x813, 0, 0, 0x00010203, 3};
+        gx2Stream().push(fetch);
+        record("GX2SetVertexShader", {VS});
+        record("GX2SetPixelShader", {PS});
+        record("GX2SetAttribBuffer", {0, 6 * 32, 32, VERTS});
+        record("GX2SetPixelTexture", {TEX, 0});
+        Gx2Command sampler{Gx2Cmd::SetPixelSampler};
+        sampler.payload = {1u << 17, 256u << 10, 0};
+        gx2Stream().push(sampler);
+        record("GX2DrawEx", {4, 6, 0, 1});
+        record("GX2CopyColorBufferToScanBuffer", {COLOR, 1});
+        gx2Stream().push(Gx2Command{Gx2Cmd::SwapScanBuffers});
+        native.replay(gx2Stream(), &cpu->m_memory);
+        ASSERT_EQ(backend->completedDraws(), frame + 1) << backend->lastError();
+        // The 16x16 source covers 7x5 pixels: its footprint selects level 2.
+        const auto red = frame < 6 ? 48 : frame < 10 ? 112 : 208;
+        EXPECT_EQ(native.framebuffer()[0], red);
+        EXPECT_EQ(native.framebuffer()[1], frame == 20 || frame == 21 ? red : 0);
+        EXPECT_EQ(native.framebuffer()[2], 0);
+        EXPECT_EQ(native.framebuffer()[3], 255);
+        EXPECT_EQ(backend->sharedTextureUploads(), frame < 6 ? 1u : frame < 10 ? 2u : frame < 20 ? 3u : 4u);
     }
 }
 

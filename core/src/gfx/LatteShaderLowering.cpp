@@ -527,7 +527,7 @@ namespace Core::Gfx::Latte {
                     "pc=0u;\n";
             bool exported = false, terminated = false, ignoredColorExports = false;
             bool terminalUnconditionalColor = false;
-            bool varyingWholeQuadUsed = false, implicitSamples = false;
+            bool varyingWholeQuadUsed = false, implicitSamples = false, comparisonSamples = false;
             bool maskedControl = false;
             bool rootMaskChanged = false;
             WholeQuadWrites wholeQuadWrites;
@@ -774,6 +774,7 @@ namespace Core::Gfx::Latte {
                         // final word is padding, not additional instruction flags.
                         // 0x18/0x1B: SAMPLE_C/SAMPLE_C_LZ depth comparison against src.w.
                         const bool compare = texOp == 0x18 || texOp == 0x1B;
+                        comparisonSamples |= compare;
                         // 0x06: GET_COMP_TEX_LOD.
                         const bool lodQuery = texOp == 0x06;
                         if ((texOp != 0x0F && texOp != 0x10 && texOp != 0x11 && texOp != 0x13 && !compare && !lodQuery) || (t0 & ~tex0Mask) ||
@@ -797,6 +798,10 @@ namespace Core::Gfx::Latte {
                             result.textures.push_back({resource, sampler, unsigned(result.textures.size() + 1), type});
                             binding = result.textures.end() - 1;
                         }
+                        const bool derivativeLod =
+                                texOp == 0x10 && binding->type == TextureType::TwoD && allActive && !varyingWholeQuadUsed &&
+                                std::none_of(jumpTargets.begin(), jumpTargets.end(), [&](const auto &target) { return target.first > cf / 2; });
+                        binding->derivativeLod |= derivativeLod;
                         binding->implicitLod |= !explicitLod;
                         binding->explicitLod |= texOp == 0x11;
                         if (compare && binding->type != TextureType::TwoD && binding->type != TextureType::TwoDArray)
@@ -860,16 +865,21 @@ namespace Core::Gfx::Latte {
                                                 "else sampled=textureGather(tex{},coord,0);\n",
                                                 coords, binding->binding - 1, binding->binding);
                         } else if (compare) {
-                            // Shadow sample: (reference FUNC texel) with the sampler's
-                            // DEPTH_COMPARE_FUNCTION, stored in u.sampling[].w by the backend.
-                            // Array coordinates already carry the rounded layer.
-                            body += std::format("{{ float reference={}; float texel=textureLod(tex{},vec{}({}),0.0).r; "
-                                                "int compareFunction=int(u.sampling[{}].w); bool pass="
-                                                "compareFunction==1?reference<texel:compareFunction==2?reference==texel:"
-                                                "compareFunction==3?reference<=texel:compareFunction==4?reference>texel:"
-                                                "compareFunction==5?reference!=texel:compareFunction==6?reference>=texel:compareFunction==7; "
-                                                "vec4 sampled=vec4(pass?1.0:0.0);\n",
-                                                select(reg, (t2 >> 29) & 7), binding->binding, array ? 3 : 2, coords, binding->binding - 1);
+                            // Compare each shadow-map tap before filtering (PCF). Filtering
+                            // depths first invents occluders at discontinuities. A single
+                            // gather keeps the four comparisons in one texture operation.
+                            body += std::format(
+                                    "{{ float reference={}; vec{} coord=vec{}({}); vec4 state=u.sampling[{}]; vec4 sampled; "
+                                    "if(any(isnan(coord))||any(isinf(coord))) "
+                                    "sampled=vec4(compareDepthReference(vec4(u.borders[{}].r),reference,int(state.w)).x); "
+                                    "else if(state.z==1.0) {{ "
+                                    "vec4 taps=textureGather(tex{},coord,0); "
+                                    "vec4 passed=compareDepthReference(taps,reference,int(state.w)); "
+                                    "vec2 fraction=fract(coord.xy*vec2(textureSize(tex{},0).xy)-vec2(0.5)); "
+                                    "sampled=vec4(mix(mix(passed.w,passed.z,fraction.x),mix(passed.x,passed.y,fraction.x),fraction.y)); "
+                                    "}} else sampled=vec4(compareDepthReference(vec4(textureLod(tex{},coord,0.0).r),reference,int(state.w)).x);\n",
+                                    select(reg, (t2 >> 29) & 7), array ? 3 : 2, array ? 3 : 2, coords, binding->binding - 1, binding->binding - 1,
+                                    binding->binding, binding->binding, binding->binding);
                         } else if (array && texOp == 0x11) {
                             body += std::format("{{ vec4 sampled=textureLod(tex{},vec3({}),{});\n", binding->binding, coords, lod);
                         } else if (array) {
@@ -878,6 +888,8 @@ namespace Core::Gfx::Latte {
                                                 "else sampled=sampleArrayReference(tex{},vec3({}),u.sampling[{}]);\n",
                                                 select(reg, (t2 >> 20) & 7), select(reg, (t2 >> 23) & 7), select(reg, (t2 >> 26) & 7),
                                                 binding->binding - 1, binding->binding, coords, binding->binding - 1);
+                        } else if (derivativeLod) {
+                            body += std::format("{{ vec4 sampled=texture(tex{},vec2({}));\n", binding->binding, coords);
                         } else {
                             body += std::format("{{ vec4 sampled=textureLod(tex{},vec{}({}),{});\n", binding->binding, volume ? 3 : 2, coords, lod);
                         }
@@ -1148,7 +1160,22 @@ int addressIntReference(int value) {
 float relativeConstant(int index,int channel) {
     return index < 0||index >= 256 ? uintBitsToFloat(2147483647u) : u.c[index][channel];
 }
-float arrayCoordinate(float v,int mode) {
+)";
+            // Keep unaffected shader sources byte-identical so this correction
+            // does not invalidate their disk cache or add first-use compilation.
+            if (comparisonSamples)
+                result.source += R"(vec4 compareDepthReference(vec4 texels,float reference,int function) {
+    vec4 value=vec4(reference);
+    if(function==1) return vec4(lessThan(value,texels));
+    if(function==2) return vec4(equal(value,texels));
+    if(function==3) return vec4(lessThanEqual(value,texels));
+    if(function==4) return vec4(greaterThan(value,texels));
+    if(function==5) return vec4(notEqual(value,texels));
+    if(function==6) return vec4(greaterThanEqual(value,texels));
+    return vec4(function==7 ? 1.0 : 0.0);
+}
+)";
+            result.source += R"(float arrayCoordinate(float v,int mode) {
     if(mode==0) return fract(v);
     if(mode==1) { float t=mod(v,2.0); return t>1.0 ? 2.0-t : t; }
     return clamp(v,0.0,1.0);

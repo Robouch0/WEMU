@@ -20,6 +20,7 @@ namespace Core::Gfx::Latte {
             TextureType type{TextureType::TwoD};
             bool implicitLod{};
             bool explicitLod{};
+            bool derivativeLod{}; // SAMPLE coordinates proven available across the whole quad.
     };
 
     struct FragmentShader {

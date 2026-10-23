@@ -113,6 +113,29 @@ namespace Core::Gfx {
             return result;
         }
 
+        TextureBlockFormat textureBlockFormat(unsigned format)
+        {
+            switch (format) {
+                case 0x31:
+                case 0x431:
+                    return TextureBlockFormat::BC1;
+                case 0x32:
+                    return TextureBlockFormat::BC2;
+                case 0x33:
+                    return TextureBlockFormat::BC3;
+                case 0x34:
+                    return TextureBlockFormat::BC4;
+                case 0x35:
+                    return TextureBlockFormat::BC5;
+                case 0x234:
+                    return TextureBlockFormat::BC4Signed;
+                case 0x235:
+                    return TextureBlockFormat::BC5Signed;
+                default:
+                    return TextureBlockFormat::None;
+            }
+        }
+
         std::uint8_t byteFromUnit(const double v) { return unitByte(v); }
 
         float interpolateValue(float a, float b, float c, float w0, float w1, float w2)
@@ -965,9 +988,14 @@ namespace Core::Gfx {
         return view;
     }
 
-    std::shared_ptr<Gx2Replayer::MipSnapshot> Gx2Replayer::mipSnapshot(const Surface &surface, bool includeMips)
+    std::shared_ptr<Gx2Replayer::MipSnapshot> Gx2Replayer::mipSnapshot(const Surface &requestedSurface, bool includeMips, bool blocksOnly)
     {
+        auto surface = requestedSurface;
+        if (blocksOnly)
+            surface.compMap = 0; // Compressed bytes can be shared by differently mapped views.
         const auto format = surface.format & 0x3Fu;
+        if (blocksOnly && (surface.dimension != 1 || textureBlockFormat(surface.format) == TextureBlockFormat::None))
+            return {};
         const bool knownUnorm =
                 !(surface.format & 0x300u) && (format == 1 || format == 7 || format == 8 || format == 0x1A || (format >= 0x31 && format <= 0x35));
         if (!knownUnorm && surface.format != 0x234 && surface.format != 0x235 && surface.format != 0x80E && surface.format != 0x816 &&
@@ -980,34 +1008,55 @@ namespace Core::Gfx {
         const auto count = includeMips ? std::min(surface.viewMipCount ? surface.viewMipCount : std::max(1u, surface.mipCount),
                                                   std::max(1u, surface.mipCount) - surface.firstMip)
                                        : 1u;
-        constexpr std::uint64_t budget = 64ull * 1024 * 1024;
+        constexpr std::uint64_t budget = 256ull * 1024 * 1024;
+        const std::uint64_t entryBudget = blocksOnly ? budget : 64ull * 1024 * 1024;
         std::vector<Surface> levels, slices;
         std::uint64_t generation = 0, decodedBytes = 0;
         const auto overlaps = [](unsigned base, std::uint64_t size, unsigned other, std::uint64_t otherSize) {
             return std::uint64_t(base) < std::uint64_t(other) + otherSize && std::uint64_t(other) < std::uint64_t(base) + size;
         };
         const auto colorBytes = std::uint64_t(m_color.pitch) * m_color.height * colorElementBytes(colorFormat(m_color.format));
-        // A snapshot already validated this frame stays valid while no slice was written since and
-        // the bound target does not alias it. Checking its stored ranges avoids rebuilding every
-        // level and slice view (AddrLib layouts) on each of the hundreds of lookups per frame.
-        const auto validatedThisFrame = [&](const std::shared_ptr<MipSnapshot> &entry) {
-            if (!entry || entry->surface != surface || entry->levelCount != count || entry->validatedFrame != m_presentCount ||
-                entry->sliceRanges.empty())
+        // Reuse validated views while their guest bytes and rendered slices are unchanged.
+        // Stored ranges avoid rebuilding every level/slice layout per draw. Write generations
+        // skip full byte comparisons between the staggered rechecks of writable views.
+        const auto validatedSnapshot = [&](const std::shared_ptr<MipSnapshot> &entry) {
+            if (!entry || entry->surface != surface || entry->levelCount != count || entry->blocksOnly != blocksOnly || entry->sliceRanges.empty())
                 return false;
-            std::uint64_t current = 0;
-            for (const auto &[pointer, size]: entry->sliceRanges) {
-                if (const auto written = m_cpuWrittenSurfaces.find(pointer); written != m_cpuWrittenSurfaces.end())
-                    current = (current ^ written->second.writes ^ pointer) * 1099511628211ull;
-                if (overlaps(pointer, size, m_color.imagePtr, colorBytes))
+            // Written surfaces remain in the table for the replayer lifetime.
+            // Absent render backings stay absent until a new surface is inserted.
+            // Avoid one hash lookup per mip on every read of immutable guest chains.
+            const bool guestOnly = !entry->hasRenderedSources && entry->writtenSurfaceCount == m_cpuWrittenSurfaces.size() &&
+                                   !overlaps(surface.imagePtr, surface.imageSize, m_color.imagePtr, colorBytes) &&
+                                   !overlaps(surface.mipImagePtr, surface.mipImageSize, m_color.imagePtr, colorBytes);
+            if (!guestOnly) {
+                std::uint64_t current = 0;
+                bool rendered = false;
+                for (const auto &[pointer, size]: entry->sliceRanges) {
+                    if (const auto written = m_cpuWrittenSurfaces.find(pointer); written != m_cpuWrittenSurfaces.end()) {
+                        current = (current ^ written->second.writes ^ pointer) * 1099511628211ull;
+                        rendered = true;
+                    }
+                    if (overlaps(pointer, size, m_color.imagePtr, colorBytes))
+                        return false;
+                }
+                if (current != entry->generation)
                     return false;
+                entry->hasRenderedSources = rendered;
+                entry->writtenSurfaceCount = m_cpuWrittenSurfaces.size();
             }
-            return current == entry->generation;
+            if (entry->validatedFrame == m_presentCount)
+                return true;
+            if (unchangedSinceValidation(entry->baseWrites, surface.imagePtr, surface.imageSize, surface.imagePtr >> 12) &&
+                (!(count > 1 || surface.firstMip) ||
+                 unchangedSinceValidation(entry->mipWrites, surface.mipImagePtr, surface.mipImageSize, surface.mipImagePtr >> 12))) {
+                entry->validatedFrame = m_presentCount;
+                return true;
+            }
+            return false;
         };
-        for (const auto &entry: m_mipSnapshots)
-            if (validatedThisFrame(entry))
-                return entry;
-        for (const auto &weak: m_retainedMipSnapshots)
-            if (auto entry = weak.lock(); validatedThisFrame(entry))
+        const auto retained = m_retainedMipSnapshots.equal_range(surface.imagePtr);
+        for (auto it = retained.first; it != retained.second; ++it)
+            if (auto entry = it->second.lock(); validatedSnapshot(entry))
                 return entry;
         bool feedback = false;
         for (unsigned level = 0; level < count; ++level) {
@@ -1019,8 +1068,9 @@ namespace Core::Gfx {
             if (view.dimension == 3)
                 view.dimension = 5;
             levels.push_back(view);
-            decodedBytes += std::uint64_t(view.width) * view.height * surface.sliceCount * 16;
-            if (decodedBytes > budget)
+            decodedBytes += blocksOnly ? std::uint64_t((view.width + 3) / 4) * ((view.height + 3) / 4) * (format == 0x31 || format == 0x34 ? 8 : 16)
+                                       : std::uint64_t(view.width) * view.height * surface.sliceCount * 16;
+            if (decodedBytes > entryBudget)
                 return {};
             for (unsigned layer = 0; layer < surface.sliceCount; ++layer) {
                 const auto slice = view.dimension == 5 ? arraySlice(view, layer) : std::optional{view};
@@ -1035,49 +1085,69 @@ namespace Core::Gfx {
             }
         }
         const auto rawSize = std::uint64_t(surface.imageSize) + (count > 1 || surface.firstMip ? surface.mipImageSize : 0);
-        if (rawSize + decodedBytes > budget)
+        if (rawSize + decodedBytes > entryBudget)
             return {};
         std::shared_ptr<MipSnapshot> previous;
         for (const auto &entry: m_mipSnapshots)
-            if (entry->surface == surface && entry->levelCount == count && entry->generation == generation) {
+            if (entry->surface == surface && entry->levelCount == count && entry->blocksOnly == blocksOnly && entry->generation == generation) {
                 previous = entry;
                 if (!feedback && entry->validatedFrame == m_presentCount)
                     return entry;
                 break;
             }
         if (!previous && !feedback)
-            for (const auto &weak: m_retainedMipSnapshots)
-                if (auto entry = weak.lock(); entry && entry->surface == surface && entry->levelCount == count && entry->generation == generation) {
+            for (auto it = retained.first; it != retained.second; ++it)
+                if (auto entry = it->second.lock(); entry && entry->surface == surface && entry->levelCount == count &&
+                                                    entry->blocksOnly == blocksOnly && entry->generation == generation) {
                     previous = entry;
                     if (entry->validatedFrame == m_presentCount)
                         return entry;
                     break;
                 }
-        std::vector<std::uint8_t> source;
-        const auto append = [&](unsigned pointer, unsigned size) {
-            const auto *bytes = m_mem->hostPtr(pointer, size);
-            if (!bytes || !size)
-                return false;
-            source.insert(source.end(), bytes, bytes + size);
-            return true;
-        };
-        if (!append(surface.imagePtr, surface.imageSize) || ((count > 1 || surface.firstMip) && !append(surface.mipImagePtr, surface.mipImageSize)))
+        const auto *baseBytes = m_mem->hostPtr(surface.imagePtr, surface.imageSize);
+        const bool hasMips = count > 1 || surface.firstMip;
+        const auto *mipBytes = hasMips ? m_mem->hostPtr(surface.mipImagePtr, surface.mipImageSize) : nullptr;
+        if (!baseBytes || (hasMips && !mipBytes))
             return {};
-        if (previous && !feedback && previous->source == source) {
+        if (previous && !feedback && previous->source.size() == rawSize && std::memcmp(previous->source.data(), baseBytes, surface.imageSize) == 0 &&
+            (!hasMips || std::memcmp(previous->source.data() + surface.imageSize, mipBytes, surface.mipImageSize) == 0)) {
             previous->validatedFrame = m_presentCount;
+            validated(previous->baseWrites, surface.imagePtr, surface.imageSize, true);
+            if (hasMips)
+                validated(previous->mipWrites, surface.mipImagePtr, surface.mipImageSize, true);
             return previous;
         }
+        // Rechecks of unchanged bytes do not allocate/copy entire mip chains.
+        std::vector<std::uint8_t> source;
+        source.reserve(std::size_t(rawSize));
+        source.insert(source.end(), baseBytes, baseBytes + surface.imageSize);
+        if (hasMips)
+            source.insert(source.end(), mipBytes, mipBytes + surface.mipImageSize);
         auto result = std::make_shared<MipSnapshot>();
         result->surface = surface;
+        result->blocksOnly = blocksOnly;
+        validated(result->baseWrites, surface.imagePtr, surface.imageSize, false);
+        if (count > 1 || surface.firstMip)
+            validated(result->mipWrites, surface.mipImagePtr, surface.mipImageSize, false);
         result->levelCount = count;
         result->validatedFrame = m_presentCount;
         result->generation = generation;
-        for (const auto &slice: slices)
+        result->writtenSurfaceCount = m_cpuWrittenSurfaces.size();
+        for (const auto &slice: slices) {
             result->sliceRanges.emplace_back(slice.imagePtr, slice.imageSize);
+            result->hasRenderedSources |= m_cpuWrittenSurfaces.contains(slice.imagePtr);
+        }
         result->source = std::move(source);
         result->levels = std::move(levels);
         for (unsigned level = 0; level < count; ++level) {
             const auto &view = result->levels[level];
+            if (blocksOnly) {
+                const auto decoded = decodedTexture(slices[level], true);
+                if (!decoded)
+                    return {};
+                result->blockTexels.push_back(decoded->blocks);
+                continue;
+            }
             auto &values = result->texels.emplace_back();
             values.reserve(std::size_t(view.width) * view.height * surface.sliceCount * 4);
             for (unsigned layer = 0; layer < surface.sliceCount; ++layer) {
@@ -1091,28 +1161,26 @@ namespace Core::Gfx {
             }
         }
         for (unsigned level = 1; level < count; ++level)
-            result->mips.push_back({result->levels[level].width, result->levels[level].height, result->texels[level]});
+            result->mips.push_back({result->levels[level].width, result->levels[level].height,
+                                    blocksOnly ? std::span<const float>{} : result->texels[level],
+                                    blocksOnly ? std::span<const std::uint8_t>(result->blockTexels[level]) : std::span<const std::uint8_t>{}});
         if (!feedback) {
-            std::erase_if(m_mipSnapshots, [&](const auto &entry) { return entry->surface == surface && entry->levelCount == count; });
+            std::erase_if(m_mipSnapshots, [&](const auto &entry) {
+                return entry->surface == surface && entry->levelCount == count && entry->blocksOnly == blocksOnly;
+            });
             auto bytes = decodedBytes + rawSize;
             for (const auto &entry: m_mipSnapshots) {
-                bytes += entry->source.size();
-                for (const auto &mip: entry->texels)
-                    bytes += mip.size() * sizeof(float);
+                bytes += entry->bytes();
             }
-            while (!m_mipSnapshots.empty() && (bytes > budget || m_mipSnapshots.size() >= 16)) {
-                bytes -= m_mipSnapshots.front()->source.size();
-                for (const auto &mip: m_mipSnapshots.front()->texels)
-                    bytes -= mip.size() * sizeof(float);
+            while (!m_mipSnapshots.empty() && (bytes > budget || m_mipSnapshots.size() >= 512)) {
+                bytes -= m_mipSnapshots.front()->bytes();
                 m_mipSnapshots.erase(m_mipSnapshots.begin());
             }
             m_mipSnapshots.push_back(result);
-            if (m_retainedMipSnapshots.size() >= 256) {
-                std::erase_if(m_retainedMipSnapshots, [](const auto &entry) { return entry.expired(); });
-                if (m_retainedMipSnapshots.size() >= 256)
-                    m_retainedMipSnapshots.clear();
-            }
-            m_retainedMipSnapshots.push_back(result);
+            if (m_retainedMipSnapshots.size() >= 4096)
+                std::erase_if(m_retainedMipSnapshots, [](const auto &entry) { return entry.second.expired(); });
+            if (m_retainedMipSnapshots.size() < 4096)
+                m_retainedMipSnapshots.emplace(surface.imagePtr, result);
         }
         return result;
     }
@@ -1272,7 +1340,7 @@ namespace Core::Gfx {
         constexpr std::uint64_t entryBudget = 128ull * 1024 * 1024;
         const bool signedBc = surface.format == 0x234 || surface.format == 0x235;
         const bool blockFormat = surface.format == 0x31 || surface.format == 0x431 || surface.format == 0x32 || surface.format == 0x33 ||
-                                 surface.format == 0x34 || signedBc;
+                                 surface.format == 0x34 || surface.format == 0x35 || signedBc;
         if ((blocksOnly && !blockFormat) ||
             (floatTexels && (blocksOnly || (colorFormat(surface.format) == ColorFormat::RGBA8 && surface.format != 0xF))))
             return {};
@@ -1280,7 +1348,7 @@ namespace Core::Gfx {
         const std::uint64_t pixels = std::uint64_t(surface.width) * surface.height;
         if (!blocksOnly && pixels > entryBudget / (floating ? 16 : 4))
             return {};
-        const unsigned blockBytes = surface.format == 0x235 || surface.format == 0x32 || surface.format == 0x33 ? 16 : 8;
+        const unsigned blockBytes = surface.format == 0x235 || surface.format == 0x35 || surface.format == 0x32 || surface.format == 0x33 ? 16 : 8;
         const std::uint64_t bytes = blocksOnly ? ((std::uint64_t(surface.width) + 3) / 4) * ((std::uint64_t(surface.height) + 3) / 4) * blockBytes
                                                : pixels * (floating ? 16 : 4);
         if (!m_mem || !surface.imagePtr || !surface.imageSize || !surface.width || !surface.height || bytes > entryBudget ||
@@ -1374,10 +1442,11 @@ namespace Core::Gfx {
                                     } else if (block) {
                                         if (format == 0x34) {
                                             const auto value = decodeBc4Value(block, pixel);
-                                            std::fill_n(rgba[pixel], 4, value);
+                                            const std::array<std::uint8_t, 4> raw{value, 0, 0, 255};
+                                            std::copy(raw.begin(), raw.end(), rgba[pixel]);
                                         } else if (format == 0x35) {
                                             const auto r = decodeBc4Value(block, pixel), g = decodeBc4Value(block + 8, pixel);
-                                            const std::array<std::uint8_t, 4> raw{r, g, 0, std::max(r, g)};
+                                            const std::array<std::uint8_t, 4> raw{r, g, 0, 255};
                                             std::copy(raw.begin(), raw.end(), rgba[pixel]);
                                         } else if (format == 0x32) {
                                             const auto alpha = (block[pixel / 2] >> ((pixel % 2) * 4)) & 15;
@@ -2014,13 +2083,13 @@ namespace Core::Gfx {
                 return {128, 128, 128, 255};
             if (fmt == 0x34) { // BC4: one channel
                 const std::uint8_t g = decodeBc4Value(block, (ty & 3) * 4 + (tx & 3));
-                return {g, g, g, g};
+                return {g, 0, 0, 255};
             }
             if (fmt == 0x35) { // BC5: two BC4 channels
                 const std::uint32_t pixel = (ty & 3) * 4 + (tx & 3);
                 const std::uint8_t r = decodeBc4Value(block, pixel);
                 const std::uint8_t g = decodeBc4Value(block + 8, pixel);
-                return {r, g, 0, std::max(r, g)};
+                return {r, g, 0, 255};
             }
             std::uint8_t texels[16][4];
             decodeBc1Block(block + ((fmt == 0x32 || fmt == 0x33) ? 8 : 0), texels, fmt != 0x31);
@@ -4742,6 +4811,23 @@ namespace Core::Gfx {
                         continue;
                     }
                 }
+                if (!vertexBinding && binding.derivativeLod && !shader.requiresDerivativeFreeSampling &&
+                    ((boundSamplers[binding.sampler].regs[0] >> 17) & 3) && surface.mipCount > 1 && m_rasterBackend->supportsBlockTextures() &&
+                    textureBlockFormat(surface.format) != TextureBlockFormat::None) {
+                    if (auto snapshot = mipSnapshot(surface, true, true)) {
+                        const auto &base = snapshot->levels.front();
+                        textures.push_back({binding, base.width, base.height, boundSamplers[binding.sampler],
+                                            [](unsigned, unsigned) { return std::array<float, 4>{}; }});
+                        textures.back().blocks = snapshot->blockTexels.front();
+                        textures.back().blockFormat = textureBlockFormat(surface.format);
+                        textures.back().unorm8Map = surface.compMap;
+                        textures.back().mips = snapshot->mips;
+                        textures.back().sourceMipCount = snapshot->levelCount;
+                        textures.back().snapshotOwner = snapshot;
+                        mipTextures.push_back(std::move(snapshot));
+                        continue;
+                    }
+                }
                 if (!vertexBinding && (surface.dimension == 3 || binding.explicitLod ||
                                        (surface.dimension == 5 &&
                                         (surface.format == 0x234 || surface.format == 0x235 || colorFormat(surface.format) != ColorFormat::RGBA8)))) {
@@ -4982,7 +5068,7 @@ namespace Core::Gfx {
                     const bool preferBlocks =
                             !vertexBinding && m_rasterBackend->supportsBlockTextures() &&
                             (surface.format == 0x31 || surface.format == 0x431 || surface.format == 0x32 || surface.format == 0x33 ||
-                             surface.format == 0x34 || surface.format == 0x234 || surface.format == 0x235);
+                             surface.format == 0x34 || surface.format == 0x35 || surface.format == 0x234 || surface.format == 0x235);
                     auto decoded = decodedTexture(surface, preferBlocks);
                     if (!decoded && preferBlocks)
                         decoded = decodedTexture(surface);
@@ -4993,6 +5079,7 @@ namespace Core::Gfx {
                                                           : surface.format == 0x235 ? TextureBlockFormat::BC5Signed
                                                           : format == 0x32          ? TextureBlockFormat::BC2
                                                           : format == 0x33          ? TextureBlockFormat::BC3
+                                                          : format == 0x35          ? TextureBlockFormat::BC5
                                                           : format == 0x34          ? TextureBlockFormat::BC4
                                                                                     : TextureBlockFormat::BC1;
                             textures.back().unorm8Map = surface.compMap;
@@ -5075,7 +5162,7 @@ namespace Core::Gfx {
             for (auto &texture: textures) {
                 const auto &surfaces = texture.binding.binding > 17 ? m_vertexTextures : m_pixelTextures;
                 const auto &surface = surfaces[texture.binding.resource];
-                if (!texture.binding.explicitLod)
+                if (!texture.binding.explicitLod && texture.mips.empty())
                     texture.sourceMipCount = surface.imagePtr ? surface.mipCount : 1;
                 texture.sourceFirstMip = surface.firstMip;
             }

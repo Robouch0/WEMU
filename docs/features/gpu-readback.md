@@ -157,6 +157,105 @@ Regression coverage compares software and Vulkan output for padded linear and
 tiled layouts, component mappings, BC2/BC3 endpoint ordering and alpha, and
 rejects truncated compressed payloads.
 
+Unsigned BC5 base levels also remain compressed through the native upload path,
+using 16 bytes per 4x4 block instead of 64 bytes of expanded RGBA8. BC4 and BC5
+supply `(R, 0, 0, 1)` and `(R, G, 0, 1)` before view component mapping. Software
+sampling and cached decoding use the same defaults; the native BC4 view no
+longer replicates red into missing channels. This preserves explicit swizzles
+without inventing texture-dependent alpha. See the
+[Khronos RGTC definitions](https://registry.khronos.org/DataFormat/specs/1.4/dataformat.1.4.pdf).
+The tiled/partial-block/changed-byte regression includes BC5 hardware decoding
+with interpolation tolerances limited to the supplied channels; missing
+channels remain exact.
+
+## Shadow comparison filtering
+
+Native `SAMPLE_C` and `SAMPLE_C_LZ` instructions compare each shadow-map tap
+before linear interpolation. Comparing a filtered depth instead gives a binary
+answer at depth discontinuities, which changes abruptly as geometry moves.
+Point filtering still performs one depth lookup and one comparison. Linear
+filtering uses one texture gather and four comparisons, followed by bilinear
+interpolation in gather component order. Array shadows select their layer
+before gathering. Sampler addressing and border substitution still apply to
+each tap, and invalid coordinates compare against the border value.
+
+The regression uses depth discontinuities in 2D and array images, every depth
+comparison function, point/linear filtering, repeated/mirrored/clamped/border
+coordinates, and an independent software sampler over comparison results.
+The depth-test/attachment path is unchanged. This correction adds no draw,
+render pass, intermediate image, or CPU readback. See the
+[Vulkan sampling order](https://docs.vulkan.org/spec/latest/chapters/textures.html).
+
+The initial shadow/channel correction measured 44.63 FPS before and 44.85 FPS
+after in two repeated Mario Kart Stadium race-start probes per build (x64 CPU,
+RTX 4070 Laptop GPU, native rendering, no frame skipping, presents 4200–5500).
+These isolated core-delivery measurements exclude Qt display costs. The
+95th-percentile frame interval was 30.29 ms before and 30.38 ms after. This stage
+alone left blue-road speckling visible.
+
+## Implicit mip sampling for compressed guest textures
+
+Unconditional 2D `SAMPLE` instructions can use screen-space derivatives when the
+lowerer proves the coordinates are available across the whole quad. The native
+sampler selects a mip from the projected footprint, with the guest min/mag
+filters, mip filter, LOD bounds and signed LOD bias. Masked or varying whole-quad
+cases retain the existing base-level path. This pass supplies full mip chains
+for supported BC guest-memory textures; other texture sources retain their
+existing level availability.
+
+BC1/2/3/4/5 and signed BC4/5 levels stay compressed through tiling conversion,
+immutable snapshots and GPU upload. Sub-4x4 tails still occupy one full block.
+Both native submission paths use block extents for staging offsets. Snapshots
+share source bytes across component-mapped views, and changed guest mip bytes
+receive a new upload identity. Indexed weak lookup and write-generation checks
+reuse unchanged chains without rebuilding layouts or decoding pixels. The
+strong mip cache is bounded to 256 MiB and 512 snapshots; decoded float entries
+keep a 64 MiB per-entry limit.
+
+Regression coverage selects each compressed mip level, rejects truncated tails,
+checks footprint selection and positive/negative sampler bias in both native
+submission paths, and verifies upload reuse plus guest stores and writable views
+in command replay. A separate memory regression checks watched-range holes,
+bitmap-word boundaries and stores on either side of a cached range.
+
+## Gameplay upload and cache overhead
+
+Native shader uploads keep the fixed uniform-buffer layout while copying only
+the register prefix the lowerer says can be read, plus the sampler/uniform tail.
+Unused register gaps are left untouched. Hand-written shaders keep the default
+256-register bound, and relative reads retain their conservative bounds. Both
+native submission paths share the copy helper. The regression exercises empty,
+small and full register prefixes, the last register, uniform tails, changing
+values and bundle reuse.
+
+Shared texture lookups build a bounded key on the stack and compare it directly
+against owned cache keys. The cache allocates a persistent key on upload, with
+all view/format/component and mip payload fields preserved. Native format
+capabilities are queried once per device/format. Mip validation compares bytes
+in place before allocating a replacement snapshot. Watched-memory range checks
+validate each 64-page bitmap word once, preserving per-page write counters and
+adding no work to guest stores.
+
+The final warmed, uncapped core-delivery comparison used the saved pre-change
+executable and the new build on an RTX 4070 Laptop GPU with the x64 backend and
+frame skipping disabled. Smash used the scripted fight window 2920–3600; MK8
+used Grand Prix grid/starting traffic 4200–5000. Qt display costs are excluded.
+
+| Probe | FPS before → after | 95th-percentile interval before → after | 99th-percentile interval before → after |
+| --- | --- | --- | --- |
+| Smash fight | 51.85 → 52.11 | 24.97 → 24.29 ms | 31.85 → 29.39 ms |
+| MK8 race start | 39.97 → 41.38 | 29.93 → 29.84 ms | 35.71 → 35.30 ms |
+
+The average Smash gain is modest; its slow-frame intervals improve more than
+its average throughput. An earlier matched MK8 pair measured 39.89 → 40.54 FPS,
+so the exact gain varies between runs. The original build's initial cold Smash
+run had pipeline-compilation spikes and is excluded from this warmed table.
+Four captures per game remained pixel-identical between the visual
+candidate and the later upload/cache optimizations. Course-intro captures show
+substantially reduced blue-road speckling with mip sampling. The race probe
+covers starting traffic and a short straight, rather than a complete lap or
+all glider/collision/particle effects.
+
 ## Reduce scanout and desktop frame copies
 
 CPU scanout clears only pixels outside the rectangle its next copy overwrites.
