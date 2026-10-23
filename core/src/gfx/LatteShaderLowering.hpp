@@ -49,6 +49,9 @@ namespace Core::Gfx::Latte {
             };
             std::vector<UniformBuffer> uniformBuffers;
             unsigned parameterMask{};
+            // Compute stream-output metadata; zero for ordinary graphics stages.
+            unsigned streamBufferMask{};
+            std::array<unsigned, 4> streamStrides{};
             // Constant registers u.c[0, constantRegisters) the program may read; hand-written
             // shaders keep the whole file.
             unsigned constantRegisters{256};
@@ -78,6 +81,10 @@ namespace Core::Gfx::Latte {
                                        unsigned colorExport = 0);
     struct VertexShader : FragmentShader {};
     using UniformBufferWindows = std::array<unsigned, 16>;
+    // Compute form of an unmasked, uniform-buffer-only vertex stream-output pass.
+    // Strides are bytes; partial component writes preserve the supplied output bytes.
+    FragmentShader lowerStreamOutShader(const Program &program, const std::array<unsigned, 4> &strides,
+                                        const UniformBufferWindows &bufferWindows = {});
     // bufferWindow: vectors per dynamically indexed uniform block (0: the shared default budget).
     VertexShader lowerVertexShader(const Program &program, std::span<const TextureType> resourceTypes = {}, unsigned bufferWindow = 0,
                                    const UniformBufferWindows &bufferWindows = {});

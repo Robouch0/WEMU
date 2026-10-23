@@ -41,6 +41,136 @@ namespace {
     }
 } // namespace
 
+TEST(LatteStreamOutTest, ComputePaletteFetchPreservesMasksRawWordsAndChangedInputs)
+{
+    if (!std::getenv("WEMU_TEST_VULKAN"))
+        GTEST_SKIP();
+    auto words = paletteProgram();
+    words[4] = 0;
+    words[5] = (0x21u << 23) | (1u << 12);
+    words[6] = 1u | (2u << 15);
+    words[7] = (0x20u << 23) | (1u << 21) | (5u << 12) | 3u;
+    const auto program = Latte::decodeProgram(words);
+    Latte::UniformBufferWindows windows{};
+    windows[1] = 1024;
+    const auto shader = Latte::lowerStreamOutShader(*program, {24, 4, 0, 0}, windows);
+    ASSERT_TRUE(shader) << shader.error;
+    EXPECT_EQ(shader.streamBufferMask, 3u);
+    VulkanRasterBackend backend;
+    for (unsigned count: {1u, 65u, 131u, 3u}) {
+        SCOPED_TRACE(count);
+        std::array<std::array<float, 4>, 1024> palette{};
+        for (unsigned i = 0; i < palette.size(); ++i)
+            palette[i] = {float(i) / 8.f, float(i) / 16.f, -float(i) / 32.f, 1.f};
+        for (unsigned pass = 0; pass < 2; ++pass) {
+            SCOPED_TRACE(pass);
+            if (pass)
+                for (auto &value: palette)
+                    value[0] += .5f;
+            const LatteVsInterp::KcacheFetch constants = [&](unsigned bank, unsigned index, unsigned channel) {
+                return bank == 1 && index < palette.size() ? palette[index][channel] : 0.f;
+            };
+            std::vector<std::array<float, 4>> attributes(count);
+            for (unsigned i = 0; i < count; ++i)
+                attributes[i][0] = std::bit_cast<float>(200u + i + pass);
+            std::vector<float> uniforms;
+            for (const auto &ref: shader.uniforms)
+                for (unsigned c = 0; c < 4; ++c)
+                    uniforms.push_back(constants(ref.bank, ref.index, c));
+            std::array<std::vector<std::uint8_t>, 4> buffers;
+            buffers[0].assign(count * 24, 0xCD);
+            buffers[1].assign(count * 4, 0xAB);
+            auto expected = buffers;
+            for (unsigned i = 0; i < count; ++i) {
+                const auto result = LatteVsInterp::runVertex(*program, std::span(attributes).subspan(i, 1), nullptr, 0, constants, {}, 37 + i);
+                ASSERT_TRUE(result.completed);
+                for (const auto &write: result.streamWrites)
+                    for (unsigned c = 0; c < 4; ++c)
+                        if (write.mask & (1u << c)) {
+                            const auto offset = i * shader.streamStrides[write.buffer] + (write.offset + c) * 4;
+                            const auto bits = std::bit_cast<unsigned>(write.value[c]);
+                            for (unsigned b = 0; b < 4; ++b)
+                                expected[write.buffer][offset + b] = bits >> (b * 8);
+                        }
+            }
+            StreamOutDraw draw{shader, attributes, count, 37, 1, {}, uniforms, {}};
+            for (unsigned i = 0; i < 4; ++i)
+                draw.buffers[i] = buffers[i];
+            const auto result = backend.streamOut(draw);
+            ASSERT_TRUE(result) << backend.lastError();
+            EXPECT_EQ(result->usedMask, 3u);
+            EXPECT_EQ(result->buffers, expected);
+            EXPECT_NE(buffers, expected); // Borrowed outputs remain unchanged.
+            draw.buffers[0] = std::span(buffers[0]).first(buffers[0].size() - 1);
+            EXPECT_FALSE(backend.streamOut(draw));
+            EXPECT_EQ(buffers[0], std::vector<std::uint8_t>(count * 24, 0xCD));
+        }
+    }
+}
+
+TEST(LatteStreamOutTest, PreservesSpecialFloatBitsAndWrappedSystemIndices)
+{
+    if (!std::getenv("WEMU_TEST_VULKAN"))
+        GTEST_SKIP();
+    const auto program =
+            Latte::decodeProgram({1u << 15, (0x20u << 23) | (15u << 12) | 3u, 0, (0x21u << 23) | (1u << 12), 0, (0x22u << 23) | (1u << 21) | 3u});
+    const auto shader = Latte::lowerStreamOutShader(*program, {16, 4, 8, 0});
+    ASSERT_TRUE(shader) << shader.error;
+    std::vector<std::array<float, 4>> attributes(67);
+    const std::array<unsigned, 4> bits{0x80000000u, 0x7F800000u, 0x7FC01234u, 0x00000123u};
+    for (auto &attribute: attributes)
+        for (unsigned c = 0; c < 4; ++c)
+            attribute[c] = std::bit_cast<float>(bits[c]);
+    std::vector<std::uint8_t> first(attributes.size() * 16, 0xCD), second(attributes.size() * 4, 0xAB), masked(attributes.size() * 8, 0xEF);
+    StreamOutDraw draw{
+            shader, attributes, unsigned(attributes.size()), 0xFFFFFFF0u, 1, {}, {}, {std::span(first), std::span(second), std::span(masked), {}}};
+    VulkanRasterBackend backend;
+    const auto result = backend.streamOut(draw);
+    ASSERT_TRUE(result) << backend.lastError();
+    EXPECT_EQ(result->usedMask, 7u);
+    EXPECT_EQ(result->buffers[2], masked);
+    for (unsigned i = 0; i < attributes.size(); ++i) {
+        for (unsigned c = 0; c < 4; ++c)
+            for (unsigned b = 0; b < 4; ++b)
+                EXPECT_EQ(result->buffers[0][i * 16 + c * 4 + b], std::uint8_t(bits[c] >> (b * 8)));
+        for (unsigned b = 0; b < 4; ++b)
+            EXPECT_EQ(result->buffers[1][i * 4 + b], std::uint8_t((draw.first + i) >> (b * 8)));
+    }
+    EXPECT_EQ(first, std::vector<std::uint8_t>(attributes.size() * 16, 0xCD));
+    draw.inputCount = 17;
+    EXPECT_FALSE(backend.streamOut(draw));
+    draw.inputCount = 1;
+    draw.count = 0;
+    EXPECT_FALSE(backend.streamOut(draw));
+}
+
+TEST(LatteStreamOutTest, RejectsUnsafeExportsTextureSamplingAndControlMasks)
+{
+    using namespace Latte;
+    const std::vector<unsigned> words{1u << 15, (0x20u << 23) | (1u << 21) | (5u << 12) | 3u};
+    EXPECT_TRUE(lowerStreamOutShader(*decodeProgram(words), {16, 0, 0, 0}));
+    EXPECT_FALSE(lowerStreamOutShader(*decodeProgram(words), {8, 0, 0, 0}));
+    EXPECT_FALSE(lowerStreamOutShader(*decodeProgram(words), {15, 0, 0, 0}));
+    for (unsigned bit: {22u, 23u}) {
+        auto invalid = words;
+        invalid[0] |= 1u << bit;
+        EXPECT_FALSE(lowerStreamOutShader(*decodeProgram(invalid), {16, 0, 0, 0}));
+    }
+    for (unsigned bit: {2u, 17u}) {
+        auto invalid = words;
+        invalid[1] |= 1u << bit;
+        EXPECT_FALSE(lowerStreamOutShader(*decodeProgram(invalid), {16, 0, 0, 0}));
+    }
+    const std::vector<unsigned> masked{
+            2, 9u << 26, 1u << 15, (0x20u << 23) | (1u << 21) | (5u << 12) | 3u, 0x80000000u | SRC_1, (OP2_MOV << 7) | 16u};
+    EXPECT_FALSE(lowerStreamOutShader(*decodeProgram(masked), {16, 0, 0, 0}));
+    auto sampled = paletteProgram();
+    sampled[12] = (sampled[12] & ~31u) | 0x13u;
+    sampled[6] = 2u << 15;
+    sampled[7] = (0x20u << 23) | (1u << 21) | (15u << 12) | 3u;
+    EXPECT_FALSE(lowerStreamOutShader(*decodeProgram(sampled), {16, 0, 0, 0}));
+}
+
 TEST(LatteBufferTest, IndexedPaletteFetchMatchesNativeVertexExecution)
 {
     std::array<std::array<float, 4>, 12> palette{};

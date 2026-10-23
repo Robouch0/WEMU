@@ -24,6 +24,8 @@ namespace Core::Gfx {
             bool supportsFloatTargets() const override { return true; }
             bool supportsVertexStage() const override { return true; }
             bool supportsBlockTextures() const override { return true; }
+            bool supportsStreamOut() const override { return true; }
+            std::optional<StreamOutResult> streamOut(const StreamOutDraw &draw) override;
             bool supportsRenderedMipLevels() const override;
             const std::string &lastError() const noexcept;
             std::uint64_t completedDraws() const noexcept;

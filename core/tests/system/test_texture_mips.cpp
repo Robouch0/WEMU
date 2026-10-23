@@ -350,31 +350,39 @@ TEST(VulkanCubeTest, CompressedBaseLevelValidatesPayloadAndKeepsViewMapping)
             *decodeProgram({2, CF_TEX << 23, 0, (CF_EXP_DONE << 23) | (1u << 21) | 0x688u, 0x10, 0x30000000u | (0x688u << 9), 1u << 23, 0}));
     ASSERT_TRUE(shader) << shader.error;
     ASSERT_EQ(shader.textures.size(), 1u);
-    std::array<std::uint8_t, 32> blocks{};
-    for (unsigned i = 0; i < blocks.size(); i += 8)
-        blocks[i] = blocks[i + 1] = 255; // White endpoint, palette index zero.
-    std::array<RasterDraw::Texture, 1> textures{{{shader.textures[0], 7, 5, {}, [](unsigned, unsigned) { return std::array<float, 4>{}; }}}};
-    textures[0].blocks = blocks;
-    textures[0].blockFormat = TextureBlockFormat::BC1;
-    std::array<RasterDraw::Vertex, 1> vertices{{{.5f, .5f, {{{.5f, .5f, 0, 1}}}}}};
-    std::array<std::uint8_t, 4> target{};
-    RasterDraw draw{shader, vertices, {}, textures, target, 1, 1, 1, {0, 0, 1, 1}, 15, {}};
-    draw.topology = RasterDraw::Topology::Points;
-    VulkanRasterBackend backend;
-    auto result = backend.render(draw);
-    ASSERT_TRUE(result) << backend.lastError();
-    EXPECT_EQ(result->rgba, (std::vector<std::uint8_t>{255, 255, 255, 255}));
-    textures[0].unorm8Map = 0x04050100; // ZERO, ONE, G, R.
-    result = backend.render(draw);
-    ASSERT_TRUE(result) << backend.lastError();
-    EXPECT_EQ(result->rgba, (std::vector<std::uint8_t>{0, 255, 255, 255}));
-    textures[0].blocks = std::span(blocks).first(31);
-    EXPECT_FALSE(backend.render(draw)); // Partial block is never submitted.
-    textures[0].blocks = blocks;
-    textures[0].unorm8 = target;
-    EXPECT_FALSE(backend.render(draw)); // Ambiguous representations are rejected.
-    textures[0].unorm8 = {};
-    textures[0].blockFormat = TextureBlockFormat::None;
-    EXPECT_FALSE(backend.render(draw));
-    EXPECT_EQ(backend.completedDraws(), 2u);
+    for (const auto format: {TextureBlockFormat::BC1, TextureBlockFormat::BC2, TextureBlockFormat::BC3}) {
+        SCOPED_TRACE(unsigned(format));
+        const unsigned blockBytes = format == TextureBlockFormat::BC1 ? 8 : 16;
+        std::vector<std::uint8_t> blocks(4 * blockBytes);
+        for (unsigned i = 0; i < blocks.size(); i += blockBytes) {
+            if (blockBytes == 16)
+                std::fill_n(blocks.begin() + i, 8, 255); // Opaque alpha.
+            const unsigned color = i + (blockBytes == 16 ? 8 : 0);
+            blocks[color] = blocks[color + 1] = 255; // White endpoint, palette index zero.
+        }
+        std::array<RasterDraw::Texture, 1> textures{{{shader.textures[0], 7, 5, {}, [](unsigned, unsigned) { return std::array<float, 4>{}; }}}};
+        textures[0].blocks = blocks;
+        textures[0].blockFormat = format;
+        std::array<RasterDraw::Vertex, 1> vertices{{{.5f, .5f, {{{.5f, .5f, 0, 1}}}}}};
+        std::array<std::uint8_t, 4> target{};
+        RasterDraw draw{shader, vertices, {}, textures, target, 1, 1, 1, {0, 0, 1, 1}, 15, {}};
+        draw.topology = RasterDraw::Topology::Points;
+        VulkanRasterBackend backend;
+        auto result = backend.render(draw);
+        ASSERT_TRUE(result) << backend.lastError();
+        EXPECT_EQ(result->rgba, (std::vector<std::uint8_t>{255, 255, 255, 255}));
+        textures[0].unorm8Map = 0x04050100; // ZERO, ONE, G, R.
+        result = backend.render(draw);
+        ASSERT_TRUE(result) << backend.lastError();
+        EXPECT_EQ(result->rgba, (std::vector<std::uint8_t>{0, 255, 255, 255}));
+        textures[0].blocks = std::span(blocks).first(blocks.size() - 1);
+        EXPECT_FALSE(backend.render(draw)); // Partial block is never submitted.
+        textures[0].blocks = blocks;
+        textures[0].unorm8 = target;
+        EXPECT_FALSE(backend.render(draw)); // Ambiguous representations are rejected.
+        textures[0].unorm8 = {};
+        textures[0].blockFormat = TextureBlockFormat::None;
+        EXPECT_FALSE(backend.render(draw));
+        EXPECT_EQ(backend.completedDraws(), 2u);
+    }
 }

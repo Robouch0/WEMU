@@ -185,6 +185,10 @@ namespace Core::Gfx {
             switch (format) {
                 case TextureBlockFormat::BC1:
                     return VK_FORMAT_BC1_RGBA_UNORM_BLOCK;
+                case TextureBlockFormat::BC2:
+                    return VK_FORMAT_BC2_UNORM_BLOCK;
+                case TextureBlockFormat::BC3:
+                    return VK_FORMAT_BC3_UNORM_BLOCK;
                 case TextureBlockFormat::BC4:
                     return VK_FORMAT_BC4_UNORM_BLOCK;
                 case TextureBlockFormat::BC4Signed:
@@ -197,7 +201,7 @@ namespace Core::Gfx {
         }
         unsigned blockElementBytes(VkFormat format)
         {
-            if (format == VK_FORMAT_BC5_SNORM_BLOCK)
+            if (format == VK_FORMAT_BC5_SNORM_BLOCK || format == VK_FORMAT_BC2_UNORM_BLOCK || format == VK_FORMAT_BC3_UNORM_BLOCK)
                 return 16;
             return format == VK_FORMAT_BC1_RGBA_UNORM_BLOCK || format == VK_FORMAT_BC4_UNORM_BLOCK || format == VK_FORMAT_BC4_SNORM_BLOCK ? 8 : 0;
         }
@@ -747,6 +751,226 @@ void main() {
                     const auto created = vkCreateComputePipelines(device, pipelineCache, 1, &pipelineInfo, nullptr, &depthQuantizePipeline);
                     vkDestroyShaderModule(device, shader, nullptr);
                     check(created, "create depth quantizer pipeline");
+                }
+        };
+
+        // Synchronous compute scratch storage: each dispatch finishes before the
+        // next upload, descriptor update, command reset or pipeline eviction.
+        class StreamOutResources {
+                struct Buffer {
+                        VkDevice device{};
+                        VkBuffer buffer{};
+                        VkDeviceMemory memory{};
+                        void *mapped{};
+                        VkDeviceSize size{};
+                        ~Buffer()
+                        {
+                            if (mapped)
+                                vkUnmapMemory(device, memory);
+                            if (buffer)
+                                vkDestroyBuffer(device, buffer, nullptr);
+                            if (memory)
+                                vkFreeMemory(device, memory, nullptr);
+                        }
+                };
+                std::shared_ptr<Context> m_context;
+                std::array<std::unique_ptr<Buffer>, 3> m_buffers;
+                VkDescriptorSetLayout m_setLayout{};
+                VkPipelineLayout m_layout{};
+                VkDescriptorPool m_descriptors{};
+                VkDescriptorSet m_set{};
+                VkCommandPool m_pool{};
+                VkCommandBuffer m_command{};
+                std::map<std::uint64_t, VkPipeline> m_pipelines;
+                void reserve(unsigned slot, VkDeviceSize bytes, VkBufferUsageFlags usage)
+                {
+                    if (m_buffers[slot] && m_buffers[slot]->size >= bytes)
+                        return;
+                    auto value = std::make_unique<Buffer>();
+                    value->device = m_context->device;
+                    value->size = std::bit_ceil(std::max<VkDeviceSize>(16, bytes));
+                    VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+                    info.size = value->size;
+                    info.usage = usage;
+                    check(vkCreateBuffer(value->device, &info, nullptr, &value->buffer), "create stream output buffer");
+                    VkMemoryRequirements requirements{};
+                    vkGetBufferMemoryRequirements(value->device, value->buffer, &requirements);
+                    VkPhysicalDeviceMemoryProperties memory{};
+                    vkGetPhysicalDeviceMemoryProperties(m_context->physical, &memory);
+                    bool found = false;
+                    for (unsigned i = 0; i < memory.memoryTypeCount; ++i) {
+                        constexpr auto flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+                        if (!(requirements.memoryTypeBits & (1u << i)) || (memory.memoryTypes[i].propertyFlags & flags) != flags)
+                            continue;
+                        VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+                        allocation.allocationSize = requirements.size;
+                        allocation.memoryTypeIndex = i;
+                        check(vkAllocateMemory(value->device, &allocation, nullptr, &value->memory), "allocate stream output buffer");
+                        found = true;
+                        break;
+                    }
+                    if (!found)
+                        throw std::runtime_error("No coherent stream output memory");
+                    check(vkBindBufferMemory(value->device, value->buffer, value->memory, 0), "bind stream output buffer");
+                    check(vkMapMemory(value->device, value->memory, 0, value->size, 0, &value->mapped), "map stream output buffer");
+                    m_buffers[slot] = std::move(value);
+                }
+
+            public:
+                explicit StreamOutResources(std::shared_ptr<Context> context) : m_context(std::move(context)) {}
+                ~StreamOutResources()
+                {
+                    const auto device = m_context->device;
+                    for (const auto &[key, pipeline]: m_pipelines)
+                        vkDestroyPipeline(device, pipeline, nullptr);
+                    if (m_pool)
+                        vkDestroyCommandPool(device, m_pool, nullptr);
+                    if (m_descriptors)
+                        vkDestroyDescriptorPool(device, m_descriptors, nullptr);
+                    if (m_layout)
+                        vkDestroyPipelineLayout(device, m_layout, nullptr);
+                    if (m_setLayout)
+                        vkDestroyDescriptorSetLayout(device, m_setLayout, nullptr);
+                }
+                void initialize()
+                {
+                    const auto device = m_context->device;
+                    std::array<VkDescriptorSetLayoutBinding, 3> bindings{};
+                    for (unsigned i = 0; i < 3; ++i)
+                        bindings[i] = {i, i == 0 ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+                                       VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+                    VkDescriptorSetLayoutCreateInfo sets{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+                    sets.bindingCount = bindings.size();
+                    sets.pBindings = bindings.data();
+                    check(vkCreateDescriptorSetLayout(device, &sets, nullptr, &m_setLayout), "create stream output descriptors");
+                    VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT, 0, 32};
+                    VkPipelineLayoutCreateInfo layout{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+                    layout.setLayoutCount = 1;
+                    layout.pSetLayouts = &m_setLayout;
+                    layout.pushConstantRangeCount = 1;
+                    layout.pPushConstantRanges = &push;
+                    check(vkCreatePipelineLayout(device, &layout, nullptr, &m_layout), "create stream output layout");
+                    const VkDescriptorPoolSize sizes[]{{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1}, {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2}};
+                    VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+                    pool.maxSets = 1;
+                    pool.poolSizeCount = 2;
+                    pool.pPoolSizes = sizes;
+                    check(vkCreateDescriptorPool(device, &pool, nullptr, &m_descriptors), "create stream output descriptor pool");
+                    VkDescriptorSetAllocateInfo allocate{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+                    allocate.descriptorPool = m_descriptors;
+                    allocate.descriptorSetCount = 1;
+                    allocate.pSetLayouts = &m_setLayout;
+                    check(vkAllocateDescriptorSets(device, &allocate, &m_set), "allocate stream output descriptors");
+                    VkCommandPoolCreateInfo commands{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+                    commands.queueFamilyIndex = m_context->family;
+                    commands.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+                    check(vkCreateCommandPool(device, &commands, nullptr, &m_pool), "create stream output command pool");
+                    VkCommandBufferAllocateInfo command{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+                    command.commandPool = m_pool;
+                    command.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+                    command.commandBufferCount = 1;
+                    check(vkAllocateCommandBuffers(device, &command, &m_command), "allocate stream output commands");
+                }
+                StreamOutResult run(const StreamOutDraw &draw, const SpirvModule &module)
+                {
+                    const auto device = m_context->device;
+                    auto pipeline = m_pipelines.find(module.id);
+                    if (pipeline == m_pipelines.end()) {
+                        struct Module {
+                                VkDevice device;
+                                VkShaderModule value{};
+                                ~Module()
+                                {
+                                    if (value)
+                                        vkDestroyShaderModule(device, value, nullptr);
+                                }
+                        } shader{device};
+                        VkShaderModuleCreateInfo code{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+                        code.codeSize = module.words.size() * 4;
+                        code.pCode = module.words.data();
+                        check(vkCreateShaderModule(device, &code, nullptr, &shader.value), "create stream output shader");
+                        VkComputePipelineCreateInfo create{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+                        create.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+                        create.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+                        create.stage.module = shader.value;
+                        create.stage.pName = "main";
+                        create.layout = m_layout;
+                        VkPipeline value{};
+                        check(vkCreateComputePipelines(device, m_context->pipelineCache, 1, &create, nullptr, &value),
+                              "create stream output pipeline");
+                        if (m_pipelines.size() >= 128) {
+                            vkDestroyPipeline(device, m_pipelines.begin()->second, nullptr);
+                            m_pipelines.erase(m_pipelines.begin());
+                        }
+                        pipeline = m_pipelines.emplace(module.id, value).first;
+                    }
+                    struct Dispatch {
+                            unsigned count, first, inputs, unused;
+                            std::array<unsigned, 4> offsets;
+                    };
+                    Dispatch dispatch{draw.count, draw.first, draw.inputCount, 0, {}};
+                    VkDeviceSize outputBytes{};
+                    for (unsigned i = 0; i < 4; ++i) {
+                        dispatch.offsets[i] = unsigned(outputBytes / 4);
+                        outputBytes += draw.buffers[i].size();
+                    }
+                    reserve(0, Latte::kStageConstantFloats * sizeof(float), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+                    reserve(1, draw.attributes.size_bytes(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+                    reserve(2, outputBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+                    std::memset(m_buffers[0]->mapped, 0, Latte::kStageConstantFloats * sizeof(float));
+                    if (!draw.registers.empty())
+                        std::memcpy(m_buffers[0]->mapped, draw.registers.data(), draw.registers.size_bytes());
+                    if (!draw.uniforms.empty())
+                        std::memcpy(static_cast<float *>(m_buffers[0]->mapped) + std::size_t(256 + 16 + 16) * 4, draw.uniforms.data(),
+                                    draw.uniforms.size_bytes());
+                    if (!draw.attributes.empty())
+                        std::memcpy(m_buffers[1]->mapped, draw.attributes.data(), draw.attributes.size_bytes());
+                    for (unsigned i = 0; i < 4; ++i)
+                        if (!draw.buffers[i].empty())
+                            std::memcpy(static_cast<std::uint8_t *>(m_buffers[2]->mapped) + std::size_t(dispatch.offsets[i]) * 4,
+                                        draw.buffers[i].data(), draw.buffers[i].size());
+                    std::array<VkDescriptorBufferInfo, 3> buffers{};
+                    std::array<VkWriteDescriptorSet, 3> writes{};
+                    for (unsigned i = 0; i < 3; ++i) {
+                        const VkDeviceSize bytes = i == 0   ? Latte::kStageConstantFloats * sizeof(float)
+                                                   : i == 1 ? draw.attributes.size_bytes()
+                                                            : outputBytes;
+                        buffers[i] = {m_buffers[i]->buffer, 0, std::max<VkDeviceSize>(16, bytes)};
+                        writes[i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+                        writes[i].dstSet = m_set;
+                        writes[i].dstBinding = i;
+                        writes[i].descriptorCount = 1;
+                        writes[i].descriptorType = i == 0 ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                        writes[i].pBufferInfo = &buffers[i];
+                    }
+                    vkUpdateDescriptorSets(device, writes.size(), writes.data(), 0, nullptr);
+                    check(vkResetCommandBuffer(m_command, 0), "reset stream output commands");
+                    VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+                    begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+                    check(vkBeginCommandBuffer(m_command, &begin), "begin stream output commands");
+                    VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+                    barrier.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
+                    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+                    vkCmdPipelineBarrier(m_command, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &barrier, 0, nullptr, 0,
+                                         nullptr);
+                    vkCmdBindPipeline(m_command, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline->second);
+                    vkCmdBindDescriptorSets(m_command, VK_PIPELINE_BIND_POINT_COMPUTE, m_layout, 0, 1, &m_set, 0, nullptr);
+                    vkCmdPushConstants(m_command, m_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(dispatch), &dispatch);
+                    vkCmdDispatch(m_command, (draw.count + 63) / 64, 1, 1);
+                    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+                    barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+                    vkCmdPipelineBarrier(m_command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &barrier, 0, nullptr, 0,
+                                         nullptr);
+                    check(vkEndCommandBuffer(m_command), "end stream output commands");
+                    const auto batch = m_context->enqueue(m_command);
+                    m_context->wait(batch);
+                    StreamOutResult result;
+                    result.usedMask = draw.shader.streamBufferMask;
+                    for (unsigned i = 0; i < 4; ++i) {
+                        const auto *bytes = static_cast<const std::uint8_t *>(m_buffers[2]->mapped) + std::size_t(dispatch.offsets[i]) * 4;
+                        result.buffers[i].assign(bytes, bytes + draw.buffers[i].size());
+                    }
+                    return result;
                 }
         };
 
@@ -3729,6 +3953,7 @@ void main() {
             SpirvCompiler compiler{SpirvCompiler::defaultCacheDirectory()};
             std::shared_ptr<Context> context;
             std::shared_ptr<DirectRenderer> direct; // destroyed before the context it shares
+            std::unique_ptr<StreamOutResources> streamOutput;
             // Compiled modules by lowered-source hash and source variant (see renderImpl).
             std::unordered_map<std::uint64_t, std::shared_ptr<const SpirvModule>> modules;
             struct ResourceEntry {
@@ -3804,6 +4029,54 @@ void main() {
     std::uint64_t VulkanRasterBackend::sharedTextureBytes() const noexcept
     {
         return m_impl->context ? m_impl->context->textureMemory->bytes.load(std::memory_order_relaxed) : 0;
+    }
+
+    std::optional<StreamOutResult> VulkanRasterBackend::streamOut(const StreamOutDraw &draw)
+    {
+        Profile::Scope work(Profile::Stage::NativeDraw);
+        m_impl->error.clear();
+        const auto reject = [&](std::string_view reason) -> std::optional<StreamOutResult> {
+            m_impl->error = reason;
+            return std::nullopt;
+        };
+        if (!draw.shader || !draw.shader.streamBufferMask || (draw.shader.streamBufferMask & ~15u) || !draw.shader.textures.empty() || !draw.count ||
+            draw.count > 65536 || draw.inputCount > 16 || draw.attributes.size() != std::size_t(draw.count) * draw.inputCount ||
+            draw.registers.size() > 1024 || draw.uniforms.size() != draw.shader.uniforms.size() * 4 ||
+            draw.uniforms.size() > std::size_t(Latte::kUniformVectors) * 4)
+            return reject("Unsupported stream output inputs");
+        std::uint64_t bytes{};
+        for (unsigned i = 0; i < 4; ++i) {
+            bytes += draw.buffers[i].size();
+            if (draw.buffers[i].size() % 4 ||
+                ((draw.shader.streamBufferMask & (1u << i)) &&
+                 (!draw.shader.streamStrides[i] || std::uint64_t(draw.count) * draw.shader.streamStrides[i] != draw.buffers[i].size())))
+                return reject("Incomplete stream output buffer");
+        }
+        if (bytes > 64ull * 1024 * 1024)
+            return reject("Stream output budget exceeded");
+        const auto module = m_impl->compiler.compile(ShaderStage::Compute, draw.shader.source);
+        if (!*module)
+            return reject(module->error);
+        if (!m_impl->context) {
+            auto context = std::make_shared<Context>();
+            context->initialize();
+            m_impl->context = std::move(context);
+        }
+        if (!m_impl->context->computeQueue)
+            return reject("Graphics queue does not support compute");
+        VkPhysicalDeviceProperties properties{};
+        vkGetPhysicalDeviceProperties(m_impl->context->physical, &properties);
+        if (properties.limits.maxUniformBufferRange < Latte::kStageConstantFloats * sizeof(float) ||
+            properties.limits.maxStorageBufferRange < std::max<std::uint64_t>(bytes, draw.attributes.size_bytes()))
+            return reject("Stream output exceeds device buffer limits");
+        if (m_impl->direct)
+            m_impl->direct->submit();
+        if (!m_impl->streamOutput) {
+            auto resources = std::make_unique<StreamOutResources>(m_impl->context);
+            resources->initialize();
+            m_impl->streamOutput = std::move(resources);
+        }
+        return m_impl->streamOutput->run(draw, *module);
     }
 
     std::optional<RasterResult> VulkanRasterBackend::renderImpl(const RasterDraw &inputDraw, bool deferReadback)

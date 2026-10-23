@@ -51,7 +51,7 @@ namespace Core::Gfx {
 
 
         // Decode one BC1 (DXT1) 8-byte block; out = 16 RGBA texels (4x4).
-        void decodeBc1Block(const std::uint8_t *b, std::uint8_t out[16][4])
+        void decodeBc1Block(const std::uint8_t *b, std::uint8_t out[16][4], bool fourColors = false)
         {
             const std::uint16_t c0 = static_cast<std::uint16_t>(b[0] | (b[1] << 8));
             const std::uint16_t c1 = static_cast<std::uint16_t>(b[2] | (b[3] << 8));
@@ -64,7 +64,7 @@ namespace Core::Gfx {
             };
             expand(c0, pal[0]);
             expand(c1, pal[1]);
-            if (c0 > c1) {
+            if (fourColors || c0 > c1) {
                 for (int i = 0; i < 3; i++) {
                     pal[2][i] = static_cast<std::uint8_t>((2 * pal[0][i] + pal[1][i]) / 3);
                     pal[3][i] = static_cast<std::uint8_t>((pal[0][i] + 2 * pal[1][i]) / 3);
@@ -704,8 +704,8 @@ namespace Core::Gfx {
             return {};
         const auto fmt = original.format & 0x3F;
         const bool compressed = fmt >= 0x31 && fmt <= 0x35;
-        if (!compressed && fmt != 1 && fmt != 5 && fmt != 7 && fmt != 8 && fmt != 0xE && fmt != 0x11 && fmt != 0x16 && fmt != 0x1A && fmt != 0x22 &&
-            original.format != 0x820 && original.format != 0x823)
+        if (!compressed && fmt != 1 && fmt != 5 && fmt != 7 && fmt != 8 && fmt != 0xE && fmt != 0xF && fmt != 0x11 && fmt != 0x16 && fmt != 0x1A &&
+            fmt != 0x22 && original.format != 0x820 && original.format != 0x823)
             return {};
         const unsigned bytes = compressed                                ? (fmt == 0x31 || fmt == 0x34 ? 8 : 16)
                                : original.format == 0x823 || fmt == 0x22 ? 16
@@ -1271,14 +1271,16 @@ namespace Core::Gfx {
         constexpr std::uint64_t budget = 256ull * 1024 * 1024;
         constexpr std::uint64_t entryBudget = 128ull * 1024 * 1024;
         const bool signedBc = surface.format == 0x234 || surface.format == 0x235;
-        const bool blockFormat = surface.format == 0x31 || surface.format == 0x431 || surface.format == 0x34 || signedBc;
-        if ((blocksOnly && !blockFormat) || (floatTexels && (blocksOnly || colorFormat(surface.format) == ColorFormat::RGBA8)))
+        const bool blockFormat = surface.format == 0x31 || surface.format == 0x431 || surface.format == 0x32 || surface.format == 0x33 ||
+                                 surface.format == 0x34 || signedBc;
+        if ((blocksOnly && !blockFormat) ||
+            (floatTexels && (blocksOnly || (colorFormat(surface.format) == ColorFormat::RGBA8 && surface.format != 0xF))))
             return {};
         const bool floating = floatTexels || signedBc;
         const std::uint64_t pixels = std::uint64_t(surface.width) * surface.height;
         if (!blocksOnly && pixels > entryBudget / (floating ? 16 : 4))
             return {};
-        const unsigned blockBytes = surface.format == 0x235 ? 16 : 8;
+        const unsigned blockBytes = surface.format == 0x235 || surface.format == 0x32 || surface.format == 0x33 ? 16 : 8;
         const std::uint64_t bytes = blocksOnly ? ((std::uint64_t(surface.width) + 3) / 4) * ((std::uint64_t(surface.height) + 3) / 4) * blockBytes
                                                : pixels * (floating ? 16 : 4);
         if (!m_mem || !surface.imagePtr || !surface.imageSize || !surface.width || !surface.height || bytes > entryBudget ||
@@ -1353,7 +1355,7 @@ namespace Core::Gfx {
                             const auto *block = std::uint64_t(blockOffset) + blockBytes <= surface.imageSize ? base + blockOffset : nullptr;
                             std::uint8_t rgba[16][4]{};
                             if (block && !signedBc && format <= 0x33)
-                                decodeBc1Block(block + (format == 0x31 ? 0 : 8), rgba);
+                                decodeBc1Block(block + (format == 0x31 ? 0 : 8), rgba, format != 0x31);
                             for (unsigned by = 0; by < 4 && y + by < surface.height; ++by)
                                 for (unsigned bx = 0; bx < 4 && x + bx < surface.width; ++bx) {
                                     const auto output = (std::size_t(y + by) * surface.width + x + bx) * 4;
@@ -1549,6 +1551,21 @@ namespace Core::Gfx {
         const auto elementBytes = colorElementBytes(format);
         const auto *floatBacking = format != ColorFormat::RGBA8 ? (feedback ? feedback : findViewBacking(s)) : nullptr;
         auto fetch = [&](unsigned x, unsigned y) {
+            if (s.format == 0xF && !feedback && !findViewBacking(s) && m_mem && s.imagePtr) {
+                const auto offset = tiledElementOffset(x, y, s.pitch, 32, s.tileMode, s.swizzle);
+                if (std::uint64_t(offset) + 4 > s.imageSize || std::uint64_t(s.imagePtr) + offset + 4 > 0x100000000ull)
+                    return sampler.border();
+                const auto *p = m_mem->hostPtr(s.imagePtr + offset, 4);
+                if (!p)
+                    return sampler.border();
+                const auto raw = decodeRg16Unorm(p);
+                std::array<float, 4> mapped{};
+                for (unsigned c = 0; c < 4; ++c) {
+                    const auto selector = (s.compMap >> (24 - c * 8)) & 7;
+                    mapped[c] = selector < 4 ? raw[selector] : selector == 5 ? 1.f : 0.f;
+                }
+                return mapped;
+            }
             if ((s.format == 0x234 || s.format == 0x235) && m_mem && s.imagePtr && !feedback) {
                 const unsigned blockBytes = s.format == 0x234 ? 8 : 16;
                 const auto offset = tiledElementOffset(x / 4, y / 4, s.pitch, blockBytes * 8, s.tileMode, s.swizzle);
@@ -2006,7 +2023,7 @@ namespace Core::Gfx {
                 return {r, g, 0, std::max(r, g)};
             }
             std::uint8_t texels[16][4];
-            decodeBc1Block(block + ((fmt == 0x32 || fmt == 0x33) ? 8 : 0), texels);
+            decodeBc1Block(block + ((fmt == 0x32 || fmt == 0x33) ? 8 : 0), texels, fmt != 0x31);
             auto &t = texels[(ty & 3) * 4 + (tx & 3)];
             if (fmt == 0x33) // BC3: alpha block precedes
                 t[3] = decodeBc4Value(block, (ty & 3) * 4 + (tx & 3));
@@ -2045,6 +2062,16 @@ namespace Core::Gfx {
             if (!px || !m_mem->hostPtr(s.imagePtr + off + 1))
                 return {128, 128, 128, 255};
             return {px[1], 0, 0, 255};
+        }
+        if (s.format == 0xF) {
+            const auto off = tiledElementOffset(tx, ty, s.pitch, 32, tile, s.swizzle);
+            if (std::uint64_t(off) + 4 > s.imageSize || std::uint64_t(s.imagePtr) + off + 4 > 0x100000000ull)
+                return {128, 128, 128, 255};
+            if (const auto *px = m_mem->hostPtr(s.imagePtr + off, 4)) {
+                const auto value = decodeRg16Unorm(px);
+                return {byteFromUnit(value[0]), byteFromUnit(value[1]), 0, 255};
+            }
+            return {128, 128, 128, 255};
         }
         // Everything else: treat as RGBA8 (exact for our own intermediates and format 0x1A).
         const std::uint32_t off = tiledElementOffset(tx, ty, s.pitch, 32, tile, s.swizzle);
@@ -2519,11 +2546,92 @@ namespace Core::Gfx {
             if (Latte::cfEop(w1) || op == Latte::CF_RETURN)
                 break;
         }
-        if (uniformOnly && count >= 64) {
+        bool native = false;
+        static const bool nativeEnabled = [] {
+            const auto *value = std::getenv("WEMU_NATIVE_STREAMOUT");
+            return !value || value[0] != '0';
+        }();
+        if (nativeEnabled && uniformOnly && count >= 64 && m_vertexInputCount <= 16 && m_rasterBackend && m_rasterBackend->supportsStreamOut()) {
+            Latte::UniformBufferWindows windows{};
+            for (unsigned bank = 0; bank < windows.size(); ++bank)
+                windows[bank] = std::max(64u, unsigned((m_vsBlocks[bank].size() + 255) / 256 * 64));
+            const auto key = std::make_pair(m_streamOutStrides, windows);
+            auto &cache = m_vsShader->streamShaders;
+            auto found = cache.find(key);
+            if (found == cache.end()) {
+                if (cache.size() >= 128)
+                    cache.erase(cache.begin());
+                found = cache.emplace(key, std::make_shared<const Latte::FragmentShader>(
+                                                   Latte::lowerStreamOutShader(*program, m_streamOutStrides, windows)))
+                                .first;
+            }
+            const auto &shader = *found->second;
+            if (shader) {
+                std::vector<std::array<float, 4>> attributes(std::size_t(count) * m_vertexInputCount);
+                bool fetched = true;
+                for (unsigned vertex = 0; vertex < count && fetched; ++vertex)
+                    fetched = fetchAttributes(fetch, vertex + cmd.gpr[2],
+                                              std::span(attributes).subspan(std::size_t(vertex) * m_vertexInputCount, m_vertexInputCount));
+                if (fetched) {
+                    std::vector<float> uniforms;
+                    uniforms.reserve(shader.uniforms.size() * 4);
+                    for (const auto &ref: shader.uniforms)
+                        for (unsigned c = 0; c < 4; ++c)
+                            uniforms.push_back(constants(ref.bank, ref.index, c));
+                    StreamOutDraw draw{shader, attributes, count, cmd.gpr[2], m_vertexInputCount, m_vsRegs, uniforms, {}};
+                    for (unsigned i = 0; i < 4; ++i)
+                        draw.buffers[i] = pending[i];
+                    if (auto result = m_rasterBackend->streamOut(draw)) {
+                        if (result->usedMask != shader.streamBufferMask)
+                            throw std::runtime_error("Incomplete native stream output mask");
+                        for (unsigned i = 0; i < 4; ++i)
+                            if (result->buffers[i].size() != pending[i].size())
+                                throw std::runtime_error("Incomplete native stream output buffer");
+                        static const unsigned verifyEnvironment = [] {
+                            const auto *value = std::getenv("WEMU_STREAMOUT_VERIFY_EVERY");
+                            return value ? unsigned(std::strtoul(value, nullptr, 10)) : 0u;
+                        }();
+                        const auto interval = m_streamOutVerifyEvery.value_or(verifyEnvironment);
+                        if (interval && m_nativeStreamOutPasses % interval == 0) {
+                            shade(0, count);
+                            if (!valid.load(std::memory_order_relaxed))
+                                throw std::runtime_error("Reference stream output failed verification");
+                            if (usedMask.load(std::memory_order_relaxed) != result->usedMask)
+                                throw std::runtime_error("Native stream output buffer usage verification mismatch");
+                            for (unsigned i = 0; i < 4; ++i)
+                                if (result->buffers[i] != pending[i]) {
+                                    for (std::size_t word = 0; word + 4 <= pending[i].size(); word += 4) {
+                                        unsigned reference{}, computed{};
+                                        std::memcpy(&reference, pending[i].data() + word, 4);
+                                        std::memcpy(&computed, result->buffers[i].data() + word, 4);
+                                        if (reference != computed) {
+                                            Utils::Log::error(
+                                                    "[STREAMOUT_VERIFY] frame={} buffer={} word={} reference={:08X} native={:08X} floats={},{}",
+                                                    m_presentCount, i, word / 4, reference, computed, std::bit_cast<float>(reference),
+                                                    std::bit_cast<float>(computed));
+                                            break;
+                                        }
+                                    }
+                                    throw std::runtime_error("Native stream output verification mismatch");
+                                }
+                            ++m_comparedStreamOutPasses;
+                            Utils::Log::error("[STREAMOUT_VERIFY] frame={} pass={} count={} matched=true", m_presentCount, m_comparedStreamOutPasses,
+                                              count);
+                        }
+                        pending = std::move(result->buffers);
+                        usedMask.store(result->usedMask, std::memory_order_relaxed);
+                        ++m_nativeStreamOutPasses;
+                        native = true;
+                    }
+                }
+            } else if (Profile::enabled())
+                Utils::Log::error("[STREAMOUT_NATIVE] frame={} native=false reason={}", m_presentCount, shader.error);
+        }
+        if (!native && uniformOnly && count >= 64) {
             if (!m_vertexWorkers)
                 m_vertexWorkers = std::make_unique<RasterWorkers>(std::clamp(std::thread::hardware_concurrency() / 2, 1u, 8u));
             m_vertexWorkers->run(count, shade);
-        } else
+        } else if (!native)
             shade(0, count);
         if (!valid.load(std::memory_order_relaxed))
             return false;
@@ -2544,10 +2652,19 @@ namespace Core::Gfx {
 
     void Gx2Replayer::drawPrimitives(const Gx2Command &cmd, const bool indexed, int selectedColor)
     {
-        if (m_streamOutEnabled && selectedColor < 0 && !streamOut(cmd, indexed)) {
-            static std::unordered_set<std::uint32_t> reported;
-            if (reported.insert(shaderHash(vsProgram())).second)
-                Utils::Log::error("[STREAMOUT] unsupported draw mode={} count={} shader={:08X}", cmd.gpr[0], cmd.gpr[1], shaderHash(vsProgram()));
+        if (m_streamOutEnabled && selectedColor < 0) {
+            const auto nativeBefore = m_nativeStreamOutPasses;
+            const auto start = Profile::enabled() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+            const bool completed = streamOut(cmd, indexed);
+            if (Profile::enabled())
+                Utils::Log::error("[STREAMOUT_PROFILE] frame={} count={} us={} completed={} native={}", m_presentCount, cmd.gpr[1],
+                                  std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count(), completed,
+                                  m_nativeStreamOutPasses != nativeBefore);
+            if (!completed) {
+                static std::unordered_set<std::uint32_t> reported;
+                if (reported.insert(shaderHash(vsProgram())).second)
+                    Utils::Log::error("[STREAMOUT] unsupported draw mode={} count={} shader={:08X}", cmd.gpr[0], cmd.gpr[1], shaderHash(vsProgram()));
+            }
         }
         if (m_streamOutEnabled && m_trace) {
             Utils::Log::error("[STREAMOUT] mode={} count={} indexed={} shader={} stride={},{},{},{}", cmd.gpr[0], cmd.gpr[1], indexed,
@@ -3331,7 +3448,7 @@ namespace Core::Gfx {
                 texBase = nullptr;
         }
         auto sampleTexel = [&](float uu, float vv) -> std::array<std::uint8_t, 4> {
-            if (colorFormat(m_texture.format) != ColorFormat::RGBA8) {
+            if (colorFormat(m_texture.format) != ColorFormat::RGBA8 || m_texture.format == 0xF) {
                 const auto value = sampleTexture(m_texture, TextureSampler{}, uu, vv);
                 return {byteFromUnit(value[0]), byteFromUnit(value[1]), byteFromUnit(value[2]), byteFromUnit(value[3])};
             }
@@ -4780,6 +4897,17 @@ namespace Core::Gfx {
                              return sampleTexture(surface, TextureSampler{}, (float(x) + 0.5f) / float(surface.width),
                                                   (float(y) + 0.5f) / float(surface.height), 0, backing);
                          }});
+                if (surface.format == 0xF && !backing) {
+                    const auto decoded = decodedTexture(surface, false, true);
+                    if (!decoded) {
+                        supported = false;
+                        unsupportedReason = "incomplete RG16 UNORM texture";
+                        break;
+                    }
+                    textures.back().rgba32 = decoded->floating;
+                    textures.back().snapshotOwner = decoded;
+                    continue;
+                }
                 if (colorFormat(surface.format) != ColorFormat::RGBA8) {
                     textures.back().renderedFormat = colorFormat(surface.format);
                     textures.back().unorm8Map = surface.compMap;
@@ -4851,9 +4979,10 @@ namespace Core::Gfx {
                 const bool linearView = surface.tileMode <= 1 || surface.tileMode == 16;
                 if (!backing && (!linearView || format == 8 || (format >= 0x31 && format <= 0x35)) && surface.format != 0x80E) {
                     // Tiled or block-compressed guest textures: reuse the decoded base level.
-                    const bool preferBlocks = !vertexBinding && m_rasterBackend->supportsBlockTextures() &&
-                                              (surface.format == 0x31 || surface.format == 0x431 || surface.format == 0x34 ||
-                                               surface.format == 0x234 || surface.format == 0x235);
+                    const bool preferBlocks =
+                            !vertexBinding && m_rasterBackend->supportsBlockTextures() &&
+                            (surface.format == 0x31 || surface.format == 0x431 || surface.format == 0x32 || surface.format == 0x33 ||
+                             surface.format == 0x34 || surface.format == 0x234 || surface.format == 0x235);
                     auto decoded = decodedTexture(surface, preferBlocks);
                     if (!decoded && preferBlocks)
                         decoded = decodedTexture(surface);
@@ -4862,6 +4991,8 @@ namespace Core::Gfx {
                             textures.back().blocks = decoded->blocks;
                             textures.back().blockFormat = surface.format == 0x234   ? TextureBlockFormat::BC4Signed
                                                           : surface.format == 0x235 ? TextureBlockFormat::BC5Signed
+                                                          : format == 0x32          ? TextureBlockFormat::BC2
+                                                          : format == 0x33          ? TextureBlockFormat::BC3
                                                           : format == 0x34          ? TextureBlockFormat::BC4
                                                                                     : TextureBlockFormat::BC1;
                             textures.back().unorm8Map = surface.compMap;

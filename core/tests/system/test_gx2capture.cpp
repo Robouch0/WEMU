@@ -186,6 +186,10 @@ TEST_F(Gx2CaptureTest, StreamOutWritesMaskedComponentsWithoutRasterizingAndResto
     EXPECT_EQ(word(context0), 16u);
 
     // Exercise the worker path with disjoint output records, then reject an overflowing append atomically.
+    if (std::getenv("WEMU_TEST_VULKAN")) {
+        replay.setRasterBackend(std::make_shared<VulkanRasterBackend>());
+        replay.setStreamOutVerificationInterval(1);
+    }
     gx2Stream().clear();
     for (unsigned i = 0; i < 64 * 4; ++i)
         cpu->m_memory.write<unsigned>(vertices + i * 4, std::bit_cast<unsigned>(float(i + 1)));
@@ -205,6 +209,10 @@ TEST_F(Gx2CaptureTest, StreamOutWritesMaskedComponentsWithoutRasterizingAndResto
         EXPECT_EQ(word(data1 + vertex * 8), vertex);
     }
     EXPECT_EQ(word(context0), 256u);
+    if (std::getenv("WEMU_TEST_VULKAN")) {
+        EXPECT_EQ(replay.nativeStreamOutPasses(), 1u);
+        EXPECT_EQ(replay.comparedStreamOutPasses(), 1u);
+    }
     gx2Stream().clear();
     cpu->m_memory.write<unsigned>(data0 + 64 * 16, 0xABABABAB);
     record("GX2DrawEx", {1, 1, 0, 1});
@@ -1070,6 +1078,10 @@ TEST_F(Gx2CaptureTest, DeclaredAttributesAndPixelSemanticRenderWithEveryIndexEnd
             {0x00010203, true, {{{255, 255, 255, 255}, {0, 0, 0, 255}, {0, 0, 0, 255}, {255, 255, 255, 255}}}, 1},
             {0x00010203, true, {{{255, 0, 0, 255}, {0, 255, 0, 255}, {0, 0, 0, 255}, {255, 255, 0, 255}}}, 7},
             {0x01000504, true, {{{0, 255, 255, 0}, {255, 0, 255, 0}, {0, 0, 255, 0}, {255, 255, 255, 0}}}, 7},
+            {0x00010203, true, {{{255, 0, 0, 255}, {0, 255, 0, 255}, {0, 0, 0, 255}, {255, 255, 0, 255}}}, 0xF},
+            {0x01000504, true, {{{0, 255, 255, 0}, {255, 0, 255, 0}, {0, 0, 255, 0}, {255, 255, 255, 0}}}, 0xF},
+            {0x00010203, true, {{{170, 0, 85, 136}, {170, 0, 85, 136}, {170, 0, 85, 136}, {170, 0, 85, 136}}}, 0x32},
+            {0x02010003, true, {{{85, 0, 170, 136}, {85, 0, 170, 136}, {85, 0, 170, 136}, {85, 0, 170, 136}}}, 0x33},
             {0x00010203, true, {{{255, 0, 0, 255}, {0, 0, 0, 255}, {0, 0, 0, 255}, {255, 0, 0, 255}}}, 0x80E},
             {0x00010203, true, {{{255, 0, 0, 255}, {0, 255, 0, 255}, {0, 0, 255, 255}, {255, 255, 0, 255}}}},
             {0x02010003, true, {{{0, 0, 255, 255}, {0, 255, 0, 255}, {255, 0, 0, 255}, {0, 255, 255, 255}}}},
@@ -1088,8 +1100,8 @@ TEST_F(Gx2CaptureTest, DeclaredAttributesAndPixelSemanticRenderWithEveryIndexEnd
                     SCOPED_TRACE(compressedTile);
                     SCOPED_TRACE(samplerMode);
                     SCOPED_TRACE(type);
-                    if (textureCase.format == 1 || textureCase.format == 7) {
-                        const unsigned components = textureCase.format == 1 ? 1 : 2;
+                    if (textureCase.format == 1 || textureCase.format == 7 || textureCase.format == 0xF) {
+                        const unsigned components = textureCase.format == 1 ? 1 : textureCase.format == 0xF ? 4 : 2;
                         // Include padded rows and both micro/macro-tiled source layouts.
                         const unsigned tile = compressedTile;
                         surface(0x2800A000, 0x28050000, 64 * 32 * components, 2, 2, 64, tile);
@@ -1099,20 +1111,30 @@ TEST_F(Gx2CaptureTest, DeclaredAttributesAndPixelSemanticRenderWithEveryIndexEnd
                                 const auto offset = tiledElementOffset(x, y, 64, components * 8, tile, 0);
                                 const auto color = colors[y * 2 + x];
                                 for (unsigned c = 0; c < components; ++c)
-                                    cpu->m_memory.write<std::uint8_t>(0x28050000 + offset + c, color >> (24 - c * 8));
+                                    cpu->m_memory.write<std::uint8_t>(0x28050000 + offset + c,
+                                                                      color >> (24 - (textureCase.format == 0xF ? c / 2 : c) * 8));
                             }
-                    } else if (compressedTile) {
+                    } else if (compressedTile || textureCase.format == 0x32 || textureCase.format == 0x33) {
                         // GX2 pitch is in compression blocks, not pixels. Cross both
                         // microtile and macro-tile rows with four solid-color quadrants.
-                        surface(0x2800A000, 0x28050000, 64 * 32 * 8, 256, 128, 64, compressedTile);
-                        cpu->m_memory.write<std::uint32_t>(0x2800A014, 0x31);
+                        const bool separateAlpha = textureCase.format == 0x32 || textureCase.format == 0x33;
+                        const unsigned blockBytes = separateAlpha ? 16 : 8;
+                        surface(0x2800A000, 0x28050000, 64 * 32 * blockBytes, 256, 128, 64, compressedTile);
+                        cpu->m_memory.write<std::uint32_t>(0x2800A014, separateAlpha ? textureCase.format : 0x31);
                         const std::uint16_t endpoints[4]{0xF800, 0x07E0, 0x001F, 0xFFE0};
                         for (unsigned y = 0; y < 32; y++)
                             for (unsigned x = 0; x < 64; x++) {
-                                const auto address = 0x28050000 + tiledElementOffset(x, y, 64, 64, compressedTile, 0);
+                                const auto address = 0x28050000 + tiledElementOffset(x, y, 64, blockBytes * 8, compressedTile, 0);
                                 const auto color = endpoints[(y >= 16 ? 2 : 0) + (x >= 32 ? 1 : 0)];
-                                for (unsigned b = 0; b < 8; b++)
-                                    cpu->m_memory.write<std::uint8_t>(address + b, b < 4 ? color >> ((b & 1) * 8) : 0);
+                                if (separateAlpha) {
+                                    // BC2/3 always have four RGB colors, even with c0 <= c1.
+                                    const std::array<std::uint8_t, 16> block{136, 136, 136, 136, 136, 136, 136, 136,
+                                                                             31,  0,   0,   248, 255, 255, 255, 255};
+                                    for (unsigned b = 0; b < block.size(); ++b)
+                                        cpu->m_memory.write<std::uint8_t>(address + b, textureCase.format == 0x33 && b >= 2 && b < 8 ? 0 : block[b]);
+                                } else
+                                    for (unsigned b = 0; b < 8; b++)
+                                        cpu->m_memory.write<std::uint8_t>(address + b, b < 4 ? color >> ((b & 1) * 8) : 0);
                             }
                     } else {
                         surface(0x2800A000, 0x28050000, 16, 2, 2, 2, 1);
@@ -1184,8 +1206,9 @@ TEST_F(Gx2CaptureTest, DeclaredAttributesAndPixelSemanticRenderWithEveryIndexEnd
                     EXPECT_EQ(pixel(6, 1), samplerMode == 6 ? border : textureCase.expected[samplerMode == 2 ? 0 : 1]);
                     EXPECT_EQ(pixel(1, 6), samplerMode == 6 ? border : textureCase.expected[2]);
                     EXPECT_EQ(pixel(6, 6), samplerMode == 6 ? border : textureCase.expected[samplerMode == 2 ? 2 : 3]);
-                    if ((textureCase.format == 1 || textureCase.format == 7 || textureCase.format == 0x80E) && !samplerMode && !type &&
-                        std::getenv("WEMU_TEST_VULKAN") && SpirvCompiler::available()) {
+                    if ((textureCase.format == 1 || textureCase.format == 7 || textureCase.format == 0xF || textureCase.format == 0x32 ||
+                         textureCase.format == 0x33 || textureCase.format == 0x80E) &&
+                        !samplerMode && !type && std::getenv("WEMU_TEST_VULKAN") && SpirvCompiler::available()) {
                         auto backend = std::make_shared<VulkanRasterBackend>();
                         Gx2Replayer native;
                         native.setRasterBackend(backend);
@@ -1314,8 +1337,10 @@ TEST_F(Gx2CaptureTest, DeclaredAttributesAndPixelSemanticRenderWithEveryIndexEnd
                         fallback.setRasterBackend(backend);
                         fallback.replay(gx2Stream(), &cpu->m_memory);
                         EXPECT_EQ(backend->calls, 1u);
-                        EXPECT_EQ(backend->firstTexel,
-                                  (textureCase.format == 1 ? std::array<float, 4>{1, 1, 1, 1} : std::array<float, 4>{1, 0, 0, 1}));
+                        std::array<float, 4> expectedTexel{};
+                        for (unsigned c = 0; c < 4; ++c)
+                            expectedTexel[c] = float(textureCase.expected[0][c]) / 255.f;
+                        EXPECT_EQ(backend->firstTexel, expectedTexel);
                         EXPECT_EQ(fallback.framebuffer(), replayer.framebuffer());
                         if (textureCase.format == 0x1A) {
                             constexpr unsigned width = 854, height = 480, image = 0x28200000, target = 0x28400000;
@@ -3763,7 +3788,8 @@ TEST_F(Gx2CaptureTest, PackedAndBlockDecodeMatchReferenceForTilingPartialBlocksA
         if (std::getenv("WEMU_TEST_VULKAN")) {
             backend = std::make_shared<VulkanRasterBackend>(true, true);
             native.setRasterBackend(backend);
-            if (format != 0x31 && format != 0x34)
+            const bool hardwareBlocks = format >= 0x31 && format <= 0x34;
+            if (!hardwareBlocks)
                 native.setNativeVerificationInterval(1);
         }
         const unsigned bytes = format == 8 ? 2 : format == 0x31 || format == 0x34 ? 8 : 16;
@@ -3828,13 +3854,13 @@ TEST_F(Gx2CaptureTest, PackedAndBlockDecodeMatchReferenceForTilingPartialBlocksA
                 for (unsigned channel = 0; channel < 4; ++channel)
                     EXPECT_EQ(reference.framebuffer()[channel], expected[channel]);
             }
-            if (backend && (format == 0x31 || format == 0x34)) {
+            if (backend && format >= 0x31 && format <= 0x34) {
                 // BC1-5 hardware interpolation is approximate. D3D11 section
                 // 19.5.2 bounds it by absolute error + 3% of endpoint distance;
                 // NVIDIA's BC1 green interpolation actually exercises this bound.
                 // The reference additionally truncates expanded endpoints and
-                // interpolants to bytes. Allow those two rounding steps for BC1,
-                // one for BC4, while keeping alpha/untouched pixels exact.
+                // interpolants to bytes. Allow those two rounding steps for BC1/2/3
+                // RGB, one for BC3/4 alpha, keeping BC1/2 alpha and untouched pixels exact.
                 // https://microsoft.github.io/DirectX-Specs/d3d/archive/D3D11_3_FunctionalSpec.htm#19.5.2
                 const auto &actual = native.framebuffer(), &expected = reference.framebuffer();
                 ASSERT_EQ(actual.size(), expected.size());
@@ -3845,14 +3871,21 @@ TEST_F(Gx2CaptureTest, PackedAndBlockDecodeMatchReferenceForTilingPartialBlocksA
                             const auto tx = unsigned((float(x) + .5f) * float(width) / 7.f + .25f) % width;
                             const auto ty = unsigned((float(y) + .5f) * float(height) / 5.f + .25f) % height;
                             const auto block = image + tiledElementOffset(tx / 4, ty / 4, layout->pitch, bytes * 8, tile, 0);
-                            if (format == 0x31) {
-                                const auto a = cpu->m_memory.read<std::uint8_t>(block) | (unsigned(cpu->m_memory.read<std::uint8_t>(block + 1)) << 8);
-                                const auto b =
-                                        cpu->m_memory.read<std::uint8_t>(block + 2) | (unsigned(cpu->m_memory.read<std::uint8_t>(block + 3)) << 8);
+                            if (format <= 0x33) {
+                                const auto colorBlock = block + (format == 0x31 ? 0 : 8);
+                                const auto a = cpu->m_memory.read<std::uint8_t>(colorBlock) |
+                                               (unsigned(cpu->m_memory.read<std::uint8_t>(colorBlock + 1)) << 8);
+                                const auto b = cpu->m_memory.read<std::uint8_t>(colorBlock + 2) |
+                                               (unsigned(cpu->m_memory.read<std::uint8_t>(colorBlock + 3)) << 8);
                                 for (unsigned c = 0; c < 3; ++c) {
                                     const unsigned shift = c == 0 ? 11 : c == 1 ? 5 : 0, mask = c == 1 ? 63 : 31;
                                     const auto distance = std::abs(int(((a >> shift) & mask) * 255 / mask) - int(((b >> shift) & mask) * 255 / mask));
                                     tolerance[c] = unsigned(std::ceil(2.0 + .03 * distance));
+                                }
+                                if (format == 0x33) {
+                                    const auto distance =
+                                            std::abs(int(cpu->m_memory.read<std::uint8_t>(block)) - int(cpu->m_memory.read<std::uint8_t>(block + 1)));
+                                    tolerance[3] = unsigned(std::ceil(1.0 + .03 * distance));
                                 }
                             } else {
                                 const auto distance =

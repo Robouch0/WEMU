@@ -17,7 +17,7 @@
 #include "gfx/TextureSampler.hpp"
 
 namespace Core::Gfx {
-    enum class TextureBlockFormat { None, BC1, BC4, BC4Signed, BC5Signed };
+    enum class TextureBlockFormat { None, BC1, BC4, BC4Signed, BC5Signed, BC2, BC3 };
     class RasterReadback;
     // Backend-specific, versioned image identity. Never exposes a borrowed handle.
     struct RasterImage {
@@ -258,6 +258,20 @@ namespace Core::Gfx {
             }
     };
 
+    struct StreamOutDraw {
+            // Attributes are count * inputCount vec4s. Buffers contain the prior
+            // bytes, including components and padding the shader must preserve.
+            const Latte::FragmentShader &shader;
+            std::span<const std::array<float, 4>> attributes;
+            unsigned count{}, first{}, inputCount{};
+            std::span<const float> registers, uniforms;
+            std::array<std::span<const std::uint8_t>, 4> buffers;
+    };
+    struct StreamOutResult {
+            std::array<std::vector<std::uint8_t>, 4> buffers;
+            unsigned usedMask{};
+    };
+
     class RasterBackend {
         public:
             virtual ~RasterBackend() = default;
@@ -266,6 +280,10 @@ namespace Core::Gfx {
             // A result commits only after its size has been checked. Backend errors
             // propagate rather than silently discarding partially executed work.
             virtual std::optional<RasterResult> render(const RasterDraw &draw) = 0;
+            // Same borrowed-input/owned-result contract as render. No guest
+            // memory is modified until the caller validates the complete result.
+            virtual bool supportsStreamOut() const { return false; }
+            virtual std::optional<StreamOutResult> streamOut(const StreamOutDraw &) { return std::nullopt; }
             virtual bool supportsRenderedTextures() const { return false; }
             virtual bool supportsRenderedTargets() const { return false; }
             virtual bool supportsDepth() const { return false; }

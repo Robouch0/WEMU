@@ -502,7 +502,7 @@ namespace Core::Gfx::Latte {
 
     static FragmentShader lowerShader(const Program &program, std::span<const TextureType> resourceTypes, bool vertexStage,
                                       bool onlyColorZero = false, unsigned colorExport = 0, unsigned bufferWindow = 0,
-                                      const UniformBufferWindows &bufferWindows = {})
+                                      const UniformBufferWindows &bufferWindows = {}, const std::array<unsigned, 4> *streamStrides = nullptr)
     {
         FragmentShader result;
         result.exportsColor = false;
@@ -512,9 +512,15 @@ namespace Core::Gfx::Latte {
             if (!program.valid || program.words.size() < 2 || colorExport >= 8 || (!onlyColorZero && colorExport))
                 throw std::runtime_error("invalid shader structure");
             std::string body = "void main() {\n";
+            if (streamStrides)
+                body += "uint vertex=gl_GlobalInvocationID.x; if(vertex>=dispatch.count) return;\n"
+                        "r[0][0]=uintBitsToFloat(dispatch.first+vertex);\n";
             std::set<unsigned> cubeIndices, uniformBuffers;
             for (unsigned i = 0; i < 16; ++i)
-                body += vertexStage ? std::format("r[{}]=attributes[{}];\n", i + 1, i) : std::format("r[{}]=inputs[{}];\n", i, i);
+                body += streamStrides
+                                ? std::format("r[{}]={}u<dispatch.inputs ? attributes.values[vertex*dispatch.inputs+{}u] : vec4(0.0);\n", i + 1, i, i)
+                        : vertexStage ? std::format("r[{}]=attributes[{}];\n", i + 1, i)
+                                      : std::format("r[{}]=inputs[{}];\n", i, i);
             if (vertexStage)
                 body += "vec4 position=vec4(0.0,0.0,0.0,1.0); vec4 parameters[32]; for(int i=0;i<32;++i) parameters[i]=vec4(0.0);\n";
             body += "vec4 pv=vec4(0.0); float ps=0.0;\nbool pred=true,laneActive=true,wroteOutput=false,killed=false; bool activeStack[32]; uint "
@@ -747,6 +753,8 @@ namespace Core::Gfx::Latte {
                             body += "}\n";
                             continue;
                         }
+                        if (streamStrides)
+                            throw std::runtime_error("stream output texture sampling requires reference execution");
                         if (vertexStage && texOp != 0x13)
                             throw std::runtime_error("vertex texture opcode requires explicit base LOD");
                         constexpr auto tex0Mask = 31u | (255u << 8) | (127u << 16);
@@ -887,6 +895,24 @@ namespace Core::Gfx::Latte {
                         body += "}\n";
                     }
                     body += "}\n";
+                } else if (streamStrides && op >= 0x20 && op <= 0x23) {
+                    const auto buffer = op - 0x20, offset = w0 & 0x1FFF;
+                    constexpr unsigned word0Mask = 0x1FFFu | (127u << 15);
+                    constexpr unsigned word1Mask = 3u | (15u << 12) | (1u << 21) | (1u << 22) | (127u << 23) | (1u << 31);
+                    if ((w0 & ~word0Mask) || (w1 & ~word1Mask) || !(*streamStrides)[buffer] || ((*streamStrides)[buffer] & 3))
+                        throw std::runtime_error("unsupported stream output addressing or stride");
+                    const auto mask = ((w1 >> 12) & 15) & ((1u << ((w1 & 0xFFF) + 1)) - 1);
+                    for (unsigned c = 0; c < 4; ++c)
+                        if (mask & (1u << c)) {
+                            if ((std::uint64_t(offset) + c + 1) * 4 > (*streamStrides)[buffer])
+                                throw std::runtime_error("stream output exceeds vertex stride");
+                            body += std::format("outputData.values[dispatch.offsets[{}]+vertex*{}u+{}u]=floatBitsToUint(r[{}][{}]);\n", buffer,
+                                                (*streamStrides)[buffer] / 4, offset + c, (w0 >> 15) & 127, c);
+                        }
+                    // An active export also advances its stream when every
+                    // component is masked. Preserve that buffer's offset state.
+                    result.streamBufferMask |= 1u << buffer;
+                    exported = true;
                 } else if (op == CF_EXP || op == CF_EXP_DONE) {
                     if (vertexStage) {
                         const auto target = w0 & 0x1FFF, type = (w0 >> 13) & 3;
@@ -1011,6 +1037,10 @@ namespace Core::Gfx::Latte {
             }
             if (!exported || !terminated)
                 throw std::runtime_error("missing color/depth export or shader termination");
+            if (streamStrides && (maskedControl || rootMaskChanged || !jumpTargets.empty() || !result.streamBufferMask || result.kills))
+                throw std::runtime_error("masked stream output requires reference execution");
+            if (streamStrides)
+                result.streamStrides = *streamStrides;
             if (result.exportsColor && result.writesDepth && maskedControl)
                 throw std::runtime_error("conditional mixed color/depth exports require per-output lane masks");
             // Emission uses explicit base LOD. With one source mip, identical
@@ -1062,7 +1092,18 @@ namespace Core::Gfx::Latte {
                             "float logReference(float x) { if(isnan(x)) return x; if(x==0.0) return uintBitsToFloat(4286578688u); "
                             "if(x<0.0) return uintBitsToFloat(2143289344u); if(isinf(x)) return x; return log2(x); }\n"
                             "float logClamped(float x) { float v=logReference(x); return isinf(v)&&v<0.0 ? -uintBitsToFloat(2139095039u) : v; }\n";
-            if (vertexStage) {
+            if (streamStrides) {
+                const auto end = result.source.find("float arrayLayerReference");
+                result.source.replace(0, end,
+                                      std::format("#version 450\nlayout(local_size_x=64) in;\n"
+                                                  "layout(set=0,binding=0,std140) uniform Constants {{ vec4 c[256]; vec4 borders[16]; vec4 "
+                                                  "sampling[16]; vec4 k[{}]; }} u;\n"
+                                                  "layout(set=0,binding=1,std430) readonly buffer Attributes {{ vec4 values[]; }} attributes;\n"
+                                                  "layout(set=0,binding=2,std430) buffer OutputData {{ uint values[]; }} outputData;\n"
+                                                  "layout(push_constant) uniform Dispatch {{ uint count; uint first; uint inputs; uint unused; uvec4 "
+                                                  "offsets; }} dispatch;\n",
+                                                  kUniformVectors));
+            } else if (vertexStage) {
                 const auto end = result.source.find("float arrayLayerReference");
                 result.source.replace(
                         0, end,
@@ -1174,7 +1215,9 @@ vec3 cubeDirectionReference(vec3 coord) {
             if (result.writesDepth)
                 body.insert(body.find('\n') + 1, "gl_FragDepth=gl_FragCoord.z;\n");
             result.source += body;
-            if (vertexStage)
+            if (streamStrides)
+                result.source += "}\n";
+            else if (vertexStage)
                 result.source += R"(
     gl_PointSize=1.0;
     float divisor=abs(position.w)>1e-6 ? position.w : 1.0;
@@ -1198,6 +1241,10 @@ vec3 cubeDirectionReference(vec3 coord) {
     FragmentShader lowerFragmentShader(const Program &program, std::span<const TextureType> resourceTypes, bool onlyColorZero, unsigned colorExport)
     {
         return lowerShader(program, resourceTypes, false, onlyColorZero, colorExport);
+    }
+    FragmentShader lowerStreamOutShader(const Program &program, const std::array<unsigned, 4> &strides, const UniformBufferWindows &bufferWindows)
+    {
+        return lowerShader(program, {}, true, false, 0, 0, bufferWindows, &strides);
     }
     bool FragmentShaderCache::hasUnconditionalColorOnlyEffects(const std::vector<std::uint32_t> &words)
     {

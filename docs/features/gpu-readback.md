@@ -140,6 +140,23 @@ pipeline states, changed HDR layers and BC source bytes, cache eviction, older
 frame pixels, weak recovery after CPU/GPU eviction, and device lifetime after
 backend destruction.
 
+BC2 and BC3 base-level textures can keep their 16-byte compressed blocks through
+the decoded snapshot cache and Vulkan upload, alongside the existing BC formats.
+For complete 4x4 blocks this uses one quarter of the RGBA8 upload payload and
+avoids CPU color/alpha expansion. Unsupported backends retain software decoding.
+Both decoders now use four RGB palette entries for BC2/BC3 regardless of endpoint
+order; only BC1 can select its three-color/transparent mode. See the
+[Khronos BC2/BC3 format definitions](https://registry.khronos.org/DataFormat/specs/1.3/dataformat.1.3.html#S3TC).
+
+Guest RG16 UNORM textures decode two little-endian 16-bit channels, with zero blue
+and unit alpha before view component mapping. Two-dimensional guest-memory views
+retain their precision through filtering and native float snapshots. Surface
+allocation and array slice layout also recognize the four-byte RG16 element.
+This does not add typed RG16 render targets or integer/signed RG16 sampling.
+Regression coverage compares software and Vulkan output for padded linear and
+tiled layouts, component mappings, BC2/BC3 endpoint ordering and alpha, and
+rejects truncated compressed payloads.
+
 ## Reduce scanout and desktop frame copies
 
 CPU scanout clears only pixels outside the rectangle its next copy overwrites.

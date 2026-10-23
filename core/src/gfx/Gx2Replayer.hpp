@@ -78,6 +78,11 @@ namespace Core::Gfx {
             // Diagnostic only: compare sampled native draws, then retain native output.
             void setNativeVerificationInterval(std::uint64_t interval) { m_nativeVerifyEvery = interval; }
             [[nodiscard]] std::uint64_t comparedNativeDraws() const noexcept { return m_comparedNativeDraws; }
+            // Diagnostic: byte-for-byte reference comparison of every Nth native
+            // stream-output pass. Zero disables comparison.
+            void setStreamOutVerificationInterval(unsigned interval) { m_streamOutVerifyEvery = interval; }
+            [[nodiscard]] std::uint64_t nativeStreamOutPasses() const noexcept { return m_nativeStreamOutPasses; }
+            [[nodiscard]] std::uint64_t comparedStreamOutPasses() const noexcept { return m_comparedStreamOutPasses; }
             [[nodiscard]] std::uint64_t differingNativeDraws() const noexcept { return m_differingNativeDraws; }
             [[nodiscard]] std::uint64_t earlyDepthRejectedFragments() const noexcept { return m_earlyDepthRejectedFragments; }
             [[nodiscard]] std::uint64_t earlyDepthRejectedTriangles() const noexcept { return m_earlyDepthRejectedTriangles; }
@@ -430,6 +435,8 @@ namespace Core::Gfx {
                     std::vector<std::uint32_t> words;
                     std::shared_ptr<const Latte::Program> declaration;
                     std::shared_ptr<const Latte::VertexShader> vertexShader;
+                    std::map<std::pair<std::array<unsigned, 4>, Latte::UniformBufferWindows>, std::shared_ptr<const Latte::FragmentShader>>
+                            streamShaders;
                     std::map<std::pair<unsigned, Latte::UniformBufferWindows>, std::shared_ptr<const Latte::VertexShader>> windowedVertexShaders;
                     std::optional<bool> colorOnlyEffects, rejectsEveryPixel;
                     // Resource types (two bits each), onlyColorZero, colorExport.
@@ -447,6 +454,8 @@ namespace Core::Gfx {
             [[nodiscard]] bool rejectsEveryPixel();
             // Current vertex shader + cache keyed by the guest GX2VertexShader struct address.
             std::shared_ptr<ShaderProgram> m_vsShader;
+            std::optional<unsigned> m_streamOutVerifyEvery;
+            std::uint64_t m_nativeStreamOutPasses{}, m_comparedStreamOutPasses{};
             std::unordered_map<std::uint32_t, std::shared_ptr<ShaderProgram>> m_vsCache;
             // Vertex uniform BLOCKS (GX2SetVertexUniformBlock): payload snapshots per binding —
             // read through the shader's kcache windows in uniform-block mode.

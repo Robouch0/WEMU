@@ -17,8 +17,9 @@ exports preserve component masks and write little-endian words into bounded
 guest buffers. Output commits only after the complete pass succeeds. Later
 uniform-block bindings in the same submission see these writes rather than
 stale call-time snapshots. Context save/restore retains stream-output state.
-Uniform-only passes with at least 64 vertices use the existing vertex worker
-pool; passes sampling textures remain serial. Other primitive modes, indexed
+Eligible uniform-only passes with at least 64 vertices now use
+[native compute stream output](gpu-stream-output.md), with the existing vertex
+worker pool as a fallback. Passes sampling textures remain serial. Other primitive modes, indexed
 passes, instancing, relative exports and burst exports remain unsupported and
 report a diagnostic instead of partially writing output.
 
