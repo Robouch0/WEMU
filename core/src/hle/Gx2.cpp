@@ -43,8 +43,16 @@ namespace {
         public:
             ReplayWorker()
             {
+#ifdef __APPLE__
+                // Darwin can only name the calling thread.
+                m_thread = std::thread([this] {
+                    pthread_setname_np("wemu-replay");
+                    loop();
+                });
+#else
                 m_thread = std::thread([this] { loop(); });
                 pthread_setname_np(m_thread.native_handle(), "wemu-replay");
+#endif
             }
             ~ReplayWorker()
             {

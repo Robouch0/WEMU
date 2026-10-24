@@ -8,6 +8,8 @@
 #include <vector>
 #include <vulkan/vulkan.h>
 
+#include "gfx/VulkanPortability.hpp"
+
 // Test-only synchronous float-target probe. No window, game data or renderer state.
 class VulkanFragmentProbe {
     public:
@@ -66,6 +68,8 @@ class VulkanFragmentProbe {
                         const std::array<float, 1024> &constants, const std::vector<Texture> &textures = {})
         {
             VkInstanceCreateInfo ii{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
+            std::vector<const char *> instanceExtensions;
+            Core::Gfx::Portability::enableEnumeration(ii, instanceExtensions);
             check(vkCreateInstance(&ii, nullptr, &instance), "create instance");
             std::uint32_t count = 0;
             check(vkEnumeratePhysicalDevices(instance, &count, nullptr), "enumerate devices");
@@ -108,6 +112,10 @@ class VulkanFragmentProbe {
             di.queueCreateInfoCount = 1;
             di.pQueueCreateInfos = &qi;
             di.pEnabledFeatures = &enabled;
+            std::vector<const char *> deviceExtensions;
+            Core::Gfx::Portability::enableSubset(physical, deviceExtensions);
+            di.enabledExtensionCount = static_cast<std::uint32_t>(deviceExtensions.size());
+            di.ppEnabledExtensionNames = deviceExtensions.data();
             check(vkCreateDevice(physical, &di, nullptr, &device), "create device");
             vkGetDeviceQueue(device, family, 0, &queue);
             VkCommandPoolCreateInfo pi{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};

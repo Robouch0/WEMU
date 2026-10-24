@@ -2,6 +2,7 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QSettings>
 #include <QTemporaryDir>
 #include <QUrl>
@@ -24,8 +25,10 @@ int main(int argc, char **argv)
     QTemporaryDir temporary;
     QSettings::setDefaultFormat(QSettings::IniFormat);
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, temporary.path());
+    // The scanner reports canonical paths; macOS temporary directories sit behind the /var symlink.
+    const auto temporaryRoot = QFileInfo(temporary.path()).canonicalFilePath();
     try {
-        const auto root = temporary.path() + "/library with spaces";
+        const auto root = temporaryRoot + "/library with spaces";
         auto title = [&](const QString &folder, const QString &id, const QString &version, const QString &name) {
             const auto dir = root + "/" + folder;
             for (const auto &part : {"code", "content", "meta"}) require(QDir().mkpath(dir + "/" + part), "mkdir failed");
@@ -108,10 +111,10 @@ int main(int argc, char **argv)
         scanner.scanDirectory(root + "/dlc");
         require(scanner.rowCount({}) == 0, "DLC was reclassified as a demo");
 
-        const auto checkout = temporary.path() + "/checkout";
+        const auto checkout = temporaryRoot + "/checkout";
         const auto binaryDirectory = checkout + "/build/integration/gui";
         const auto gamesDirectory = checkout + "/games";
-        const auto elsewhere = temporary.path() + "/elsewhere";
+        const auto elsewhere = temporaryRoot + "/elsewhere";
         require(QDir().mkpath(binaryDirectory) && QDir().mkpath(gamesDirectory) && QDir().mkpath(elsewhere), "discovery fixture failed");
         require(TitleScanner::defaultLibraryPath(binaryDirectory, elsewhere) == gamesDirectory, "nested build cannot find repository games");
         require(TitleScanner::defaultLibraryPath(elsewhere, checkout) == gamesDirectory, "working-directory discovery failed");
