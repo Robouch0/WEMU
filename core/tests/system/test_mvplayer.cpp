@@ -119,6 +119,7 @@ TEST_F(MvPlayerTest, IndependentPlayersUseGuestClockSeekAndPreserveQueuedPixelsA
 TEST_F(MvPlayerTest, MovieAudioRunsWithoutAxInitRespectsDeviceMixAndStopsWithThePlayer)
 {
     RegisterAxFunctions();
+    Core::Audio::output().setLatencyFrames(0);
     cpu->m_scheduler = Core::Scheduler{};
     cpu->m_scheduler.bootstrap(*cpu);
     const auto object = create();
@@ -181,5 +182,6 @@ TEST_F(MvPlayerTest, MovieAudioRunsWithoutAxInitRespectsDeviceMixAndStopsWithThe
     cpu->m_gpr[3] = object;
     call("Destroy__8MVPlayerSFP8MVPlayer");
     RegisterAxFunctions();
+    Core::Audio::output().setLatencyFrames(0);
     cpu->m_scheduler = Core::Scheduler{};
 }

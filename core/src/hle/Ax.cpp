@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "audio/Output.hpp"
+#include "audio/Resampler.hpp"
 #include "audio/Voice.hpp"
 #include "cpu/interpreter/Interpreter.hpp"
 #include "cpu/interpreter/SyscallHandler.hpp"
@@ -69,6 +70,7 @@ namespace {
             std::uint32_t storage = 0;
             bool pending = false;
             unsigned samples = kSamples;
+            std::array<Core::Audio::LinearUpsampler, 8> upsamplers{};
     };
     std::array<FinalMixDevice, 2> g_finalMix;
 
@@ -95,7 +97,14 @@ namespace {
     unsigned g_phase = 3;
 
 
-    std::int32_t pcm(float value) { return static_cast<std::int32_t>(std::clamp(value, -32768.0f, 32767.0f)); }
+    // Aux/final buffers are signed 32-bit containers in PCM16 amplitude units.
+    // Keep summing headroom until host volume has been applied.
+    std::int32_t mixedSample(float value)
+    {
+        if (!std::isfinite(value))
+            return 0;
+        return static_cast<std::int32_t>(std::clamp(double(value), double(INT32_MIN), double(INT32_MAX)));
+    }
 
     void mixVoices(Core::Interpreter &cpu)
     {
@@ -103,17 +112,22 @@ namespace {
         for (auto &voice: g_voices) {
             if (!voice.used || voice.state != 1)
                 continue;
-            for (unsigned i = 0; i < g_inputSamples; ++i) {
-                const auto sample = voice.render(cpu.m_memory);
-                for (unsigned type = 0; type < 2; ++type)
-                    for (unsigned id = 0; id < devices(type); ++id)
-                        for (unsigned ch = 0; ch < channels(type); ++ch)
-                            for (unsigned bus = 0; bus < 4; ++bus) {
-                                auto &gain = voice.gains[type][id][ch][bus];
-                                g_buses[type][id][bus][ch][i] += sample * (gain.volume / 32768.0f);
+            std::array<float, kSamples> mono{};
+            for (unsigned i = 0; i < g_inputSamples; ++i)
+                mono[i] = voice.render(cpu.m_memory);
+            for (unsigned type = 0; type < 2; ++type)
+                for (unsigned id = 0; id < devices(type); ++id)
+                    for (unsigned ch = 0; ch < channels(type); ++ch)
+                        for (unsigned bus = 0; bus < 4; ++bus) {
+                            auto &gain = voice.gains[type][id][ch][bus];
+                            if (!gain.volume && !gain.delta)
+                                continue;
+                            auto &destination = g_buses[type][id][bus][ch];
+                            for (unsigned i = 0; i < g_inputSamples; ++i) {
+                                destination[i] += mono[i] * (float(gain.volume) / 32768.0f);
                                 gain.volume = std::clamp(gain.volume + gain.delta, 0, 65535);
                             }
-            }
+                        }
             cpu.m_memory.write<std::uint32_t>(voice.guestPtr + kStateOffset, voice.state);
             cpu.m_memory.write<std::uint32_t>(voice.guestPtr + 8, voice.envelope);
             writeVoiceOffsets(cpu, voice);
@@ -140,7 +154,7 @@ namespace {
                         const auto data = pointers + count * 4 + ch * kSamples * 4;
                         cpu.m_memory.write<std::uint32_t>(pointers + ch * 4, data);
                         for (unsigned i = 0; i < g_inputSamples; ++i)
-                            cpu.m_memory.write<std::int32_t>(data + i * 4, pcm(g_buses[type][id][bus + 1][ch][i]));
+                            cpu.m_memory.write<std::int32_t>(data + i * 4, mixedSample(g_buses[type][id][bus + 1][ch][i]));
                     }
                     g_pendingCbs.push_back({aux.callback, pointers, aux.userData, aux.storage});
                 }
@@ -148,7 +162,7 @@ namespace {
 
     void prepareFinal(Core::Interpreter &cpu)
     {
-        std::array<float, kSamples * 2> movie{};
+        std::array<float, std::size_t(kSamples) * 2> movie{};
         Core::MvPlayer::mixAudio(cpu, movie, (g_nextFrameQuarterTicks - 2 * kFrameQuarterTicks) / 4);
         for (unsigned type = 0; type < 2; ++type) {
             auto &mix = g_finalMix[type];
@@ -159,29 +173,29 @@ namespace {
                     for (unsigned i = 0; i < g_inputSamples; ++i) {
                         for (unsigned bus = 0; bus < 3; ++bus) {
                             const auto &aux = g_aux[type][id][bus];
-                            const float value = aux.pending ? cpu.m_memory.read<std::int32_t>(aux.storage + 8 + count * 4 + ch * kSamples * 4 + i * 4)
-                                                            : g_buses[type][id][bus + 1][ch][i];
-                            main[i] += value * (aux.volume / 32768.0f);
+                            // An unregistered effect bus has no wet return.
+                            // Passing its dry send through again doubles voices.
+                            if (aux.pending) {
+                                const float value = float(cpu.m_memory.read<std::int32_t>(aux.storage + 8 + count * 4 + ch * kSamples * 4 + i * 4));
+                                main[i] += value * (float(aux.volume) / 32768.0f);
+                            }
                         }
-                        main[i] *= g_deviceVolume[type][id] / 32768.0f;
+                        main[i] *= float(g_deviceVolume[type][id]) / 32768.0f;
                     }
                     if (!g_upsampleAfter[type] && g_inputSamples == 96) {
                         const auto input = main;
-                        for (unsigned i = 0; i < kSamples; ++i) {
-                            const float position = i * (96.0f / 144.0f);
-                            const unsigned lo = position;
-                            main[i] = input[lo] + (input[std::min(lo + 1, 95u)] - input[lo]) * (position - lo);
-                        }
+                        mix.upsamplers[id * count + ch].convert(std::span<const float>(input).first(96), main);
                     }
                 }
             mix.samples = g_upsampleAfter[type] ? g_inputSamples : kSamples;
             if (type == 0) {
                 for (unsigned i = 0; i < mix.samples; ++i) {
-                    const float position = i * (float(kSamples) / mix.samples);
-                    const unsigned lo = position, hi = std::min(lo + 1, kSamples - 1);
+                    const float position = float(i) * (float(kSamples) / float(mix.samples));
+                    const auto lo = static_cast<unsigned>(position);
+                    const unsigned hi = std::min(lo + 1, kSamples - 1);
                     for (unsigned ch = 0; ch < 2; ++ch) {
-                        const float value = movie[lo * 2 + ch] + (movie[hi * 2 + ch] - movie[lo * 2 + ch]) * (position - lo);
-                        g_buses[0][0][0][ch][i] += value * (g_deviceVolume[0][0] / 32768.0f);
+                        const float value = movie[lo * 2 + ch] + (movie[hi * 2 + ch] - movie[lo * 2 + ch]) * (position - float(lo));
+                        g_buses[0][0][0][ch][i] += value * (float(g_deviceVolume[0][0]) / 32768.0f);
                     }
                 }
             }
@@ -201,7 +215,7 @@ namespace {
                 const auto data = pointers + planes * 4 + plane * kSamples * 4;
                 cpu.m_memory.write<std::uint32_t>(pointers + plane * 4, data);
                 for (unsigned i = 0; i < mix.samples; ++i)
-                    cpu.m_memory.write<std::int32_t>(data + i * 4, pcm(g_buses[type][plane / count][0][plane % count][i]));
+                    cpu.m_memory.write<std::int32_t>(data + i * 4, mixedSample(g_buses[type][plane / count][0][plane % count][i]));
             }
             g_pendingCbs.push_back({mix.callback, mix.storage});
         }
@@ -218,31 +232,54 @@ namespace {
             if (ch >= outputChannels)
                 return 0;
             if (mix.pending)
-                return cpu.m_memory.read<std::int32_t>(mix.storage + 12 + count * 4 + ch * kSamples * 4 + index * 4);
+                return float(cpu.m_memory.read<std::int32_t>(mix.storage + 12 + count * 4 + ch * kSamples * 4 + index * 4));
             return g_buses[0][0][0][ch][index];
         };
-        std::array<float, kSamples * 2> stereo{};
-        for (unsigned i = 0; i < kSamples; ++i) {
-            const float position = mix.samples == 96 ? i * (96.0f / 144.0f) : float(i);
-            const unsigned lo = position, hi = std::min(lo + 1, mix.samples - 1);
-            const auto channel = [&](unsigned ch) { return fetch(ch, lo) + (fetch(ch, hi) - fetch(ch, lo)) * (position - lo); };
-            // AX channel order: L, R, surround L, surround R, center, LFE.
-            stereo[i * 2] = channel(0) + .70710678f * (channel(2) + channel(4)) + .5f * channel(5);
-            stereo[i * 2 + 1] = outputChannels == 1 ? stereo[i * 2] : channel(1) + .70710678f * (channel(3) + channel(4)) + .5f * channel(5);
+        std::array<Plane, 6> planes{};
+        for (unsigned ch = 0; ch < outputChannels; ++ch) {
+            if (mix.samples == 96) {
+                std::array<float, 96> input{};
+                for (unsigned i = 0; i < 96; ++i)
+                    input[i] = fetch(ch, i);
+                mix.upsamplers[ch].convert(input, planes[ch]);
+            } else
+                for (unsigned i = 0; i < kSamples; ++i)
+                    planes[ch][i] = fetch(ch, i);
         }
-        std::array<std::int16_t, kSamples * 2> output{};
-        for (unsigned i = 0; i < output.size(); ++i)
-            output[i] = pcm(stereo[i]);
-        Core::Audio::output().submit(output);
+        std::array<float, std::size_t(kSamples) * 2> stereo{};
+        unsigned overrange = 0;
+        float peak = 0;
+        for (std::size_t i = 0; i < kSamples; ++i) {
+            if (outputChannels == 1 || g_deviceMode[0] == 5) {
+                stereo[i * 2] = stereo[i * 2 + 1] = planes[0][i];
+            } else if (g_deviceMode[0] == 3 && outputChannels > 2) {
+                // AX order: L, R, surround L/R, center, LFE. Normalized
+                // coefficients reserve headroom. LFE is not a full-range send.
+                constexpr float surround = .70710678f, headroom = 1 / (1 + 2 * surround);
+                stereo[i * 2] = (planes[0][i] + surround * (planes[2][i] + planes[4][i])) * headroom;
+                stereo[i * 2 + 1] = (planes[1][i] + surround * (planes[3][i] + planes[4][i])) * headroom;
+            } else {
+                // Stereo (and matrix-encoded surround) is already mixed by the
+                // title. Extra callback planes must not boost its bass/volume.
+                stereo[i * 2] = planes[0][i];
+                stereo[i * 2 + 1] = planes[1][i];
+            }
+            for (unsigned ch = 0; ch < 2; ++ch) {
+                const float value = stereo[i * 2 + ch];
+                peak = std::max(peak, std::abs(value));
+                overrange += value > 32767 || value < -32768;
+            }
+        }
+        Core::Audio::output().submit(stereo);
         if (std::getenv("WEMU_AX_TRACE") && (g_frameCount <= 8 || g_frameCount % 256 == 0)) {
             unsigned active = 0;
-            int peak = 0;
             for (const auto &v: g_voices)
                 active += v.used && v.state == 1;
-            for (auto value: output)
-                peak = std::max(peak, std::abs(int(value)));
-            Utils::Log::error("[AX_MIX] frame={} active={} peak={} queued_frames={}", g_frameCount, active, peak,
-                              Core::Audio::output().queuedFrames());
+            const auto stats = Core::Audio::output().statistics();
+            Utils::Log::error("[AX_MIX] frame={} active={} peak={} overrange={} queued_frames={} buffering={} underruns={} missing_frames={} "
+                              "dropped_frames={} clipped_samples={} tempo={} production_rate={}",
+                              g_frameCount, active, peak, overrange, stats.queuedFrames, stats.buffering, stats.underruns, stats.missingFrames,
+                              stats.droppedFrames, stats.clippedSamples, stats.tempo, stats.productionRate);
         }
     }
 
@@ -261,6 +298,8 @@ namespace {
                 case 2:
                     submitFrame(cpu);
                     break;
+                default:
+                    break; // The loop guard restricts g_phase to 0..2.
             }
         }
         if ((!g_initialized && !Core::MvPlayer::hasPlayingAudio(cpu)) || g_pendingIdx == g_pendingCbs.size())
@@ -403,6 +442,9 @@ namespace {
         }
         g_initialized = true;
         g_inputSamples = 96;
+        for (auto &mix: g_finalMix)
+            for (auto &converter: mix.upsamplers)
+                converter.reset();
         g_nextFrameQuarterTicks = cpu.m_scheduler.now() * 4 + kFrameQuarterTicks;
         cpu.m_gpr[3] = 0;
     }
@@ -723,7 +765,12 @@ namespace {
             cpu.m_gpr[3] = -1;
             return;
         }
-        g_upsampleAfter[cpu.m_gpr[3]] = cpu.m_gpr[4] != 0;
+        const auto type = cpu.m_gpr[3];
+        const bool after = cpu.m_gpr[4] != 0;
+        if (g_upsampleAfter[type] != after)
+            for (auto &converter: g_finalMix[type].upsamplers)
+                converter.reset();
+        g_upsampleAfter[type] = after;
         cpu.m_gpr[3] = 0;
     }
     void ax_GetDeviceUpsampleStage(Core::Interpreter &cpu)

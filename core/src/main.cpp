@@ -268,6 +268,8 @@ int main(const int ac, char const *const *av)
             if (end != value && !*end && percent >= 0 && percent <= 100)
                 audio.setVolume(percent);
         }
+        if (const char *setting = std::getenv("WEMU_AUDIO_STRETCH"); setting && std::string(setting) == "0")
+            audio.setTimeStretchEnabled(false);
         audio.start();
         struct AudioCleanup {
                 ~AudioCleanup() { Core::Audio::output().stop(); }
