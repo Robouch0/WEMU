@@ -22,6 +22,7 @@
 #include <vulkan/vulkan.h>
 
 #include "gfx/SpirvCompiler.hpp"
+#include "gfx/VulkanPortability.hpp"
 #include "utils/FrameProfiler.hpp"
 #include "utils/Logger.hpp"
 
@@ -580,6 +581,8 @@ namespace Core::Gfx {
                 void initialize()
                 {
                     VkInstanceCreateInfo ii{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
+                    std::vector<const char *> instanceExtensions;
+                    Portability::enableEnumeration(ii, instanceExtensions);
                     check(vkCreateInstance(&ii, nullptr, &instance), "create instance");
                     std::uint32_t count = 0;
                     check(vkEnumeratePhysicalDevices(instance, &count, nullptr), "enumerate devices");
@@ -645,6 +648,10 @@ namespace Core::Gfx {
                     enabled.textureCompressionBC = features.textureCompressionBC;
                     enabled.depthClamp = features.depthClamp;
                     di.pEnabledFeatures = &enabled;
+                    std::vector<const char *> deviceExtensions;
+                    Portability::enableSubset(physical, deviceExtensions);
+                    di.enabledExtensionCount = static_cast<std::uint32_t>(deviceExtensions.size());
+                    di.ppEnabledExtensionNames = deviceExtensions.data();
                     check(vkCreateDevice(physical, &di, nullptr, &device), "create device");
                     vkGetDeviceQueue(device, family, 0, &queue);
 
