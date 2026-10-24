@@ -14,10 +14,10 @@
 #include <cstring>
 #include <utility>
 
+#include "audio/Output.hpp"
 #include "cpu/interpreter/SyscallHandler.hpp"
 #include "cpu/types/InstructionTraits.hpp"
 #include "gfx/Renderer.hpp"
-#include "audio/Output.hpp"
 #include "hle/ApplicationBoot.hpp"
 #include "hle/AsyncCallbacks.hpp"
 #include "hle/Ax.hpp"

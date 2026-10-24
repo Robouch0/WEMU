@@ -21,17 +21,17 @@ namespace Core::Audio {
         if (format == 10)
             return memory.read<std::int16_t>(address);
         if (format == 25)
-            return std::int32_t(memory.read<std::int8_t>(address)) * 256;
+            return float(memory.read<std::int8_t>(address)) * 256;
         if (format != 0 || (current & 15) < 2)
             return 0;
         const auto byte = memory.read<std::uint8_t>(address);
         const int nibble = (current & 1) ? byte & 15 : byte >> 4;
         const int value = nibble < 8 ? nibble : nibble - 16;
-        const unsigned predictor = (predScale >> 4) & 7;
+        const std::size_t predictor = (predScale >> 4) & 7;
         const std::int64_t prediction =
                 std::int64_t(coefficients[predictor * 2]) * history1 + std::int64_t(coefficients[predictor * 2 + 1]) * history2;
         const auto decoded = std::int64_t(value) * (1 << (predScale & 15)) + ((prediction + 1024) >> 11);
-        return std::clamp<std::int64_t>(decoded, -32768, 32767);
+        return static_cast<float>(std::clamp<std::int64_t>(decoded, -32768, 32767));
     }
     void Source::advance(const Memory &memory)
     {
@@ -74,7 +74,7 @@ namespace Core::Audio {
             // consumed source sample, including when interpolating across loops.
             auto next = static_cast<const Source &>(*this);
             next.advance(memory);
-            result += ((next.state ? next.sample(memory) : 0) - result) * fraction;
+            result = static_cast<float>(result + ((next.state ? next.sample(memory) : 0) - result) * fraction);
         }
         fraction += srcType == 0 ? 1 : ratio;
         while (fraction >= 1 && state) {
@@ -83,7 +83,7 @@ namespace Core::Audio {
         }
         if (!state)
             fraction = 0;
-        result *= envelope / 32768.0f;
+        result *= static_cast<float>(envelope) / 32768.0f;
         envelope = std::clamp(envelope + envelopeDelta, 0, 65535);
         return result;
     }

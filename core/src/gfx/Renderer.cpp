@@ -2,8 +2,6 @@
 //
 // Created by nicolas on 5/21/26.
 //
-#include "Renderer.hpp"
-
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -12,6 +10,7 @@
 
 #include "GpuQuadRasterizer.hpp"
 #include "GpuRenderGraph.hpp"
+#include "Renderer.hpp"
 #include "utils/DisplayTiming.hpp"
 #include "utils/FrameProfiler.hpp"
 

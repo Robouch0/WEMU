@@ -38,7 +38,7 @@ namespace Core::Audio {
                 // AAC and other overlapping codecs need packets before the
                 // target, including negative priming timestamps at time zero.
                 const auto *audio = format->streams[stream];
-                const double timestamp = (sample / 48000.0 - .1 + origin) / av_q2d(audio->time_base);
+                const double timestamp = (static_cast<double>(sample) / 48000.0 - .1 + origin) / av_q2d(audio->time_base);
                 if (!std::isfinite(timestamp) || timestamp < double(INT64_MIN) || timestamp >= double(INT64_MAX) ||
                     av_seek_frame(format, stream, std::int64_t(timestamp), AVSEEK_FLAG_BACKWARD) < 0)
                     throw std::runtime_error("Movie audio seek failed");
@@ -61,7 +61,10 @@ namespace Core::Audio {
                             throw std::runtime_error("Unsupported movie audio frame");
                         const auto delay = swr_get_delay(resampler, 48000);
                         first = !flush && frame->best_effort_timestamp != AV_NOPTS_VALUE
-                                        ? std::llround((frame->best_effort_timestamp * av_q2d(format->streams[stream]->time_base) - origin) * 48000) -
+                                        ? std::llround(
+                                                  (static_cast<double>(frame->best_effort_timestamp) * av_q2d(format->streams[stream]->time_base) -
+                                                   origin) *
+                                                  48000) -
                                                   delay
                                         : next;
                         const int capacity = swr_get_out_samples(resampler, flush ? 0 : frame->nb_samples);
@@ -111,7 +114,7 @@ namespace Core::Audio {
             return; // A video-only movie is valid.
         const int video = av_find_best_stream(impl->format, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
         if (video >= 0 && impl->format->streams[video]->start_time != AV_NOPTS_VALUE)
-            impl->origin = impl->format->streams[video]->start_time * av_q2d(impl->format->streams[video]->time_base);
+            impl->origin = static_cast<double>(impl->format->streams[video]->start_time) * av_q2d(impl->format->streams[video]->time_base);
         else if (impl->format->start_time != AV_NOPTS_VALUE)
             impl->origin = double(impl->format->start_time) / AV_TIME_BASE;
         impl->codec = avcodec_alloc_context3(decoder);

@@ -1373,6 +1373,17 @@ TEST_F(Gx2CaptureTest, DeclaredAttributesAndPixelSemanticRenderWithEveryIndexEnd
                     SCOPED_TRACE(compressedTile);
                     SCOPED_TRACE(samplerMode);
                     SCOPED_TRACE(type);
+                    const auto expectNativeFramebuffer = [&](const Gx2Replayer &native, const Gx2Replayer &reference) {
+                        const auto &actual = native.framebuffer();
+                        const auto &expected = reference.framebuffer();
+                        ASSERT_EQ(actual.size(), expected.size());
+                        // Native BC2/3 RGB interpolation rounds differently across
+                        // drivers (e.g. llvmpipe returns 169 where the CPU returns
+                        // 170). Keep alpha and all other formats byte-exact.
+                        const bool compressedRgb = textureCase.format == 0x32 || textureCase.format == 0x33;
+                        for (std::size_t i = 0; i < actual.size(); ++i)
+                            ASSERT_LE(std::abs(int(actual[i]) - int(expected[i])), compressedRgb && i % 4 < 3 ? 1 : 0) << "Framebuffer byte " << i;
+                    };
                     if (textureCase.format == 1 || textureCase.format == 7 || textureCase.format == 0xF) {
                         const unsigned components = textureCase.format == 1 ? 1 : textureCase.format == 0xF ? 4 : 2;
                         // Include padded rows and both micro/macro-tiled source layouts.
@@ -1489,7 +1500,7 @@ TEST_F(Gx2CaptureTest, DeclaredAttributesAndPixelSemanticRenderWithEveryIndexEnd
                         native.replay(gx2Stream(), &cpu->m_memory);
                         EXPECT_EQ(backend->completedDraws(), 1u) << backend->lastError();
                         EXPECT_EQ(native.comparedNativeDraws(), 1u);
-                        EXPECT_EQ(native.framebuffer(), replayer.framebuffer());
+                        expectNativeFramebuffer(native, replayer);
                     }
                     if (textureCase.format == 1 && textureCase.map == 0x00010203 && !compressedTile && !samplerMode && !type) {
                         auto gatherWords = ps;
@@ -1804,9 +1815,9 @@ TEST_F(Gx2CaptureTest, DeclaredAttributesAndPixelSemanticRenderWithEveryIndexEnd
                             native.setNativeVerificationInterval(1);
                             native.replay(gx2Stream(), &cpu->m_memory);
                             EXPECT_EQ(native.comparedNativeDraws(), 1u);
-                            EXPECT_EQ(native.differingNativeDraws(), 0u);
+                            EXPECT_EQ(native.differingNativeDraws(), native.framebuffer() == replayer.framebuffer() ? 0u : 1u);
                             EXPECT_EQ(nativeBackend->completedDraws(), 1u) << nativeBackend->lastError();
-                            EXPECT_EQ(native.framebuffer(), replayer.framebuffer());
+                            expectNativeFramebuffer(native, replayer);
                         }
                         auto accepted = std::make_shared<BackendProbe>();
                         // Disabling separate alpha blending does not disable RGB blending.
@@ -1880,7 +1891,7 @@ TEST_F(Gx2CaptureTest, DeclaredAttributesAndPixelSemanticRenderWithEveryIndexEnd
                             if (nativeBackend) {
                                 native.replay(gx2Stream(), &cpu->m_memory);
                                 EXPECT_EQ(nativeBackend->completedDraws(), pass + 3u) << nativeBackend->lastError();
-                                EXPECT_EQ(native.framebuffer(), replayer.framebuffer());
+                                expectNativeFramebuffer(native, replayer);
                                 if (pass == 2)
                                     EXPECT_GE(nativeBackend->reusedDraws(), 2u);
                             }
