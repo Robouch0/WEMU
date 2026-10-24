@@ -3,6 +3,7 @@
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
+#include <QQuickStyle>
 #include <QSettings>
 #include <SDL2/SDL.h>
 
@@ -21,6 +22,10 @@ int main(int argc, char *argv[])
     QGuiApplication app(argc, argv);
     app.setOrganizationName("WEMU");
     app.setApplicationName("WEMU");
+#ifdef Q_OS_MACOS
+    // The native macOS style ignores the custom backgrounds the QML controls draw; use the Linux default.
+    if (qEnvironmentVariableIsEmpty("QT_QUICK_CONTROLS_STYLE")) QQuickStyle::setStyle("Fusion");
+#endif
     QCommandLineParser parser;
     parser.addHelpOption();
     parser.addOption({"library", "Select a game library folder.", "directory"});
