@@ -19,6 +19,7 @@
 #include <unordered_map>
 
 #include "MessageQueue.hpp"
+#include "OfflineMii.hpp"
 #include "cpu/interpreter/Interpreter.hpp"
 #include "cpu/interpreter/SyscallHandler.hpp"
 #include "cpu/memory/Memory.hpp"
@@ -869,11 +870,12 @@ static void hle_SYSGetSystemApplicationTitleId(Core::Interpreter &cpu)
     cpu.m_gpr[3] = 0x00050010u;
 }
 
-// GetMii(FFLStoreData* out): zeroed Mii + OK result; real Mii data can come with FFL support.
+// GetMii/GetMiiEx: return the offline account's valid, stable store record.
 static void hle_nn_act_GetMii(Core::Interpreter &cpu)
 {
-    for (std::uint32_t off = 0; off < 0x60 && cpu.m_gpr[3]; off += 4)
-        cpu.m_memory.write<std::uint32_t>(cpu.m_gpr[3] + off, 0);
+    static constexpr auto data = Core::offlineMii();
+    for (std::uint32_t off = 0; off < data.size() && cpu.m_gpr[3]; ++off)
+        cpu.m_memory.write<std::uint8_t>(cpu.m_gpr[3] + off, data[off]);
     cpu.m_gpr[3] = 0;
 }
 

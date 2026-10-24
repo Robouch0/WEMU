@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <format>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -86,6 +87,7 @@ namespace {
     {
         static const std::string kContent = "/vol/content";
         static const std::string kSave = "/vol/save";
+        static const std::string kSharedSave = "/vol/shared_save";
         if (isWithinMount(guestPath, kContent)) {
             const std::string rel = guestPath.substr(kContent.size());
             // Title updates overlay the base content: first root that has the file wins.
@@ -101,6 +103,12 @@ namespace {
             std::error_code ec;
             std::filesystem::create_directories(saveRoot, ec);
             return saveRoot + guestPath.substr(kSave.size());
+        }
+        if (isWithinMount(guestPath, kSharedSave)) {
+            // Shared system services also create persistent data (for example, the Mii
+            // database). Back the paths returned by SAVE with the same storage as saves,
+            // keeping each shared title's files separate from normal account saves.
+            return g_contentRoot + "/../wemu_save/shared" + guestPath.substr(kSharedSave.size());
         }
         // An unmounted guest path must not fall through to the host filesystem.
         return {};
@@ -678,8 +686,9 @@ namespace {
     // SAVEGetSharedSaveDataPath(u64 titleId, const char* file, char* out, u32 outSize)
     void save_GetSharedSaveDataPath(Core::Interpreter &cpu)
     {
+        const auto title = (std::uint64_t(cpu.m_gpr[3]) << 32) | cpu.m_gpr[4];
         const std::string file = readGuestString(cpu, cpu.m_gpr[5]);
-        writeGuestString(cpu, cpu.m_gpr[6], cpu.m_gpr[7], "/vol/shared_save/" + file);
+        writeGuestString(cpu, cpu.m_gpr[6], cpu.m_gpr[7], std::format("/vol/shared_save/{:016x}/{}", title, file));
         cpu.m_gpr[3] = FS_STATUS_OK;
     }
 

@@ -88,6 +88,67 @@ TEST_F(FsTest, OpenMissingFileFails)
     EXPECT_LT(static_cast<std::int32_t>(cpu->m_gpr[3]), 0); // negative FSStatus
 }
 
+TEST_F(FsTest, SharedSavePathsSupportDatabaseCreationAndKeepTitlesSeparate)
+{
+    // Keep persistent test saves inside the fixture's disposable directory.
+    SetFsContentRoot((root / "content").string());
+    constexpr unsigned FILE = 0x02100000, PATH = 0x02100100, MODE = 0x02100300;
+    constexpr unsigned OUT = 0x02100400, BUFFER = 0x02100500;
+    putStr(FILE, "db/database.bin");
+    const auto sharedPath = [&](unsigned titleLow) {
+        cpu->m_gpr[3] = 0x0005001B;
+        cpu->m_gpr[4] = titleLow;
+        cpu->m_gpr[5] = FILE;
+        cpu->m_gpr[6] = PATH;
+        cpu->m_gpr[7] = 0x200;
+        call("SAVEGetSharedSaveDataPath");
+        EXPECT_EQ(cpu->m_gpr[3], 0u);
+        return std::string(reinterpret_cast<char *>(cpu->m_memory.hostPtr(PATH)));
+    };
+    const auto open = [&](const char *mode) {
+        putStr(MODE, mode);
+        cpu->m_gpr[3] = 0;
+        cpu->m_gpr[5] = PATH;
+        cpu->m_gpr[6] = MODE;
+        cpu->m_gpr[7] = OUT;
+        call("FSOpenFile");
+    };
+    const auto first = sharedPath(0x10056000);
+    open("r");
+    EXPECT_EQ(static_cast<std::int32_t>(cpu->m_gpr[3]), -6);
+    open("w");
+    ASSERT_EQ(cpu->m_gpr[3], 0u);
+    const auto handle = cpu->m_memory.read<unsigned>(OUT);
+    cpu->m_memory.write<unsigned>(BUFFER, 0x12345678);
+    cpu->m_gpr[5] = BUFFER;
+    cpu->m_gpr[6] = 1;
+    cpu->m_gpr[7] = 4;
+    cpu->m_gpr[8] = handle;
+    call("FSWriteFile");
+    EXPECT_EQ(cpu->m_gpr[3], 4u);
+    cpu->m_gpr[5] = handle;
+    call("FSCloseFile");
+
+    EXPECT_NE(sharedPath(0x10057000), first);
+    open("r");
+    EXPECT_EQ(static_cast<std::int32_t>(cpu->m_gpr[3]), -6);
+
+    EXPECT_EQ(sharedPath(0x10056000), first);
+    open("r");
+    ASSERT_EQ(cpu->m_gpr[3], 0u);
+    const auto reopened = cpu->m_memory.read<unsigned>(OUT);
+    cpu->m_memory.write<unsigned>(BUFFER, 0);
+    cpu->m_gpr[5] = BUFFER;
+    cpu->m_gpr[6] = 1;
+    cpu->m_gpr[7] = 4;
+    cpu->m_gpr[8] = reopened;
+    call("FSReadFile");
+    EXPECT_EQ(cpu->m_gpr[3], 4u);
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(BUFFER), 0x12345678u);
+    cpu->m_gpr[5] = reopened;
+    call("FSCloseFile");
+}
+
 TEST_F(FsTest, AsyncStatDeliversSuccessAndErrorsThroughCallbacksAndQueues)
 {
     RegisterCoreinitFunctions();
