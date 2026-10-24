@@ -17,6 +17,7 @@
 #include "cpu/interpreter/SyscallHandler.hpp"
 #include "cpu/types/InstructionTraits.hpp"
 #include "gfx/Renderer.hpp"
+#include "audio/Output.hpp"
 #include "hle/ApplicationBoot.hpp"
 #include "hle/AsyncCallbacks.hpp"
 #include "hle/Ax.hpp"
@@ -377,12 +378,14 @@ void Core::Interpreter::run()
             }
             if (m_renderer && m_renderer->pause_requested()) {
                 Profile::Scope paused(Profile::Stage::Pause);
+                Core::Audio::output().pause(true);
                 m_renderer->service_pause([&] {
                     Utils::Log::error("[SESSION] paused retired={} tick={} presents={} movies={}", m_retired, m_scheduler.now(),
                                       m_renderer->guest_present_count(), m_renderer->movie_frame_count());
                 });
                 Utils::Log::error("[SESSION] {} retired={} tick={} presents={} movies={}", m_renderer->is_open() ? "resumed" : "stopped", m_retired,
                                   m_scheduler.now(), m_renderer->guest_present_count(), m_renderer->movie_frame_count());
+                Core::Audio::output().pause(false);
                 ipsMark = threadDumpMark = std::chrono::steady_clock::now();
                 ipsLast = m_retired;
                 if (!m_renderer->is_open()) {

@@ -1,11 +1,15 @@
 #include <cmath>
 #include <filesystem>
+#include <numeric>
 
 #include "TestFixture.hpp"
+#include "audio/Output.hpp"
 #include "cpu/interpreter/SyscallHandler.hpp"
 #include "gfx/Gx2CommandStream.hpp"
+#include "hle/Ax.hpp"
 #include "hle/CoreinitExtra.hpp"
 #include "hle/Fs.hpp"
+#include "hle/MvPlayer.hpp"
 #include "video/MovieDecoder.hpp"
 
 // Generated with ffmpeg testsrc2=size=64x48:rate=10:duration=2,
@@ -110,4 +114,72 @@ TEST_F(MvPlayerTest, IndependentPlayersUseGuestClockSeekAndPreserveQueuedPixelsA
     call("Draw__6MVViewFv");
     EXPECT_EQ(commands.size(), 1u);
     EXPECT_TRUE(ResolveFsContentPath("/vol/content/../../save/no").empty());
+}
+
+TEST_F(MvPlayerTest, MovieAudioRunsWithoutAxInitRespectsDeviceMixAndStopsWithThePlayer)
+{
+    RegisterAxFunctions();
+    cpu->m_scheduler = Core::Scheduler{};
+    cpu->m_scheduler.bootstrap(*cpu);
+    const auto object = create();
+    const char uri[] = "file:///vol/content/menu-audio.bin";
+    constexpr unsigned path = 0x28000000;
+    for (unsigned i = 0; i < sizeof(uri); ++i)
+        cpu->m_memory.write<std::uint8_t>(path + i, uri[i]);
+    cpu->m_gpr[4] = path;
+    method(object, 3);
+    ASSERT_EQ(cpu->m_gpr[3], 0u);
+    cpu->m_fpr[1] = .2;
+    method(object, 17);
+    method(object, 7);
+    EXPECT_TRUE(Core::MvPlayer::hasPlayingAudio(*cpu));
+    cpu->m_scheduler.advanceTicks(186469);
+    Core::Ax::OnFrameTick(*cpu);
+    ASSERT_TRUE(cpu->m_scheduler.preempt(*cpu));
+    std::array<std::int16_t, 288> output{};
+    Core::Audio::output().read(output);
+    EXPECT_GT(std::inner_product(output.begin(), output.end(), output.begin(), 0.0), 1.e7);
+    Core::Ax::OnSentinelReturn(*cpu);
+    cpu->m_gpr[3] = cpu->m_gpr[4] = cpu->m_gpr[5] = 0;
+    call("AXSetDeviceVolume");
+    cpu->m_scheduler.advanceTicks(186469);
+    ASSERT_TRUE(cpu->m_scheduler.preempt(*cpu));
+    Core::Ax::OnSentinelReturn(*cpu);
+    Core::Audio::output().read(output);
+    EXPECT_EQ(output, (std::array<std::int16_t, 288>{}));
+    EXPECT_TRUE(Core::MvPlayer::hasPlayingAudio(*cpu));
+
+    cpu->m_gpr[3] = cpu->m_gpr[4] = 0;
+    cpu->m_gpr[5] = 0x8000;
+    call("AXSetDeviceVolume");
+    cpu->m_gpr[3] = 0;
+    cpu->m_gpr[4] = Core::Memory::MemoryMap::ApplicationCode + 0x400;
+    call("AXRegisterDeviceFinalMixCallback");
+    cpu->m_scheduler.advanceTicks(186469);
+    ASSERT_TRUE(cpu->m_scheduler.preempt(*cpu));
+    Core::Ax::OnSentinelReturn(*cpu);
+    ASSERT_EQ(cpu->m_pc, 0x400u);
+    const auto pointers = cpu->m_memory.read<unsigned>(cpu->m_gpr[3]);
+    double energy = 0;
+    for (unsigned ch = 0; ch < 2; ++ch) {
+        const auto plane = cpu->m_memory.read<unsigned>(pointers + ch * 4);
+        for (unsigned i = 0; i < 144; ++i) {
+            const double sample = cpu->m_memory.read<std::int32_t>(plane + i * 4);
+            energy += sample * sample;
+            cpu->m_memory.write<std::int32_t>(plane + i * 4, 0);
+        }
+    }
+    EXPECT_GT(energy, 1.e7);
+    Core::Ax::OnSentinelReturn(*cpu);
+    Core::Audio::output().read(output);
+    EXPECT_EQ(output, (std::array<std::int16_t, 288>{}));
+    method(object, 13);
+    EXPECT_FALSE(Core::MvPlayer::hasPlayingAudio(*cpu));
+    std::array<float, 288> stopped{};
+    Core::MvPlayer::mixAudio(*cpu, stopped, cpu->m_scheduler.now());
+    EXPECT_EQ(stopped, (std::array<float, 288>{}));
+    cpu->m_gpr[3] = object;
+    call("Destroy__8MVPlayerSFP8MVPlayer");
+    RegisterAxFunctions();
+    cpu->m_scheduler = Core::Scheduler{};
 }

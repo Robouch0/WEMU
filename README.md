@@ -25,6 +25,7 @@ Commercial games are not yet fully playable. Current components include:
 | PowerPC interpreter, paired-single operations, and cached instruction blocks | Partial instruction coverage |
 | Optional LLVM 19.1 CPU compiler and object cache | Experimental |
 | Cooperative scheduling, heaps, layered filesystem, AX callbacks, and H.264 decoding | Implemented; compatibility is incomplete |
+| AX PCM/ADPCM mixing, buffered desktop audio, music/SFX and HLE movie soundtracks | Implemented; [audio compatibility limits](docs/features/audio.md) |
 | GX2 replay, Latte shader lowering, and Vulkan rendering | Experimental |
 | Qt6/QML library with isolated emulator processes | Implemented |
 | USB/gamepad input (SDL2) | Done        |
@@ -74,7 +75,7 @@ After a successful build:
 ```bash
 # Debian/Ubuntu dependencies
 sudo apt install cmake g++ zlib1g-dev libvulkan-dev libglfw3-dev libsdl2-dev libsdl2-image-dev \
-     libavcodec-dev libavutil-dev libswscale-dev qt6-base-dev qt6-declarative-dev \
+     libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev qt6-base-dev qt6-declarative-dev \
      glslang-tools spirv-tools mesa-vulkan-drivers ninja-build ccache
 
 # Core emulator + Qt GUI

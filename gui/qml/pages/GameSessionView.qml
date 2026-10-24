@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Layouts
 import QtQuick.Controls
 import Wemu 1.0
 import "../components"
@@ -60,6 +61,10 @@ Item {
                 moveSelection(-1);
             else if (event.key === Qt.Key_Down)
                 moveSelection(1);
+            else if (event.key === Qt.Key_Left)
+                EmulatorLauncher.audioVolume -= 5;
+            else if (event.key === Qt.Key_Right)
+                EmulatorLauncher.audioVolume += 5;
             else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter)
                 activateSelection();
         }
@@ -81,6 +86,10 @@ Item {
                 page.moveSelection(-1);
             else if (button === "Down")
                 page.moveSelection(1);
+            else if (button === "Left")
+                EmulatorLauncher.audioVolume -= 5;
+            else if (button === "Right")
+                EmulatorLauncher.audioVolume += 5;
             else if (button === "A")
                 page.activateSelection();
             else if (button === "B")
@@ -246,11 +255,29 @@ Item {
                         }
                     }
                 }
+                RowLayout {
+                    width: parent.width
+                    visible: !page.confirmingQuit
+                    enabled: EmulatorLauncher.paused && !EmulatorLauncher.pausePending && !EmulatorLauncher.stopping
+                    Label { text: "Volume"; color: Theme.panelText }
+                    Slider {
+                        objectName: "sessionVolumeSlider"
+                        Layout.fillWidth: true
+                        from: 0; to: 100; stepSize: 1
+                        value: EmulatorLauncher.audioVolume
+                        onMoved: EmulatorLauncher.audioVolume = Math.round(value)
+                    }
+                    Label {
+                        text: EmulatorLauncher.audioVolume === 0 ? "Muted" : EmulatorLauncher.audioVolume + "%"
+                        color: Theme.panelText
+                        Layout.preferredWidth: 50
+                    }
+                }
                 Text {
                     width: parent.width
                     color: Theme.mutedText
                     font.pixelSize: 12
-                    text: "↑ / ↓ select     Enter or A accept"
+                    text: "↑ / ↓ select     Enter or A accept     ← / → volume"
                 }
             }
         }

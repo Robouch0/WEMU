@@ -1,5 +1,7 @@
 #include "EmulatorLauncher.hpp"
 
+#include <algorithm>
+
 #include <QCoreApplication>
 #include <QDataStream>
 #include <QDateTime>
@@ -87,6 +89,22 @@ void EmulatorLauncher::setError(const QString &error)
     emit errorChanged();
 }
 
+int EmulatorLauncher::audioVolume() const
+{
+    bool valid{};
+    const int value = QSettings().value("audio/volume", 100).toInt(&valid);
+    return valid ? std::clamp(value, 0, 100) : 100;
+}
+
+void EmulatorLauncher::setAudioVolume(int value)
+{
+    value = std::clamp(value, 0, 100);
+    if (value == audioVolume()) return;
+    QSettings().setValue("audio/volume", value);
+    if (m_connected) sendCommand(quint32(Core::Gfx::HostPresenter::Action::AudioVolume), value);
+    emit settingsChanged();
+}
+
 int EmulatorLauncher::systemLanguage() const
 {
     bool valid{};
@@ -170,8 +188,9 @@ void EmulatorLauncher::launch(const QString &rpxPath, const QString &title, cons
     }
     const auto titleRegion = titleRegionForLaunch(rpxPath);
     const auto region = systemRegion() ? unsigned(systemRegion()) : titleRegion;
-    const auto environment = desktopLaunchEnvironment(QProcessEnvironment::systemEnvironment(), contentPath, font,
+    auto environment = desktopLaunchEnvironment(QProcessEnvironment::systemEnvironment(), contentPath, font,
                                                      nativeCpu, nativeCache, unsigned(systemLanguage()), region, titleRegion, x64Cpu);
+    environment.insert("WEMU_AUDIO_VOLUME", QString::number(audioVolume()));
     qInfo() << "[SESSION_CORE]" << QFileInfo(binary).canonicalFilePath();
     qInfo() << "[SESSION_CPU]" << (x64Cpu ? "x86-64 JIT with interpreter fallback" : nativeCpu ? "LLVM with interpreter fallback" : "interpreter")
             << "cache=" << nativeCache;
@@ -304,6 +323,7 @@ void EmulatorLauncher::readChannel()
                 if (m_connected || version != WemuSession::version || !stream.atEnd())
                     throw std::runtime_error("Incompatible game display protocol");
                 m_connected = true;
+                sendCommand(quint32(Core::Gfx::HostPresenter::Action::AudioVolume), audioVolume());
                 if (m_drcStreaming)
                     sendCommand(5, 1);
                 m_gamepadDirty = true;

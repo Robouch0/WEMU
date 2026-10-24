@@ -1,71 +1,55 @@
-/*
-** EPITECH PROJECT, 2026
-** core
-** File description:
-** Ax -- minimal sndcore2 (AX) HLE. No audio is rendered yet; the goal is structural
-** correctness: AXAcquireVoice hands out real zeroed guest-memory voice structs (titles deref
-** them immediately), setters accept everything, queries return silence/defaults, and frame
-** callbacks are remembered so a later audio pump can fire them.
-*/
+// AX HLE: guest-clock voice mixing, effect callbacks and buffered host output.
 
 #include "Ax.hpp"
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <optional>
 #include <vector>
 
+#include "audio/Output.hpp"
+#include "audio/Voice.hpp"
 #include "cpu/interpreter/Interpreter.hpp"
 #include "cpu/interpreter/SyscallHandler.hpp"
 #include "cpu/memory/Memory.hpp"
+#include "hle/MvPlayer.hpp"
 #include "hle/Scheduler.hpp"
 #include "utils/Logger.hpp"
 
 namespace {
 
     constexpr std::uint32_t kMaxVoices = 96;
-    constexpr std::uint32_t kVoiceSize = 0x200; // generous; real AXVoice is ~0x60 + padding
+    constexpr std::uint32_t kVoiceSize = 0x58; // public AXVoice layout (WUT sndcore2/voice.h)
     constexpr std::uint32_t kVoiceOffsets = 0x34;
     constexpr std::uint32_t kVoiceOffsetsSize = 0x14;
 
-    // Playback model: no samples are mixed, but a playing voice consumes its source at the
-    // SRC ratio each 3 ms frame, loops or stops at its end offset, and reports its position.
-    // Streamed sound players poll that position (and wait for clips to finish), so a voice
-    // that never advances stalls anything synchronised to audio.
-    // Offsets are kept absolute in AX address units: nibbles for ADPCM, samples for PCM.
-    struct VoiceSlot {
-            std::uint32_t guestPtr{0};
-            bool used{false};
-            std::uint32_t state{0};
-            std::uint16_t format{0}, loopFlag{0};
-            std::uint32_t base{0}; // samples pointer the public offsets are relative to
-            std::uint64_t loop{0}, end{0}, current{0};
-            std::uint32_t loopCount{0};
-            double ratio{1.0}, fraction{0.0};
+    struct VoiceSlot : Core::Audio::Voice {
+            std::uint32_t guestPtr{};
+            bool used{};
     };
     std::vector<VoiceSlot> g_voices;
-
-    constexpr std::uint16_t kFormatAdpcm = 0x00, kFormatPcm16 = 0x0A;
+    using Core::Audio::addressUnits;
     constexpr std::uint32_t kStateOffset = 0x04;
-
-    std::uint64_t addressUnits(std::uint32_t address, std::uint16_t format)
-    {
-        return format == kFormatAdpcm ? std::uint64_t(address) * 2 : format == kFormatPcm16 ? address / 2 : address;
-    }
-
-    // ADPCM frames are 8 bytes: two header nibbles, then 14 sample nibbles.
-    std::uint64_t unitsToSample(std::uint64_t units, std::uint16_t format)
-    {
-        if (format != kFormatAdpcm)
-            return units;
-        const auto inFrame = units % 16;
-        return units / 16 * 14 + (inFrame < 2 ? 0 : inFrame - 2);
-    }
-
-    std::uint64_t sampleToUnits(std::uint64_t sample, std::uint16_t format)
-    {
-        return format == kFormatAdpcm ? sample / 14 * 16 + sample % 14 + 2 : sample;
-    }
+    constexpr unsigned kSamples = 144;
+    unsigned g_inputSamples = 96;
+    unsigned channels(unsigned type) { return type == 0 ? 6 : 4; }
+    unsigned devices(unsigned type) { return type == 0 ? 1 : 2; }
+    bool validDevice(unsigned type, unsigned id) { return type < 2 && id < devices(type); }
+    using Plane = std::array<float, kSamples>;
+    // [type][device][bus][channel][sample]
+    std::array<std::array<std::array<std::array<Plane, 6>, 4>, 2>, 2> g_buses{};
+    struct Aux {
+            std::uint32_t callback{}, userData{}, storage{};
+            std::uint16_t volume{0x8000};
+            bool pending{};
+    };
+    std::array<std::array<std::array<Aux, 3>, 2>, 2> g_aux{};
+    std::array<std::array<std::uint16_t, 2>, 2> g_deviceVolume{{{0x8000, 0x8000}, {0x8000, 0x8000}}};
+    std::array<bool, 2> g_upsampleAfter{};
+    std::array<unsigned, 2> g_deviceMode{0, 0}; // stereo
 
     VoiceSlot *findVoice(std::uint32_t guestPtr)
     {
@@ -83,6 +67,8 @@ namespace {
     struct FinalMixDevice {
             std::uint32_t callback = 0;
             std::uint32_t storage = 0;
+            bool pending = false;
+            unsigned samples = kSamples;
     };
     std::array<FinalMixDevice, 2> g_finalMix;
 
@@ -101,40 +87,185 @@ namespace {
     std::uint32_t g_axStackTop = 0;
     struct PendingCallback {
             std::uint32_t function;
-            std::uint32_t argument = 0;
+            std::uint32_t argument = 0, argument2 = 0, argument3 = 0;
     };
     std::vector<PendingCallback> g_pendingCbs;
     std::size_t g_pendingIdx = 0;
 
-    bool hasCallbacks() { return g_frameCallback || !g_appFrameCallbacks.empty() || g_finalMix[0].callback || g_finalMix[1].callback; }
+    unsigned g_phase = 3;
 
-    void advanceVoices(Core::Interpreter &cpu)
+
+    std::int32_t pcm(float value) { return static_cast<std::int32_t>(std::clamp(value, -32768.0f, 32767.0f)); }
+
+    void mixVoices(Core::Interpreter &cpu)
     {
-        constexpr double kOutputSamples = 144.0; // 3 ms at 48 kHz
+        g_buses = {};
         for (auto &voice: g_voices) {
-            if (!voice.used || voice.state != 1 || !voice.base)
+            if (!voice.used || voice.state != 1)
                 continue;
-            const double consumed = kOutputSamples * voice.ratio + voice.fraction;
-            const auto whole = static_cast<std::uint64_t>(consumed);
-            voice.fraction = consumed - double(whole);
-            auto position = unitsToSample(voice.current, voice.format) + whole;
-            const auto endSample = unitsToSample(voice.end, voice.format);
-            if (position > endSample) {
-                const auto loopSample = unitsToSample(voice.loop, voice.format);
-                if (voice.loopFlag && loopSample <= endSample) {
-                    const auto length = endSample - loopSample + 1;
-                    const auto overrun = position - endSample - 1;
-                    voice.loopCount += static_cast<std::uint32_t>(1 + overrun / length);
-                    position = loopSample + overrun % length;
-                } else {
-                    position = endSample;
-                    voice.state = 0;
-                    cpu.m_memory.write<std::uint32_t>(voice.guestPtr + kStateOffset, 0);
-                }
+            for (unsigned i = 0; i < g_inputSamples; ++i) {
+                const auto sample = voice.render(cpu.m_memory);
+                for (unsigned type = 0; type < 2; ++type)
+                    for (unsigned id = 0; id < devices(type); ++id)
+                        for (unsigned ch = 0; ch < channels(type); ++ch)
+                            for (unsigned bus = 0; bus < 4; ++bus) {
+                                auto &gain = voice.gains[type][id][ch][bus];
+                                g_buses[type][id][bus][ch][i] += sample * (gain.volume / 32768.0f);
+                                gain.volume = std::clamp(gain.volume + gain.delta, 0, 65535);
+                            }
             }
-            voice.current = sampleToUnits(position, voice.format);
+            cpu.m_memory.write<std::uint32_t>(voice.guestPtr + kStateOffset, voice.state);
+            cpu.m_memory.write<std::uint32_t>(voice.guestPtr + 8, voice.envelope);
             writeVoiceOffsets(cpu, voice);
         }
+    }
+
+    void prepareAux(Core::Interpreter &cpu)
+    {
+        mixVoices(cpu);
+        for (unsigned type = 0; type < 2; ++type)
+            for (unsigned id = 0; id < devices(type); ++id)
+                for (unsigned bus = 0; bus < 3; ++bus) {
+                    auto &aux = g_aux[type][id][bus];
+                    aux.pending = aux.callback != 0;
+                    if (!aux.pending)
+                        continue;
+                    const auto count = channels(type);
+                    if (!aux.storage)
+                        aux.storage = cpu.m_memory.heapAllocate(8 + count * 4 + count * kSamples * 4, 32);
+                    const auto pointers = aux.storage + 8;
+                    cpu.m_memory.write<std::uint32_t>(aux.storage, count);
+                    cpu.m_memory.write<std::uint32_t>(aux.storage + 4, g_inputSamples);
+                    for (unsigned ch = 0; ch < count; ++ch) {
+                        const auto data = pointers + count * 4 + ch * kSamples * 4;
+                        cpu.m_memory.write<std::uint32_t>(pointers + ch * 4, data);
+                        for (unsigned i = 0; i < g_inputSamples; ++i)
+                            cpu.m_memory.write<std::int32_t>(data + i * 4, pcm(g_buses[type][id][bus + 1][ch][i]));
+                    }
+                    g_pendingCbs.push_back({aux.callback, pointers, aux.userData, aux.storage});
+                }
+    }
+
+    void prepareFinal(Core::Interpreter &cpu)
+    {
+        std::array<float, kSamples * 2> movie{};
+        Core::MvPlayer::mixAudio(cpu, movie, (g_nextFrameQuarterTicks - 2 * kFrameQuarterTicks) / 4);
+        for (unsigned type = 0; type < 2; ++type) {
+            auto &mix = g_finalMix[type];
+            const auto count = channels(type), deviceCount = devices(type);
+            for (unsigned id = 0; id < deviceCount; ++id)
+                for (unsigned ch = 0; ch < count; ++ch) {
+                    auto &main = g_buses[type][id][0][ch];
+                    for (unsigned i = 0; i < g_inputSamples; ++i) {
+                        for (unsigned bus = 0; bus < 3; ++bus) {
+                            const auto &aux = g_aux[type][id][bus];
+                            const float value = aux.pending ? cpu.m_memory.read<std::int32_t>(aux.storage + 8 + count * 4 + ch * kSamples * 4 + i * 4)
+                                                            : g_buses[type][id][bus + 1][ch][i];
+                            main[i] += value * (aux.volume / 32768.0f);
+                        }
+                        main[i] *= g_deviceVolume[type][id] / 32768.0f;
+                    }
+                    if (!g_upsampleAfter[type] && g_inputSamples == 96) {
+                        const auto input = main;
+                        for (unsigned i = 0; i < kSamples; ++i) {
+                            const float position = i * (96.0f / 144.0f);
+                            const unsigned lo = position;
+                            main[i] = input[lo] + (input[std::min(lo + 1, 95u)] - input[lo]) * (position - lo);
+                        }
+                    }
+                }
+            mix.samples = g_upsampleAfter[type] ? g_inputSamples : kSamples;
+            if (type == 0) {
+                for (unsigned i = 0; i < mix.samples; ++i) {
+                    const float position = i * (float(kSamples) / mix.samples);
+                    const unsigned lo = position, hi = std::min(lo + 1, kSamples - 1);
+                    for (unsigned ch = 0; ch < 2; ++ch) {
+                        const float value = movie[lo * 2 + ch] + (movie[hi * 2 + ch] - movie[lo * 2 + ch]) * (position - lo);
+                        g_buses[0][0][0][ch][i] += value * (g_deviceVolume[0][0] / 32768.0f);
+                    }
+                }
+            }
+            mix.pending = mix.callback != 0;
+            if (!mix.pending)
+                continue;
+            const auto planes = count * deviceCount;
+            if (!mix.storage)
+                mix.storage = cpu.m_memory.heapAllocate(12 + planes * 4 + planes * kSamples * 4, 32);
+            const auto pointers = mix.storage + 12;
+            cpu.m_memory.write<std::uint32_t>(mix.storage, pointers);
+            cpu.m_memory.write<std::uint16_t>(mix.storage + 4, count);
+            cpu.m_memory.write<std::uint16_t>(mix.storage + 6, mix.samples);
+            cpu.m_memory.write<std::uint16_t>(mix.storage + 8, deviceCount);
+            cpu.m_memory.write<std::uint16_t>(mix.storage + 10, count);
+            for (unsigned plane = 0; plane < planes; ++plane) {
+                const auto data = pointers + planes * 4 + plane * kSamples * 4;
+                cpu.m_memory.write<std::uint32_t>(pointers + plane * 4, data);
+                for (unsigned i = 0; i < mix.samples; ++i)
+                    cpu.m_memory.write<std::int32_t>(data + i * 4, pcm(g_buses[type][plane / count][0][plane % count][i]));
+            }
+            g_pendingCbs.push_back({mix.callback, mix.storage});
+        }
+    }
+
+    void submitFrame(Core::Interpreter &cpu)
+    {
+        // TV device 0 feeds the desktop speakers. DRC buffers and effects are
+        // rendered independently, without doubling games' mirrored TV sound.
+        auto &mix = g_finalMix[0];
+        const unsigned count = channels(0);
+        const unsigned outputChannels = mix.pending ? std::clamp<unsigned>(cpu.m_memory.read<std::uint16_t>(mix.storage + 10), 1, count) : count;
+        const auto fetch = [&](unsigned ch, unsigned index) -> float {
+            if (ch >= outputChannels)
+                return 0;
+            if (mix.pending)
+                return cpu.m_memory.read<std::int32_t>(mix.storage + 12 + count * 4 + ch * kSamples * 4 + index * 4);
+            return g_buses[0][0][0][ch][index];
+        };
+        std::array<float, kSamples * 2> stereo{};
+        for (unsigned i = 0; i < kSamples; ++i) {
+            const float position = mix.samples == 96 ? i * (96.0f / 144.0f) : float(i);
+            const unsigned lo = position, hi = std::min(lo + 1, mix.samples - 1);
+            const auto channel = [&](unsigned ch) { return fetch(ch, lo) + (fetch(ch, hi) - fetch(ch, lo)) * (position - lo); };
+            // AX channel order: L, R, surround L, surround R, center, LFE.
+            stereo[i * 2] = channel(0) + .70710678f * (channel(2) + channel(4)) + .5f * channel(5);
+            stereo[i * 2 + 1] = outputChannels == 1 ? stereo[i * 2] : channel(1) + .70710678f * (channel(3) + channel(4)) + .5f * channel(5);
+        }
+        std::array<std::int16_t, kSamples * 2> output{};
+        for (unsigned i = 0; i < output.size(); ++i)
+            output[i] = pcm(stereo[i]);
+        Core::Audio::output().submit(output);
+        if (std::getenv("WEMU_AX_TRACE") && (g_frameCount <= 8 || g_frameCount % 256 == 0)) {
+            unsigned active = 0;
+            int peak = 0;
+            for (const auto &v: g_voices)
+                active += v.used && v.state == 1;
+            for (auto value: output)
+                peak = std::max(peak, std::abs(int(value)));
+            Utils::Log::error("[AX_MIX] frame={} active={} peak={} queued_frames={}", g_frameCount, active, peak,
+                              Core::Audio::output().queuedFrames());
+        }
+    }
+
+    // App callbacks update voices first, then aux callbacks process their
+    // buses, then final callbacks see the resulting mix. Submit only on return.
+    std::optional<PendingCallback> nextCallback(Core::Interpreter &cpu)
+    {
+        while ((g_initialized || Core::MvPlayer::hasPlayingAudio(cpu)) && g_pendingIdx == g_pendingCbs.size() && g_phase < 3) {
+            switch (g_phase++) {
+                case 0:
+                    prepareAux(cpu);
+                    break;
+                case 1:
+                    prepareFinal(cpu);
+                    break;
+                case 2:
+                    submitFrame(cpu);
+                    break;
+            }
+        }
+        if ((!g_initialized && !Core::MvPlayer::hasPlayingAudio(cpu)) || g_pendingIdx == g_pendingCbs.size())
+            return {};
+        return g_pendingCbs[g_pendingIdx++];
     }
 
     void buildPending(Core::Interpreter &cpu)
@@ -143,42 +274,16 @@ namespace {
             g_firstFrameTick = cpu.m_scheduler.now();
         ++g_frameCount;
         if (std::getenv("WEMU_AX_TRACE") && (g_frameCount <= 8 || g_frameCount % 256 == 0))
-            Utils::Log::error("[AX_CLOCK] frame={} tick={} elapsed_ticks={} previous_deadline_quarters={}", g_frameCount, cpu.m_scheduler.now(),
-                              cpu.m_scheduler.now() - g_firstFrameTick, g_nextFrameQuarterTicks);
+            Utils::Log::error("[AX_CLOCK] frame={} tick={} elapsed_ticks={}", g_frameCount, cpu.m_scheduler.now(),
+                              cpu.m_scheduler.now() - g_firstFrameTick);
         g_nextFrameQuarterTicks += kFrameQuarterTicks;
-        advanceVoices(cpu);
         g_pendingCbs.clear();
         g_pendingIdx = 0;
+        g_phase = 0;
         if (g_frameCallback)
             g_pendingCbs.push_back({g_frameCallback});
         for (auto callback: g_appFrameCallbacks)
             g_pendingCbs.push_back({callback});
-        for (std::size_t device = 0; device < g_finalMix.size(); ++device) {
-            auto &mix = g_finalMix[device];
-            if (!mix.callback)
-                continue;
-            // Default final mix is after upsampling: 3 ms of planar signed 32-bit
-            // samples at 48 kHz. Voice mixing is not implemented; input is silence.
-            const std::uint16_t channels = device == 0 ? 6 : 4;
-            const std::uint16_t devices = device == 0 ? 1 : 2;
-            constexpr std::uint16_t samples = 144;
-            const auto planes = channels * devices;
-            const auto bytes = 12 + planes * 4 + planes * samples * 4;
-            if (!mix.storage)
-                mix.storage = cpu.m_memory.heapAllocate(bytes, 0x20);
-            for (std::uint32_t off = 0; off < bytes; off += 4)
-                cpu.m_memory.write<std::uint32_t>(mix.storage + off, 0);
-            const auto pointers = mix.storage + 12;
-            const auto data = pointers + planes * 4;
-            cpu.m_memory.write<std::uint32_t>(mix.storage, pointers);
-            cpu.m_memory.write<std::uint16_t>(mix.storage + 4, channels);
-            cpu.m_memory.write<std::uint16_t>(mix.storage + 6, samples);
-            cpu.m_memory.write<std::uint16_t>(mix.storage + 8, devices);
-            cpu.m_memory.write<std::uint16_t>(mix.storage + 10, channels);
-            for (int plane = 0; plane < planes; ++plane)
-                cpu.m_memory.write<std::uint32_t>(pointers + plane * 4, data + plane * samples * 4);
-            g_pendingCbs.push_back({mix.callback, mix.storage});
-        }
     }
 
     void ensureAxThread(Core::Interpreter &cpu)
@@ -206,20 +311,26 @@ namespace {
 
 namespace Core::Ax {
 
+    void StartMovieAudio(Core::Interpreter &cpu)
+    {
+        if (!g_initialized)
+            g_nextFrameQuarterTicks = cpu.m_scheduler.now() * 4 + kFrameQuarterTicks;
+    }
+
     void OnFrameTick(Core::Interpreter &cpu)
     {
-        if (!g_initialized || cpu.m_scheduler.now() * 4 < g_nextFrameQuarterTicks)
-            return;
-        if (!hasCallbacks())
+        if ((!g_initialized && !Core::MvPlayer::hasPlayingAudio(cpu)) || cpu.m_scheduler.now() * 4 < g_nextFrameQuarterTicks)
             return;
         ensureAxThread(cpu);
         if (g_axThread->state != Core::ThreadContext::State::Paused)
             return; // previous frame still in flight; skip this one
         buildPending(cpu);
         Core::ThreadContext *t = g_axThread;
-        const auto callback = g_pendingCbs[g_pendingIdx++];
-        t->pc = callback.function - Core::Memory::MemoryMap::ApplicationCode;
-        t->gpr[3] = callback.argument;
+        const auto callback = nextCallback(cpu);
+        t->pc = (callback ? callback->function : Core::AX_FRAME_SENTINEL) - Core::Memory::MemoryMap::ApplicationCode;
+        t->gpr[3] = callback ? callback->argument : 0;
+        t->gpr[4] = callback ? callback->argument2 : 0;
+        t->gpr[5] = callback ? callback->argument3 : 0;
         t->lr = Core::AX_FRAME_SENTINEL - Core::Memory::MemoryMap::ApplicationCode;
         t->gpr[1] = (g_axStackTop & ~0xFu) - 8;
         t->gpr[2] = cpu.m_gpr[2]; // SDA bases (shared address space)
@@ -231,10 +342,11 @@ namespace Core::Ax {
     void OnSentinelReturn(Core::Interpreter &cpu)
     {
         const std::uint32_t appCode = Core::Memory::MemoryMap::ApplicationCode;
-        if (g_pendingIdx < g_pendingCbs.size()) { // next callback of this frame
-            const auto callback = g_pendingCbs[g_pendingIdx++];
-            cpu.m_pc = callback.function - appCode;
-            cpu.m_gpr[3] = callback.argument;
+        if (const auto callback = nextCallback(cpu)) {
+            cpu.m_pc = callback->function - appCode;
+            cpu.m_gpr[3] = callback->argument;
+            cpu.m_gpr[4] = callback->argument2;
+            cpu.m_gpr[5] = callback->argument3;
             cpu.m_nextPc = cpu.m_pc;
             cpu.m_lr = Core::AX_FRAME_SENTINEL - appCode;
             cpu.m_gpr[1] = (g_axStackTop & ~0xFu) - 8;
@@ -242,7 +354,7 @@ namespace Core::Ax {
         }
         g_pendingCbs.clear();
         g_pendingIdx = 0;
-        if (!g_initialized || !hasCallbacks()) {
+        if (!g_initialized && !Core::MvPlayer::hasPlayingAudio(cpu)) {
             if (cpu.m_scheduler.parkCurrent(cpu))
                 return;
             cpu.m_lr = Core::AX_FRAME_SENTINEL - appCode;
@@ -259,16 +371,22 @@ namespace Core::Ax {
             return;
         }
         buildPending(cpu);
-        if (!g_pendingCbs.empty()) {
-            const auto callback = g_pendingCbs[g_pendingIdx++];
-            cpu.m_pc = callback.function - appCode;
-            cpu.m_gpr[3] = callback.argument;
+        if (const auto callback = nextCallback(cpu)) {
+            cpu.m_pc = callback->function - appCode;
+            cpu.m_gpr[3] = callback->argument;
+            cpu.m_gpr[4] = callback->argument2;
+            cpu.m_gpr[5] = callback->argument3;
             cpu.m_nextPc = cpu.m_pc;
             cpu.m_lr = Core::AX_FRAME_SENTINEL - appCode;
             cpu.m_gpr[1] = (g_axStackTop & ~0xFu) - 8;
             return;
         }
-        cpu.m_scheduler.sleep(cpu, 1000);
+        cpu.m_lr = Core::AX_FRAME_SENTINEL - appCode;
+        cpu.m_pc = cpu.m_nextPc = cpu.m_lr;
+        cpu.m_scheduler.sleep(
+                cpu,
+                std::max<std::uint64_t>(
+                        1, (g_nextFrameQuarterTicks > cpu.m_scheduler.now() * 4 ? g_nextFrameQuarterTicks - cpu.m_scheduler.now() * 4 + 3 : 4) / 4));
     }
 
 } // namespace Core::Ax
@@ -279,7 +397,12 @@ namespace {
 
     void ax_Init(Core::Interpreter &cpu)
     {
+        if (g_initialized) {
+            cpu.m_gpr[3] = 0;
+            return;
+        }
         g_initialized = true;
+        g_inputSamples = 96;
         g_nextFrameQuarterTicks = cpu.m_scheduler.now() * 4 + kFrameQuarterTicks;
         cpu.m_gpr[3] = 0;
     }
@@ -287,6 +410,24 @@ namespace {
     void ax_Quit(Core::Interpreter &cpu)
     {
         g_initialized = false;
+        for (auto &v: g_voices) {
+            v.state = 0;
+            if (v.used)
+                cpu.m_memory.write<std::uint32_t>(v.guestPtr + kStateOffset, 0);
+            v.used = false;
+        }
+        g_frameCallback = 0;
+        g_appFrameCallbacks.clear();
+        for (auto &mix: g_finalMix)
+            mix.callback = 0;
+        for (auto &group: g_aux)
+            for (auto &device: group)
+                for (auto &aux: device)
+                    aux.callback = 0;
+        g_pendingCbs.clear();
+        g_pendingIdx = 0;
+        g_phase = 3;
+        Core::Audio::output().clear();
         cpu.m_gpr[3] = 0;
     }
 
@@ -326,8 +467,13 @@ namespace {
             for (std::uint32_t off = 0; off < kVoiceSize; off += 4)
                 cpu.m_memory.write<std::uint32_t>(slot.guestPtr + off, 0);
             cpu.m_memory.write<std::uint32_t>(slot.guestPtr + 0x00, i); // index
-            cpu.m_memory.write<std::uint32_t>(slot.guestPtr + 0x08, cpu.m_gpr[3]); // priority
-            slot = {slot.guestPtr, true};
+            cpu.m_memory.write<std::uint32_t>(slot.guestPtr + 0x1C, cpu.m_gpr[3]);
+            cpu.m_memory.write<std::uint32_t>(slot.guestPtr + 0x20, cpu.m_gpr[4]);
+            cpu.m_memory.write<std::uint32_t>(slot.guestPtr + 0x24, cpu.m_gpr[5]);
+            const auto pointer = slot.guestPtr;
+            slot = {};
+            slot.guestPtr = pointer;
+            slot.used = true;
             cpu.m_gpr[3] = slot.guestPtr;
             return;
         }
@@ -335,11 +481,33 @@ namespace {
         cpu.m_gpr[3] = 0;
     }
 
+    void ax_AcquireVoiceEx(Core::Interpreter &cpu)
+    {
+        const auto callback = cpu.m_gpr[4];
+        ax_AcquireVoice(cpu);
+        if (const auto voice = cpu.m_gpr[3]) {
+            cpu.m_memory.write<std::uint32_t>(voice + 0x20, 0);
+            cpu.m_memory.write<std::uint32_t>(voice + 0x48, callback);
+        }
+    }
+    void ax_SetVoiceSamplesAddr(Core::Interpreter &cpu)
+    {
+        if (auto *v = findVoice(cpu.m_gpr[3])) {
+            v->base = cpu.m_gpr[4];
+            cpu.m_memory.write<std::uint32_t>(v->guestPtr + kVoiceOffsets + 16, v->base);
+            writeVoiceOffsets(cpu, *v);
+        }
+        cpu.m_gpr[3] = 0;
+    }
+
     void ax_FreeVoice(Core::Interpreter &cpu)
     {
         for (auto &slot: g_voices)
-            if (slot.guestPtr == cpu.m_gpr[3])
+            if (slot.guestPtr == cpu.m_gpr[3]) {
                 slot.used = false;
+                slot.state = 0;
+                cpu.m_memory.write<std::uint32_t>(slot.guestPtr + kStateOffset, 0);
+            }
         cpu.m_gpr[3] = 0;
     }
 
@@ -347,7 +515,8 @@ namespace {
     void ax_RegisterAppFrameCallback(Core::Interpreter &cpu)
     {
         if (cpu.m_gpr[3]) {
-            g_appFrameCallbacks.push_back(cpu.m_gpr[3]);
+            if (std::find(g_appFrameCallbacks.begin(), g_appFrameCallbacks.end(), cpu.m_gpr[3]) == g_appFrameCallbacks.end())
+                g_appFrameCallbacks.push_back(cpu.m_gpr[3]);
             Utils::Log::error("[AX] app frame callback registered: 0x{:08X}", cpu.m_gpr[3]);
         }
         cpu.m_gpr[3] = 0;
@@ -409,7 +578,8 @@ namespace {
     void ax_SetVoiceEndOffsetEx(Core::Interpreter &cpu)
     {
         if (auto *voice = findVoice(cpu.m_gpr[3])) {
-            voice->end = addressUnits(cpu.m_gpr[5], voice->format) + cpu.m_gpr[4];
+            voice->base = cpu.m_gpr[5];
+            voice->end = addressUnits(voice->base, voice->format) + cpu.m_gpr[4];
             writeVoiceOffsets(cpu, *voice);
         }
         cpu.m_gpr[3] = 0;
@@ -418,7 +588,8 @@ namespace {
     void ax_SetVoiceLoopOffsetEx(Core::Interpreter &cpu)
     {
         if (auto *voice = findVoice(cpu.m_gpr[3])) {
-            voice->loop = addressUnits(cpu.m_gpr[5], voice->format) + cpu.m_gpr[4];
+            voice->base = cpu.m_gpr[5];
+            voice->loop = addressUnits(voice->base, voice->format) + cpu.m_gpr[4];
             writeVoiceOffsets(cpu, *voice);
         }
         cpu.m_gpr[3] = 0;
@@ -459,16 +630,23 @@ namespace {
     // AXSetVoiceSrc(voice, const AXVoiceSrc *): 16.16 fixed-point ratio in the first two halves.
     void ax_SetVoiceSrc(Core::Interpreter &cpu)
     {
-        if (auto *voice = findVoice(cpu.m_gpr[3]); voice && cpu.m_gpr[4])
-            voice->ratio = cpu.m_memory.read<std::uint16_t>(cpu.m_gpr[4]) + cpu.m_memory.read<std::uint16_t>(cpu.m_gpr[4] + 2) / 65536.0;
+        if (auto *voice = findVoice(cpu.m_gpr[3]); voice && cpu.m_gpr[4]) {
+            voice->ratio = std::min(64.0, cpu.m_memory.read<std::uint32_t>(cpu.m_gpr[4]) / 65536.0);
+            voice->fraction = cpu.m_memory.read<std::uint16_t>(cpu.m_gpr[4] + 4) / 65536.0;
+        }
         cpu.m_gpr[3] = 0;
     }
 
     // AXSetVoiceSrcRatio(voice, float ratio) -> AX_RESULT
     void ax_SetVoiceSrcRatio(Core::Interpreter &cpu)
     {
-        if (auto *voice = findVoice(cpu.m_gpr[3]); voice && cpu.m_fpr[1] >= 0 && cpu.m_fpr[1] < 64)
-            voice->ratio = cpu.m_fpr[1];
+        const double ratio = cpu.m_fpr[1];
+        if (!std::isfinite(ratio) || ratio < 0 || ratio > 64) {
+            cpu.m_gpr[3] = ratio < 0 ? std::uint32_t(-1) : std::uint32_t(-2);
+            return;
+        }
+        if (auto *voice = findVoice(cpu.m_gpr[3]))
+            voice->ratio = ratio;
         cpu.m_gpr[3] = 0;
     }
 
@@ -482,13 +660,206 @@ namespace {
         cpu.m_gpr[3] = 0;
     }
 
-    // AXGetAuxCallback(dev, unk, aux, fn** outCb, void** outData): none registered.
     void ax_GetAuxCallback(Core::Interpreter &cpu)
     {
+        const auto type = cpu.m_gpr[3], id = cpu.m_gpr[4], bus = cpu.m_gpr[5];
+        if (!validDevice(type, id) || bus >= 3) {
+            cpu.m_gpr[3] = -1;
+            return;
+        }
+        const auto &aux = g_aux[type][id][bus];
         if (cpu.m_gpr[6])
-            cpu.m_memory.write<std::uint32_t>(cpu.m_gpr[6], 0);
+            cpu.m_memory.write<std::uint32_t>(cpu.m_gpr[6], aux.callback);
         if (cpu.m_gpr[7])
-            cpu.m_memory.write<std::uint32_t>(cpu.m_gpr[7], 0);
+            cpu.m_memory.write<std::uint32_t>(cpu.m_gpr[7], aux.userData);
+        cpu.m_gpr[3] = 0;
+    }
+    void ax_RegisterAuxCallback(Core::Interpreter &cpu)
+    {
+        const auto type = cpu.m_gpr[3], id = cpu.m_gpr[4], bus = cpu.m_gpr[5];
+        if (!validDevice(type, id) || bus >= 3) {
+            cpu.m_gpr[3] = -1;
+            return;
+        }
+        auto &aux = g_aux[type][id][bus];
+        aux.callback = cpu.m_gpr[6];
+        aux.userData = cpu.m_gpr[7];
+        cpu.m_gpr[3] = 0;
+    }
+    void ax_SetAuxReturnVolume(Core::Interpreter &cpu)
+    {
+        const auto type = cpu.m_gpr[3], id = cpu.m_gpr[4], bus = cpu.m_gpr[5];
+        if (!validDevice(type, id) || bus >= 3) {
+            cpu.m_gpr[3] = -1;
+            return;
+        }
+        g_aux[type][id][bus].volume = cpu.m_gpr[6];
+        cpu.m_gpr[3] = 0;
+    }
+    void ax_SetDeviceVolume(Core::Interpreter &cpu)
+    {
+        const auto type = cpu.m_gpr[3], id = cpu.m_gpr[4];
+        if (!validDevice(type, id)) {
+            cpu.m_gpr[3] = -1;
+            return;
+        }
+        g_deviceVolume[type][id] = cpu.m_gpr[5];
+        cpu.m_gpr[3] = 0;
+    }
+    void ax_GetDeviceVolume(Core::Interpreter &cpu)
+    {
+        const auto type = cpu.m_gpr[3], id = cpu.m_gpr[4];
+        if (!validDevice(type, id)) {
+            cpu.m_gpr[3] = -1;
+            return;
+        }
+        if (cpu.m_gpr[5])
+            cpu.m_memory.write<std::uint16_t>(cpu.m_gpr[5], g_deviceVolume[type][id]);
+        cpu.m_gpr[3] = 0;
+    }
+    void ax_SetDeviceUpsampleStage(Core::Interpreter &cpu)
+    {
+        if (cpu.m_gpr[3] >= 2) {
+            cpu.m_gpr[3] = -1;
+            return;
+        }
+        g_upsampleAfter[cpu.m_gpr[3]] = cpu.m_gpr[4] != 0;
+        cpu.m_gpr[3] = 0;
+    }
+    void ax_GetDeviceUpsampleStage(Core::Interpreter &cpu)
+    {
+        if (cpu.m_gpr[3] >= 2) {
+            cpu.m_gpr[3] = -1;
+            return;
+        }
+        if (cpu.m_gpr[4])
+            cpu.m_memory.write<std::uint32_t>(cpu.m_gpr[4], g_upsampleAfter[cpu.m_gpr[3]]);
+        cpu.m_gpr[3] = 0;
+    }
+    void ax_GetDeviceMode(Core::Interpreter &cpu)
+    {
+        if (cpu.m_gpr[3] >= 2) {
+            cpu.m_gpr[3] = -1;
+            return;
+        }
+        if (cpu.m_gpr[4])
+            cpu.m_memory.write<std::uint32_t>(cpu.m_gpr[4], g_deviceMode[cpu.m_gpr[3]]);
+        cpu.m_gpr[3] = 0;
+    }
+    void ax_SetDeviceMode(Core::Interpreter &cpu)
+    {
+        if (cpu.m_gpr[3] >= 2 || (cpu.m_gpr[4] > 3 && cpu.m_gpr[4] != 5)) {
+            cpu.m_gpr[3] = -1;
+            return;
+        }
+        g_deviceMode[cpu.m_gpr[3]] = cpu.m_gpr[4];
+        cpu.m_gpr[3] = 0;
+    }
+    void ax_SetVoiceDeviceMix(Core::Interpreter &cpu)
+    {
+        auto *voice = findVoice(cpu.m_gpr[3]);
+        const auto type = cpu.m_gpr[4], id = cpu.m_gpr[5], data = cpu.m_gpr[6];
+        if (!voice || !validDevice(type, id) || !data) {
+            cpu.m_gpr[3] = -1;
+            return;
+        }
+        for (unsigned ch = 0; ch < channels(type); ++ch)
+            for (unsigned bus = 0; bus < 4; ++bus) {
+                auto &gain = voice->gains[type][id][ch][bus];
+                gain.volume = cpu.m_memory.read<std::uint16_t>(data + ch * 16 + bus * 4);
+                gain.delta = cpu.m_memory.read<std::int16_t>(data + ch * 16 + bus * 4 + 2);
+            }
+        cpu.m_gpr[3] = 0;
+    }
+    void ax_SetVoiceVe(Core::Interpreter &cpu)
+    {
+        if (auto *v = findVoice(cpu.m_gpr[3]); v && cpu.m_gpr[4]) {
+            v->envelope = cpu.m_memory.read<std::uint16_t>(cpu.m_gpr[4]);
+            v->envelopeDelta = cpu.m_memory.read<std::int16_t>(cpu.m_gpr[4] + 2);
+            cpu.m_memory.write<std::uint32_t>(v->guestPtr + 8, v->envelope);
+        }
+        cpu.m_gpr[3] = 0;
+    }
+    void ax_SetVoiceVeDelta(Core::Interpreter &cpu)
+    {
+        if (auto *v = findVoice(cpu.m_gpr[3]))
+            v->envelopeDelta = std::int16_t(cpu.m_gpr[4]);
+        cpu.m_gpr[3] = 0;
+    }
+    void ax_SetVoiceAdpcm(Core::Interpreter &cpu)
+    {
+        if (auto *v = findVoice(cpu.m_gpr[3]); v && cpu.m_gpr[4]) {
+            const auto data = cpu.m_gpr[4];
+            for (unsigned i = 0; i < 16; ++i)
+                v->coefficients[i] = cpu.m_memory.read<std::int16_t>(data + i * 2);
+            v->predScale = cpu.m_memory.read<std::uint16_t>(data + 0x22);
+            v->history1 = cpu.m_memory.read<std::int16_t>(data + 0x24);
+            v->history2 = cpu.m_memory.read<std::int16_t>(data + 0x26);
+        }
+        cpu.m_gpr[3] = 0;
+    }
+    void ax_SetVoiceAdpcmLoop(Core::Interpreter &cpu)
+    {
+        if (auto *v = findVoice(cpu.m_gpr[3]); v && cpu.m_gpr[4]) {
+            v->loopPredScale = cpu.m_memory.read<std::uint16_t>(cpu.m_gpr[4]);
+            v->loopHistory1 = cpu.m_memory.read<std::int16_t>(cpu.m_gpr[4] + 2);
+            v->loopHistory2 = cpu.m_memory.read<std::int16_t>(cpu.m_gpr[4] + 4);
+        }
+        cpu.m_gpr[3] = 0;
+    }
+    void ax_InitWithParams(Core::Interpreter &cpu)
+    {
+        const auto params = cpu.m_gpr[3];
+        const bool rate48 = params && cpu.m_memory.read<std::uint32_t>(params) == 1;
+        const bool initialized = g_initialized;
+        ax_Init(cpu);
+        if (!initialized)
+            g_inputSamples = rate48 ? 144 : 96;
+    }
+    void ax_IsInit(Core::Interpreter &cpu) { cpu.m_gpr[3] = g_initialized; }
+    void ax_GetInputSamplesPerFrame(Core::Interpreter &cpu) { cpu.m_gpr[3] = g_inputSamples; }
+    void ax_GetInputSamplesPerSec(Core::Interpreter &cpu) { cpu.m_gpr[3] = g_inputSamples * 1000 / 3; }
+    void ax_GetMaxVoices(Core::Interpreter &cpu) { cpu.m_gpr[3] = kMaxVoices; }
+    void ax_IsVoiceRunning(Core::Interpreter &cpu)
+    {
+        auto *v = findVoice(cpu.m_gpr[3]);
+        cpu.m_gpr[3] = v && v->state == 1;
+    }
+    void ax_SetVoiceSrcType(Core::Interpreter &cpu)
+    {
+        if (auto *v = findVoice(cpu.m_gpr[3]))
+            v->srcType = cpu.m_gpr[4];
+        cpu.m_gpr[3] = 0;
+    }
+    void ax_SetVoiceType(Core::Interpreter &cpu)
+    {
+        if (auto *v = findVoice(cpu.m_gpr[3]))
+            v->type = cpu.m_gpr[4];
+        cpu.m_gpr[3] = 0;
+    }
+    void ax_SetVoicePriority(Core::Interpreter &cpu)
+    {
+        if (auto *v = findVoice(cpu.m_gpr[3]))
+            cpu.m_memory.write<std::uint32_t>(v->guestPtr + 0x1C, cpu.m_gpr[4]);
+        cpu.m_gpr[3] = 0;
+    }
+    template<int Field, bool Ex>
+    void ax_SetOffset(Core::Interpreter &cpu)
+    {
+        if (auto *v = findVoice(cpu.m_gpr[3])) {
+            if constexpr (Ex)
+                v->base = cpu.m_gpr[5];
+            const auto origin = addressUnits(v->base, v->format);
+            if constexpr (Field == 0) {
+                v->current = origin + cpu.m_gpr[4];
+                v->fraction = 0;
+            }
+            if constexpr (Field == 1)
+                v->end = origin + cpu.m_gpr[4];
+            if constexpr (Field == 2)
+                v->loop = origin + cpu.m_gpr[4];
+            writeVoiceOffsets(cpu, *v);
+        }
         cpu.m_gpr[3] = 0;
     }
 
@@ -497,6 +868,7 @@ namespace {
         const auto origin = addressUnits(voice.base, voice.format);
         const auto offsets = voice.guestPtr + kVoiceOffsets;
         cpu.m_memory.write<std::uint16_t>(offsets + 2, voice.loopFlag);
+        cpu.m_memory.write<std::uint32_t>(offsets + 16, voice.base);
         cpu.m_memory.write<std::uint32_t>(offsets + 4, static_cast<std::uint32_t>(voice.loop - origin));
         cpu.m_memory.write<std::uint32_t>(offsets + 8, static_cast<std::uint32_t>(voice.end - origin));
         cpu.m_memory.write<std::uint32_t>(offsets + 0xC, static_cast<std::uint32_t>(voice.current - origin));
@@ -504,15 +876,11 @@ namespace {
 
     const char *const kNoops[] = {
             "AXDecodeAdpcmData",
-            "AXGetDeviceMode",
-            "AXGetDeviceUpsampleStage",
             "AXGetSwapProfile",
             "AXInitProfile",
-            "AXRegisterAuxCallback",
             "AXRmtAdvancePtr",
             "AXRmtGetSamples",
             "AXRmtGetSamplesLeft",
-            "AXSetAuxReturnVolume",
             "AXSetDRCVSDownmixBalance",
             "AXSetDRCVSLC",
             "AXSetDRCVSMode",
@@ -523,24 +891,15 @@ namespace {
             "AXSetDefaultMixerSelect",
             "AXSetDeviceCompressor",
             "AXSetDeviceLinearUpsampler",
-            "AXSetDeviceUpsampleStage",
-            "AXSetDeviceVolume",
             "AXSetMaxVoices",
-            "AXSetVoiceAdpcm",
-            "AXSetVoiceAdpcmLoop",
             "AXSetVoiceBiquad",
             "AXSetVoiceBiquadCoefs",
-            "AXSetVoiceDeviceMix",
             "AXSetVoiceLpf",
             "AXSetVoiceLpfCoefs",
             "AXSetVoiceMixerSelect",
-            "AXSetVoicePriority",
             "AXSetVoiceRmtIIR",
             "AXSetVoiceRmtIIRCoefs",
             "AXSetVoiceRmtOn",
-            "AXSetVoiceSrcType",
-            "AXSetVoiceType",
-            "AXSetVoiceVe",
             "AXUserBegin",
             "AXUserEnd",
             "AXUserIsProtected",
@@ -555,6 +914,14 @@ void RegisterAxFunctions()
     g_frameCallback = 0;
     g_initialized = false;
     g_finalMix = {};
+    g_aux = {};
+    g_deviceVolume = {{{0x8000, 0x8000}, {0x8000, 0x8000}}};
+    g_upsampleAfter = {};
+    g_deviceMode = {0, 0};
+    g_buses = {};
+    g_inputSamples = 96;
+    g_phase = 3;
+    Core::Audio::output().clear();
     g_axThread = nullptr;
     g_axStackTop = 0;
     g_pendingCbs.clear();
@@ -568,7 +935,7 @@ void RegisterAxFunctions()
     Core::syscallHandler.registerSyscall("AXInit", ax_Init);
     Core::syscallHandler.registerSyscall("AXQuit", ax_Quit);
     Core::syscallHandler.registerSyscall("AXAcquireVoice", ax_AcquireVoice);
-    Core::syscallHandler.registerSyscall("AXAcquireVoiceEx", ax_AcquireVoice);
+    Core::syscallHandler.registerSyscall("AXAcquireVoiceEx", ax_AcquireVoiceEx);
     Core::syscallHandler.registerSyscall("AXFreeVoice", ax_FreeVoice);
     Core::syscallHandler.registerSyscall("AXRegisterAppFrameCallback", ax_RegisterAppFrameCallback);
     Core::syscallHandler.registerSyscall("AXDeregisterAppFrameCallback", ax_DeregisterAppFrameCallback);
@@ -587,4 +954,35 @@ void RegisterAxFunctions()
     Core::syscallHandler.registerSyscall("AXGetAuxCallback", ax_GetAuxCallback);
     Core::syscallHandler.registerSyscall("AXRegisterDeviceFinalMixCallback", ax_RegisterDeviceFinalMixCallback);
     Core::syscallHandler.registerSyscall("AXGetDeviceFinalMixCallback", ax_GetDeviceFinalMixCallback);
+    Core::syscallHandler.registerSyscall("AXInitWithParams", ax_InitWithParams);
+    Core::syscallHandler.registerSyscall("AXIsInit", ax_IsInit);
+    Core::syscallHandler.registerSyscall("AXGetInputSamplesPerFrame", ax_GetInputSamplesPerFrame);
+    Core::syscallHandler.registerSyscall("AXGetInputSamplesPerSec", ax_GetInputSamplesPerSec);
+    Core::syscallHandler.registerSyscall("AXGetMaxVoices", ax_GetMaxVoices);
+    Core::syscallHandler.registerSyscall("AXIsVoiceRunning", ax_IsVoiceRunning);
+    Core::syscallHandler.registerSyscall("AXRegisterAuxCallback", ax_RegisterAuxCallback);
+    Core::syscallHandler.registerSyscall("AXSetAuxReturnVolume", ax_SetAuxReturnVolume);
+    Core::syscallHandler.registerSyscall("AXSetDeviceVolume", ax_SetDeviceVolume);
+    Core::syscallHandler.registerSyscall("AXGetDeviceVolume", ax_GetDeviceVolume);
+    Core::syscallHandler.registerSyscall("AXGetDeviceMode", ax_GetDeviceMode);
+    Core::syscallHandler.registerSyscall("AXSetDeviceMode", ax_SetDeviceMode);
+    Core::syscallHandler.registerSyscall("AXGetDeviceUpsampleStage", ax_GetDeviceUpsampleStage);
+    Core::syscallHandler.registerSyscall("AXSetDeviceUpsampleStage", ax_SetDeviceUpsampleStage);
+    Core::syscallHandler.registerSyscall("AXSetVoiceDeviceMix", ax_SetVoiceDeviceMix);
+    Core::syscallHandler.registerSyscall("AXSetVoiceVe", ax_SetVoiceVe);
+    Core::syscallHandler.registerSyscall("AXSetVoiceVeDelta", ax_SetVoiceVeDelta);
+    Core::syscallHandler.registerSyscall("AXSetVoiceAdpcm", ax_SetVoiceAdpcm);
+    Core::syscallHandler.registerSyscall("AXSetVoiceAdpcmLoop", ax_SetVoiceAdpcmLoop);
+    Core::syscallHandler.registerSyscall("AXSetVoiceSrcType", ax_SetVoiceSrcType);
+    Core::syscallHandler.registerSyscall("AXSetVoiceType", ax_SetVoiceType);
+    Core::syscallHandler.registerSyscall("AXSetVoicePriority", ax_SetVoicePriority);
+    Core::syscallHandler.registerSyscall("AXSetVoiceCurrentOffset", ax_SetOffset<0, false>);
+    Core::syscallHandler.registerSyscall("AXSetVoiceCurrentOffsetEx", ax_SetOffset<0, true>);
+    Core::syscallHandler.registerSyscall("AXSetVoiceEndOffset", ax_SetOffset<1, false>);
+    Core::syscallHandler.registerSyscall("AXSetVoiceLoopOffset", ax_SetOffset<2, false>);
+    Core::syscallHandler.registerSyscall("AXSetVoiceSamplesAddr", ax_SetVoiceSamplesAddr);
+    Core::syscallHandler.registerSyscall("AXVoiceIsProtected", ax_noop_ok);
+    Core::syscallHandler.registerSyscall("AXPrepareEfxData", ax_noop_ok);
+    Core::syscallHandler.registerSyscall("AXVoiceBegin", ax_noop_ok);
+    Core::syscallHandler.registerSyscall("AXVoiceEnd", ax_noop_ok);
 }

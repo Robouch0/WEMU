@@ -24,6 +24,7 @@ class EmulatorLauncher : public QObject {
         Q_PROPERTY(double presentFps READ presentFps NOTIFY statisticsChanged)
         Q_PROPERTY(double movieFps READ movieFps NOTIFY statisticsChanged)
         Q_PROPERTY(QString gameTitle READ gameTitle NOTIFY sessionChanged)
+        Q_PROPERTY(int audioVolume READ audioVolume WRITE setAudioVolume NOTIFY settingsChanged)
         Q_PROPERTY(int systemLanguage READ systemLanguage WRITE setSystemLanguage NOTIFY settingsChanged)
         Q_PROPERTY(int systemRegion READ systemRegion WRITE setSystemRegion NOTIFY settingsChanged)
     public:
@@ -42,6 +43,8 @@ class EmulatorLauncher : public QObject {
         double movieFps() const { return m_movieFps; }
         QString gameTitle() const { return m_title; }
         QString gameRpxPath() const { return m_rpxPath; }
+        int audioVolume() const;
+        void setAudioVolume(int value);
         int systemLanguage() const;
         int systemRegion() const;
         void setSystemLanguage(int value);

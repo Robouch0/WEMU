@@ -1,3 +1,4 @@
+#include "audio/Output.hpp"
 //
 // Created by nicolas on 5/21/26.
 //
@@ -271,6 +272,9 @@ void Renderer::processHostCommands(std::chrono::milliseconds wait)
                     m_hostButtonSamples.push_back(command.value);
                     m_hostButtons = command.value;
                 }
+                break;
+            case Action::AudioVolume:
+                Core::Audio::output().setVolume(command.value);
                 break;
             case Action::DrcStream:
                 m_drcWanted = command.value != 0;
