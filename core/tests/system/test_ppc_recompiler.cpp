@@ -249,10 +249,14 @@ TEST_F(PpcNativeTest, ImmediateBlocksMatchInterpreterWithAliasesAndWraparound)
         NativeBlock native(compiler, *block);
         const auto object = emitObject(*block);
         ASSERT_GT(object.size(), 4u);
-        EXPECT_EQ(object[0], 0x7F);
-        EXPECT_EQ(object[1], 'E');
-        EXPECT_EQ(object[2], 'L');
-        EXPECT_EQ(object[3], 'F');
+        // Objects use the host format: Mach-O (MH_MAGIC_64) on macOS, ELF elsewhere.
+    #ifdef __APPLE__
+        const std::array<unsigned, 4> magic{0xCF, 0xFA, 0xED, 0xFE};
+    #else
+        const std::array<unsigned, 4> magic{0x7F, 'E', 'L', 'F'};
+    #endif
+        for (unsigned i = 0; i < magic.size(); ++i)
+            EXPECT_EQ(object[i], magic[i]);
         NativeBlock aheadOfTime(compiler, object);
         for (unsigned sample = 0; sample < 64; ++sample) {
             std::array<std::uint32_t, 32> registers;
