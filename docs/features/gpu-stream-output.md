@@ -13,15 +13,26 @@ budget. Devices without a suitable compute queue or buffer limits also fall back
 
 Direct STREAM0–3 writes support component masks and offsets within a vertex's
 stride. An output snapshot starts with the previous bytes, so masked components
-and padding survive. Attributes and constants are copied into reusable mapped
-buffers, the kernel dispatch completes, and complete output snapshots are returned.
-Replay validates all outputs before committing guest memory, advancing stream
-offsets, and making the writes visible to later uniform-block bindings.
+and padding survive. Attributes, constants and previous output bytes are copied
+into owned mapped buffers before submission. Each readback ticket owns its inputs
+and output storage until resolution; resolved snapshots remain immutable even
+after the storage is reused. Tickets also survive backend destruction.
 
-The backend retains mapped buffers and compute pipelines across passes. Compute
-submissions preserve queue order with earlier graphics work and synchronize before
-the CPU consumes their output. This is a synchronous implementation; it does not
-keep stream-output buffers resident for subsequent GPU vertex fetches.
+Replay queues independent passes instead of waiting after every skinning dispatch.
+It advances stream offsets and records produced ranges at submission, then validates
+each complete result before committing its guest-memory bytes in submission order.
+Overlapping attribute/output reads, uniform-block bindings, shader-memory reads and
+stream-context accesses drain the queue. Graphics draws, conservative command
+barriers, CPU fallback and the end of replay also drain it. Pure state bindings can
+run ahead. No pending result crosses the replay/guest-CPU handoff.
+
+The queue drains at 32 passes or before adding work beyond 64 MiB of input/output
+snapshots. A single pass larger than that queue budget resolves synchronously.
+The backend pools at most 64 dispatch slots within a 256 MiB mapped-buffer
+capacity budget. Only slots with no unresolved ticket can be reused; their fences
+must complete first. Compute pipeline eviction and teardown also wait for users.
+Compute submissions preserve queue order with earlier graphics work. Outputs still
+return through guest memory before subsequent graphics vertex fetches.
 
 Converted geometry inputs can now be reused independently of the changing
 palettes, and CPU-read output buffers prefer cached host memory. See
@@ -30,19 +41,28 @@ four/eight-fighter scenarios and transient attachment reuse.
 
 `WEMU_NATIVE_STREAMOUT=0` selects CPU reference execution for comparisons. Native
 execution is enabled by default when a compatible raster backend is present.
+`WEMU_NATIVE_STREAMOUT_DEFER=0` retains native execution but resolves every pass
+immediately. This isolates batching for diagnosis without changing shader lowering.
 `WEMU_STREAMOUT_VERIFY_EVERY=N` re-executes every Nth native pass on the reference
 interpreter and compares the complete output byte-for-byte before committing.
-It also checks which streams advance their offsets. Mismatch aborts replay with a diagnostic. Verification includes masked components,
-padding and integer payloads, rather than accepting floating-point tolerances.
+It also checks which streams advance their offsets. Enabling verification selects
+synchronous execution for every pass. Mismatch aborts replay with a diagnostic.
+Verification includes masked components, padding and integer payloads, rather than
+accepting floating-point tolerances.
 
-`WEMU_FRAME_PROFILE=1` adds a `native` field to `[STREAMOUT_PROFILE]` records.
-Their wall time includes GPU synchronization or CPU worker completion. It is
-already part of replay/frame wall time and must not be added to those totals.
+`WEMU_FRAME_PROFILE=1` adds `native` and `deferred` fields to
+`[STREAMOUT_PROFILE]` records. Deferred pass timings measure preparation/submission;
+`[STREAMOUT_BATCH]` records measure the later drain, including synchronization and
+guest-memory copies. Synchronous pass timings include GPU/CPU worker completion.
+All are already part of replay/frame wall time and must not be added to those totals.
 
 Tests cover changed palettes, multiple output buffers, nonzero first vertices,
 wrapped system indices, raw integer and exceptional float bits, partial workgroups,
 masked writes and padding, repeated buffer resizing, malformed inputs, context
-offset restoration and overflow rejection. Run them with Vulkan enabled:
+offset restoration and overflow rejection. Deferred cases check borrowed-input
+lifetime, changed palettes, reverse-order resolution, reuse without corrupting
+resolved snapshots, backend teardown with unresolved work, batches larger than the
+replay limit and output-to-input dependencies between passes. Run them with Vulkan enabled:
 
 ```bash
 WEMU_TEST_VULKAN=1 build/core/tests/wemu_tests \

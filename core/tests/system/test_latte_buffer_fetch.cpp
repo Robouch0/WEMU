@@ -108,6 +108,79 @@ TEST(LatteStreamOutTest, ComputePaletteFetchPreservesMasksRawWordsAndChangedInpu
     }
 }
 
+TEST(LatteStreamOutTest, DeferredPassesOwnInputsBatchSubmissionsAndOutliveBackend)
+{
+    if (!std::getenv("WEMU_TEST_VULKAN"))
+        GTEST_SKIP();
+    auto words = paletteProgram();
+    words[4] = 0;
+    words[5] = (0x21u << 23) | (1u << 12);
+    words[6] = 1u | (2u << 15);
+    words[7] = (0x20u << 23) | (1u << 21) | (5u << 12) | 3u;
+    const auto program = Latte::decodeProgram(words);
+    const auto shader = Latte::lowerStreamOutShader(*program, {24, 4, 0, 0});
+    ASSERT_TRUE(shader) << shader.error;
+    auto backend = std::make_unique<VulkanRasterBackend>();
+    std::vector<std::shared_ptr<StreamOutReadback>> tickets;
+    std::vector<StreamOutResult> expected;
+    for (unsigned pass = 0; pass < 24; ++pass) {
+        const unsigned count = std::array{1u, 65u, 129u, 2049u}[pass % 4];
+        std::vector<std::array<float, 4>> attributes(count);
+        for (unsigned i = 0; i < count; ++i)
+            attributes[i][0] = std::bit_cast<float>(i % 128);
+        const LatteVsInterp::KcacheFetch constants = [pass](unsigned, unsigned index, unsigned channel) {
+            return float(pass * 16 + index * 4 + channel) / 8;
+        };
+        std::vector<float> uniforms;
+        for (const auto &ref: shader.uniforms)
+            for (unsigned c = 0; c < 4; ++c)
+                uniforms.push_back(constants(ref.bank, ref.index, c));
+        StreamOutResult reference;
+        reference.usedMask = shader.streamBufferMask;
+        reference.buffers[0].assign(count * 24, std::uint8_t(0x80 + pass));
+        reference.buffers[1].assign(count * 4, 0xAB);
+        StreamOutDraw draw{shader, attributes, count, 37 + pass, 1, {}, uniforms, {}};
+        for (unsigned i = 0; i < 4; ++i)
+            draw.buffers[i] = reference.buffers[i];
+        auto ticket = backend->streamOutDeferred(draw);
+        ASSERT_TRUE(ticket) << backend->lastError();
+        tickets.push_back(std::move(ticket));
+        for (unsigned i = 0; i < count; ++i) {
+            const auto result = LatteVsInterp::runVertex(*program, std::span(attributes).subspan(i, 1), nullptr, 0, constants, {}, draw.first + i);
+            ASSERT_TRUE(result.completed);
+            for (const auto &write: result.streamWrites)
+                for (unsigned c = 0; c < 4; ++c)
+                    if (write.mask & (1u << c)) {
+                        const auto offset = i * shader.streamStrides[write.buffer] + (write.offset + c) * 4;
+                        const auto bits = std::bit_cast<unsigned>(write.value[c]);
+                        for (unsigned b = 0; b < 4; ++b)
+                            reference.buffers[write.buffer][offset + b] = bits >> (b * 8);
+                    }
+        }
+        expected.push_back(std::move(reference));
+        // Every borrowed vector goes away before any output is resolved.
+        std::ranges::fill(attributes, std::array<float, 4>{});
+        std::ranges::fill(uniforms, -999.f);
+        if (pass == 11) {
+            EXPECT_EQ(backend->submissionWaits(), 0u);
+            for (unsigned i = unsigned(tickets.size()); i-- > 1;) {
+                EXPECT_EQ(tickets[i]->resolve().buffers, expected[i].buffers);
+                EXPECT_EQ(tickets[i]->resolve().usedMask, expected[i].usedMask);
+            }
+            const auto *setting = std::getenv("WEMU_NATIVE_BATCH_SUBMITS");
+            if (!setting || std::strtoul(setting, nullptr, 10) > 1)
+                EXPECT_LT(backend->submissionWaits(), tickets.size());
+            // Later passes reuse these slots, while resolved snapshots stay immutable.
+        }
+    }
+    backend.reset(); // Also drains the last unsubmitted batch; unresolved tickets retain their buffers/context.
+    EXPECT_EQ(tickets[0]->resolve().buffers, expected[0].buffers);
+    for (unsigned i = 0; i < tickets.size(); ++i) {
+        EXPECT_EQ(tickets[i]->resolve().buffers, expected[i].buffers);
+        EXPECT_EQ(tickets[i]->resolve().usedMask, expected[i].usedMask);
+    }
+}
+
 TEST(LatteStreamOutTest, PreservesSpecialFloatBitsAndWrappedSystemIndices)
 {
     if (!std::getenv("WEMU_TEST_VULKAN"))

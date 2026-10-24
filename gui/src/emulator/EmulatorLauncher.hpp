@@ -57,6 +57,8 @@ class EmulatorLauncher : public QObject {
         // as-is. setDrcStreaming asks the core for GamePad-screen frames (drcFrameReady).
         void setRemoteButtons(quint32 buttons);
         void setRemoteGamepad(const Core::Gfx::GamepadState &state);
+        // Deliver scripted frame-boundary input before presentation acknowledgement.
+        void setScriptedInput(quint32 buttons, const Core::Gfx::GamepadState &state);
         void setDrcStreaming(bool enabled);
         // Host controllers, already mapped to VPAD bits and sticks by the active input profile: merged
         // with the keyboard and the phone. Buttons held when launching or pausing wait for a release.

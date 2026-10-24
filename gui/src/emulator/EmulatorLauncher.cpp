@@ -132,6 +132,16 @@ void EmulatorLauncher::launch(const QString &rpxPath, const QString &title, cons
     }
     // The configured build core takes priority over old copied executables.
     QString binary = QString::fromUtf8(WEMU_CORE_BINARY);
+    if (!qEnvironmentVariable("QT_WEMU_SESSION_PROBE").isEmpty()) {
+        const auto probeCore = qEnvironmentVariable("QT_WEMU_PROBE_CORE");
+        if (!probeCore.isEmpty()) {
+            if (!QFileInfo(probeCore).isExecutable()) {
+                setError("The desktop probe core executable was not found.");
+                return;
+            }
+            binary = probeCore;
+        }
+    }
     if (!QFileInfo(binary).isExecutable())
         binary = QDir(QCoreApplication::applicationDirPath()).filePath("../wemu");
     if (!QFileInfo(binary).isExecutable())
@@ -162,6 +172,7 @@ void EmulatorLauncher::launch(const QString &rpxPath, const QString &title, cons
     const auto region = systemRegion() ? unsigned(systemRegion()) : titleRegion;
     const auto environment = desktopLaunchEnvironment(QProcessEnvironment::systemEnvironment(), contentPath, font,
                                                      nativeCpu, nativeCache, unsigned(systemLanguage()), region, titleRegion, x64Cpu);
+    qInfo() << "[SESSION_CORE]" << QFileInfo(binary).canonicalFilePath();
     qInfo() << "[SESSION_CPU]" << (x64Cpu ? "x86-64 JIT with interpreter fallback" : nativeCpu ? "LLVM with interpreter fallback" : "interpreter")
             << "cache=" << nativeCache;
     const auto logs = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation) + "/logs";
@@ -420,6 +431,14 @@ void EmulatorLauncher::setControllerInput(quint32 buttons, const std::array<floa
         m_controllerButtons = buttons;
         sendButtons();
     }
+}
+
+void EmulatorLauncher::setScriptedInput(quint32 buttons, const Core::Gfx::GamepadState &state)
+{
+    setRemoteButtons(buttons);
+    setRemoteGamepad(state);
+    m_gamepadTimer.stop();
+    sendGamepad();
 }
 
 void EmulatorLauncher::sendGamepad()

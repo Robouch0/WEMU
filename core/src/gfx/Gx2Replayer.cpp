@@ -2191,6 +2191,7 @@ namespace Core::Gfx {
 
     const std::uint8_t *Gx2Replayer::bufferBytes(std::uint32_t address, std::size_t bytes) const
     {
+        flushStreamOut(address, bytes);
         const auto found = std::upper_bound(m_bufferSnapshots.begin(), m_bufferSnapshots.end(), address,
                                             [](std::uint32_t value, const Gx2BufferSnapshot &snapshot) { return value < snapshot.address; });
         if (found != m_bufferSnapshots.begin()) {
@@ -2656,6 +2657,40 @@ namespace Core::Gfx {
         return vertices;
     }
 
+    void Gx2Replayer::flushStreamOut(std::uint32_t address, std::uint64_t bytes) const
+    {
+        for (const auto &pass: m_pendingStreamOut)
+            for (unsigned i = 0; i < 4; ++i)
+                if ((pass.usedMask & (1u << i)) && std::uint64_t(address) < std::uint64_t(pass.addresses[i]) + pass.sizes[i] &&
+                    pass.addresses[i] < std::uint64_t(address) + bytes) {
+                    flushStreamOut();
+                    return;
+                }
+    }
+
+    void Gx2Replayer::flushStreamOut() const
+    {
+        if (m_pendingStreamOut.empty())
+            return;
+        const auto start = Profile::enabled() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+        for (const auto &pass: m_pendingStreamOut) {
+            const auto &result = pass.result->resolve();
+            if (result.usedMask != pass.usedMask)
+                throw std::runtime_error("Incomplete deferred stream output mask");
+            for (unsigned i = 0; i < 4; ++i)
+                if (result.buffers[i].size() != pass.sizes[i])
+                    throw std::runtime_error("Incomplete deferred stream output buffer");
+            for (unsigned i = 0; i < 4; ++i)
+                if (pass.usedMask & (1u << i))
+                    std::memcpy(m_writableMem->hostPtr(pass.addresses[i], pass.sizes[i]), result.buffers[i].data(), pass.sizes[i]);
+        }
+        if (Profile::enabled())
+            Utils::Log::error("[STREAMOUT_BATCH] frame={} passes={} us={}", m_presentCount, m_pendingStreamOut.size(),
+                              std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count());
+        m_pendingStreamOut.clear();
+        m_pendingStreamOutBytes = 0;
+    }
+
     bool Gx2Replayer::streamOut(const Gx2Command &cmd, bool indexed)
     {
         if (!m_mem || !m_writableMem || !m_vsShader || cmd.gpr[0] != 1 || indexed || cmd.gpr[3] != 1)
@@ -2676,6 +2711,7 @@ namespace Core::Gfx {
             const auto *source = m_mem->hostPtr(buffer.address + buffer.offset, bytes);
             if (!source)
                 return false;
+            flushStreamOut(buffer.address + buffer.offset, bytes);
             pending[i].assign(source, source + bytes);
         }
         const auto fetch = prepareAttributeFetch();
@@ -2774,17 +2810,51 @@ namespace Core::Gfx {
                     StreamOutDraw draw{shader, inputs->attributes, count, cmd.gpr[2], m_vertexInputCount, m_vsRegs, uniforms, {}};
                     for (unsigned i = 0; i < 4; ++i)
                         draw.buffers[i] = pending[i];
+                    static const unsigned verifyEnvironment = [] {
+                        const auto *value = std::getenv("WEMU_STREAMOUT_VERIFY_EVERY");
+                        return value ? unsigned(std::strtoul(value, nullptr, 10)) : 0u;
+                    }();
+                    const auto interval = m_streamOutVerifyEvery.value_or(verifyEnvironment);
+                    static const bool defer = [] {
+                        const auto *value = std::getenv("WEMU_NATIVE_STREAMOUT_DEFER");
+                        return !value || value[0] != '0';
+                    }();
+                    std::size_t queuedBytes = inputs->attributes.size() * sizeof(inputs->attributes[0]) + uniforms.size() * sizeof(float);
+                    for (const auto &buffer: pending)
+                        queuedBytes += buffer.size();
+                    constexpr std::size_t deferredBudget = 64ull * 1024 * 1024;
+                    if (m_pendingStreamOut.size() >= 32 || m_pendingStreamOutBytes + queuedBytes > deferredBudget)
+                        flushStreamOut();
+                    if (defer && !interval && queuedBytes <= deferredBudget)
+                        if (auto result = m_rasterBackend->streamOutDeferred(draw)) {
+                            PendingStreamOut pass;
+                            pass.result = std::move(result);
+                            pass.usedMask = shader.streamBufferMask;
+                            for (unsigned i = 0; i < 4; ++i) {
+                                auto &buffer = m_streamOutBuffers[i];
+                                pass.addresses[i] = buffer.address + buffer.offset;
+                                pass.sizes[i] = std::uint32_t(pending[i].size());
+                                if (pass.usedMask & (1u << i)) {
+                                    m_streamOutWrites.emplace_back(pass.addresses[i], pass.sizes[i]);
+                                    buffer.offset += pass.sizes[i];
+                                }
+                            }
+                            m_pendingStreamOut.push_back(std::move(pass));
+                            m_pendingStreamOutBytes += queuedBytes;
+                            ++m_deferredStreamOutPasses;
+                            ++m_nativeStreamOutPasses;
+                            ++m_streamOutWriteEpoch;
+                            return true;
+                        }
+                    // An unsupported or verification pass executes in submission order, with
+                    // earlier results visible to the reference interpreter and any output alias.
+                    flushStreamOut();
                     if (auto result = m_rasterBackend->streamOut(draw)) {
                         if (result->usedMask != shader.streamBufferMask)
                             throw std::runtime_error("Incomplete native stream output mask");
                         for (unsigned i = 0; i < 4; ++i)
                             if (result->buffers[i].size() != pending[i].size())
                                 throw std::runtime_error("Incomplete native stream output buffer");
-                        static const unsigned verifyEnvironment = [] {
-                            const auto *value = std::getenv("WEMU_STREAMOUT_VERIFY_EVERY");
-                            return value ? unsigned(std::strtoul(value, nullptr, 10)) : 0u;
-                        }();
-                        const auto interval = m_streamOutVerifyEvery.value_or(verifyEnvironment);
                         if (interval && m_nativeStreamOutPasses % interval == 0) {
                             shade(0, count);
                             if (!valid.load(std::memory_order_relaxed))
@@ -2820,6 +2890,8 @@ namespace Core::Gfx {
             } else if (Profile::enabled())
                 Utils::Log::error("[STREAMOUT_NATIVE] frame={} native=false reason={}", m_presentCount, shader.error);
         }
+        if (!native)
+            flushStreamOut();
         if (!native && uniformOnly && count >= 64) {
             if (!m_vertexWorkers)
                 m_vertexWorkers = std::make_unique<RasterWorkers>(std::clamp(std::thread::hardware_concurrency() / 2, 1u, 8u));
@@ -2847,15 +2919,19 @@ namespace Core::Gfx {
 
     void Gx2Replayer::drawPrimitives(const Gx2Command &cmd, const bool indexed, int selectedColor)
     {
+        if (!m_streamOutEnabled || m_rasterizerEnabled)
+            flushStreamOut();
         if (m_streamOutEnabled && selectedColor < 0) {
             const auto nativeBefore = m_nativeStreamOutPasses;
             const auto inputsBefore = m_streamOutInputReuses;
+            const auto deferredBefore = m_deferredStreamOutPasses;
             const auto start = Profile::enabled() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
             const bool completed = streamOut(cmd, indexed);
             if (Profile::enabled())
-                Utils::Log::error("[STREAMOUT_PROFILE] frame={} count={} us={} completed={} native={} inputs_reused={}", m_presentCount, cmd.gpr[1],
-                                  std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count(), completed,
-                                  m_nativeStreamOutPasses != nativeBefore, m_streamOutInputReuses != inputsBefore);
+                Utils::Log::error("[STREAMOUT_PROFILE] frame={} count={} us={} completed={} native={} inputs_reused={} deferred={}", m_presentCount,
+                                  cmd.gpr[1], std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count(),
+                                  completed, m_nativeStreamOutPasses != nativeBefore, m_streamOutInputReuses != inputsBefore,
+                                  m_deferredStreamOutPasses != deferredBefore);
             if (!completed) {
                 static std::unordered_set<std::uint32_t> reported;
                 if (reported.insert(shaderHash(vsProgram())).second)
@@ -2879,6 +2955,7 @@ namespace Core::Gfx {
         }
         if (!m_rasterizerEnabled)
             return;
+        flushStreamOut();
         static const bool nativeAuditEnabled = [] {
             const auto *value = std::getenv("WEMU_NATIVE_SHADER_AUDIT");
             return value && value[0] == '1';
@@ -6222,6 +6299,49 @@ namespace Core::Gfx {
         };
         bool presented = false, drcPresented = false;
         for (const auto &cmd: stream.commands()) {
+            // Pure register/snapshot bindings can run ahead of skinning. Guest memory reads
+            // and writes synchronize overlapping outputs; other commands form conservative
+            // barriers, including clears, texture bindings, presentation and graphics draws.
+            if (!m_pendingStreamOut.empty()) {
+                switch (cmd.type) {
+                    case Gx2Cmd::SetVertexShader:
+                    case Gx2Cmd::SetPixelShader:
+                        flushStreamOut(cmd.gpr[0], 0x140);
+                        break;
+                    case Gx2Cmd::SetVertexUniformBlock:
+                    case Gx2Cmd::SetPixelUniformBlock:
+                        flushStreamOut(cmd.gpr[2], std::uint64_t(cmd.payload.size()) * 4);
+                        break;
+                    case Gx2Cmd::SetStreamOutContext:
+                    case Gx2Cmd::SaveStreamOutContext:
+                        if (cmd.payload.size() == 8 && cmd.payload[7])
+                            flushStreamOut(cmd.payload[7], 4);
+                        break;
+                    case Gx2Cmd::SetContextState:
+                    case Gx2Cmd::SetFetchShader:
+                    case Gx2Cmd::SetAttribBuffer:
+                    case Gx2Cmd::SetStreamOutEnable:
+                    case Gx2Cmd::SetStreamOutBuffer:
+                    case Gx2Cmd::SetViewport:
+                    case Gx2Cmd::SetScissor:
+                    case Gx2Cmd::SetVertexUniformReg:
+                    case Gx2Cmd::SetPixelUniformReg:
+                    case Gx2Cmd::SetPolygonControl:
+                    case Gx2Cmd::SetRasterizerClipControl:
+                    case Gx2Cmd::SetPolygonOffset:
+                    case Gx2Cmd::SetBlendControl:
+                    case Gx2Cmd::SetBlendConstantColor:
+                    case Gx2Cmd::SetColorControl:
+                    case Gx2Cmd::SetTargetChannelMasks:
+                    case Gx2Cmd::SetDepthStencilControl:
+                    case Gx2Cmd::DrawEx:
+                    case Gx2Cmd::DrawIndexedEx:
+                        break;
+                    default:
+                        flushStreamOut();
+                        break;
+                }
+            }
             switch (cmd.type) {
                 case Gx2Cmd::SetDepthBuffer:
                     m_depth = attachmentSurface(parseSurface(cmd));
@@ -6448,6 +6568,8 @@ namespace Core::Gfx {
                             // Shader bytecode is little-endian in guest memory; read<> assumes
                             // big-endian, so swap back.
                             if (ptr && size >= 8 && size <= 0x10000)
+                                flushStreamOut(ptr, size);
+                            if (ptr && size >= 8 && size <= 0x10000)
                                 for (std::uint32_t i = 0; i < size / 4; i++)
                                     prog.push_back(std::byteswap(m_mem->read<std::uint32_t>(ptr + i * 4)));
                         } catch (const Core::MemoryException &) {
@@ -6496,6 +6618,8 @@ namespace Core::Gfx {
                                 size = bytes <= 0x10000 ? std::uint32_t(bytes) : 0;
                                 ptr = m_mem->read<std::uint32_t>(sh + 0xE4);
                             }
+                            if (ptr && size >= 8 && size <= 0x10000)
+                                flushStreamOut(ptr, size);
                             if (ptr && size >= 8 && size <= 0x10000)
                                 for (std::uint32_t i = 0; i < size / 4; i++)
                                     prog.push_back(std::byteswap(m_mem->read<std::uint32_t>(ptr + i * 4)));
@@ -6803,6 +6927,7 @@ namespace Core::Gfx {
                     break; // remaining state commands not needed by the CPU replay
             }
         }
+        flushStreamOut();
     }
 
 } // namespace Core::Gfx

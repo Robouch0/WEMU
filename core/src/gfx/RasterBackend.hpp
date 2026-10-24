@@ -272,6 +272,31 @@ namespace Core::Gfx {
             std::array<std::vector<std::uint8_t>, 4> buffers;
             unsigned usedMask{};
     };
+    class StreamOutReadback {
+        public:
+            explicit StreamOutReadback(std::function<StreamOutResult()> read) : m_read(std::move(read)) {}
+            const StreamOutResult &resolve()
+            {
+                if (m_error)
+                    std::rethrow_exception(m_error);
+                try {
+                    if (!m_result) {
+                        m_result = m_read();
+                        m_read = {};
+                    }
+                } catch (...) {
+                    m_error = std::current_exception();
+                    m_read = {};
+                    throw;
+                }
+                return *m_result;
+            }
+
+        private:
+            std::function<StreamOutResult()> m_read;
+            std::optional<StreamOutResult> m_result;
+            std::exception_ptr m_error;
+    };
 
     class RasterBackend {
         public:
@@ -285,6 +310,9 @@ namespace Core::Gfx {
             // memory is modified until the caller validates the complete result.
             virtual bool supportsStreamOut() const { return false; }
             virtual std::optional<StreamOutResult> streamOut(const StreamOutDraw &) { return std::nullopt; }
+            // Copies all borrowed inputs before returning. Only the owned ticket outlives this
+            // call; resolving it synchronizes and returns complete output snapshots.
+            virtual std::shared_ptr<StreamOutReadback> streamOutDeferred(const StreamOutDraw &) { return {}; }
             virtual bool supportsRenderedTextures() const { return false; }
             virtual bool supportsRenderedTargets() const { return false; }
             virtual bool supportsDepth() const { return false; }

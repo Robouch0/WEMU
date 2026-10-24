@@ -84,6 +84,7 @@ namespace Core::Gfx {
             [[nodiscard]] std::uint64_t nativeStreamOutPasses() const noexcept { return m_nativeStreamOutPasses; }
             [[nodiscard]] std::uint64_t comparedStreamOutPasses() const noexcept { return m_comparedStreamOutPasses; }
             [[nodiscard]] std::uint64_t streamOutInputReuses() const noexcept { return m_streamOutInputReuses; }
+            [[nodiscard]] std::uint64_t deferredStreamOutPasses() const noexcept { return m_deferredStreamOutPasses; }
             [[nodiscard]] std::uint64_t differingNativeDraws() const noexcept { return m_differingNativeDraws; }
             [[nodiscard]] std::uint64_t earlyDepthRejectedFragments() const noexcept { return m_earlyDepthRejectedFragments; }
             [[nodiscard]] std::uint64_t earlyDepthRejectedTriangles() const noexcept { return m_earlyDepthRejectedTriangles; }
@@ -256,6 +257,16 @@ namespace Core::Gfx {
             std::unordered_map<std::uint64_t, DirectVertexEntry> m_streamOutInputs;
             std::uint64_t m_streamOutInputBytes{}, m_streamOutInputReuses{};
             std::uint64_t m_streamOutWriteEpoch{};
+            struct PendingStreamOut {
+                    std::shared_ptr<StreamOutReadback> result;
+                    std::array<std::uint32_t, 4> addresses{}, sizes{};
+                    unsigned usedMask{};
+            };
+            mutable std::vector<PendingStreamOut> m_pendingStreamOut;
+            mutable std::size_t m_pendingStreamOutBytes{};
+            std::uint64_t m_deferredStreamOutPasses{};
+            void flushStreamOut() const;
+            void flushStreamOut(std::uint32_t address, std::uint64_t bytes) const;
             std::shared_ptr<const DirectVertices> streamOutInputs(const AttributeFetch &fetch, unsigned first, unsigned count);
             // Guest byte ranges [address, address + size) the fetch plan reads for vertices
             // low..high, merged; false when a read is not resident in one host range.

@@ -24,6 +24,7 @@ qt_add_executable(appgui
     src/library/TitleScanner.cpp
     src/emulator/EmulatorLauncher.cpp
     src/emulator/GameView.cpp
+    src/emulator/SessionProbe.cpp
     src/remote/RemoteGamepadServer.cpp
 )
 

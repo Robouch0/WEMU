@@ -820,17 +820,44 @@ void main() {
                         }
                 };
                 std::shared_ptr<Context> m_context;
-                std::array<std::unique_ptr<Buffer>, 3> m_buffers;
+                struct Slot {
+                        std::shared_ptr<Context> context;
+                        std::array<std::unique_ptr<Buffer>, 3> buffers;
+                        VkDescriptorPool descriptors{};
+                        VkDescriptorSet set{};
+                        VkCommandPool pool{};
+                        VkCommandBuffer command{};
+                        std::shared_ptr<Context::BatchFence> fence;
+                        ~Slot()
+                        {
+                            if (fence) {
+                                try {
+                                    context->wait(fence, false);
+                                } catch (...) {
+                                    context->drainNoThrow();
+                                }
+                            }
+                            if (pool)
+                                vkDestroyCommandPool(context->device, pool, nullptr);
+                            if (descriptors)
+                                vkDestroyDescriptorPool(context->device, descriptors, nullptr);
+                        }
+                        VkDeviceSize bytes() const
+                        {
+                            VkDeviceSize result{};
+                            for (const auto &buffer: buffers)
+                                if (buffer)
+                                    result += buffer->size;
+                            return result;
+                        }
+                };
+                std::vector<std::shared_ptr<Slot>> m_slots;
                 VkDescriptorSetLayout m_setLayout{};
                 VkPipelineLayout m_layout{};
-                VkDescriptorPool m_descriptors{};
-                VkDescriptorSet m_set{};
-                VkCommandPool m_pool{};
-                VkCommandBuffer m_command{};
                 std::map<std::uint64_t, VkPipeline> m_pipelines;
-                void reserve(unsigned slot, VkDeviceSize bytes, VkBufferUsageFlags usage)
+                void reserve(Slot &resources, unsigned slot, VkDeviceSize bytes, VkBufferUsageFlags usage)
                 {
-                    if (m_buffers[slot] && m_buffers[slot]->size >= bytes)
+                    if (resources.buffers[slot] && resources.buffers[slot]->size >= bytes)
                         return;
                     auto value = std::make_unique<Buffer>();
                     value->device = m_context->device;
@@ -864,7 +891,7 @@ void main() {
                         throw std::runtime_error("No coherent stream output memory");
                     check(vkBindBufferMemory(value->device, value->buffer, value->memory, 0), "bind stream output buffer");
                     check(vkMapMemory(value->device, value->memory, 0, value->size, 0, &value->mapped), "map stream output buffer");
-                    m_buffers[slot] = std::move(value);
+                    resources.buffers[slot] = std::move(value);
                 }
 
             public:
@@ -872,12 +899,10 @@ void main() {
                 ~StreamOutResources()
                 {
                     const auto device = m_context->device;
+                    m_context->drainNoThrow();
+                    m_slots.clear();
                     for (const auto &[key, pipeline]: m_pipelines)
                         vkDestroyPipeline(device, pipeline, nullptr);
-                    if (m_pool)
-                        vkDestroyCommandPool(device, m_pool, nullptr);
-                    if (m_descriptors)
-                        vkDestroyDescriptorPool(device, m_descriptors, nullptr);
                     if (m_layout)
                         vkDestroyPipelineLayout(device, m_layout, nullptr);
                     if (m_setLayout)
@@ -901,28 +926,65 @@ void main() {
                     layout.pushConstantRangeCount = 1;
                     layout.pPushConstantRanges = &push;
                     check(vkCreatePipelineLayout(device, &layout, nullptr, &m_layout), "create stream output layout");
-                    const VkDescriptorPoolSize sizes[]{{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1}, {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2}};
+                }
+                std::shared_ptr<Slot> acquire(const std::array<VkDeviceSize, 3> &sizes)
+                {
+                    std::shared_ptr<Slot> slot;
+                    for (const auto &entry: m_slots)
+                        if (entry.use_count() == 1) {
+                            slot = entry;
+                            break;
+                        }
+                    if (!slot)
+                        slot = std::make_shared<Slot>();
+                    VkDeviceSize used{}, extra{};
+                    for (const auto &entry: m_slots)
+                        used += entry->bytes();
+                    for (unsigned i = 0; i < sizes.size(); ++i) {
+                        const auto old = slot->buffers[i] ? slot->buffers[i]->size : 0;
+                        extra += std::max(old, sizes[i]) - old;
+                    }
+                    constexpr VkDeviceSize budget = VkDeviceSize{256} << 20;
+                    for (auto it = m_slots.begin(); used + extra > budget && it != m_slots.end();) {
+                        if (*it != slot && it->use_count() == 1) {
+                            used -= (*it)->bytes();
+                            it = m_slots.erase(it);
+                        } else
+                            ++it;
+                    }
+                    if (used + extra > budget || (m_slots.size() >= 64 && !slot->context))
+                        return {};
+                    if (slot->context) {
+                        m_context->wait(slot->fence);
+                        slot->fence.reset();
+                        return slot;
+                    }
+                    slot->context = m_context;
+                    const auto device = m_context->device;
+                    const VkDescriptorPoolSize descriptorSizes[]{{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1}, {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2}};
                     VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
                     pool.maxSets = 1;
                     pool.poolSizeCount = 2;
-                    pool.pPoolSizes = sizes;
-                    check(vkCreateDescriptorPool(device, &pool, nullptr, &m_descriptors), "create stream output descriptor pool");
+                    pool.pPoolSizes = descriptorSizes;
+                    check(vkCreateDescriptorPool(device, &pool, nullptr, &slot->descriptors), "create stream output descriptor pool");
                     VkDescriptorSetAllocateInfo allocate{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-                    allocate.descriptorPool = m_descriptors;
+                    allocate.descriptorPool = slot->descriptors;
                     allocate.descriptorSetCount = 1;
                     allocate.pSetLayouts = &m_setLayout;
-                    check(vkAllocateDescriptorSets(device, &allocate, &m_set), "allocate stream output descriptors");
+                    check(vkAllocateDescriptorSets(device, &allocate, &slot->set), "allocate stream output descriptors");
                     VkCommandPoolCreateInfo commands{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
                     commands.queueFamilyIndex = m_context->family;
                     commands.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-                    check(vkCreateCommandPool(device, &commands, nullptr, &m_pool), "create stream output command pool");
+                    check(vkCreateCommandPool(device, &commands, nullptr, &slot->pool), "create stream output command pool");
                     VkCommandBufferAllocateInfo command{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-                    command.commandPool = m_pool;
+                    command.commandPool = slot->pool;
                     command.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
                     command.commandBufferCount = 1;
-                    check(vkAllocateCommandBuffers(device, &command, &m_command), "allocate stream output commands");
+                    check(vkAllocateCommandBuffers(device, &command, &slot->command), "allocate stream output commands");
+                    m_slots.push_back(slot);
+                    return slot;
                 }
-                StreamOutResult run(const StreamOutDraw &draw, const SpirvModule &module)
+                std::shared_ptr<StreamOutReadback> run(const StreamOutDraw &draw, const SpirvModule &module)
                 {
                     const auto device = m_context->device;
                     auto pipeline = m_pipelines.find(module.id);
@@ -950,6 +1012,8 @@ void main() {
                         check(vkCreateComputePipelines(device, m_context->pipelineCache, 1, &create, nullptr, &value),
                               "create stream output pipeline");
                         if (m_pipelines.size() >= 128) {
+                            for (const auto &slot: m_slots)
+                                m_context->wait(slot->fence);
                             vkDestroyPipeline(device, m_pipelines.begin()->second, nullptr);
                             m_pipelines.erase(m_pipelines.begin());
                         }
@@ -965,20 +1029,27 @@ void main() {
                         dispatch.offsets[i] = unsigned(outputBytes / 4);
                         outputBytes += draw.buffers[i].size();
                     }
-                    reserve(0, Latte::kStageConstantFloats * sizeof(float), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
-                    reserve(1, draw.attributes.size_bytes(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-                    reserve(2, outputBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-                    std::memset(m_buffers[0]->mapped, 0, Latte::kStageConstantFloats * sizeof(float));
+                    const std::array<VkDeviceSize, 3> sizes{Latte::kStageConstantFloats * sizeof(float), draw.attributes.size_bytes(), outputBytes};
+                    std::array<VkDeviceSize, 3> capacities;
+                    for (unsigned i = 0; i < sizes.size(); ++i)
+                        capacities[i] = std::bit_ceil(std::max<VkDeviceSize>(16, sizes[i]));
+                    const auto slot = acquire(capacities);
+                    if (!slot)
+                        return {};
+                    reserve(*slot, 0, sizes[0], VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+                    reserve(*slot, 1, draw.attributes.size_bytes(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+                    reserve(*slot, 2, outputBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+                    std::memset(slot->buffers[0]->mapped, 0, Latte::kStageConstantFloats * sizeof(float));
                     if (!draw.registers.empty())
-                        std::memcpy(m_buffers[0]->mapped, draw.registers.data(), draw.registers.size_bytes());
+                        std::memcpy(slot->buffers[0]->mapped, draw.registers.data(), draw.registers.size_bytes());
                     if (!draw.uniforms.empty())
-                        std::memcpy(static_cast<float *>(m_buffers[0]->mapped) + std::size_t(256 + 16 + 16) * 4, draw.uniforms.data(),
+                        std::memcpy(static_cast<float *>(slot->buffers[0]->mapped) + std::size_t(256 + 16 + 16) * 4, draw.uniforms.data(),
                                     draw.uniforms.size_bytes());
                     if (!draw.attributes.empty())
-                        std::memcpy(m_buffers[1]->mapped, draw.attributes.data(), draw.attributes.size_bytes());
+                        std::memcpy(slot->buffers[1]->mapped, draw.attributes.data(), draw.attributes.size_bytes());
                     for (unsigned i = 0; i < 4; ++i)
                         if (!draw.buffers[i].empty())
-                            std::memcpy(static_cast<std::uint8_t *>(m_buffers[2]->mapped) + std::size_t(dispatch.offsets[i]) * 4,
+                            std::memcpy(static_cast<std::uint8_t *>(slot->buffers[2]->mapped) + std::size_t(dispatch.offsets[i]) * 4,
                                         draw.buffers[i].data(), draw.buffers[i].size());
                     std::array<VkDescriptorBufferInfo, 3> buffers{};
                     std::array<VkWriteDescriptorSet, 3> writes{};
@@ -986,42 +1057,47 @@ void main() {
                         const VkDeviceSize bytes = i == 0   ? Latte::kStageConstantFloats * sizeof(float)
                                                    : i == 1 ? draw.attributes.size_bytes()
                                                             : outputBytes;
-                        buffers[i] = {m_buffers[i]->buffer, 0, std::max<VkDeviceSize>(16, bytes)};
+                        buffers[i] = {slot->buffers[i]->buffer, 0, std::max<VkDeviceSize>(16, bytes)};
                         writes[i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-                        writes[i].dstSet = m_set;
+                        writes[i].dstSet = slot->set;
                         writes[i].dstBinding = i;
                         writes[i].descriptorCount = 1;
                         writes[i].descriptorType = i == 0 ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
                         writes[i].pBufferInfo = &buffers[i];
                     }
                     vkUpdateDescriptorSets(device, writes.size(), writes.data(), 0, nullptr);
-                    check(vkResetCommandBuffer(m_command, 0), "reset stream output commands");
+                    check(vkResetCommandBuffer(slot->command, 0), "reset stream output commands");
                     VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
                     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-                    check(vkBeginCommandBuffer(m_command, &begin), "begin stream output commands");
+                    check(vkBeginCommandBuffer(slot->command, &begin), "begin stream output commands");
                     VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
                     barrier.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
                     barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-                    vkCmdPipelineBarrier(m_command, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &barrier, 0, nullptr, 0,
-                                         nullptr);
-                    vkCmdBindPipeline(m_command, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline->second);
-                    vkCmdBindDescriptorSets(m_command, VK_PIPELINE_BIND_POINT_COMPUTE, m_layout, 0, 1, &m_set, 0, nullptr);
-                    vkCmdPushConstants(m_command, m_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(dispatch), &dispatch);
-                    vkCmdDispatch(m_command, (draw.count + 63) / 64, 1, 1);
+                    vkCmdPipelineBarrier(slot->command, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &barrier, 0, nullptr,
+                                         0, nullptr);
+                    vkCmdBindPipeline(slot->command, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline->second);
+                    vkCmdBindDescriptorSets(slot->command, VK_PIPELINE_BIND_POINT_COMPUTE, m_layout, 0, 1, &slot->set, 0, nullptr);
+                    vkCmdPushConstants(slot->command, m_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(dispatch), &dispatch);
+                    vkCmdDispatch(slot->command, (draw.count + 63) / 64, 1, 1);
                     barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
                     barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
-                    vkCmdPipelineBarrier(m_command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &barrier, 0, nullptr, 0,
-                                         nullptr);
-                    check(vkEndCommandBuffer(m_command), "end stream output commands");
-                    const auto batch = m_context->enqueue(m_command);
-                    m_context->wait(batch);
-                    StreamOutResult result;
-                    result.usedMask = draw.shader.streamBufferMask;
-                    for (unsigned i = 0; i < 4; ++i) {
-                        const auto *bytes = static_cast<const std::uint8_t *>(m_buffers[2]->mapped) + std::size_t(dispatch.offsets[i]) * 4;
-                        result.buffers[i].assign(bytes, bytes + draw.buffers[i].size());
-                    }
-                    return result;
+                    vkCmdPipelineBarrier(slot->command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &barrier, 0, nullptr,
+                                         0, nullptr);
+                    check(vkEndCommandBuffer(slot->command), "end stream output commands");
+                    slot->fence = m_context->enqueue(slot->command);
+                    std::array<std::size_t, 4> outputSizes{};
+                    for (unsigned i = 0; i < 4; ++i)
+                        outputSizes[i] = draw.buffers[i].size();
+                    return std::make_shared<StreamOutReadback>([slot, outputSizes, offsets = dispatch.offsets, mask = draw.shader.streamBufferMask] {
+                        slot->context->wait(slot->fence);
+                        StreamOutResult result;
+                        result.usedMask = mask;
+                        for (unsigned i = 0; i < 4; ++i) {
+                            const auto *bytes = static_cast<const std::uint8_t *>(slot->buffers[2]->mapped) + std::size_t(offsets[i]) * 4;
+                            result.buffers[i].assign(bytes, bytes + outputSizes[i]);
+                        }
+                        return result;
+                    });
                 }
         };
 
@@ -4175,11 +4251,18 @@ void main() {
 
     std::optional<StreamOutResult> VulkanRasterBackend::streamOut(const StreamOutDraw &draw)
     {
+        if (auto result = streamOutDeferred(draw))
+            return result->resolve();
+        return std::nullopt;
+    }
+
+    std::shared_ptr<StreamOutReadback> VulkanRasterBackend::streamOutDeferred(const StreamOutDraw &draw)
+    {
         Profile::Scope work(Profile::Stage::NativeDraw);
         m_impl->error.clear();
-        const auto reject = [&](std::string_view reason) -> std::optional<StreamOutResult> {
+        const auto reject = [&](std::string_view reason) -> std::shared_ptr<StreamOutReadback> {
             m_impl->error = reason;
-            return std::nullopt;
+            return {};
         };
         if (!draw.shader || !draw.shader.streamBufferMask || (draw.shader.streamBufferMask & ~15u) || !draw.shader.textures.empty() || !draw.count ||
             draw.count > 65536 || draw.inputCount > 16 || draw.attributes.size() != std::size_t(draw.count) * draw.inputCount ||

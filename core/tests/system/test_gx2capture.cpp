@@ -121,7 +121,7 @@ TEST_F(Gx2CaptureTest, StreamOutWritesMaskedComponentsWithoutRasterizingAndResto
     using namespace Core::Gfx;
     constexpr unsigned shader = 0x2B001000, program = 0x2B002000, vertices = 0x2B003000;
     constexpr unsigned buffer0 = 0x2B004000, buffer1 = 0x2B004100, context0 = 0x2B005000, context1 = 0x2B005100;
-    constexpr unsigned data0 = 0x2B010000, data1 = 0x2B011000;
+    constexpr unsigned data0 = 0x2B010000, data1 = 0x2B020000;
     const auto record = [&](const char *name, std::initializer_list<unsigned> args) {
         unsigned reg = 3;
         for (const auto arg: args)
@@ -256,6 +256,59 @@ TEST_F(Gx2CaptureTest, StreamOutWritesMaskedComponentsWithoutRasterizingAndResto
     replay.replay(gx2Stream(), &cpu->m_memory);
     EXPECT_EQ(word(data0 + 64 * 16), 0xABABABABu);
     EXPECT_EQ(word(context0), 256u);
+    if (!std::getenv("WEMU_TEST_VULKAN"))
+        return;
+    replay.setStreamOutVerificationInterval(0);
+    constexpr unsigned deferredPassCount = 36; // Cross both the replay and queue-submission batch limits.
+    cpu->m_memory.write<unsigned>(buffer0, deferredPassCount * 64 * 16);
+    cpu->m_memory.write<unsigned>(buffer1, deferredPassCount * 64 * 8);
+    for (unsigned off = 0; off < deferredPassCount * 64 * 16; off += 4)
+        cpu->m_memory.write<unsigned>(data0 + off, 0xCDCDCDCD);
+    gx2Stream().clear();
+    record("GX2SetStreamOutBuffer", {0, buffer0});
+    record("GX2SetStreamOutBuffer", {1, buffer1});
+    record("GX2SetStreamOutContext", {0, buffer0, 1});
+    record("GX2SetStreamOutContext", {1, buffer1, 1});
+    for (unsigned pass = 0; pass < deferredPassCount; ++pass)
+        record("GX2DrawEx", {1, 64, 0, 1});
+    record("GX2SaveStreamOutContext", {0, buffer0});
+    const auto deferredBefore = replay.deferredStreamOutPasses();
+    replay.replay(gx2Stream(), &cpu->m_memory);
+    const auto *deferSetting = std::getenv("WEMU_NATIVE_STREAMOUT_DEFER");
+    const bool deferred = !deferSetting || deferSetting[0] != '0';
+    EXPECT_EQ(replay.deferredStreamOutPasses() - deferredBefore, deferred ? deferredPassCount : 0u);
+    EXPECT_EQ(word(context0), deferredPassCount * 256);
+    for (unsigned pass = 0; pass < deferredPassCount; ++pass)
+        for (unsigned vertex = 0; vertex < 64; ++vertex) {
+            const auto address = data0 + (pass * 64 + vertex) * 16;
+            EXPECT_EQ(word(address), std::bit_cast<unsigned>(float(vertex * 4 + 3)));
+            EXPECT_EQ(word(address + 8), std::bit_cast<unsigned>(vertex ? float(vertex * 4 + 1) : 42.f));
+            EXPECT_EQ(word(address + 4), 0xCDCDCDCDu);
+            EXPECT_EQ(word(address + 12), 0xCDCDCDCDu);
+            EXPECT_EQ(word(data1 + (pass * 64 + vertex) * 8), vertex);
+        }
+    // The next pass fetches the first pass's pending output, so it must see the new
+    // GPU words before its inputs are copied, even with no graphics draw in between.
+    gx2Stream().clear();
+    fetch.payload = {0, 0, 0, 0x813, 0, 0, 0x00010203, 3};
+    gx2Stream().push(fetch);
+    record("GX2SetAttribBuffer", {0, 64 * 16, 16, vertices});
+    record("GX2SetStreamOutContext", {0, buffer0, 1});
+    record("GX2SetStreamOutContext", {1, buffer1, 1});
+    record("GX2DrawEx", {1, 64, 0, 1});
+    fetch.payload = {0, 0, 0, 0x813, 0, 0, 0x00010203, 0};
+    gx2Stream().push(fetch);
+    record("GX2SetAttribBuffer", {0, 64 * 16, 16, data0});
+    record("GX2DrawEx", {1, 64, 0, 1});
+    record("GX2SaveStreamOutContext", {0, buffer0});
+    replay.replay(gx2Stream(), &cpu->m_memory);
+    for (unsigned pass = 0; pass < 2; ++pass)
+        for (unsigned vertex = 0; vertex < 64; ++vertex) {
+            const auto address = data0 + (pass * 64 + vertex) * 16;
+            EXPECT_EQ(word(address), std::bit_cast<unsigned>(vertex ? float(vertex * 4 + 1) : 42.f));
+            EXPECT_EQ(word(address + 8), std::bit_cast<unsigned>(float(vertex * 4 + 3)));
+        }
+    EXPECT_EQ(word(context0), 512u);
 }
 
 TEST_F(Gx2CaptureTest, DepthStencilControlCapturesStackArgumentsInDirectAndRegisterForms)
