@@ -14,11 +14,14 @@
 #include <cstring>
 #include <utility>
 
+#include "audio/Output.hpp"
 #include "cpu/interpreter/SyscallHandler.hpp"
 #include "cpu/types/InstructionTraits.hpp"
 #include "gfx/Renderer.hpp"
+#include "hle/ApplicationBoot.hpp"
 #include "hle/AsyncCallbacks.hpp"
 #include "hle/Ax.hpp"
+#include "hle/Gx2.hpp"
 #include "utils/Diagnostics.hpp"
 #include "utils/FrameProfiler.hpp"
 #include "utils/Logger.hpp"
@@ -88,6 +91,8 @@ void Core::Interpreter::run()
     m_pc = ppc_pc - Core::Memory::MemoryMap::ApplicationCode;
     Utils::Log::info("[EMU] Starting at entrypoint 0x{:08X}", ppc_pc);
     m_scheduler.bootstrap(*this);
+    Core::Hle::ApplicationBoot applicationBoot;
+    applicationBoot.begin(*this);
     std::uint32_t lastPpc = ppc_pc;
     // Periodic service tick: AX/async pumps must run often enough to unblock guest producers even
     // when the current thread is spinning in pure PPC code.
@@ -373,12 +378,14 @@ void Core::Interpreter::run()
             }
             if (m_renderer && m_renderer->pause_requested()) {
                 Profile::Scope paused(Profile::Stage::Pause);
+                Core::Audio::output().pause(true);
                 m_renderer->service_pause([&] {
                     Utils::Log::error("[SESSION] paused retired={} tick={} presents={} movies={}", m_retired, m_scheduler.now(),
                                       m_renderer->guest_present_count(), m_renderer->movie_frame_count());
                 });
                 Utils::Log::error("[SESSION] {} retired={} tick={} presents={} movies={}", m_renderer->is_open() ? "resumed" : "stopped", m_retired,
                                   m_scheduler.now(), m_renderer->guest_present_count(), m_renderer->movie_frame_count());
+                Core::Audio::output().pause(false);
                 ipsMark = threadDumpMark = std::chrono::steady_clock::now();
                 ipsLast = m_retired;
                 if (!m_renderer->is_open()) {
@@ -447,10 +454,20 @@ void Core::Interpreter::run()
         ppc_pc = m_pc + Core::Memory::MemoryMap::ApplicationCode;
         // Every return sentinel lies in [kSentinelLow, ApplicationData) and nothing valid lives
         // below the code base, so ordinary code addresses skip all of these checks at once.
+        static_assert(Core::Gx2::bufferAllocatorReturn == kSentinelLow);
+        static_assert(Core::Hle::preinitReturn > Core::Gx2::bufferAllocatorReturn && Core::Hle::preinitReturn != Core::H264::callbackSentinel);
         static_assert(Core::H264::callbackSentinel >= kSentinelLow && kDriveMenuInlineSentinel >= kSentinelLow &&
                       Core::ASYNC_CB_SENTINEL >= kSentinelLow && Core::AX_FRAME_SENTINEL >= kSentinelLow &&
                       Core::RETURN_SENTINEL < Core::Memory::MemoryMap::ApplicationData);
         if (ppc_pc - Core::Memory::MemoryMap::ApplicationCode >= kSentinelLow - Core::Memory::MemoryMap::ApplicationCode) [[unlikely]] {
+            if (ppc_pc == Core::Gx2::bufferAllocatorReturn) {
+                Core::Gx2::onBufferAllocatorReturn(*this);
+                continue;
+            }
+            if (ppc_pc == Core::Hle::preinitReturn && applicationBoot.active) {
+                applicationBoot.finish(*this);
+                continue;
+            }
             if (ppc_pc == Core::H264::callbackSentinel) {
                 Core::H264::onCallbackReturn(*this);
                 continue;

@@ -24,6 +24,7 @@ class EmulatorLauncher : public QObject {
         Q_PROPERTY(double presentFps READ presentFps NOTIFY statisticsChanged)
         Q_PROPERTY(double movieFps READ movieFps NOTIFY statisticsChanged)
         Q_PROPERTY(QString gameTitle READ gameTitle NOTIFY sessionChanged)
+        Q_PROPERTY(int audioVolume READ audioVolume WRITE setAudioVolume NOTIFY settingsChanged)
         Q_PROPERTY(int systemLanguage READ systemLanguage WRITE setSystemLanguage NOTIFY settingsChanged)
         Q_PROPERTY(int systemRegion READ systemRegion WRITE setSystemRegion NOTIFY settingsChanged)
     public:
@@ -42,6 +43,8 @@ class EmulatorLauncher : public QObject {
         double movieFps() const { return m_movieFps; }
         QString gameTitle() const { return m_title; }
         QString gameRpxPath() const { return m_rpxPath; }
+        int audioVolume() const;
+        void setAudioVolume(int value);
         int systemLanguage() const;
         int systemRegion() const;
         void setSystemLanguage(int value);
@@ -57,6 +60,8 @@ class EmulatorLauncher : public QObject {
         // as-is. setDrcStreaming asks the core for GamePad-screen frames (drcFrameReady).
         void setRemoteButtons(quint32 buttons);
         void setRemoteGamepad(const Core::Gfx::GamepadState &state);
+        // Deliver scripted frame-boundary input before presentation acknowledgement.
+        void setScriptedInput(quint32 buttons, const Core::Gfx::GamepadState &state);
         void setDrcStreaming(bool enabled);
         // Host controllers, already mapped to VPAD bits and sticks by the active input profile: merged
         // with the keyboard and the phone. Buttons held when launching or pausing wait for a release.
@@ -101,6 +106,7 @@ class EmulatorLauncher : public QObject {
         quint32 m_buttons{}, m_remoteButtons{}, m_controllerButtons{}, m_suppressedControllerButtons{};
         Core::Gfx::GamepadState m_remoteGamepad;
         std::array<float, 2> m_controllerLeftStick{}, m_controllerRightStick{};
+        std::array<float, 2> m_keyboardLeftStick{};
         bool m_gamepadDirty{}, m_drcStreaming{};
         QTimer m_gamepadTimer;
         QSet<int> m_heldKeys, m_suppressedKeys;

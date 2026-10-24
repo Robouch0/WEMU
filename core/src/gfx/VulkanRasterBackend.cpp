@@ -32,6 +32,20 @@ namespace Core::Gfx {
             if (result != VK_SUCCESS)
                 throw std::runtime_error(std::string(operation) + ": Vulkan result " + std::to_string(result));
         }
+        // The lowerer bounds all C-register reads. Keep the fixed UBO layout,
+        // copying its live register prefix and sampler/uniform tail only.
+        void copyStageConstants(void *destination, const std::array<float, Latte::kStageConstantFloats> &values, std::size_t definedFloats,
+                                unsigned registers)
+        {
+            constexpr std::size_t samplerStart = std::size_t{256} * 4;
+            const auto prefix = std::min({definedFloats, std::size_t(registers) * 4, samplerStart});
+            if (prefix)
+                std::memcpy(destination, values.data(), prefix * sizeof(float));
+            if (definedFloats > samplerStart)
+                std::memcpy(static_cast<std::byte *>(destination) + samplerStart * sizeof(float), values.data() + samplerStart,
+                            (definedFloats - samplerStart) * sizeof(float));
+        }
+
         bool depthOnly(const RasterDraw &draw) { return draw.depth.test && !draw.channelMask; }
         std::size_t vertexCount(const RasterDraw &draw)
         {
@@ -185,10 +199,16 @@ namespace Core::Gfx {
             switch (format) {
                 case TextureBlockFormat::BC1:
                     return VK_FORMAT_BC1_RGBA_UNORM_BLOCK;
+                case TextureBlockFormat::BC2:
+                    return VK_FORMAT_BC2_UNORM_BLOCK;
+                case TextureBlockFormat::BC3:
+                    return VK_FORMAT_BC3_UNORM_BLOCK;
                 case TextureBlockFormat::BC4:
                     return VK_FORMAT_BC4_UNORM_BLOCK;
                 case TextureBlockFormat::BC4Signed:
                     return VK_FORMAT_BC4_SNORM_BLOCK;
+                case TextureBlockFormat::BC5:
+                    return VK_FORMAT_BC5_UNORM_BLOCK;
                 case TextureBlockFormat::BC5Signed:
                     return VK_FORMAT_BC5_SNORM_BLOCK;
                 default:
@@ -197,7 +217,8 @@ namespace Core::Gfx {
         }
         unsigned blockElementBytes(VkFormat format)
         {
-            if (format == VK_FORMAT_BC5_SNORM_BLOCK)
+            if (format == VK_FORMAT_BC5_UNORM_BLOCK || format == VK_FORMAT_BC5_SNORM_BLOCK || format == VK_FORMAT_BC2_UNORM_BLOCK ||
+                format == VK_FORMAT_BC3_UNORM_BLOCK)
                 return 16;
             return format == VK_FORMAT_BC1_RGBA_UNORM_BLOCK || format == VK_FORMAT_BC4_UNORM_BLOCK || format == VK_FORMAT_BC4_SNORM_BLOCK ? 8 : 0;
         }
@@ -207,9 +228,27 @@ namespace Core::Gfx {
             // UNORM writes are quantized in a GPU buffer pass after comparison.
             return VK_FORMAT_D32_SFLOAT;
         }
-        std::array<unsigned, 5> depthKey(const RasterDraw::Depth &depth)
+        bool stencilStorage(VkFormat format) { return format == VK_FORMAT_D32_SFLOAT_S8_UINT; }
+        bool nativeDepthFormat(VkFormat format) { return format == VK_FORMAT_D32_SFLOAT || stencilStorage(format); }
+        VkImageAspectFlags depthAspects(VkFormat format)
         {
-            return {depth.test ? unsigned(depth.format) + 1 : 0, unsigned(depth.test), unsigned(depth.write), depth.compare, unsigned(depth.clamp)};
+            return VK_IMAGE_ASPECT_DEPTH_BIT | (stencilStorage(format) ? VK_IMAGE_ASPECT_STENCIL_BIT : 0);
+        }
+        VkFormat directDepthFormat(DepthFormat format)
+        {
+            return format == DepthFormat::UNorm24 ? VK_FORMAT_D32_SFLOAT_S8_UINT : depthVkFormat(format);
+        }
+        std::array<unsigned, 9> depthKey(const RasterDraw::Depth &depth)
+        {
+            return {depth.test ? unsigned(depth.format) + 1 : 0,
+                    unsigned(depth.test),
+                    unsigned(depth.write),
+                    depth.compare,
+                    unsigned(depth.clamp),
+                    depth.stencil.test ? depth.stencil.control : 0,
+                    depth.stencil.test ? depth.stencil.masks[0] : 0,
+                    depth.stencil.test ? depth.stencil.masks[1] : 0,
+                    0};
         }
         struct TextureMemoryUsage {
                 std::atomic<std::uint64_t> bytes{};
@@ -243,9 +282,29 @@ namespace Core::Gfx {
                 }
         };
         struct KeyWordsHash {
-                std::size_t operator()(const std::vector<std::uint64_t> &words) const noexcept
+                using is_transparent = void;
+                std::size_t operator()(std::span<const std::uint64_t> words) const noexcept
                 {
                     return std::hash<std::string_view>{}({reinterpret_cast<const char *>(words.data()), words.size() * sizeof(words[0])});
+                }
+        };
+
+        struct KeyWordsEqual {
+                using is_transparent = void;
+                bool operator()(std::span<const std::uint64_t> a, std::span<const std::uint64_t> b) const noexcept
+                {
+                    return std::ranges::equal(a, b);
+                }
+        };
+        constexpr std::size_t kMaxTextureMips = 13;
+        struct TextureCacheKey {
+                std::array<std::uint64_t, 14 + kMaxTextureMips * 2> storage{};
+                std::size_t count{14};
+                std::span<const std::uint64_t> words() const { return std::span(storage).first(count); }
+                std::vector<std::uint64_t> owned() const
+                {
+                    const auto view = words();
+                    return {view.begin(), view.end()};
                 }
         };
 
@@ -328,7 +387,7 @@ namespace Core::Gfx {
                         std::vector<std::uint32_t> bindings;
                         unsigned channelMask{};
                         std::array<unsigned, 11> blend{};
-                        std::array<unsigned, 5> depth{};
+                        std::array<unsigned, 9> depth{};
                         unsigned topology{}, colorFormat{}, cull{};
                         bool depthBias{};
                         unsigned attributeStride{}; // compact program inputs (0: full RasterDraw::Vertex)
@@ -357,15 +416,23 @@ namespace Core::Gfx {
                 bool computeQueue{};
                 bool cubeArrays{}, biasClamp{}, blockTextures{}, depthClamp{};
                 unsigned timestampBits{};
-                float timestampPeriod{};
+                float timestampPeriod{}, maxSamplerLodBias{};
+                std::unordered_map<VkFormat, VkFormatProperties> formatPropertiesCache;
+                const VkFormatProperties &formatProperties(VkFormat format)
+                {
+                    auto [entry, inserted] = formatPropertiesCache.try_emplace(format);
+                    if (inserted)
+                        vkGetPhysicalDeviceFormatProperties(physical, format, &entry->second);
+                    return entry->second;
+                }
                 std::map<PipelineKey, PipelineBundle> pipelines;
                 struct TextureEntry {
                         std::shared_ptr<CachedTexture> value;
                         std::uint64_t bytes{}, used{};
                 };
                 // Hashed: ordered maps compared key vectors word by word on every lookup.
-                std::unordered_map<std::vector<std::uint64_t>, TextureEntry, KeyWordsHash> textures;
-                std::unordered_map<std::vector<std::uint64_t>, std::weak_ptr<CachedTexture>, KeyWordsHash> retainedTextures;
+                std::unordered_map<std::vector<std::uint64_t>, TextureEntry, KeyWordsHash, KeyWordsEqual> textures;
+                std::unordered_map<std::vector<std::uint64_t>, std::weak_ptr<CachedTexture>, KeyWordsHash, KeyWordsEqual> retainedTextures;
                 std::uint64_t textureBytes{}, textureClock{}, textureUploads{}, textureHits{};
                 std::shared_ptr<TextureMemoryUsage> textureMemory = std::make_shared<TextureMemoryUsage>();
                 // Shared texture LRU. A race frame samples hundreds of distinct textures; evicting them
@@ -532,6 +599,22 @@ namespace Core::Gfx {
                     depthState.depthTestEnable = draw.depth.test;
                     depthState.depthWriteEnable = draw.depth.test && draw.depth.write;
                     depthState.depthCompareOp = VkCompareOp(draw.depth.compare);
+                    depthState.stencilTestEnable = draw.depth.stencil.test;
+                    if (draw.depth.stencil.test) {
+                        const auto face = [&](unsigned shift, std::uint32_t mask) {
+                            VkStencilOpState state{};
+                            state.compareOp = VkCompareOp((draw.depth.stencil.control >> shift) & 7);
+                            state.failOp = VkStencilOp((draw.depth.stencil.control >> (shift + 3)) & 7);
+                            state.passOp = VkStencilOp((draw.depth.stencil.control >> (shift + 6)) & 7);
+                            state.depthFailOp = VkStencilOp((draw.depth.stencil.control >> (shift + 9)) & 7);
+                            state.compareMask = (mask >> 8) & 255;
+                            state.writeMask = (mask >> 16) & 255;
+                            state.reference = mask & 255;
+                            return state;
+                        };
+                        depthState.front = face(8, draw.depth.stencil.masks[0]);
+                        depthState.back = (draw.depth.stencil.control & (1u << 7)) ? face(20, draw.depth.stencil.masks[1]) : depthState.front;
+                    }
                     gp.pDepthStencilState = &depthState;
                     gp.layout = created.layout;
                     gp.renderPass = pass;
@@ -624,6 +707,7 @@ namespace Core::Gfx {
                     deviceName = props.deviceName;
                     discrete = props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU;
                     timestampPeriod = props.limits.timestampPeriod;
+                    maxSamplerLodBias = props.limits.maxSamplerLodBias;
                     Utils::Log::error("[NATIVE_VULKAN] device={}", deviceName);
                     const float priority = 1.0f;
                     VkDeviceQueueCreateInfo qi{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
@@ -716,6 +800,307 @@ void main() {
                 }
         };
 
+        // Synchronous compute scratch storage: each dispatch finishes before the
+        // next upload, descriptor update, command reset or pipeline eviction.
+        class StreamOutResources {
+                struct Buffer {
+                        VkDevice device{};
+                        VkBuffer buffer{};
+                        VkDeviceMemory memory{};
+                        void *mapped{};
+                        VkDeviceSize size{};
+                        ~Buffer()
+                        {
+                            if (mapped)
+                                vkUnmapMemory(device, memory);
+                            if (buffer)
+                                vkDestroyBuffer(device, buffer, nullptr);
+                            if (memory)
+                                vkFreeMemory(device, memory, nullptr);
+                        }
+                };
+                std::shared_ptr<Context> m_context;
+                struct Slot {
+                        std::shared_ptr<Context> context;
+                        std::array<std::unique_ptr<Buffer>, 3> buffers;
+                        VkDescriptorPool descriptors{};
+                        VkDescriptorSet set{};
+                        VkCommandPool pool{};
+                        VkCommandBuffer command{};
+                        std::shared_ptr<Context::BatchFence> fence;
+                        ~Slot()
+                        {
+                            if (fence) {
+                                try {
+                                    context->wait(fence, false);
+                                } catch (...) {
+                                    context->drainNoThrow();
+                                }
+                            }
+                            if (pool)
+                                vkDestroyCommandPool(context->device, pool, nullptr);
+                            if (descriptors)
+                                vkDestroyDescriptorPool(context->device, descriptors, nullptr);
+                        }
+                        VkDeviceSize bytes() const
+                        {
+                            VkDeviceSize result{};
+                            for (const auto &buffer: buffers)
+                                if (buffer)
+                                    result += buffer->size;
+                            return result;
+                        }
+                };
+                std::vector<std::shared_ptr<Slot>> m_slots;
+                VkDescriptorSetLayout m_setLayout{};
+                VkPipelineLayout m_layout{};
+                std::map<std::uint64_t, VkPipeline> m_pipelines;
+                void reserve(Slot &resources, unsigned slot, VkDeviceSize bytes, VkBufferUsageFlags usage)
+                {
+                    if (resources.buffers[slot] && resources.buffers[slot]->size >= bytes)
+                        return;
+                    auto value = std::make_unique<Buffer>();
+                    value->device = m_context->device;
+                    value->size = std::bit_ceil(std::max<VkDeviceSize>(16, bytes));
+                    VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+                    info.size = value->size;
+                    info.usage = usage;
+                    check(vkCreateBuffer(value->device, &info, nullptr, &value->buffer), "create stream output buffer");
+                    VkMemoryRequirements requirements{};
+                    vkGetBufferMemoryRequirements(value->device, value->buffer, &requirements);
+                    VkPhysicalDeviceMemoryProperties memory{};
+                    vkGetPhysicalDeviceMemoryProperties(m_context->physical, &memory);
+                    bool found = false;
+                    // Output is read by the CPU after each dispatch. Reading write-combined
+                    // upload memory is expensive on discrete GPUs; prefer cached host memory
+                    // for that buffer, retaining the coherent fallback on other devices.
+                    for (unsigned pass = 0; pass < 2 && !found; ++pass)
+                        for (unsigned i = 0; i < memory.memoryTypeCount; ++i) {
+                            const auto flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                                               (slot == 2 && !pass ? VK_MEMORY_PROPERTY_HOST_CACHED_BIT : 0);
+                            if (!(requirements.memoryTypeBits & (1u << i)) || (memory.memoryTypes[i].propertyFlags & flags) != flags)
+                                continue;
+                            VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+                            allocation.allocationSize = requirements.size;
+                            allocation.memoryTypeIndex = i;
+                            check(vkAllocateMemory(value->device, &allocation, nullptr, &value->memory), "allocate stream output buffer");
+                            found = true;
+                            break;
+                        }
+                    if (!found)
+                        throw std::runtime_error("No coherent stream output memory");
+                    check(vkBindBufferMemory(value->device, value->buffer, value->memory, 0), "bind stream output buffer");
+                    check(vkMapMemory(value->device, value->memory, 0, value->size, 0, &value->mapped), "map stream output buffer");
+                    resources.buffers[slot] = std::move(value);
+                }
+
+            public:
+                explicit StreamOutResources(std::shared_ptr<Context> context) : m_context(std::move(context)) {}
+                ~StreamOutResources()
+                {
+                    const auto device = m_context->device;
+                    m_context->drainNoThrow();
+                    m_slots.clear();
+                    for (const auto &[key, pipeline]: m_pipelines)
+                        vkDestroyPipeline(device, pipeline, nullptr);
+                    if (m_layout)
+                        vkDestroyPipelineLayout(device, m_layout, nullptr);
+                    if (m_setLayout)
+                        vkDestroyDescriptorSetLayout(device, m_setLayout, nullptr);
+                }
+                void initialize()
+                {
+                    const auto device = m_context->device;
+                    std::array<VkDescriptorSetLayoutBinding, 3> bindings{};
+                    for (unsigned i = 0; i < 3; ++i)
+                        bindings[i] = {i, i == 0 ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+                                       VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+                    VkDescriptorSetLayoutCreateInfo sets{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+                    sets.bindingCount = bindings.size();
+                    sets.pBindings = bindings.data();
+                    check(vkCreateDescriptorSetLayout(device, &sets, nullptr, &m_setLayout), "create stream output descriptors");
+                    VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT, 0, 32};
+                    VkPipelineLayoutCreateInfo layout{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+                    layout.setLayoutCount = 1;
+                    layout.pSetLayouts = &m_setLayout;
+                    layout.pushConstantRangeCount = 1;
+                    layout.pPushConstantRanges = &push;
+                    check(vkCreatePipelineLayout(device, &layout, nullptr, &m_layout), "create stream output layout");
+                }
+                std::shared_ptr<Slot> acquire(const std::array<VkDeviceSize, 3> &sizes)
+                {
+                    std::shared_ptr<Slot> slot;
+                    for (const auto &entry: m_slots)
+                        if (entry.use_count() == 1) {
+                            slot = entry;
+                            break;
+                        }
+                    if (!slot)
+                        slot = std::make_shared<Slot>();
+                    VkDeviceSize used{}, extra{};
+                    for (const auto &entry: m_slots)
+                        used += entry->bytes();
+                    for (unsigned i = 0; i < sizes.size(); ++i) {
+                        const auto old = slot->buffers[i] ? slot->buffers[i]->size : 0;
+                        extra += std::max(old, sizes[i]) - old;
+                    }
+                    constexpr VkDeviceSize budget = VkDeviceSize{256} << 20;
+                    for (auto it = m_slots.begin(); used + extra > budget && it != m_slots.end();) {
+                        if (*it != slot && it->use_count() == 1) {
+                            used -= (*it)->bytes();
+                            it = m_slots.erase(it);
+                        } else
+                            ++it;
+                    }
+                    if (used + extra > budget || (m_slots.size() >= 64 && !slot->context))
+                        return {};
+                    if (slot->context) {
+                        m_context->wait(slot->fence);
+                        slot->fence.reset();
+                        return slot;
+                    }
+                    slot->context = m_context;
+                    const auto device = m_context->device;
+                    const VkDescriptorPoolSize descriptorSizes[]{{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1}, {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2}};
+                    VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+                    pool.maxSets = 1;
+                    pool.poolSizeCount = 2;
+                    pool.pPoolSizes = descriptorSizes;
+                    check(vkCreateDescriptorPool(device, &pool, nullptr, &slot->descriptors), "create stream output descriptor pool");
+                    VkDescriptorSetAllocateInfo allocate{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+                    allocate.descriptorPool = slot->descriptors;
+                    allocate.descriptorSetCount = 1;
+                    allocate.pSetLayouts = &m_setLayout;
+                    check(vkAllocateDescriptorSets(device, &allocate, &slot->set), "allocate stream output descriptors");
+                    VkCommandPoolCreateInfo commands{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+                    commands.queueFamilyIndex = m_context->family;
+                    commands.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+                    check(vkCreateCommandPool(device, &commands, nullptr, &slot->pool), "create stream output command pool");
+                    VkCommandBufferAllocateInfo command{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+                    command.commandPool = slot->pool;
+                    command.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+                    command.commandBufferCount = 1;
+                    check(vkAllocateCommandBuffers(device, &command, &slot->command), "allocate stream output commands");
+                    m_slots.push_back(slot);
+                    return slot;
+                }
+                std::shared_ptr<StreamOutReadback> run(const StreamOutDraw &draw, const SpirvModule &module)
+                {
+                    const auto device = m_context->device;
+                    auto pipeline = m_pipelines.find(module.id);
+                    if (pipeline == m_pipelines.end()) {
+                        struct Module {
+                                VkDevice device;
+                                VkShaderModule value{};
+                                ~Module()
+                                {
+                                    if (value)
+                                        vkDestroyShaderModule(device, value, nullptr);
+                                }
+                        } shader{device};
+                        VkShaderModuleCreateInfo code{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+                        code.codeSize = module.words.size() * 4;
+                        code.pCode = module.words.data();
+                        check(vkCreateShaderModule(device, &code, nullptr, &shader.value), "create stream output shader");
+                        VkComputePipelineCreateInfo create{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+                        create.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+                        create.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+                        create.stage.module = shader.value;
+                        create.stage.pName = "main";
+                        create.layout = m_layout;
+                        VkPipeline value{};
+                        check(vkCreateComputePipelines(device, m_context->pipelineCache, 1, &create, nullptr, &value),
+                              "create stream output pipeline");
+                        if (m_pipelines.size() >= 128) {
+                            for (const auto &slot: m_slots)
+                                m_context->wait(slot->fence);
+                            vkDestroyPipeline(device, m_pipelines.begin()->second, nullptr);
+                            m_pipelines.erase(m_pipelines.begin());
+                        }
+                        pipeline = m_pipelines.emplace(module.id, value).first;
+                    }
+                    struct Dispatch {
+                            unsigned count, first, inputs, unused;
+                            std::array<unsigned, 4> offsets;
+                    };
+                    Dispatch dispatch{draw.count, draw.first, draw.inputCount, 0, {}};
+                    VkDeviceSize outputBytes{};
+                    for (unsigned i = 0; i < 4; ++i) {
+                        dispatch.offsets[i] = unsigned(outputBytes / 4);
+                        outputBytes += draw.buffers[i].size();
+                    }
+                    const std::array<VkDeviceSize, 3> sizes{Latte::kStageConstantFloats * sizeof(float), draw.attributes.size_bytes(), outputBytes};
+                    std::array<VkDeviceSize, 3> capacities;
+                    for (unsigned i = 0; i < sizes.size(); ++i)
+                        capacities[i] = std::bit_ceil(std::max<VkDeviceSize>(16, sizes[i]));
+                    const auto slot = acquire(capacities);
+                    if (!slot)
+                        return {};
+                    reserve(*slot, 0, sizes[0], VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+                    reserve(*slot, 1, draw.attributes.size_bytes(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+                    reserve(*slot, 2, outputBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+                    std::memset(slot->buffers[0]->mapped, 0, Latte::kStageConstantFloats * sizeof(float));
+                    if (!draw.registers.empty())
+                        std::memcpy(slot->buffers[0]->mapped, draw.registers.data(), draw.registers.size_bytes());
+                    if (!draw.uniforms.empty())
+                        std::memcpy(static_cast<float *>(slot->buffers[0]->mapped) + std::size_t(256 + 16 + 16) * 4, draw.uniforms.data(),
+                                    draw.uniforms.size_bytes());
+                    if (!draw.attributes.empty())
+                        std::memcpy(slot->buffers[1]->mapped, draw.attributes.data(), draw.attributes.size_bytes());
+                    for (unsigned i = 0; i < 4; ++i)
+                        if (!draw.buffers[i].empty())
+                            std::memcpy(static_cast<std::uint8_t *>(slot->buffers[2]->mapped) + std::size_t(dispatch.offsets[i]) * 4,
+                                        draw.buffers[i].data(), draw.buffers[i].size());
+                    std::array<VkDescriptorBufferInfo, 3> buffers{};
+                    std::array<VkWriteDescriptorSet, 3> writes{};
+                    for (unsigned i = 0; i < 3; ++i) {
+                        const VkDeviceSize bytes = i == 0   ? Latte::kStageConstantFloats * sizeof(float)
+                                                   : i == 1 ? draw.attributes.size_bytes()
+                                                            : outputBytes;
+                        buffers[i] = {slot->buffers[i]->buffer, 0, std::max<VkDeviceSize>(16, bytes)};
+                        writes[i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+                        writes[i].dstSet = slot->set;
+                        writes[i].dstBinding = i;
+                        writes[i].descriptorCount = 1;
+                        writes[i].descriptorType = i == 0 ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                        writes[i].pBufferInfo = &buffers[i];
+                    }
+                    vkUpdateDescriptorSets(device, writes.size(), writes.data(), 0, nullptr);
+                    check(vkResetCommandBuffer(slot->command, 0), "reset stream output commands");
+                    VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+                    begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+                    check(vkBeginCommandBuffer(slot->command, &begin), "begin stream output commands");
+                    VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+                    barrier.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
+                    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+                    vkCmdPipelineBarrier(slot->command, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &barrier, 0, nullptr,
+                                         0, nullptr);
+                    vkCmdBindPipeline(slot->command, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline->second);
+                    vkCmdBindDescriptorSets(slot->command, VK_PIPELINE_BIND_POINT_COMPUTE, m_layout, 0, 1, &slot->set, 0, nullptr);
+                    vkCmdPushConstants(slot->command, m_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(dispatch), &dispatch);
+                    vkCmdDispatch(slot->command, (draw.count + 63) / 64, 1, 1);
+                    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+                    barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+                    vkCmdPipelineBarrier(slot->command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &barrier, 0, nullptr,
+                                         0, nullptr);
+                    check(vkEndCommandBuffer(slot->command), "end stream output commands");
+                    slot->fence = m_context->enqueue(slot->command);
+                    std::array<std::size_t, 4> outputSizes{};
+                    for (unsigned i = 0; i < 4; ++i)
+                        outputSizes[i] = draw.buffers[i].size();
+                    return std::make_shared<StreamOutReadback>([slot, outputSizes, offsets = dispatch.offsets, mask = draw.shader.streamBufferMask] {
+                        slot->context->wait(slot->fence);
+                        StreamOutResult result;
+                        result.usedMask = mask;
+                        for (unsigned i = 0; i < 4; ++i) {
+                            const auto *bytes = static_cast<const std::uint8_t *>(slot->buffers[2]->mapped) + std::size_t(offsets[i]) * 4;
+                            result.buffers[i].assign(bytes, bytes + outputSizes[i]);
+                        }
+                        return result;
+                    });
+                }
+        };
+
         struct ColorImage {
                 std::shared_ptr<Context> context;
                 VkImage image{};
@@ -780,22 +1165,48 @@ void main() {
                         unsigned layers{1}; // depth slices for volume textures
                         bool array{}, volume{};
                         bool cube{};
-                        std::vector<std::span<const float>> mips;
+                        std::vector<std::span<const std::byte>> mips;
                         VkSamplerAddressMode addressU{}, addressV{}, addressW{VK_SAMPLER_ADDRESS_MODE_REPEAT};
                         VkBorderColor borderColor{VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK};
                         VkFilter filter = VK_FILTER_NEAREST;
                         VkFilter minFilter = VK_FILTER_NEAREST;
                         VkSamplerMipmapMode mipFilter{VK_SAMPLER_MIPMAP_MODE_NEAREST};
-                        float minLod{}, maxLod{};
+                        float minLod{}, maxLod{}, lodBias{};
                         std::shared_ptr<ColorImage> rendered;
                         // Levels x layers for direct draws: resident images, or null with the layer's CPU
                         // bytes (rows of layerPitch bytes) in layerBytes.
                         std::vector<std::shared_ptr<ColorImage>> renderedLayers;
+                        std::vector<std::shared_ptr<const void>> layerOwners; // immutable CPU readback versions, parallel to renderedLayers
                         std::vector<std::span<const std::uint8_t>> layerBytes;
                         std::size_t layerPitch{};
                         unsigned renderedLevels{1};
                         unsigned levelCount() const { return std::max(unsigned(mips.size() + 1), renderedLevels); }
                         std::shared_ptr<const void> snapshotOwner;
+
+                        TextureCacheKey cacheKey() const
+                        {
+                            TextureCacheKey key;
+                            const std::array<std::uint64_t, 14> header{reinterpret_cast<std::uintptr_t>(snapshotOwner.get()),
+                                                                       reinterpret_cast<std::uintptr_t>(snapshot.data()),
+                                                                       width,
+                                                                       height,
+                                                                       layers,
+                                                                       unsigned(format),
+                                                                       sourcePitch,
+                                                                       unsigned(components.r),
+                                                                       unsigned(components.g),
+                                                                       unsigned(components.b),
+                                                                       unsigned(components.a),
+                                                                       unsigned(array),
+                                                                       unsigned(volume),
+                                                                       unsigned(cube)};
+                            std::copy(header.begin(), header.end(), key.storage.begin());
+                            for (const auto mip: mips) {
+                                key.storage[key.count++] = reinterpret_cast<std::uintptr_t>(mip.data());
+                                key.storage[key.count++] = mip.size();
+                            }
+                            return key;
+                        }
 
                         std::size_t rowBytes() const
                         {
@@ -1046,11 +1457,11 @@ void main() {
                     uniform = buffer(sizeof(constants), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, uniformMemory);
                     void *mapped = nullptr;
                     check(vkMapMemory(device, uniformMemory, 0, sizeof(constants), 0, &mapped), "map constants");
-                    std::memcpy(mapped, constants.data(), constantFloats * sizeof(float));
+                    copyStageConstants(mapped, constants, constantFloats, draw.shader.constantRegisters);
                     vkUnmapMemory(device, uniformMemory);
                     if (draw.vertexStage.shader) {
                         vertexUniform = buffer(sizeof(vertexConstants), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, vertexUniformMemory);
-                        upload(vertexUniformMemory, vertexConstants.data(), vertexConstantFloats * sizeof(float));
+                        uploadConstants(vertexUniformMemory, vertexConstants, vertexConstantFloats, draw.vertexStage.shader->constantRegisters);
                     }
                     if (!depthOnly(draw))
                         readback = buffer(draw.target.size(), VK_BUFFER_USAGE_TRANSFER_DST_BIT, readbackMemory, VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
@@ -1681,9 +2092,9 @@ void main() {
                     check(vkResetCommandPool(device, pool, 0), "reset commands");
                     VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
                     check(vkBeginCommandBuffer(command, &begin), "begin commands");
-                    upload(uniformMemory, constants.data(), constantFloats * sizeof(float));
+                    uploadConstants(uniformMemory, constants, constantFloats, draw.shader.constantRegisters);
                     if (draw.vertexStage.shader)
-                        upload(vertexUniformMemory, vertexConstants.data(), vertexConstantFloats * sizeof(float));
+                        uploadConstants(vertexUniformMemory, vertexConstants, vertexConstantFloats, draw.vertexStage.shader->constantRegisters);
                     upload(vertexMemory, draw.vertices.data(), draw.vertices.size_bytes());
                     if (!draw.indices.empty())
                         upload(indexMemory, draw.indices.data(), draw.indices.size_bytes());
@@ -1724,7 +2135,7 @@ void main() {
                         uploadTextureData(textureStagingMemories[i], texture);
                         textureStagingValid[i] = true;
                         recordTextureUpload(textureImages[i], textureStagingBuffers[i], texture.width, texture.height, !textureImageInitialized[i],
-                                            {}, texture.layers, texture.volume, unsigned(texture.mips.size() + 1));
+                                            {}, texture.layers, texture.volume, unsigned(texture.mips.size() + 1), texture.format);
                         textureImageInitialized[i] = true;
                     }
                     return retainedTarget;
@@ -1774,6 +2185,14 @@ void main() {
                     texture.copyTo(mapped);
                     vkUnmapMemory(device, memory);
                 }
+                void uploadConstants(VkDeviceMemory memory, const std::array<float, Latte::kStageConstantFloats> &values, std::size_t definedFloats,
+                                     unsigned registers)
+                {
+                    void *mapped = nullptr;
+                    check(vkMapMemory(device, memory, 0, definedFloats * sizeof(float), 0, &mapped), "map constants upload");
+                    copyStageConstants(mapped, values, definedFloats, registers);
+                    vkUnmapMemory(device, memory);
+                }
                 void upload(VkDeviceMemory memory, const void *data, std::size_t size)
                 {
                     void *mapped = nullptr;
@@ -1789,6 +2208,7 @@ void main() {
                     si.mipmapMode = texture.mipFilter;
                     si.minLod = texture.minLod;
                     si.maxLod = texture.maxLod;
+                    si.mipLodBias = texture.lodBias;
                     si.addressModeU = texture.addressU;
                     si.addressModeV = texture.addressV;
                     si.addressModeW = texture.addressW;
@@ -1801,29 +2221,12 @@ void main() {
 
                 std::shared_ptr<CachedTexture> cachedTexture(const Texture &texture, const std::shared_ptr<CachedTexture> &previous)
                 {
-                    std::vector<std::uint64_t> key{reinterpret_cast<std::uintptr_t>(texture.snapshotOwner.get()),
-                                                   reinterpret_cast<std::uintptr_t>(texture.snapshot.data()),
-                                                   texture.width,
-                                                   texture.height,
-                                                   texture.layers,
-                                                   unsigned(texture.format),
-                                                   texture.sourcePitch,
-                                                   unsigned(texture.components.r),
-                                                   unsigned(texture.components.g),
-                                                   unsigned(texture.components.b),
-                                                   unsigned(texture.components.a),
-                                                   unsigned(texture.array),
-                                                   unsigned(texture.volume),
-                                                   unsigned(texture.cube)};
-                    for (const auto mip: texture.mips) {
-                        key.push_back(reinterpret_cast<std::uintptr_t>(mip.data()));
-                        key.push_back(mip.size());
-                    }
-                    if (previous && previous->key == key && previous->ready) {
+                    auto key = texture.cacheKey();
+                    if (previous && std::ranges::equal(previous->key, key.words()) && previous->ready) {
                         ++context.textureHits;
                         return previous;
                     }
-                    if (auto found = context.textures.find(key); found != context.textures.end()) {
+                    if (auto found = context.textures.find(key.words()); found != context.textures.end()) {
                         if (found->second.value->ready || found->second.value->producer.lock().get() == this) {
                             found->second.used = ++context.textureClock;
                             ++context.textureHits;
@@ -1832,7 +2235,7 @@ void main() {
                         context.textureBytes -= found->second.bytes;
                         context.textures.erase(found);
                     }
-                    if (const auto retained = context.retainedTextures.find(key); retained != context.retainedTextures.end())
+                    if (const auto retained = context.retainedTextures.find(key.words()); retained != context.retainedTextures.end())
                         if (auto value = retained->second.lock(); value && (value->ready || value->producer.lock().get() == this)) {
                             ++context.textureHits;
                             return value;
@@ -1842,7 +2245,8 @@ void main() {
                     auto result = std::make_shared<CachedTexture>();
                     result->device = device;
                     result->owner = texture.snapshotOwner;
-                    result->key = key;
+                    auto ownedKey = key.owned();
+                    result->key = ownedKey;
                     result->producer = shared_from_this();
                     VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
                     ci.imageType = texture.volume ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D;
@@ -1876,11 +2280,11 @@ void main() {
                                              VK_MEMORY_PROPERTY_HOST_CACHED_BIT, false, false);
                     uploadTextureData(result->stagingMemory, texture);
                     recordTextureUpload(result->image, result->staging, texture.width, texture.height, true, {}, texture.layers, texture.volume,
-                                        ci.mipLevels);
+                                        ci.mipLevels, texture.format);
                     result->bytes = bytes;
                     result->usage = context.textureMemory;
                     result->usage->bytes.fetch_add(bytes, std::memory_order_relaxed);
-                    context.admitTexture(std::move(key), result);
+                    context.admitTexture(std::move(ownedKey), result);
                     return result;
                 }
 
@@ -1953,7 +2357,7 @@ void main() {
                         textureStagingValid[index] = true;
                     }
                     recordTextureUpload(textureImage, staging, texture.width, texture.height, true, texture.rendered, texture.layers, texture.volume,
-                                        ci.mipLevels);
+                                        ci.mipLevels, texture.format);
                     textureImageInitialized[index] = true;
                     bindTextureDescriptor(texture.binding, sampler, textureView);
                 }
@@ -2013,7 +2417,7 @@ void main() {
                 }
                 void recordTextureUpload(VkImage textureImage, VkBuffer staging, unsigned width, unsigned height, bool initial,
                                          const std::shared_ptr<ColorImage> &source = {}, unsigned layers = 1, bool volume = false,
-                                         unsigned levels = 1)
+                                         unsigned levels = 1, VkFormat format = VK_FORMAT_R32G32B32A32_SFLOAT)
                 {
                     const unsigned depth = volume ? layers : 1;
                     if (volume)
@@ -2032,7 +2436,7 @@ void main() {
                                          VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
                     if (source)
                         ++context.residentTextureCopies;
-                    if (source && source->format == VK_FORMAT_D32_SFLOAT) {
+                    if (source && nativeDepthFormat(source->format)) {
                         auto found = depthTextureTransfers.find(staging);
                         if (found == depthTextureTransfers.end()) {
                             VkDeviceMemory memory{};
@@ -2080,9 +2484,10 @@ void main() {
                             copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, 0, layers};
                             copy.imageExtent = {std::max(1u, width >> level), std::max(1u, height >> level), depth};
                             copies.push_back(copy);
-                            // Multilevel snapshots are RGBA32F; existing single-level
-                            // formats do not need a following staging offset.
-                            offset += VkDeviceSize(copy.imageExtent.width) * copy.imageExtent.height * depth * layers * 16;
+                            // Block-compressed tails still occupy a complete 4x4 block.
+                            const auto blockBytes = blockElementBytes(format);
+                            offset += blockBytes ? VkDeviceSize((copy.imageExtent.width + 3) / 4) * ((copy.imageExtent.height + 3) / 4) * blockBytes
+                                                 : VkDeviceSize(copy.imageExtent.width) * copy.imageExtent.height * depth * layers * 16;
                         }
                         vkCmdCopyBufferToImage(command, staging, textureImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, unsigned(copies.size()),
                                                copies.data());
@@ -2313,15 +2718,27 @@ void main() {
 
                 std::uint64_t draws() const { return renderedDraws; }
                 std::uint64_t passMerges() const { return mergedDraws; }
+                std::uint64_t imageReuses() const { return reusedTargetImages; }
 
                 RasterResult render(const Inputs &in)
                 {
+                    static const bool profile = [] {
+                        const auto *setting = std::getenv("WEMU_NATIVE_DIRECT_PROFILE");
+                        return setting && setting[0] == '1';
+                    }();
+                    std::array<std::chrono::steady_clock::time_point, 10> marks;
+                    const auto mark = [&](unsigned slot) {
+                        if (profile)
+                            marks[slot] = std::chrono::steady_clock::now();
+                    };
+                    mark(0);
                     const auto &draw = in.draw;
                     const bool hasColor = !depthOnly(draw);
                     const bool colorInPlace = hasColor && in.targetSource && in.targetSource->direct && in.supersedes;
                     const bool colorCopy = hasColor && in.targetSource && !colorInPlace;
                     const bool colorUpload = hasColor && !in.targetSource && !in.overwriteTarget;
-                    const bool depthInPlace = draw.depth.test && in.depthSource && in.depthSource->direct && (in.supersedes || !draw.depth.write);
+                    const bool depthInPlace = draw.depth.test && in.depthSource && in.depthSource->direct &&
+                                              (in.supersedes || (!draw.depth.write && !draw.depth.stencil.test));
                     const bool depthCopy = draw.depth.test && in.depthSource && !depthInPlace;
                     const bool depthUpload = draw.depth.test && !in.depthSource;
 
@@ -2365,6 +2782,8 @@ void main() {
                         reserve(draw.target.size());
                     if (depthUpload && !draw.depth.clear)
                         reserve(draw.depth.target.size_bytes());
+                    if (depthUpload && draw.depth.format == DepthFormat::UNorm24 && !draw.depth.stencil.clear)
+                        reserve(draw.depth.stencil.target.size());
                     static const bool directTextures = [] {
                         const auto *value = std::getenv("WEMU_NATIVE_DIRECT_TEXTURES");
                         return !value || value[0] != '0';
@@ -2400,10 +2819,13 @@ void main() {
                     // A draw recording no transfer or layout change, into the attachments of the render
                     // pass left open, continues it: a pass and two full barriers per draw were most of
                     // the driver's time in a MK8 race (4500 draws per frame).
-                    bool passFree = (colorInPlace || !hasColor) && (depthInPlace || !draw.depth.test) && !(vertexOwner && !residentVertices);
+                    bool passFree = (colorInPlace || !hasColor) && (depthInPlace || !draw.depth.test) && !draw.depth.stencil.clear &&
+                                    !(vertexOwner && !residentVertices);
                     for (std::size_t i = 0; passFree && i < sources.size(); ++i)
                         passFree = sources[i] == Source::Shared && shared[i];
+                    mark(1);
                     auto &segment = open(need);
+                    mark(2);
                     const auto command = segment.command;
                     const auto extent = attachmentExtent(draw);
                     const bool continuesPass = passFree && openPass && openPass->color == (hasColor ? in.targetSource.get() : nullptr) &&
@@ -2418,11 +2840,14 @@ void main() {
                         segment.used += (std::max(bytes, reserved) + alignment - 1) / alignment * alignment;
                         return offset;
                     };
-                    const auto constantsOffset = pushUpload(in.constants.data(), in.constantFloats * sizeof(float), sizeof(in.constants));
-                    const auto vertexConstantsOffset =
-                            draw.vertexStage.shader
-                                    ? pushUpload(in.vertexConstants.data(), in.vertexConstantFloats * sizeof(float), sizeof(in.vertexConstants))
-                                    : VkDeviceSize{};
+                    const auto constantsOffset = pushUpload(nullptr, 0, sizeof(in.constants));
+                    copyStageConstants(segment.mapped + constantsOffset, in.constants, in.constantFloats, draw.shader.constantRegisters);
+                    VkDeviceSize vertexConstantsOffset{};
+                    if (draw.vertexStage.shader) {
+                        vertexConstantsOffset = pushUpload(nullptr, 0, sizeof(in.vertexConstants));
+                        copyStageConstants(segment.mapped + vertexConstantsOffset, in.vertexConstants, in.vertexConstantFloats,
+                                           draw.vertexStage.shader->constantRegisters);
+                    }
                     const auto verticesOffset = residentVertices ? VkDeviceSize{} : pushUpload(vertexData, vertexBytes, 0);
                     const auto defaultsOffset =
                             compact ? pushUpload(compactAttributeDefaults.data(), sizeof(compactAttributeDefaults), 0) : VkDeviceSize{};
@@ -2447,6 +2872,7 @@ void main() {
                         segment.retained.push_back(residentVertices);
 
                     // Textures first: their transfers must precede the render pass.
+                    mark(3);
                     std::vector<VkDescriptorImageInfo> imageInfos(in.textures.size());
                     std::vector<std::shared_ptr<ColorImage>> sampled;
                     for (std::size_t i = 0; i < in.textures.size(); ++i) {
@@ -2476,7 +2902,8 @@ void main() {
                                 if (assembled)
                                     if (const auto found = assembledTextures.find(*assembled);
                                         found != assembledTextures.end() &&
-                                        std::ranges::none_of(found->second.sources, [](const auto &source) { return source.expired(); })) {
+                                        std::ranges::none_of(found->second.sources, [](const auto &source) { return source.expired(); }) &&
+                                        std::ranges::none_of(found->second.cpuSources, [](const auto &source) { return source.expired(); })) {
                                         found->second.used = ++assembledClock;
                                         imageInfos[i].imageView = found->second.image->view;
                                         segment.retained.push_back(found->second.image);
@@ -2504,9 +2931,15 @@ void main() {
                                     }
                                     auto &entry = assembledTextures[*assembled];
                                     entry.sources.clear();
+                                    entry.cpuSources.clear();
                                     if (texture.rendered)
                                         entry.sources.push_back(texture.rendered);
-                                    entry.sources.insert(entry.sources.end(), texture.renderedLayers.begin(), texture.renderedLayers.end());
+                                    for (const auto &layer: texture.renderedLayers)
+                                        if (layer)
+                                            entry.sources.push_back(layer);
+                                    for (const auto &owner: texture.layerOwners)
+                                        if (owner)
+                                            entry.cpuSources.push_back(owner);
                                     entry.image = scratch;
                                     entry.used = ++assembledClock;
                                 }
@@ -2525,6 +2958,7 @@ void main() {
                     }
 
                     // Attachments: render in place, or start a direct image from a copy or CPU bytes.
+                    mark(4);
                     std::shared_ptr<ColorImage> color, depth;
                     VkImageLayout colorLayout = VK_IMAGE_LAYOUT_UNDEFINED, depthLayout = VK_IMAGE_LAYOUT_UNDEFINED;
                     if (hasColor) {
@@ -2556,7 +2990,7 @@ void main() {
                             depth = in.depthSource;
                             depthLayout = depth->initialized ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED;
                         } else {
-                            depth = createImage(draw.depth.width, draw.depth.height, depthVkFormat(draw.depth.format), true);
+                            depth = createImage(draw.depth.width, draw.depth.height, directDepthFormat(draw.depth.format), true);
                             depth->depthFormat = draw.depth.format;
                             if (depthCopy) {
                                 copyImage(command, *in.depthSource, *depth, true);
@@ -2569,15 +3003,33 @@ void main() {
                                 uploadImage(command, *depth, segment.buffer, offset, draw.depth.pitch, true);
                             }
                             depthLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                            if (stencilStorage(depth->format) && !depthCopy && !draw.depth.stencil.clear) {
+                                const auto offset = pushUpload(draw.depth.stencil.target.data(), draw.depth.stencil.target.size(), 0);
+                                VkBufferImageCopy copy{};
+                                copy.bufferOffset = offset;
+                                copy.bufferRowLength = draw.depth.pitch;
+                                copy.imageSubresource = {VK_IMAGE_ASPECT_STENCIL_BIT, 0, 0, 1};
+                                copy.imageExtent = {draw.depth.width, draw.depth.height, 1};
+                                vkCmdCopyBufferToImage(command, segment.buffer, depth->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+                            }
+                        }
+                        if (stencilStorage(depth->format) && draw.depth.stencil.clear) {
+                            imageBarrier(command, depth->image, depthAspects(depth->format), depthLayout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+                            const VkClearDepthStencilValue value{0, *draw.depth.stencil.clear};
+                            const VkImageSubresourceRange range{VK_IMAGE_ASPECT_STENCIL_BIT, 0, 1, 0, 1};
+                            vkCmdClearDepthStencilImage(command, depth->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &value, 1, &range);
+                            depthLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
                         }
                     }
+                    mark(5);
                     std::vector<VkImageMemoryBarrier> barriers;
                     const auto transition = [&](const ColorImage &image, bool depthAspect, VkImageLayout from, VkImageLayout to) {
                         VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
                         barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
                         barrier.image = image.image;
-                        barrier.subresourceRange = {VkImageAspectFlags(depthAspect ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT), 0, 1, 0,
-                                                    1};
+                        barrier.subresourceRange = {depthAspect || nativeDepthFormat(image.format) ? depthAspects(image.format)
+                                                                                                   : VkImageAspectFlags(VK_IMAGE_ASPECT_COLOR_BIT),
+                                                    0, 1, 0, 1};
                         barrier.oldLayout = from;
                         barrier.newLayout = to;
                         barrier.srcAccessMask = from == VK_IMAGE_LAYOUT_UNDEFINED ? 0 : VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT;
@@ -2597,10 +3049,11 @@ void main() {
                                              copiedVertices ? 1 : 0, &vertexCopy, 0, nullptr, unsigned(barriers.size()), barriers.data());
 
                     const auto pass = renderPass(hasColor ? colorVkFormat(draw.colorFormat) : VK_FORMAT_UNDEFINED,
-                                                 draw.depth.test ? depthVkFormat(draw.depth.format) : VK_FORMAT_UNDEFINED);
+                                                 draw.depth.test ? directDepthFormat(draw.depth.format) : VK_FORMAT_UNDEFINED);
                     Context::PipelineKey key{in.vertex.id, in.fragment.id, {}, draw.channelMask};
                     key.blend = blendKey(draw.blend);
                     key.depth = depthKey(draw.depth);
+                    key.depth[8] = unsigned(draw.depth.test && draw.depth.format == DepthFormat::UNorm24);
                     key.depthBias = draw.depthBias.enabled;
                     key.topology = unsigned(draw.topology);
                     key.colorFormat = unsigned(draw.colorFormat);
@@ -2613,6 +3066,7 @@ void main() {
                     }
                     const auto &pipeline = context.pipelineFor(key, in.vertex, in.fragment, draw, textureBindings, pass);
 
+                    mark(6);
                     const auto descriptor = allocateDescriptor(segment, pipeline.setLayout);
                     std::vector<VkWriteDescriptorSet> writes;
                     const VkDescriptorBufferInfo constantsInfo{segment.buffer, constantsOffset, sizeof(in.constants)};
@@ -2636,6 +3090,7 @@ void main() {
                         writes.push_back(write);
                     }
                     vkUpdateDescriptorSets(device, unsigned(writes.size()), writes.data(), 0, nullptr);
+                    mark(7);
 
                     if (continuesPass)
                         ++mergedDraws;
@@ -2704,14 +3159,29 @@ void main() {
                         vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0,
                                              nullptr, unsigned(barriers.size()), barriers.data());
 
+                    mark(8);
+                    const auto report = [&] {
+                        mark(9);
+                        if (!profile)
+                            return;
+                        const auto us = [&](unsigned first, unsigned last) {
+                            return std::chrono::duration_cast<std::chrono::microseconds>(marks[last] - marks[first]).count();
+                        };
+                        if (us(0, 9) >= 100)
+                            Utils::Log::error("[NATIVE_DIRECT_PROFILE] ps={:016X} total_us={} setup_us={} open_us={} uploads_us={} textures_us={} "
+                                              "attachments_us={} pipeline_us={} descriptors_us={} commands_us={} tickets_us={} textures={} "
+                                              "sampled={} merged={}",
+                                              draw.shader.sourceHash, us(0, 9), us(0, 1), us(1, 2), us(2, 3), us(3, 4), us(4, 5), us(5, 6), us(6, 7),
+                                              us(7, 8), us(8, 9), in.textures.size(), sampled.size(), continuesPass);
+                    };
                     RasterResult result;
                     if (depth) {
                         depth->initialized = true;
                         segment.retained.push_back(depth);
                         // A read-only draw that had to upload or copy its depth still returns the new
                         // image, so later draws find the surface resident instead of uploading again.
-                        if (draw.depth.write || !depthInPlace) {
-                            if (draw.depth.write)
+                        if (draw.depth.write || draw.depth.stencil.test || draw.depth.stencil.clear || !depthInPlace) {
+                            if (draw.depth.write || draw.depth.stencil.test || draw.depth.stencil.clear)
                                 ++depth->version;
                             const auto padding = depthPadding(draw.depth);
                             result.depthReadback = std::make_shared<RasterReadback>(
@@ -2719,6 +3189,21 @@ void main() {
                                     [self = shared_from_this(), image = depth, width = draw.depth.width, height = draw.depth.height,
                                      pitch = draw.depth.pitch, padding] { return self->read(image, true, width, height, pitch, padding); },
                                     std::make_shared<NativeImage>(depth, draw.depth.pitch, padding));
+                            if (stencilStorage(depth->format)) {
+                                auto stencilPadding = std::make_shared<std::vector<std::uint8_t>>();
+                                if (draw.depth.pitch > draw.depth.width && !draw.depth.stencil.target.empty())
+                                    for (unsigned y = 0; y < draw.depth.height; ++y) {
+                                        const auto rowPadding = draw.depth.stencil.target.subspan(
+                                                std::size_t(y) * draw.depth.pitch + draw.depth.width, draw.depth.pitch - draw.depth.width);
+                                        stencilPadding->insert(stencilPadding->end(), rowPadding.begin(), rowPadding.end());
+                                    }
+                                result.stencilReadback = std::make_shared<RasterReadback>(
+                                        draw.depth.stencil.target.size(),
+                                        [self = shared_from_this(), image = depth, width = draw.depth.width, height = draw.depth.height,
+                                         pitch = draw.depth.pitch,
+                                         stencilPadding] { return self->read(image, true, width, height, pitch, stencilPadding, true); },
+                                        std::make_shared<NativeImage>(depth, draw.depth.pitch, nullptr));
+                            }
                         }
                     }
                     if (++segment.draws >= drawsPerSegment)
@@ -2729,6 +3214,7 @@ void main() {
                         result.readback = draw.renderedTarget;
                         if (!result.readback)
                             result.unchangedTarget = draw.target.size();
+                        report();
                         return result;
                     }
                     color->initialized = true;
@@ -2752,6 +3238,7 @@ void main() {
                                 return self->read(image, false, width, height, pitch, padding);
                             },
                             std::make_shared<NativeImage>(color, draw.pitch, padding));
+                    report();
                     return result;
                 }
 
@@ -3034,6 +3521,19 @@ void main() {
 
                 std::shared_ptr<ColorImage> createImage(unsigned width, unsigned height, VkFormat format, bool depthAspect)
                 {
+                    for (auto &entry: targetImages)
+                        if (entry.image.use_count() == 1 && entry.image->width == width && entry.image->height == height &&
+                            entry.image->format == format) {
+                            // Segments retain every attachment until their completion fence has
+                            // passed. Readback tickets and texture consumers also retain it, so an
+                            // image owned only by this pool has no outstanding users.
+                            entry.used = ++targetImageClock;
+                            entry.image->initialized = false;
+                            entry.image->direct = true;
+                            ++entry.image->version;
+                            ++reusedTargetImages;
+                            return entry.image;
+                        }
                     auto image = std::make_shared<ColorImage>();
                     image->context = contextOwner;
                     image->width = width;
@@ -3060,8 +3560,25 @@ void main() {
                     view.image = image->image;
                     view.viewType = VK_IMAGE_VIEW_TYPE_2D;
                     view.format = format;
-                    view.subresourceRange = {VkImageAspectFlags(depthAspect ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT), 0, 1, 0, 1};
+                    view.subresourceRange = {depthAspect ? depthAspects(format) : VkImageAspectFlags(VK_IMAGE_ASPECT_COLOR_BIT), 0, 1, 0, 1};
                     check(vkCreateImageView(device, &view, nullptr, &image->attachmentView), "create direct attachment view");
+                    constexpr VkDeviceSize budget = VkDeviceSize{256} << 20;
+                    if (requirements.size <= budget) {
+                        while (targetImageBytes + requirements.size > budget) {
+                            auto oldest = targetImages.end();
+                            for (auto it = targetImages.begin(); it != targetImages.end(); ++it)
+                                if (it->image.use_count() == 1 && (oldest == targetImages.end() || it->used < oldest->used))
+                                    oldest = it;
+                            if (oldest == targetImages.end())
+                                break;
+                            targetImageBytes -= oldest->bytes;
+                            targetImages.erase(oldest);
+                        }
+                        if (targetImageBytes + requirements.size <= budget) {
+                            targetImages.push_back({image, requirements.size, ++targetImageClock});
+                            targetImageBytes += requirements.size;
+                        }
+                    }
                     return image;
                 }
                 void imageBarrier(VkCommandBuffer command, VkImage image, VkImageAspectFlags aspect, VkImageLayout from, VkImageLayout to,
@@ -3080,19 +3597,27 @@ void main() {
                 }
                 void copyImage(VkCommandBuffer command, const ColorImage &source, const ColorImage &destination, bool depthAspect)
                 {
-                    const VkImageAspectFlags aspect = depthAspect ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
-                    imageBarrier(command, destination.image, aspect, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-                    VkImageCopy copy{};
-                    copy.srcSubresource = copy.dstSubresource = {aspect, 0, 0, 1};
-                    copy.extent = {std::min(source.width, destination.width), std::min(source.height, destination.height), 1};
+                    const VkImageAspectFlags aspects = depthAspect ? depthAspects(destination.format) : VkImageAspectFlags(VK_IMAGE_ASPECT_COLOR_BIT);
+                    imageBarrier(command, destination.image, aspects, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+                    std::array<VkImageCopy, 2> copies{};
+                    copies[0].srcSubresource = copies[0].dstSubresource = {
+                            depthAspect ? VkImageAspectFlags(VK_IMAGE_ASPECT_DEPTH_BIT) : VkImageAspectFlags(VK_IMAGE_ASPECT_COLOR_BIT), 0, 0, 1};
+                    copies[0].extent = {std::min(source.width, destination.width), std::min(source.height, destination.height), 1};
+                    unsigned count = 1;
+                    if (depthAspect && stencilStorage(destination.format)) {
+                        copies[1] = copies[0];
+                        copies[1].srcSubresource.aspectMask = copies[1].dstSubresource.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
+                        count = 2;
+                    }
                     vkCmdCopyImage(command, source.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, destination.image,
-                                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+                                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, count, copies.data());
                 }
                 void uploadImage(VkCommandBuffer command, const ColorImage &destination, VkBuffer buffer, VkDeviceSize offset, unsigned pitch,
                                  bool depthAspect)
                 {
                     const VkImageAspectFlags aspect = depthAspect ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
-                    imageBarrier(command, destination.image, aspect, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+                    imageBarrier(command, destination.image, depthAspect ? depthAspects(destination.format) : aspect, VK_IMAGE_LAYOUT_UNDEFINED,
+                                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
                     VkBufferImageCopy copy{};
                     copy.bufferOffset = offset;
                     copy.bufferRowLength = pitch;
@@ -3115,7 +3640,7 @@ void main() {
                 // The depth counterpart of clearImage(): a stored (quantized) value, exact in D32.
                 void clearDepthImage(VkCommandBuffer command, const ColorImage &destination, float depth)
                 {
-                    imageBarrier(command, destination.image, VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                    imageBarrier(command, destination.image, depthAspects(destination.format), VK_IMAGE_LAYOUT_UNDEFINED,
                                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
                     const VkClearDepthStencilValue value{depth, 0};
                     const VkImageSubresourceRange range{VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
@@ -3139,8 +3664,10 @@ void main() {
                         copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, 0, layers};
                         copy.imageExtent = {std::max(1u, texture.width >> level), std::max(1u, texture.height >> level), depth};
                         copies.push_back(copy);
-                        // Multilevel snapshots are RGBA32F; single-level formats need no following offset.
-                        offset += VkDeviceSize(copy.imageExtent.width) * copy.imageExtent.height * depth * layers * 16;
+                        // Block-compressed tails still occupy a complete 4x4 block.
+                        const auto blockBytes = blockElementBytes(texture.format);
+                        offset += blockBytes ? VkDeviceSize((copy.imageExtent.width + 3) / 4) * ((copy.imageExtent.height + 3) / 4) * blockBytes
+                                             : VkDeviceSize(copy.imageExtent.width) * copy.imageExtent.height * depth * layers * 16;
                     }
                     vkCmdCopyBufferToImage(command, buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, unsigned(copies.size()), copies.data());
                     imageBarrier(command, image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -3170,7 +3697,7 @@ void main() {
                             continue;
                         }
                         const auto &source = texture.renderedLayers.empty() ? *texture.rendered : *texture.renderedLayers[entry];
-                        if (source.format == VK_FORMAT_D32_SFLOAT) {
+                        if (nativeDepthFormat(source.format)) {
                             const VkDeviceSize bytes = VkDeviceSize(width) * height * sizeof(float);
                             if (scratchCapacity < bytes) {
                                 destroyBuffer(scratchBuffer, scratchMemory);
@@ -3204,38 +3731,15 @@ void main() {
                                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, levels, layers);
                 }
 
-                std::vector<std::uint64_t> sharedKey(const DrawResources::Texture &texture) const
-                {
-                    // Same identity as DrawResources::cachedTexture, so both paths share uploads.
-                    std::vector<std::uint64_t> key{reinterpret_cast<std::uintptr_t>(texture.snapshotOwner.get()),
-                                                   reinterpret_cast<std::uintptr_t>(texture.snapshot.data()),
-                                                   texture.width,
-                                                   texture.height,
-                                                   texture.layers,
-                                                   unsigned(texture.format),
-                                                   texture.sourcePitch,
-                                                   unsigned(texture.components.r),
-                                                   unsigned(texture.components.g),
-                                                   unsigned(texture.components.b),
-                                                   unsigned(texture.components.a),
-                                                   unsigned(texture.array),
-                                                   unsigned(texture.volume),
-                                                   unsigned(texture.cube)};
-                    for (const auto mip: texture.mips) {
-                        key.push_back(reinterpret_cast<std::uintptr_t>(mip.data()));
-                        key.push_back(mip.size());
-                    }
-                    return key;
-                }
                 std::shared_ptr<CachedTexture> findSharedTexture(const DrawResources::Texture &texture)
                 {
-                    const auto key = sharedKey(texture);
-                    if (auto found = context.textures.find(key); found != context.textures.end() && found->second.value->ready) {
+                    const auto key = texture.cacheKey();
+                    if (auto found = context.textures.find(key.words()); found != context.textures.end() && found->second.value->ready) {
                         found->second.used = ++context.textureClock;
                         ++context.textureHits;
                         return found->second.value;
                     }
-                    if (const auto retained = context.retainedTextures.find(key); retained != context.retainedTextures.end())
+                    if (const auto retained = context.retainedTextures.find(key.words()); retained != context.retainedTextures.end())
                         if (auto value = retained->second.lock(); value && value->ready) {
                             ++context.textureHits;
                             return value;
@@ -3245,8 +3749,8 @@ void main() {
                 template<typename Upload>
                 std::shared_ptr<CachedTexture> createSharedTexture(const DrawResources::Texture &texture, Segment &segment, Upload &upload)
                 {
-                    auto key = sharedKey(texture);
-                    if (const auto found = context.textures.find(key); found != context.textures.end()) {
+                    auto key = texture.cacheKey();
+                    if (const auto found = context.textures.find(key.words()); found != context.textures.end()) {
                         context.textureBytes -= found->second.bytes;
                         context.textures.erase(found);
                     }
@@ -3255,7 +3759,8 @@ void main() {
                     auto result = std::make_shared<CachedTexture>();
                     result->device = device;
                     result->owner = texture.snapshotOwner;
-                    result->key = key;
+                    auto ownedKey = key.owned();
+                    result->key = ownedKey;
                     VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
                     info.imageType = texture.volume ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D;
                     info.flags = texture.cube ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0;
@@ -3290,12 +3795,12 @@ void main() {
                     result->bytes = bytes; // no staging copy is kept
                     result->usage = context.textureMemory;
                     result->usage->bytes.fetch_add(result->bytes, std::memory_order_relaxed);
-                    context.admitTexture(std::move(key), result);
+                    context.admitTexture(std::move(ownedKey), result);
                     return result;
                 }
 
-                // Shape plus (image, version) of every rendered source, or nothing when a layer comes
-                // from CPU bytes, whose buffers can change without a version.
+                // Shape and GPU image versions or immutable CPU readback identities. Raw CPU
+                // bytes without an owner cannot establish an unchanged assembled image.
                 static std::optional<std::vector<std::uint64_t>> assembledKey(const DrawResources::Texture &texture)
                 {
                     std::vector<std::uint64_t> key{texture.width,
@@ -3309,10 +3814,14 @@ void main() {
                                                            unsigned(texture.components.b) << 16 | std::uint64_t(texture.components.a) << 24};
                     if (texture.rendered)
                         key.insert(key.end(), {reinterpret_cast<std::uintptr_t>(texture.rendered.get()), texture.rendered->version});
-                    for (const auto &layer: texture.renderedLayers) {
-                        if (!layer)
+                    for (std::size_t i = 0; i < texture.renderedLayers.size(); ++i) {
+                        const auto &layer = texture.renderedLayers[i];
+                        if (layer)
+                            key.insert(key.end(), {1, reinterpret_cast<std::uintptr_t>(layer.get()), layer->version});
+                        else if (i < texture.layerOwners.size() && texture.layerOwners[i])
+                            key.insert(key.end(), {2, reinterpret_cast<std::uintptr_t>(texture.layerOwners[i].get()), 0});
+                        else
                             return std::nullopt;
-                        key.insert(key.end(), {reinterpret_cast<std::uintptr_t>(layer.get()), layer->version});
                     }
                     return key;
                 }
@@ -3369,15 +3878,16 @@ void main() {
 
                 VkSampler sampler(const DrawResources::Texture &texture)
                 {
-                    const std::array<std::uint32_t, 9> key{unsigned(texture.filter),
-                                                           unsigned(texture.minFilter),
-                                                           unsigned(texture.mipFilter),
-                                                           std::bit_cast<std::uint32_t>(texture.minLod),
-                                                           std::bit_cast<std::uint32_t>(texture.maxLod),
-                                                           unsigned(texture.addressU),
-                                                           unsigned(texture.addressV),
-                                                           unsigned(texture.addressW),
-                                                           unsigned(texture.borderColor)};
+                    const std::array<std::uint32_t, 10> key{unsigned(texture.filter),
+                                                            unsigned(texture.minFilter),
+                                                            unsigned(texture.mipFilter),
+                                                            std::bit_cast<std::uint32_t>(texture.minLod),
+                                                            std::bit_cast<std::uint32_t>(texture.maxLod),
+                                                            std::bit_cast<std::uint32_t>(texture.lodBias),
+                                                            unsigned(texture.addressU),
+                                                            unsigned(texture.addressV),
+                                                            unsigned(texture.addressW),
+                                                            unsigned(texture.borderColor)};
                     if (const auto found = samplers.find(key); found != samplers.end())
                         return found->second;
                     VkSamplerCreateInfo info{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
@@ -3386,6 +3896,7 @@ void main() {
                     info.mipmapMode = texture.mipFilter;
                     info.minLod = texture.minLod;
                     info.maxLod = texture.maxLod;
+                    info.mipLodBias = texture.lodBias;
                     info.addressModeU = texture.addressU;
                     info.addressModeV = texture.addressV;
                     info.addressModeW = texture.addressW;
@@ -3419,6 +3930,10 @@ void main() {
                     }
                     if (depthFormat != VK_FORMAT_UNDEFINED) {
                         depthReference.attachment = unsigned(attachments.size());
+                        if (stencilStorage(depthFormat)) {
+                            attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+                            attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_STORE;
+                        }
                         attachment.format = depthFormat;
                         attachment.initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
                         attachments.push_back(attachment);
@@ -3496,7 +4011,7 @@ void main() {
                 {
                     if (depth.rendered)
                         if (const auto native = std::dynamic_pointer_cast<const NativeImage>(depth.rendered->image());
-                            native && native->storage->format == depthVkFormat(depth.format))
+                            native && native->storage->format == directDepthFormat(depth.format))
                             return native->padding;
                     if (depth.pitch == depth.width)
                         return {};
@@ -3508,11 +4023,12 @@ void main() {
                 }
 
                 std::vector<std::uint8_t> read(const std::shared_ptr<ColorImage> &image, bool depthAspect, unsigned width, unsigned height,
-                                               unsigned pitch, const std::shared_ptr<const std::vector<std::uint8_t>> &padding)
+                                               unsigned pitch, const std::shared_ptr<const std::vector<std::uint8_t>> &padding,
+                                               bool stencilAspect = false)
                 {
                     Profile::Scope reading(Profile::Stage::Readback);
                     submit();
-                    const auto elementBytes = depthAspect ? sizeof(float) : imageElementBytes(image->format);
+                    const auto elementBytes = stencilAspect ? 1 : depthAspect ? sizeof(float) : imageElementBytes(image->format);
                     const VkDeviceSize bytes = VkDeviceSize(pitch) * height * elementBytes;
                     context.wait(readbackFence);
                     if (readbackCapacity < bytes) {
@@ -3541,7 +4057,10 @@ void main() {
                     check(vkBeginCommandBuffer(readbackCommand, &begin), "begin direct readback");
                     VkBufferImageCopy copy{};
                     copy.bufferRowLength = pitch;
-                    copy.imageSubresource = {VkImageAspectFlags(depthAspect ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT), 0, 0, 1};
+                    copy.imageSubresource = {VkImageAspectFlags(stencilAspect ? VK_IMAGE_ASPECT_STENCIL_BIT
+                                                                : depthAspect ? VK_IMAGE_ASPECT_DEPTH_BIT
+                                                                              : VK_IMAGE_ASPECT_COLOR_BIT),
+                                             0, 0, 1};
                     copy.imageExtent = {width, height, 1};
                     vkCmdCopyImageToBuffer(readbackCommand, image->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readbackBuffer, 1, &copy);
                     VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
@@ -3593,6 +4112,14 @@ void main() {
                 }
                 std::size_t current{};
                 std::uint64_t renderedDraws{};
+                struct TargetImage {
+                        std::shared_ptr<ColorImage> image;
+                        VkDeviceSize bytes{};
+                        std::uint64_t used{};
+                };
+                std::vector<TargetImage> targetImages;
+                VkDeviceSize targetImageBytes{};
+                std::uint64_t targetImageClock{}, reusedTargetImages{};
                 VkCommandPool readbackPool{};
                 VkCommandBuffer readbackCommand{};
                 std::shared_ptr<Context::BatchFence> readbackFence;
@@ -3603,13 +4130,14 @@ void main() {
                 VkBuffer scratchBuffer{};
                 VkDeviceMemory scratchMemory{};
                 VkDeviceSize scratchCapacity{};
-                std::map<std::array<std::uint32_t, 9>, VkSampler> samplers;
+                std::map<std::array<std::uint32_t, 10>, VkSampler> samplers;
                 std::map<std::pair<VkFormat, VkFormat>, VkRenderPass> passes;
                 std::map<std::tuple<VkRenderPass, VkImageView, VkImageView, unsigned, unsigned>, FramebufferEntry> framebuffers;
                 std::size_t framebufferPurgeAt{1024};
                 std::map<std::array<std::uint64_t, 10>, std::vector<std::shared_ptr<ScratchTexture>>> scratchTextures;
                 struct AssembledTexture {
                         std::vector<std::weak_ptr<ColorImage>> sources; // expired: the key's addresses may be reused
+                        std::vector<std::weak_ptr<const void>> cpuSources;
                         std::shared_ptr<ScratchTexture> image;
                         std::uint64_t used{};
                 };
@@ -3642,6 +4170,7 @@ void main() {
             SpirvCompiler compiler{SpirvCompiler::defaultCacheDirectory()};
             std::shared_ptr<Context> context;
             std::shared_ptr<DirectRenderer> direct; // destroyed before the context it shares
+            std::unique_ptr<StreamOutResources> streamOutput;
             // Compiled modules by lowered-source hash and source variant (see renderImpl).
             std::unordered_map<std::uint64_t, std::shared_ptr<const SpirvModule>> modules;
             struct ResourceEntry {
@@ -3685,6 +4214,7 @@ void main() {
     std::uint64_t VulkanRasterBackend::targetClears() const noexcept { return m_impl->context ? m_impl->context->targetClears : 0; }
     std::uint64_t VulkanRasterBackend::depthClears() const noexcept { return m_impl->context ? m_impl->context->depthClears : 0; }
     std::uint64_t VulkanRasterBackend::mergedRenderPasses() const noexcept { return m_impl->direct ? m_impl->direct->passMerges() : 0; }
+    std::uint64_t VulkanRasterBackend::reusedTargetImages() const noexcept { return m_impl->direct ? m_impl->direct->imageReuses() : 0; }
     std::uint64_t VulkanRasterBackend::targetCopyTransfers() const noexcept { return m_impl->context ? m_impl->context->targetCopyTransfers : 0; }
     std::uint64_t VulkanRasterBackend::fullOverwriteDraws() const noexcept { return m_impl->context ? m_impl->context->fullOverwriteDraws : 0; }
     std::uint64_t VulkanRasterBackend::residentTargetCopies() const noexcept { return m_impl->residentTargetCopies; }
@@ -3717,6 +4247,61 @@ void main() {
     std::uint64_t VulkanRasterBackend::sharedTextureBytes() const noexcept
     {
         return m_impl->context ? m_impl->context->textureMemory->bytes.load(std::memory_order_relaxed) : 0;
+    }
+
+    std::optional<StreamOutResult> VulkanRasterBackend::streamOut(const StreamOutDraw &draw)
+    {
+        if (auto result = streamOutDeferred(draw))
+            return result->resolve();
+        return std::nullopt;
+    }
+
+    std::shared_ptr<StreamOutReadback> VulkanRasterBackend::streamOutDeferred(const StreamOutDraw &draw)
+    {
+        Profile::Scope work(Profile::Stage::NativeDraw);
+        m_impl->error.clear();
+        const auto reject = [&](std::string_view reason) -> std::shared_ptr<StreamOutReadback> {
+            m_impl->error = reason;
+            return {};
+        };
+        if (!draw.shader || !draw.shader.streamBufferMask || (draw.shader.streamBufferMask & ~15u) || !draw.shader.textures.empty() || !draw.count ||
+            draw.count > 65536 || draw.inputCount > 16 || draw.attributes.size() != std::size_t(draw.count) * draw.inputCount ||
+            draw.registers.size() > 1024 || draw.uniforms.size() != draw.shader.uniforms.size() * 4 ||
+            draw.uniforms.size() > std::size_t(Latte::kUniformVectors) * 4)
+            return reject("Unsupported stream output inputs");
+        std::uint64_t bytes{};
+        for (unsigned i = 0; i < 4; ++i) {
+            bytes += draw.buffers[i].size();
+            if (draw.buffers[i].size() % 4 ||
+                ((draw.shader.streamBufferMask & (1u << i)) &&
+                 (!draw.shader.streamStrides[i] || std::uint64_t(draw.count) * draw.shader.streamStrides[i] != draw.buffers[i].size())))
+                return reject("Incomplete stream output buffer");
+        }
+        if (bytes > 64ull * 1024 * 1024)
+            return reject("Stream output budget exceeded");
+        const auto module = m_impl->compiler.compile(ShaderStage::Compute, draw.shader.source);
+        if (!*module)
+            return reject(module->error);
+        if (!m_impl->context) {
+            auto context = std::make_shared<Context>();
+            context->initialize();
+            m_impl->context = std::move(context);
+        }
+        if (!m_impl->context->computeQueue)
+            return reject("Graphics queue does not support compute");
+        VkPhysicalDeviceProperties properties{};
+        vkGetPhysicalDeviceProperties(m_impl->context->physical, &properties);
+        if (properties.limits.maxUniformBufferRange < Latte::kStageConstantFloats * sizeof(float) ||
+            properties.limits.maxStorageBufferRange < std::max<std::uint64_t>(bytes, draw.attributes.size_bytes()))
+            return reject("Stream output exceeds device buffer limits");
+        if (m_impl->direct)
+            m_impl->direct->submit();
+        if (!m_impl->streamOutput) {
+            auto resources = std::make_unique<StreamOutResources>(m_impl->context);
+            resources->initialize();
+            m_impl->streamOutput = std::move(resources);
+        }
+        return m_impl->streamOutput->run(draw, *module);
     }
 
     std::optional<RasterResult> VulkanRasterBackend::renderImpl(const RasterDraw &inputDraw, bool deferReadback)
@@ -3778,7 +4363,8 @@ void main() {
                 return reject("Nonfinite vertex position");
         if (draw.renderedTarget && draw.renderedTarget->size() != draw.target.size())
             return reject("Invalid rendered target size");
-        if (!vertices || (!draw.channelMask && !(draw.depth.test && draw.depth.write)) || draw.scissor[2] <= 0 || draw.scissor[3] <= 0) {
+        if (!vertices || (!draw.channelMask && !(draw.depth.test && (draw.depth.write || draw.depth.stencil.test))) || draw.scissor[2] <= 0 ||
+            draw.scissor[3] <= 0) {
             RasterResult result;
             if (deferReadback) {
                 // Nothing is drawn: keep the target's current version. Resolving it waited for the
@@ -3819,11 +4405,11 @@ void main() {
             const auto compressedFormat = blockVkFormat(texture.blockFormat);
             const bool compressed = texture.blockFormat != TextureBlockFormat::None;
             if ((!compressed && !texture.blocks.empty()) ||
-                (compressed && (compressedFormat == VK_FORMAT_UNDEFINED || array || !texture.mips.empty() || texture.rendered ||
-                                !texture.unorm8.empty() || !texture.rgba32.empty() || !texture.r32.empty() || !texture.r32Bytes.empty() ||
-                                !texture.rgba32Bytes.empty() || !texture.r11g11b10Bytes.empty() ||
-                                texture.blocks.size() !=
-                                        std::uint64_t((texture.width + 3) / 4) * ((texture.height + 3) / 4) * blockElementBytes(compressedFormat))))
+                (compressed &&
+                 (compressedFormat == VK_FORMAT_UNDEFINED || array || texture.rendered || !texture.unorm8.empty() || !texture.rgba32.empty() ||
+                  !texture.r32.empty() || !texture.r32Bytes.empty() || !texture.rgba32Bytes.empty() || !texture.r11g11b10Bytes.empty() ||
+                  texture.blocks.size() !=
+                          std::uint64_t((texture.width + 3) / 4) * ((texture.height + 3) / 4) * blockElementBytes(compressedFormat))))
                 return reject("Invalid compressed base texture snapshot");
             if (cube && (texture.width != texture.height || texture.layers % 6))
                 return reject("Invalid cube texture dimensions or face count");
@@ -3877,17 +4463,22 @@ void main() {
                  texture.r32Pitch < texture.width || std::uint64_t(texture.r32Pitch) * texture.height * texture.layers * 4 > texture.r32Bytes.size()))
                 return reject("Invalid little-endian R32 texture snapshot");
             const auto r = texture.sampler.regs[0];
-            if (!texture.mips.empty() && (texture.rgba32.empty() || texture.rendered || binding.type == Latte::TextureType::ThreeD ||
-                                          texture.mips.size() >= std::bit_width(std::max(texture.width, texture.height)) || texture.mips.size() > 13))
+            if (!texture.mips.empty() &&
+                ((!compressed && texture.rgba32.empty()) || texture.rendered || binding.type == Latte::TextureType::ThreeD ||
+                 texture.mips.size() >= std::bit_width(std::max(texture.width, texture.height)) || texture.mips.size() > kMaxTextureMips))
                 return reject("Unsupported mip chain snapshot");
             for (unsigned level = 0; level < texture.mips.size(); ++level) {
                 const auto &mip = texture.mips[level];
                 if (mip.width != std::max(1u, texture.width >> (level + 1)) || mip.height != std::max(1u, texture.height >> (level + 1)) ||
-                    mip.rgba32.size() != std::uint64_t(mip.width) * mip.height * texture.layers * 4)
+                    (compressed ? !mip.rgba32.empty() || mip.blocks.size() != std::uint64_t((mip.width + 3) / 4) * ((mip.height + 3) / 4) *
+                                                                                      blockElementBytes(compressedFormat)
+                                : !mip.blocks.empty() || mip.rgba32.size() != std::uint64_t(mip.width) * mip.height * texture.layers * 4))
                     return reject("Incomplete mip chain snapshot");
-                textureBytes += mip.rgba32.size_bytes();
+                textureBytes += mip.rgba32.size_bytes() + mip.blocks.size_bytes();
             }
             const auto extraLevels = std::max<std::size_t>(texture.mips.size(), texture.renderedLevels - 1);
+            if (found->derivativeLod && (((r >> 12) & 7) > 1 || ((r >> 17) & 3) > 2))
+                return reject("Unsupported implicit minification or mip filter");
             if (found->explicitLod && (((r >> 12) & 7) > 1 || ((r >> 17) & 3) > 2 ||
                                        (((r >> 17) & 3) && (!texture.sourceMipCount || extraLevels + 1 < texture.sourceMipCount))))
                 return reject("Explicit LOD requires the complete texture view and supported filters");
@@ -3907,8 +4498,6 @@ void main() {
                 // channels that read a component must agree with the unmapped border.
                 for (unsigned c = 0; c < 4; ++c) {
                     auto selector = (map >> (24 - c * 8)) & 7;
-                    if (texture.blockFormat == TextureBlockFormat::BC4 && selector < 4)
-                        selector = 0; // Preserve the reference's luminance/alpha expansion.
                     if (selector < 4 && border[selector] != border[c])
                         return false;
                 }
@@ -3947,6 +4536,10 @@ void main() {
             const auto *value = std::getenv("WEMU_NATIVE_TIMING");
             return value && value[0] == '1';
         }();
+        static const bool directProfile = [] {
+            const auto *setting = std::getenv("WEMU_NATIVE_DIRECT_PROFILE");
+            return setting && setting[0] == '1';
+        }();
         const auto t0 = std::chrono::steady_clock::now();
         const bool overwriteTarget = overwritesTarget(draw);
         // Modules of lowered shaders are found by their precomputed source hash and the draw's
@@ -3977,6 +4570,17 @@ void main() {
         }();
         // GPU timing uses bundle queries.
         const bool direct = directDraws && m_impl->directDraws && !gpuTiming && deferReadback && m_impl->lazyReadback;
+        if (draw.depth.stencil.test && (!direct || !draw.depth.test || draw.depth.format != DepthFormat::UNorm24))
+            return reject("Stencil requires the direct UNORM24 depth/stencil path");
+        std::vector<std::uint8_t> initialStencil;
+        if (direct && draw.depth.test && draw.depth.format == DepthFormat::UNorm24 && draw.depth.stencil.target.empty() && !draw.depth.stencil.test) {
+            initialStencil.resize(std::size_t(draw.depth.pitch) * draw.depth.height);
+            draw.depth.stencil.target = initialStencil;
+        }
+        if (direct && draw.depth.test && draw.depth.format == DepthFormat::UNorm24 &&
+            draw.depth.stencil.target.size() != std::size_t(draw.depth.pitch) * draw.depth.height)
+            return reject("Missing canonical stencil storage");
+
         const auto *vertexShader = draw.vertexStage.shader.get();
         const auto vertex = cachedModule(vertexShader ? vertexShader->sourceHash ? mixKey(0x5653, vertexShader->sourceHash) : 0 : 0x5650,
                                          [&]() -> std::shared_ptr<const SpirvModule> {
@@ -4069,15 +4673,14 @@ void main() {
                                                         [](const auto &texture) { return texture.binding.type == Latte::TextureType::Cube; }))
             return reject("Device lacks cube array sampling support");
         {
-            VkFormatProperties properties{};
-            vkGetPhysicalDeviceFormatProperties(m_impl->context->physical, colorVkFormat(draw.colorFormat), &properties);
+            const auto &properties = m_impl->context->formatProperties(colorVkFormat(draw.colorFormat));
             const auto required = VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | (draw.blend.enabled ? VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT : 0);
             if ((properties.optimalTilingFeatures & required) != required)
                 return reject("Device lacks target attachment/blending support");
         }
         if (draw.depth.test) {
-            VkFormatProperties properties{};
-            vkGetPhysicalDeviceFormatProperties(m_impl->context->physical, depthVkFormat(draw.depth.format), &properties);
+            const auto &properties =
+                    m_impl->context->formatProperties(direct ? directDepthFormat(draw.depth.format) : depthVkFormat(draw.depth.format));
             if (!(properties.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT))
                 return reject("Device lacks the requested depth attachment format");
             if (draw.depth.format != DepthFormat::Float32 && draw.depth.write && !m_impl->context->computeQueue)
@@ -4089,7 +4692,8 @@ void main() {
             const auto native = std::dynamic_pointer_cast<const NativeImage>(draw.depth.rendered->image());
             if (native && native->storage->context == m_impl->context && native->storage->version == native->version &&
                 native->storage->width == draw.depth.width && native->storage->height == draw.depth.height &&
-                native->storage->format == depthVkFormat(draw.depth.format) && native->storage->depthFormat == draw.depth.format)
+                native->storage->format == (direct ? directDepthFormat(draw.depth.format) : depthVkFormat(draw.depth.format)) &&
+                native->storage->depthFormat == draw.depth.format)
                 depthSource = native->storage;
             else {
                 const auto &bytes = draw.depth.rendered->resolve();
@@ -4098,12 +4702,30 @@ void main() {
                 draw.depth.target = resolvedDepth;
             }
         }
+        if (depthSource && stencilStorage(depthSource->format) && !draw.depth.stencil.clear) {
+            const auto stencil =
+                    draw.depth.stencil.rendered ? std::dynamic_pointer_cast<const NativeImage>(draw.depth.stencil.rendered->image()) : nullptr;
+            if (!stencil || stencil->storage != depthSource || stencil->version != depthSource->version) {
+                const auto &bytes = draw.depth.rendered->resolve();
+                resolvedDepth.resize(draw.depth.target.size());
+                std::memcpy(resolvedDepth.data(), bytes.data(), bytes.size());
+                draw.depth.target = resolvedDepth;
+                depthSource.reset();
+            }
+        }
+        std::vector<std::uint8_t> resolvedStencil;
+        if (direct && draw.depth.test && draw.depth.format == DepthFormat::UNorm24 && !depthSource && draw.depth.stencil.rendered &&
+            !draw.depth.stencil.clear) {
+            resolvedStencil = draw.depth.stencil.rendered->resolve();
+            draw.depth.stencil.target = resolvedStencil;
+        }
         // Only direct draws clear their depth image on the GPU; the other paths upload values.
         if (draw.depth.test && draw.depth.clear && !direct) {
             resolvedDepth = clearedDepth(draw.depth, *draw.depth.clear);
             draw.depth.target = resolvedDepth;
             draw.depth.clear.reset();
         }
+        const auto depthInputsEnd = directProfile ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
         std::shared_ptr<ColorImage> targetSource;
         std::shared_ptr<const NativeImage> targetSnapshot;
         std::optional<std::array<float, 4>> targetClear;
@@ -4120,7 +4742,9 @@ void main() {
             else
                 draw.target = draw.renderedTarget->resolve();
         }
+        const auto targetInputsEnd = directProfile ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
         std::vector<DrawResources::Texture> textures;
+        textures.reserve(draw.textures.size());
         std::vector<std::vector<std::uint8_t>> packedLayers; // CPU snapshots of non-resident array layers
         for (const auto &input: draw.textures) {
             auto texture = input;
@@ -4129,7 +4753,8 @@ void main() {
                 const auto native = std::dynamic_pointer_cast<const NativeImage>(texture.rendered->image());
                 if (native && native->storage->context == m_impl->context && native->storage->version == native->version &&
                     native->storage->width == texture.width && native->storage->height == texture.height &&
-                    native->storage->format == (texture.renderedDepth ? VK_FORMAT_D32_SFLOAT : colorVkFormat(texture.renderedFormat)))
+                    (texture.renderedDepth ? nativeDepthFormat(native->storage->format)
+                                           : native->storage->format == colorVkFormat(texture.renderedFormat)))
                     resident = native->storage;
                 if (texture.renderedDepth) {
                     texture.r32Bytes = resident ? std::span<const std::uint8_t>{} : texture.rendered->resolve();
@@ -4165,7 +4790,8 @@ void main() {
                         const auto native = std::dynamic_pointer_cast<const NativeImage>(texture.renderedLayers[entry]->image());
                         if (native && native->storage->context == m_impl->context && native->storage->version == native->version &&
                             native->storage->width == std::max(1u, texture.width >> level) &&
-                            native->storage->height == std::max(1u, texture.height >> level) && native->storage->format == layerFormat) {
+                            native->storage->height == std::max(1u, texture.height >> level) &&
+                            (texture.renderedDepth ? nativeDepthFormat(native->storage->format) : native->storage->format == layerFormat)) {
                             residentLayers.push_back(native->storage);
                             layerBytes.emplace_back();
                         } else if (texture.renderedLevels > 1)
@@ -4222,10 +4848,9 @@ void main() {
                                        : texture.unorm8Channels == 1                       ? VK_FORMAT_R8_UNORM
                                        : texture.unorm8Channels == 2                       ? VK_FORMAT_R8G8_UNORM
                                                                                            : VK_FORMAT_R8G8B8A8_UNORM;
-            VkFormatProperties format{};
-            vkGetPhysicalDeviceFormatProperties(m_impl->context->physical, textureFormat, &format);
+            const auto &format = m_impl->context->formatProperties(textureFormat);
             const auto r = texture.sampler.regs[0];
-            const bool linear = ((r >> 9) & 7) == 1 || (texture.binding.explicitLod && ((r >> 12) & 7) == 1);
+            const bool linear = ((r >> 9) & 7) == 1 || ((texture.binding.explicitLod || texture.binding.derivativeLod) && ((r >> 12) & 7) == 1);
             if (!(format.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) ||
                 (linear && !(format.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT)))
                 return reject("Host cannot sample float texture with requested filter");
@@ -4251,10 +4876,18 @@ void main() {
             uploaded.borderColor = borderColors[(r >> 22) & 3];
             uploaded.filter = linear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
             uploaded.minFilter = uploaded.filter;
+            uploaded.mips.reserve(texture.mips.size());
             for (const auto &mip: texture.mips)
-                uploaded.mips.push_back(mip.rgba32);
-            if (texture.binding.explicitLod) {
+                uploaded.mips.push_back(compressedFormat != VK_FORMAT_UNDEFINED ? std::as_bytes(mip.blocks) : std::as_bytes(mip.rgba32));
+            if (texture.binding.explicitLod || texture.binding.derivativeLod) {
+                uploaded.filter = ((r >> 9) & 7) ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
                 uploaded.minFilter = ((r >> 12) & 7) ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
+                if (texture.binding.derivativeLod) {
+                    const int bias = int(texture.sampler.regs[1]) >> 20;
+                    uploaded.lodBias = float(bias) / 64.f;
+                    if (std::abs(uploaded.lodBias) > m_impl->context->maxSamplerLodBias)
+                        return reject("Sampler LOD bias exceeds the host device limit");
+                }
                 uploaded.mipFilter = ((r >> 17) & 3) == 2 ? VK_SAMPLER_MIPMAP_MODE_LINEAR : VK_SAMPLER_MIPMAP_MODE_NEAREST;
                 if ((r >> 17) & 3) {
                     const auto extraLevels = std::max<std::size_t>(texture.mips.size(), texture.renderedLevels - 1);
@@ -4264,6 +4897,12 @@ void main() {
             }
             uploaded.rendered = resident;
             uploaded.renderedLayers = std::move(residentLayers);
+            if (!uploaded.renderedLayers.empty()) {
+                uploaded.layerOwners.resize(uploaded.renderedLayers.size());
+                for (std::size_t i = 0; i < uploaded.layerOwners.size(); ++i)
+                    if (!uploaded.renderedLayers[i])
+                        uploaded.layerOwners[i] = texture.renderedLayers[i];
+            }
             uploaded.layerBytes = std::move(layerBytes);
             uploaded.layerPitch = std::size_t(texture.unorm8Pitch) * (texture.renderedDepth ? 4u : colorElementBytes(texture.renderedFormat));
             uploaded.renderedLevels = uploaded.renderedLayers.empty() ? 1u : texture.renderedLevels;
@@ -4272,8 +4911,6 @@ void main() {
                     constexpr VkComponentSwizzle channels[]{VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G,    VK_COMPONENT_SWIZZLE_B,
                                                             VK_COMPONENT_SWIZZLE_A, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ONE};
                     auto selector = (texture.unorm8Map >> (24 - c * 8)) & 7;
-                    if (texture.blockFormat == TextureBlockFormat::BC4 && selector < 4)
-                        selector = 0;
                     return channels[selector < 6 ? selector : 4];
                 };
                 uploaded.components = {channel(0), channel(1), channel(2), channel(3)};
@@ -4346,6 +4983,7 @@ void main() {
         }
         // Layout: registers [0, 1024), sampler borders and modes [1024, 1152), static uniform-block
         // references from 1152. Values past the references are never read, so they stay unset.
+        const auto textureInputsEnd = directProfile ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
         std::array<float, Latte::kStageConstantFloats> constants, vertexConstants;
         const auto constantFloats = std::min<std::size_t>(constants.size(), std::max(draw.constants.size(), 1152 + draw.uniforms.size()));
         const auto vertexConstantFloats =
@@ -4395,9 +5033,20 @@ void main() {
         if (direct) {
             if (!m_impl->direct)
                 m_impl->direct = std::make_shared<DirectRenderer>(m_impl->context);
+            const auto started = directProfile ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
             auto result =
                     m_impl->direct->render({draw, *vertex, *fragment, constants, vertexConstants, constantFloats, vertexConstantFloats, textures,
                                             targetSource, targetSnapshot, depthSource, overwriteTarget, draw.supersedesTarget, targetClear});
+            if (directProfile) {
+                const auto end = std::chrono::steady_clock::now();
+                const auto us = [](auto first, auto last) { return std::chrono::duration_cast<std::chrono::microseconds>(last - first).count(); };
+                if (us(t0, end) >= 100)
+                    Utils::Log::error("[NATIVE_BACKEND_PROFILE] ps={:016X} total_us={} modules_us={} context_us={} inputs_us={} direct_us={} "
+                                      "depth_us={} target_us={} textures_us={} constants_us={}",
+                                      draw.shader.sourceHash, us(t0, end), us(t0, t1), us(t1, t2), us(t2, started), us(started, end),
+                                      us(t2, depthInputsEnd), us(depthInputsEnd, targetInputsEnd), us(targetInputsEnd, textureInputsEnd),
+                                      us(textureInputsEnd, started));
+            }
             ++m_impl->completed;
             return result;
         }
@@ -4435,6 +5084,8 @@ void main() {
                                     std::uint64_t(key.indexCapacity) * sizeof(std::uint32_t) + sizeof(constants) +
                                     (draw.vertexStage.shader ? sizeof(vertexConstants) : 0) +
                                     (draw.depth.test ? draw.depth.target.size_bytes() * 3 : 0);
+        key.pipeline.bindings.reserve(textures.size());
+        key.textureShape.reserve(textures.size() * 23);
         for (const auto &texture: textures) {
             key.pipeline.bindings.push_back(texture.binding);
             key.textureShape.insert(key.textureShape.end(), {texture.width,
@@ -4458,6 +5109,7 @@ void main() {
                                                              unsigned(texture.mipFilter),
                                                              std::bit_cast<unsigned>(texture.minLod),
                                                              std::bit_cast<unsigned>(texture.maxLod),
+                                                             std::bit_cast<unsigned>(texture.lodBias),
                                                              unsigned(texture.snapshotOwner && !texture.snapshot.empty() && !texture.rendered)});
         }
         const auto t3 = std::chrono::steady_clock::now();

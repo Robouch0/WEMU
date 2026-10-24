@@ -115,14 +115,7 @@ namespace {
     // ---- OSCond / rendezvous / thread queues ---------------------------------
 
     void hle_OSInitCond(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
-    void hle_OSWaitCond(Core::Interpreter &cpu)
-    {
-        // The guest holds the mutex (our mutexes are no-ops); spurious wakeups are legal for
-        // condition variables, so waking without the predicate is safe -- callers re-check in a loop.
-        // After a switch the live registers belong to the next thread -- don't touch them.
-        if (!cpu.m_scheduler.blockOn(cpu, cpu.m_gpr[3]))
-            cpu.m_gpr[3] = 0;
-    }
+    void hle_OSWaitCond(Core::Interpreter &cpu) { cpu.m_scheduler.waitCondition(cpu, cpu.m_gpr[3], cpu.m_gpr[4]); }
     void hle_OSSignalCond(Core::Interpreter &cpu)
     {
         cpu.m_scheduler.wakeAll(cpu.m_gpr[3]);
@@ -159,6 +152,51 @@ namespace {
     }
     void hle_OSInitThreadQueue(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
     void hle_OSInitThreadQueueEx(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
+
+    // ---- OSSemaphore ----------------------------------------------------------
+    void initSemaphore(Core::Interpreter &cpu, bool named)
+    {
+        const auto address = cpu.m_gpr[3], count = cpu.m_gpr[4];
+        const auto name = named ? cpu.m_gpr[5] : 0;
+        for (unsigned offset = 0; offset < 0x20; offset += 4)
+            cpu.m_memory.write<unsigned>(address + offset, 0);
+        cpu.m_memory.write<unsigned>(address, 0x73506852);
+        cpu.m_memory.write<unsigned>(address + 4, name);
+        cpu.m_memory.write<unsigned>(address + 12, count);
+        cpu.m_gpr[3] = 0;
+    }
+    void hle_OSInitSemaphore(Core::Interpreter &cpu) { initSemaphore(cpu, false); }
+    void hle_OSInitSemaphoreEx(Core::Interpreter &cpu) { initSemaphore(cpu, true); }
+    void hle_OSGetSemaphoreCount(Core::Interpreter &cpu) { cpu.m_gpr[3] = cpu.m_memory.read<unsigned>(cpu.m_gpr[3] + 12); }
+    void hle_OSTryWaitSemaphore(Core::Interpreter &cpu)
+    {
+        const auto address = cpu.m_gpr[3];
+        const auto count = cpu.m_memory.read<std::int32_t>(address + 12);
+        if (count > 0)
+            cpu.m_memory.write<std::int32_t>(address + 12, count - 1);
+        cpu.m_gpr[3] = count;
+    }
+    void hle_OSWaitSemaphore(Core::Interpreter &cpu)
+    {
+        const auto address = cpu.m_gpr[3];
+        if (cpu.m_memory.read<std::int32_t>(address + 12) > 0) {
+            hle_OSTryWaitSemaphore(cpu);
+            return;
+        }
+        if (!cpu.m_scheduler.blockOn(cpu, address, true)) {
+            cpu.m_nextPc = cpu.m_pc;
+            cpu.m_hle_redirected = true;
+        }
+    }
+    void hle_OSSignalSemaphore(Core::Interpreter &cpu)
+    {
+        const auto address = cpu.m_gpr[3], count = cpu.m_memory.read<unsigned>(address + 12);
+        cpu.m_memory.write<unsigned>(address + 12, count + 1);
+        cpu.m_gpr[3] = count;
+        if (static_cast<std::int32_t>(count + 1) > 0)
+            cpu.m_scheduler.wakeOne(address);
+        cpu.m_scheduler.rescheduleAfterHle(cpu);
+    }
 
     // ---- OSAlarm --------------------------------------------------------------
     // Store-only: alarms are registered but never fire (no timer interrupts in the cooperative
@@ -251,6 +289,36 @@ namespace {
         if (const std::uint8_t *p = cpu.m_memory.hostPtr(cpu.m_gpr[3]); p && size)
             std::fprintf(stderr, "[OSConsole] %.*s\n", static_cast<int>(size), reinterpret_cast<const char *>(p));
         cpu.m_gpr[3] = 0;
+    }
+
+    // DMA operations complete synchronously against shared guest RAM. A nonzero,
+    // monotonic completion timestamp preserves the DMAE caller's polling contract.
+    std::uint64_t g_dmaTimestamp{};
+    void hle_DMAECopyMem(Core::Interpreter &cpu)
+    {
+        const auto destination = cpu.m_gpr[3], source = cpu.m_gpr[4], mode = cpu.m_gpr[6];
+        const std::size_t bytes = std::uint64_t{cpu.m_gpr[5]} * 4;
+        if (bytes) {
+            const Core::Memory &memory = cpu.m_memory;
+            const auto *input = memory.hostPtr(source, bytes);
+            auto *output = cpu.m_memory.hostPtr(destination, bytes);
+            if (!input || !output || mode > 3)
+                throw Core::MemoryException("Invalid DMAECopyMem range or swap mode");
+            std::memmove(output, input, bytes);
+            if (mode) {
+                const std::size_t group = std::size_t{1} << mode;
+                for (std::size_t i = 0; i < bytes; i += group)
+                    std::reverse(output + i, output + std::min(i + group, bytes));
+            }
+        }
+        ++g_dmaTimestamp;
+        cpu.m_gpr[3] = static_cast<std::uint32_t>(g_dmaTimestamp >> 32);
+        cpu.m_gpr[4] = static_cast<std::uint32_t>(g_dmaTimestamp);
+    }
+    void hle_DMAEWaitDone(Core::Interpreter &cpu)
+    {
+        const auto timestamp = (std::uint64_t{cpu.m_gpr[3]} << 32) | cpu.m_gpr[4];
+        cpu.m_gpr[3] = timestamp <= g_dmaTimestamp;
     }
 
     // ---- UC (system config) / MCP ------------------------------------------------
@@ -447,7 +515,20 @@ namespace {
             inflateEnd(&zs.host);
         zs.host = z_stream{};
         zs.inflateMode = true;
-        cpu.m_gpr[3] = static_cast<std::uint32_t>(inflateInit2(&zs.host, static_cast<int>(cpu.m_gpr[4])));
+        const auto stream = cpu.m_gpr[3];
+        const auto result = inflateInit2(&zs.host, static_cast<int>(cpu.m_gpr[4]));
+        // state is opaque to the guest; the guest stream address keys our host-side state.
+        cpu.m_memory.write<std::uint32_t>(stream + 0x1C, result == Z_OK ? stream : 0);
+        cpu.m_memory.write<std::uint32_t>(stream + 0x08, 0);
+        cpu.m_memory.write<std::uint32_t>(stream + 0x14, 0);
+        cpu.m_memory.write<std::uint32_t>(stream + 0x18, 0);
+        cpu.m_memory.write<std::uint32_t>(stream + 0x30, static_cast<std::uint32_t>(zs.host.adler));
+        cpu.m_gpr[3] = static_cast<std::uint32_t>(result);
+    }
+    void hle_inflateInit_(Core::Interpreter &cpu)
+    {
+        cpu.m_gpr[4] = MAX_WBITS;
+        hle_inflateInit2_(cpu);
     }
     void hle_inflate(Core::Interpreter &cpu)
     {
@@ -468,6 +549,7 @@ namespace {
         if (auto it = g_zstreams.find(cpu.m_gpr[3]); it != g_zstreams.end()) {
             inflateEnd(&it->second.host);
             g_zstreams.erase(it);
+            cpu.m_memory.write<std::uint32_t>(cpu.m_gpr[3] + 0x1C, 0);
         }
         cpu.m_gpr[3] = Z_OK;
     }
@@ -698,6 +780,14 @@ void RegisterCoreinitExtraFunctions()
     sh.registerSyscall("OSInitThreadQueue", hle_OSInitThreadQueue);
     sh.registerSyscall("OSInitThreadQueueEx", hle_OSInitThreadQueueEx);
 
+    // OSSemaphore
+    sh.registerSyscall("OSInitSemaphore", hle_OSInitSemaphore);
+    sh.registerSyscall("OSInitSemaphoreEx", hle_OSInitSemaphoreEx);
+    sh.registerSyscall("OSGetSemaphoreCount", hle_OSGetSemaphoreCount);
+    sh.registerSyscall("OSWaitSemaphore", hle_OSWaitSemaphore);
+    sh.registerSyscall("OSTryWaitSemaphore", hle_OSTryWaitSemaphore);
+    sh.registerSyscall("OSSignalSemaphore", hle_OSSignalSemaphore);
+
     // OSAlarm
     sh.registerSyscall("OSCreateAlarm", hle_OSCreateAlarm);
     sh.registerSyscall("OSCreateAlarmEx", hle_OSCreateAlarmEx);
@@ -735,6 +825,8 @@ void RegisterCoreinitExtraFunctions()
     sh.registerSyscall("OSPanic", hle_OSPanic);
     sh.registerSyscall("OSVReport", hle_OSVReport);
     sh.registerSyscall("OSConsoleWrite", hle_OSConsoleWrite);
+    sh.registerSyscall("DMAECopyMem", hle_DMAECopyMem);
+    sh.registerSyscall("DMAEWaitDone", hle_DMAEWaitDone);
 
     // UC / MCP system config
     sh.registerSyscall("UCOpen", hle_UCOpen);
@@ -763,6 +855,7 @@ void RegisterCoreinitExtraFunctions()
 
     // zlib125.rpl
     sh.registerSyscall("inflateInit2_", hle_inflateInit2_);
+    sh.registerSyscall("inflateInit_", hle_inflateInit_);
     sh.registerSyscall("inflate", hle_inflate);
     sh.registerSyscall("inflateEnd", hle_inflateEnd);
     sh.registerSyscall("deflateInit2_", hle_deflateInit2_);

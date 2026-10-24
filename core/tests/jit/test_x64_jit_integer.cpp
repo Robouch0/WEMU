@@ -88,7 +88,7 @@ TEST_F(X64JitTest, SpecialRegisterMovesMatchInterpreter)
 {
     Random rng(16);
     const auto sprField = [](const unsigned spr) { return ((spr & 0x1F) << 5) | (spr >> 5); };
-    for (const unsigned spr: {1u, 8u, 9u, 912u, 915u, 919u, 22u, 1008u})
+    for (const unsigned spr: {1u, 8u, 9u, 896u, 899u, 903u, 912u, 915u, 919u, 22u, 1008u})
         for (int round = 0; round < kRounds / 4; ++round) {
             expectSameBlock(std::array{31u << 26 | reg(rng) << 21 | sprField(spr) << 11 | 339u << 1}, [&] { randomize(rng); }); // mfspr
             expectSameBlock(std::array{31u << 26 | reg(rng) << 21 | sprField(spr) << 11 | 467u << 1}, [&] { randomize(rng); }); // mtspr

@@ -53,7 +53,7 @@ class Renderer {
                 cleanup();
         }
 
-        void flip_tv(const std::uint8_t *rgbx, std::uint32_t w, std::uint32_t h);
+        void flip_tv(const std::uint8_t *rgbx, std::uint32_t w, std::uint32_t h, unsigned swapInterval = 1);
         // GamePad screen. Forwarded only while the host streams it to a remote GamePad; never paces.
         void flip_drc(const std::uint8_t *rgbx, std::uint32_t w, std::uint32_t h);
         // True while a host consumer wants GamePad frames, so callers can skip building them.
@@ -135,8 +135,8 @@ class Renderer {
     private:
         void processHostCommands(std::chrono::milliseconds wait = {});
         Core::Gfx::HostPresenter::Statistics hostStatistics() const;
-        void pacePresentation();
-        void presentFrame(const std::uint8_t *rgbx, std::uint32_t w, std::uint32_t h, bool guestFrame);
+        void pacePresentation(unsigned swapInterval = 1);
+        void presentFrame(const std::uint8_t *rgbx, std::uint32_t w, std::uint32_t h, bool guestFrame, unsigned swapInterval = 1);
         bool handleHostEvent(const SDL_Event &event);
         void createInstance();
 

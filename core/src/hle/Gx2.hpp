@@ -2,6 +2,14 @@
 
 #include <cstdint>
 
+namespace Core {
+    class Interpreter;
+    namespace Gx2 {
+        inline constexpr std::uint32_t bufferAllocatorReturn = 0x0FFFFFE0u;
+        void onBufferAllocatorReturn(Interpreter &cpu);
+    } // namespace Gx2
+} // namespace Core
+
 // Registers GX2 HLE queries, command capture and display-list recording/replay.
 void RegisterGx2Functions();
 

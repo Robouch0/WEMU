@@ -7,6 +7,37 @@
 
 #include "TestFixture.hpp"
 
+TEST_F(InstructionTest, UserQuantizationRegistersShareStateWithPrivilegedAliases)
+{
+    constexpr std::uint32_t address = 0x02000200;
+    cpu->m_memory.write<std::uint16_t>(address, 1234);
+    cpu->m_memory.write<std::uint16_t>(address + 2, 65535);
+    cpu->m_gpr[4] = address;
+    for (unsigned bank = 0; bank < 8; ++bank) {
+        const auto move = [bank](unsigned opcode, unsigned reg, unsigned base) {
+            const unsigned spr = base + bank;
+            const unsigned field = (spr & 31) << 5 | (spr >> 5);
+            return EncodedInstruction(31u << 26 | reg << 21 | field << 11 | opcode << 1);
+        };
+        cpu->m_gpr[3] = 0x00050005; // unsigned 16-bit loads and stores
+        Core::Instruction::MTSPR(*cpu, move(467, 3, 896));
+        EXPECT_EQ(cpu->m_gqr[bank], 0x00050005u);
+        Core::Instruction::MFSPR(*cpu, move(339, 5, 912));
+        EXPECT_EQ(cpu->m_gpr[5], 0x00050005u);
+        const EncodedInstruction load(56u << 26 | 9u << 21 | 4u << 16 | bank << 12);
+        Core::Instruction::PSQ_L(*cpu, load);
+        EXPECT_DOUBLE_EQ(cpu->m_fpr[9], 1234.0);
+        EXPECT_DOUBLE_EQ(cpu->m_ps1[9], 65535.0);
+        cpu->m_gpr[3] = 0x01050005; // load scale 1: multiply by 2^-1
+        Core::Instruction::MTSPR(*cpu, move(467, 3, 912));
+        Core::Instruction::MFSPR(*cpu, move(339, 5, 896));
+        EXPECT_EQ(cpu->m_gpr[5], 0x01050005u);
+        Core::Instruction::PSQ_L(*cpu, load);
+        EXPECT_DOUBLE_EQ(cpu->m_fpr[9], 617.0);
+        EXPECT_DOUBLE_EQ(cpu->m_ps1[9], 32767.5);
+    }
+}
+
 // SPR encoding: SPR = (inst.rb << 5) | inst.ra
 // LR  = SPR  8: ra=8,  rb=0
 // CTR = SPR  9: ra=9,  rb=0

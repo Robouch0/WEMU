@@ -39,6 +39,63 @@ class SchedulerTest : public InstructionTest {
 
 static constexpr std::uint32_t APP = Core::Memory::MemoryMap::ApplicationCode;
 
+TEST_F(SchedulerTest, ThreadTerminationQueryTracksCreationExitAndHandleReuse)
+{
+    RegisterCoreinitFunctions();
+    cpu->m_scheduler.bootstrap(*cpu);
+    constexpr unsigned worker = 0x28001000;
+    const auto terminated = [&](unsigned handle) {
+        cpu->m_gpr[3] = handle;
+        Core::syscallHandler.get("OSIsThreadTerminated")(*cpu);
+        return cpu->m_gpr[3];
+    };
+    cpu->m_memory.write<std::uint8_t>(worker + 0x324, 0);
+    EXPECT_EQ(terminated(worker), 1u); // inactive OSThread, before creation
+    EXPECT_EQ(terminated(cpu->m_scheduler.mainHandle()), 0u);
+    EXPECT_EQ(terminated(0), 0u);
+    EXPECT_EQ(terminated(0xFFFFFF00), 0u);
+    auto *thread = cpu->m_scheduler.create(*cpu, worker, APP + 0x100, 0, 0, 0x28010000);
+    ASSERT_NE(thread, nullptr);
+    EXPECT_EQ(terminated(worker), 0u); // suspended is not terminated
+    cpu->m_scheduler.resume(worker);
+    EXPECT_EQ(terminated(worker), 0u);
+    ASSERT_TRUE(cpu->m_scheduler.yield(*cpu));
+    EXPECT_EQ(terminated(worker), 0u);
+    cpu->m_gpr[3] = 42;
+    ASSERT_TRUE(cpu->m_scheduler.exitCurrent(*cpu));
+    EXPECT_EQ(terminated(worker), 1u); // observable before OSJoinThread
+    EXPECT_NE(cpu->m_scheduler.create(*cpu, worker, APP + 0x200, 0, 0, 0x28010000), nullptr);
+    EXPECT_EQ(terminated(worker), 0u);
+}
+
+TEST_F(SchedulerTest, GamepadLcdModeInitializesOutputAndTracksPowerChanges)
+{
+    RegisterCoreinitFunctions();
+    constexpr unsigned output = 0x28001000;
+    Core::syscallHandler.get("VPADInit")(*cpu);
+    const auto read = [&] {
+        cpu->m_memory.write<unsigned>(output, 0x12345678);
+        cpu->m_gpr[3] = 0;
+        cpu->m_gpr[4] = output;
+        Core::syscallHandler.get("VPADGetLcdMode")(*cpu);
+        EXPECT_EQ(cpu->m_gpr[3], 0u);
+        return cpu->m_memory.read<unsigned>(output);
+    };
+    EXPECT_EQ(read(), 0xFFu);
+    for (const unsigned mode: {0u, 1u, 0xFFu}) {
+        cpu->m_gpr[3] = 0;
+        cpu->m_gpr[4] = mode;
+        Core::syscallHandler.get("VPADSetLcdMode")(*cpu);
+        ASSERT_EQ(cpu->m_gpr[3], 0u);
+        EXPECT_EQ(read(), mode);
+    }
+    cpu->m_gpr[3] = 1;
+    cpu->m_gpr[4] = output;
+    Core::syscallHandler.get("VPADGetLcdMode")(*cpu);
+    EXPECT_NE(cpu->m_gpr[3], 0u);
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(output), 0xFFu);
+}
+
 TEST_F(SchedulerTest, NewThreadsStartWithCafeQuantizationDefaultsAndPreserveChanges)
 {
     constexpr unsigned worker = 0x28001000;
@@ -66,6 +123,131 @@ TEST_F(SchedulerTest, NewThreadsStartWithCafeQuantizationDefaultsAndPreserveChan
     EXPECT_EQ(cpu->m_gqr[3], 0x05050505u);
     ASSERT_TRUE(cpu->m_scheduler.yield(*cpu));
     EXPECT_EQ(cpu->m_gqr[5], 0x02070207u);
+}
+
+TEST_F(SchedulerTest, Atomic64UsesAlignedArgumentsAndBothReturnRegisters)
+{
+    RegisterCoreinitFunctions();
+    constexpr unsigned address = 0x28001000;
+    cpu->m_memory.write<std::uint64_t>(address, 0x1234567887654321ULL);
+    cpu->m_gpr[3] = address;
+    cpu->m_gpr[4] = 0xDEADBEEF; // ABI padding, not part of the new value
+    cpu->m_gpr[5] = 0xABCDEF12;
+    cpu->m_gpr[6] = 0x34567890;
+    Core::syscallHandler.get("OSSetAtomic64")(*cpu);
+    EXPECT_EQ(cpu->m_gpr[3], 0x12345678u);
+    EXPECT_EQ(cpu->m_gpr[4], 0x87654321u);
+    EXPECT_EQ(cpu->m_memory.read<std::uint64_t>(address), 0xABCDEF1234567890ULL);
+    cpu->m_gpr[3] = address;
+    Core::syscallHandler.get("OSGetAtomic64")(*cpu);
+    EXPECT_EQ(cpu->m_gpr[3], 0xABCDEF12u);
+    EXPECT_EQ(cpu->m_gpr[4], 0x34567890u);
+}
+
+TEST_F(SchedulerTest, JoinDeliversWorkerReturnValueForWaitingAndFinishedThreads)
+{
+    RegisterCoreinitFunctions();
+    constexpr unsigned worker = 0x28001000, result = 0x28002000;
+    cpu->m_scheduler.bootstrap(*cpu);
+    const auto main = cpu->m_scheduler.mainHandle();
+    ASSERT_NE(cpu->m_scheduler.create(*cpu, worker, APP + 0x100, 0, 0, 0x28010000), nullptr);
+    cpu->m_scheduler.resume(worker);
+    cpu->m_gpr[3] = worker;
+    cpu->m_gpr[4] = result;
+    Core::syscallHandler.get("OSJoinThread")(*cpu);
+    ASSERT_EQ(cpu->m_scheduler.currentHandle(), worker);
+    cpu->m_gpr[3] = 0x54321000; // pointer returned by the worker's entry function
+    ASSERT_TRUE(cpu->m_scheduler.exitCurrent(*cpu));
+    EXPECT_EQ(cpu->m_scheduler.currentHandle(), main);
+    EXPECT_EQ(cpu->m_gpr[3], 1u);
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(result), 0x54321000u);
+    cpu->m_hle_redirected = false;
+    cpu->m_gpr[3] = worker;
+    cpu->m_gpr[4] = result + 4;
+    Core::syscallHandler.get("OSJoinThread")(*cpu);
+    EXPECT_EQ(cpu->m_gpr[3], 1u);
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(result + 4), 0x54321000u);
+}
+
+TEST_F(SchedulerTest, SemaphoreWaitBlocksUntilSignalThenConsumesOnePermit)
+{
+    RegisterCoreinitFunctions();
+    constexpr unsigned sem = 0x28001000, worker = 0x28002000;
+    cpu->m_scheduler.bootstrap(*cpu);
+    const auto main = cpu->m_scheduler.mainHandle();
+    cpu->m_gpr[3] = sem;
+    cpu->m_gpr[4] = 0;
+    Core::syscallHandler.get("OSInitSemaphore")(*cpu);
+    ASSERT_NE(cpu->m_scheduler.create(*cpu, worker, APP + 0x100, 0, 0, 0x28010000), nullptr);
+    cpu->m_scheduler.resume(worker);
+    cpu->m_gpr[3] = sem;
+    Core::syscallHandler.get("OSWaitSemaphore")(*cpu);
+    ASSERT_EQ(cpu->m_scheduler.currentHandle(), worker);
+    ASSERT_EQ(cpu->m_scheduler.find(main)->waitKey, sem);
+    cpu->m_gpr[3] = sem;
+    Core::syscallHandler.get("OSSignalSemaphore")(*cpu);
+    if (cpu->m_scheduler.currentHandle() != main)
+        ASSERT_TRUE(cpu->m_scheduler.yield(*cpu));
+    ASSERT_EQ(cpu->m_scheduler.currentHandle(), main);
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(sem + 12), 1u);
+    cpu->m_gpr[3] = sem;
+    Core::syscallHandler.get("OSWaitSemaphore")(*cpu);
+    EXPECT_EQ(cpu->m_gpr[3], 1u);
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(sem + 12), 0u);
+    cpu->m_gpr[3] = sem;
+    Core::syscallHandler.get("OSTryWaitSemaphore")(*cpu);
+    EXPECT_EQ(cpu->m_gpr[3], 0u);
+}
+
+TEST_F(SchedulerTest, OfflineFriendListInitializesOutputCount)
+{
+    RegisterCoreinitFunctions();
+    constexpr unsigned list = 0x28001000, count = 0x28002000;
+    cpu->m_memory.write<unsigned>(count, 0xFFFFFFFF);
+    cpu->m_memory.write<unsigned>(list, 0x12345678);
+    cpu->m_gpr[3] = list;
+    cpu->m_gpr[4] = count;
+    cpu->m_gpr[5] = 0;
+    cpu->m_gpr[6] = 100;
+    Core::syscallHandler.get("GetFriendList__Q2_2nn2fpFPUiT1UiT3")(*cpu);
+    EXPECT_EQ(cpu->m_gpr[3], 0u);
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(count), 0u);
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(list), 0x12345678u);
+}
+
+TEST_F(SchedulerTest, ConditionWaitReleasesAndRestoresRecursiveMutexOwnership)
+{
+    RegisterCoreinitFunctions();
+    constexpr unsigned condition = 0x28001000, mutex = 0x28002000, worker = 0x28003000;
+    cpu->m_scheduler.bootstrap(*cpu);
+    const auto main = cpu->m_scheduler.mainHandle();
+    ASSERT_TRUE(cpu->m_scheduler.mutexLock(*cpu, mutex));
+    ASSERT_TRUE(cpu->m_scheduler.mutexLock(*cpu, mutex));
+    ASSERT_NE(cpu->m_scheduler.create(*cpu, worker, APP + 0x100, 0, 0, 0x28010000), nullptr);
+    cpu->m_scheduler.resume(worker);
+    cpu->m_gpr[3] = condition;
+    cpu->m_gpr[4] = mutex;
+    Core::syscallHandler.get("OSWaitCond")(*cpu);
+    ASSERT_EQ(cpu->m_scheduler.currentHandle(), worker);
+    ASSERT_TRUE(cpu->m_scheduler.mutexTryLock(mutex)); // sleeping main released both levels
+    cpu->m_gpr[3] = condition;
+    Core::syscallHandler.get("OSSignalCond")(*cpu);
+    cpu->m_scheduler.mutexUnlock(mutex);
+    ASSERT_TRUE(cpu->m_scheduler.yield(*cpu));
+    ASSERT_EQ(cpu->m_scheduler.currentHandle(), main);
+    cpu->m_gpr[3] = condition;
+    cpu->m_gpr[4] = mutex;
+    Core::syscallHandler.get("OSWaitCond")(*cpu); // resume the blocked HLE instruction
+    EXPECT_EQ(cpu->m_gpr[3], 0u);
+    cpu->m_scheduler.mutexUnlock(mutex); // one recursive level remains
+    ASSERT_TRUE(cpu->m_scheduler.yield(*cpu));
+    ASSERT_EQ(cpu->m_scheduler.currentHandle(), worker);
+    EXPECT_FALSE(cpu->m_scheduler.mutexTryLock(mutex));
+    ASSERT_TRUE(cpu->m_scheduler.yield(*cpu));
+    cpu->m_scheduler.mutexUnlock(mutex);
+    ASSERT_TRUE(cpu->m_scheduler.yield(*cpu));
+    EXPECT_TRUE(cpu->m_scheduler.mutexTryLock(mutex));
+    cpu->m_scheduler.mutexUnlock(mutex);
 }
 
 TEST_F(SchedulerTest, QuantizedPairedSinglesApplyPositiveAndNegativeScales)
@@ -309,6 +491,61 @@ TEST_F(SchedulerTest, FrameClockWakesTimedWaiters)
     EXPECT_EQ(sch.find(main)->gpr[3], 0u);
 }
 
+TEST_F(SchedulerTest, FrameClockDoesNotAccumulatePresentCompletionJitter)
+{
+    auto &sch = cpu->m_scheduler;
+    sch.advanceFrame(100);
+    for (unsigned pair = 0; pair < 1000; ++pair) {
+        sch.advanceTicks(110); // work/wait completes ten ticks past this deadline
+        sch.advanceFrame(100);
+        sch.advanceTicks(40); // next frame has room to absorb the late completion
+        sch.advanceFrame(100);
+        EXPECT_EQ(sch.now(), 100u + (pair + 1) * 200u);
+    }
+}
+
+TEST_F(SchedulerTest, FrameWaitRunsMovieWorkersBeforeAdvancingToDisplayDeadline)
+{
+    auto &sch = cpu->m_scheduler;
+    sch.bootstrap(*cpu);
+    const auto main = sch.currentHandle();
+    constexpr unsigned worker = 0x28001000;
+    sch.create(*cpu, worker, APP + 0x100, 0, 0, 0x28010000);
+    sch.resume(worker);
+    sch.waitForFrame(*cpu, 100);
+    EXPECT_EQ(sch.currentHandle(), worker);
+    EXPECT_EQ(sch.now(), 0u); // a ready producer gets CPU time before the clock jumps
+    EXPECT_EQ(sch.find(main)->state, Core::ThreadContext::State::Sleeping);
+    sch.advanceTicks(40);
+    ASSERT_TRUE(sch.yield(*cpu));
+    EXPECT_EQ(sch.now(), 100u); // producer yielded; only the display waiter remains
+    EXPECT_EQ(sch.currentHandle(), main);
+    sch.advanceTicks(30);
+    sch.waitForFrame(*cpu, 100);
+    EXPECT_EQ(sch.find(main)->wakeTick, 200u); // work already spent counts toward this frame
+    EXPECT_EQ(sch.currentHandle(), worker);
+}
+
+TEST_F(SchedulerTest, YieldPollingAllowsHigherPriorityTimeoutToExpire)
+{
+    RegisterCoreinitFunctions();
+    auto &sch = cpu->m_scheduler;
+    sch.bootstrap(*cpu);
+    const auto main = sch.currentHandle();
+    constexpr unsigned worker = 0x28001000;
+    sch.create(*cpu, worker, APP + 0x100, 0, 0, 0x28010000, 1);
+    sch.resume(worker);
+    ASSERT_TRUE(sch.yield(*cpu));
+    ASSERT_EQ(sch.currentHandle(), worker);
+    ASSERT_TRUE(sch.blockWithTimeout(*cpu, 0x1234, 1000));
+    ASSERT_EQ(sch.currentHandle(), main);
+    for (unsigned attempt = 0; attempt < 1000 && sch.currentHandle() == main; ++attempt)
+        Core::syscallHandler.get("OSYieldThread")(*cpu);
+    EXPECT_EQ(sch.currentHandle(), worker);
+    EXPECT_GE(sch.now(), 1000u);
+    EXPECT_EQ(cpu->m_gpr[3], 0u); // timeout, not a signal
+}
+
 TEST_F(SchedulerTest, FatalMainThreadFaultMarksSessionFailed)
 {
     cpu->m_scheduler.bootstrap(*cpu);
@@ -482,6 +719,31 @@ TEST_F(SchedulerTest, YieldWithNoOtherThreadIsNoOp)
     const std::uint32_t before = sch.currentHandle();
     EXPECT_FALSE(sch.yield(*cpu)); // nobody else runnable
     EXPECT_EQ(sch.currentHandle(), before);
+}
+
+TEST_F(SchedulerTest, YieldLetsTheLocalControllerResumeWhileOtherCoresHaveBusyWorkers)
+{
+    auto &sch = cpu->m_scheduler;
+    sch.bootstrap(*cpu);
+    const auto controller = sch.currentHandle();
+    sch.setAffinity(controller, 1);
+    sch.setPriority(controller, 17);
+    sch.create(*cpu, 0x2000, APP + 0x200, 0, 0, 0xC0000000, 16);
+    sch.setAffinity(0x2000, 1);
+    sch.resume(0x2000);
+    ASSERT_TRUE(sch.rescheduleAfterHle(*cpu));
+    ASSERT_EQ(sch.currentHandle(), 0x2000u);
+    // An unrelated worker on core 1 has a better priority than the controller
+    // on core 0. It must not take every explicit yield away from that controller.
+    sch.create(*cpu, 0x3000, APP + 0x300, 0, 0, 0xC0010000, 16);
+    sch.setAffinity(0x3000, 2);
+    sch.resume(0x3000);
+    cpu->m_lr = 0x440;
+    ASSERT_TRUE(sch.yield(*cpu));
+    EXPECT_EQ(sch.currentHandle(), controller);
+    // Other cores still receive instruction-boundary slices.
+    ASSERT_TRUE(sch.preempt(*cpu));
+    EXPECT_NE(sch.currentHandle(), controller);
 }
 
 TEST_F(SchedulerTest, FinishedThreadHandleCanBeRecreatedAndResumed)

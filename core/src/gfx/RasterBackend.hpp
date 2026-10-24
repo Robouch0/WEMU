@@ -17,7 +17,7 @@
 #include "gfx/TextureSampler.hpp"
 
 namespace Core::Gfx {
-    enum class TextureBlockFormat { None, BC1, BC4, BC4Signed, BC5Signed };
+    enum class TextureBlockFormat { None, BC1, BC4, BC4Signed, BC5Signed, BC2, BC3, BC5 };
     class RasterReadback;
     // Backend-specific, versioned image identity. Never exposes a borrowed handle.
     struct RasterImage {
@@ -31,7 +31,7 @@ namespace Core::Gfx {
     };
     // Synchronous reference-raster ABI. All borrowed data expires when render returns.
     // Positions include window depth and reciprocal clip W. Varyings interpolate
-    // perspectively for positive W; full clipping, stencil and multisampling are
+    // perspectively for positive W; full clipping and multisampling are
     // outside this ABI's validated native subset.
     // Texture views expose only reference base-level texels. Shader output is
     // rounded to RGBA8 before integer blending on UNORM targets. RGBA32 float
@@ -91,9 +91,10 @@ namespace Core::Gfx {
                     struct MipLevel {
                             unsigned width{}, height{};
                             std::span<const float> rgba32; // tightly packed, layer-major, component-mapped
+                            std::span<const std::uint8_t> blocks; // same compressed format as the base level
                     };
                     // Additional levels after the base snapshot. Multilevel uploads
-                    // currently use component-mapped RGBA32F for every level.
+                    // use either component-mapped RGBA32F or compressed blocks for every level.
                     std::span<const MipLevel> mips;
                     // Identity/lifetime of immutable snapshot bytes. A changed image
                     // must supply a new owner; permits sharing uploads across draws.
@@ -138,6 +139,15 @@ namespace Core::Gfx {
                     // The guest disabled Z clipping: window depth outside [0, 1] is clamped per
                     // fragment, as the reference rasterizer does, instead of clipping the primitive.
                     bool clamp{};
+                    struct Stencil {
+                            bool test{};
+                            // GX2 DB_DEPTH_CONTROL and front/back DB_STENCILREFMASK.
+                            std::uint32_t control{};
+                            std::array<std::uint32_t, 2> masks{};
+                            std::span<const std::uint8_t> target; // canonical byte plane, same pitch as depth
+                            std::shared_ptr<RasterReadback> rendered;
+                            std::optional<std::uint8_t> clear;
+                    } stencil;
             } depth;
             enum class Topology { Triangles, Points };
             Topology topology{Topology::Triangles};
@@ -227,6 +237,7 @@ namespace Core::Gfx {
             std::size_t unchangedTarget{};
             std::vector<float> depth;
             std::shared_ptr<RasterReadback> depthReadback;
+            std::shared_ptr<RasterReadback> stencilReadback;
             std::size_t size() const { return readback ? readback->size() : unchangedTarget ? unchangedTarget : rgba.size(); }
             void resolve()
             {
@@ -248,6 +259,45 @@ namespace Core::Gfx {
             }
     };
 
+    struct StreamOutDraw {
+            // Attributes are count * inputCount vec4s. Buffers contain the prior
+            // bytes, including components and padding the shader must preserve.
+            const Latte::FragmentShader &shader;
+            std::span<const std::array<float, 4>> attributes;
+            unsigned count{}, first{}, inputCount{};
+            std::span<const float> registers, uniforms;
+            std::array<std::span<const std::uint8_t>, 4> buffers;
+    };
+    struct StreamOutResult {
+            std::array<std::vector<std::uint8_t>, 4> buffers;
+            unsigned usedMask{};
+    };
+    class StreamOutReadback {
+        public:
+            explicit StreamOutReadback(std::function<StreamOutResult()> read) : m_read(std::move(read)) {}
+            const StreamOutResult &resolve()
+            {
+                if (m_error)
+                    std::rethrow_exception(m_error);
+                try {
+                    if (!m_result) {
+                        m_result = m_read();
+                        m_read = {};
+                    }
+                } catch (...) {
+                    m_error = std::current_exception();
+                    m_read = {};
+                    throw;
+                }
+                return *m_result;
+            }
+
+        private:
+            std::function<StreamOutResult()> m_read;
+            std::optional<StreamOutResult> m_result;
+            std::exception_ptr m_error;
+    };
+
     class RasterBackend {
         public:
             virtual ~RasterBackend() = default;
@@ -256,9 +306,18 @@ namespace Core::Gfx {
             // A result commits only after its size has been checked. Backend errors
             // propagate rather than silently discarding partially executed work.
             virtual std::optional<RasterResult> render(const RasterDraw &draw) = 0;
+            // Same borrowed-input/owned-result contract as render. No guest
+            // memory is modified until the caller validates the complete result.
+            virtual bool supportsStreamOut() const { return false; }
+            virtual std::optional<StreamOutResult> streamOut(const StreamOutDraw &) { return std::nullopt; }
+            // Copies all borrowed inputs before returning. Only the owned ticket outlives this
+            // call; resolving it synchronizes and returns complete output snapshots.
+            virtual std::shared_ptr<StreamOutReadback> streamOutDeferred(const StreamOutDraw &) { return {}; }
             virtual bool supportsRenderedTextures() const { return false; }
             virtual bool supportsRenderedTargets() const { return false; }
             virtual bool supportsDepth() const { return false; }
+            // Fixed-function stencil on canonical UNORM24 depth/stencil storage.
+            virtual bool supportsStencil() const { return false; }
             virtual bool supportsPoints() const { return false; }
             virtual bool supportsFloatTargets() const { return false; }
             virtual bool supportsVertexStage() const { return false; }

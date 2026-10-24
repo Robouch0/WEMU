@@ -512,6 +512,8 @@ namespace Core::Jit {
                 return true;
             case E_PSQ_L:
             case E_PSQ_ST:
+            case E_PSQ_LU:
+            case E_PSQ_STU:
                 quantized(i, id);
                 return true;
             default:
@@ -526,9 +528,11 @@ namespace Core::Jit {
         Xbyak::Label &integer = newLabel();
         Xbyak::Label &done = newLabel();
         const auto displacement = (i.psd & 0x800) ? static_cast<std::int32_t>(i.psd) - 0x1000 : static_cast<std::int32_t>(i.psd);
+        const bool loading = id == E_PSQ_L || id == E_PSQ_LU;
+        const bool updating = id == E_PSQ_LU || id == E_PSQ_STU;
         // The type is bits 16-18 for loads, bits 0-2 for stores.
         mov(eax, dword[rbx + m_layout.gqr + static_cast<int>(i.psI * 4)]);
-        test(eax, id == E_PSQ_L ? 0x40000u : 0x4u);
+        test(eax, loading ? 0x40000u : 0x4u);
         jnz(integer, T_NEAR);
         if (i.ra) {
             mov(ecx, gpr(i.ra));
@@ -537,7 +541,7 @@ namespace Core::Jit {
         } else {
             mov(ecx, static_cast<std::uint32_t>(displacement));
         }
-        if (id == E_PSQ_L) {
+        if (loading) {
             if (i.psW) {
                 load(4);
                 vmovd(xmm0, eax);
@@ -554,19 +558,26 @@ namespace Core::Jit {
             vcvtss2sd(xmm0, xmm0, xmm0);
             vmovsd(fpr(i.frt), xmm0);
             vmovsd(ps1(i.frt), xmm1);
+            if (updating)
+                mov(gpr(i.ra), ecx);
         } else {
             // Lane by lane, as the interpreter writes them; a code write in the first lane
             // replays the whole instruction in the interpreter.
             vmovsd(xmm0, fpr(i.frt));
             vcvtsd2ss(xmm0, xmm0, xmm0);
             vmovd(eax, xmm0);
-            store(4, {}, true);
+            const auto updateBase = [this, i] { mov(gpr(i.ra), ecx); };
+            store(4, updating && i.psW ? updateBase : std::function<void()>{}, true);
             if (!i.psW) {
                 add(ecx, 4);
                 vmovsd(xmm0, ps1(i.frt));
                 vcvtsd2ss(xmm0, xmm0, xmm0);
                 vmovd(eax, xmm0);
-                store(4);
+                store(4, updating ? std::function<void()>{[this, i] {
+                          lea(eax, ptr[rcx - 4]);
+                          mov(gpr(i.ra), eax);
+                      }}
+                                  : std::function<void()>{});
             }
         }
         L(done);

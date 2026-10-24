@@ -129,6 +129,23 @@ Rectangle {
             }
         }
 
+        RowLayout {
+            Layout.fillWidth: true
+            Label { text: "Volume"; color: "#1a1a1a" }
+            Slider {
+                objectName: "audioVolumeSlider"
+                Layout.fillWidth: true
+                from: 0; to: 100; stepSize: 1
+                value: EmulatorLauncher.audioVolume
+                onMoved: EmulatorLauncher.audioVolume = Math.round(value)
+            }
+            Label {
+                text: EmulatorLauncher.audioVolume === 0 ? "Muted" : EmulatorLauncher.audioVolume + "%"
+                color: "#1a1a1a"
+                Layout.preferredWidth: 60
+            }
+        }
+
         RemoteGamepadPanel {
             Layout.fillWidth: true
         }

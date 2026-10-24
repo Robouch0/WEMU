@@ -72,7 +72,7 @@ namespace Core::Frontend {
             } else if (type == quint32(WemuSession::Type::Command)) {
                 quint32 action{}, value{};
                 stream >> action >> value;
-                if (action < quint32(Action::Pause) || action > quint32(Action::DrcStream))
+                if (action < quint32(Action::Pause) || action > quint32(Action::AudioVolume))
                     throw std::runtime_error("Invalid session control action");
                 m_commands.push_back({Action(action), value});
                 if (Action(action) == Action::Stop)

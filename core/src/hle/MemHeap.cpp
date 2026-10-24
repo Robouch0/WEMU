@@ -310,6 +310,19 @@ namespace {
 } // namespace
 
 namespace Core::Hle {
+    std::array<std::uint32_t, 3> applicationHeapHandles(Core::Interpreter &cpu)
+    {
+        ensureBaseHeaps(cpu);
+        return {g_baseHeap[0], g_baseHeap[8], g_baseHeap[1]};
+    }
+
+    void setApplicationHeapHandles(const std::array<std::uint32_t, 3> &handles)
+    {
+        g_baseHeap[0] = handles[0];
+        g_baseHeap[8] = handles[1];
+        g_baseHeap[1] = handles[2];
+    }
+
     std::uint32_t defaultHeapHandle(Core::Interpreter &cpu)
     {
         ensureBaseHeaps(cpu);

@@ -15,7 +15,7 @@ namespace Core::Instruction {
 
     /**
      * @brief Move From Special Purpose Register.
-     *        RT = SPR. Supported: XER (1), LR (8), CTR (9), GQR0-7 (912-919), TBL/TBU (268/269).
+     *        RT = SPR. Supported: XER (1), LR (8), CTR (9), UGQR0-7 (896-903) and GQR0-7 (912-919), TBL/TBU (268/269).
      * @param cpu   Interpreter state.
      * @param instr Encoded instruction (fields: rt, ra, rb).
      */
@@ -23,8 +23,8 @@ namespace Core::Instruction {
     {
         const std::uint32_t spr = decodeSpr(instr.spr);
 
-        if (spr >= 912 && spr <= 919) {
-            cpu.m_gpr[instr.rt] = cpu.m_gqr[spr - 912];
+        if ((spr >= 896 && spr <= 903) || (spr >= 912 && spr <= 919)) {
+            cpu.m_gpr[instr.rt] = cpu.m_gqr[spr & 7];
             return;
         }
         switch (spr) {
@@ -53,7 +53,7 @@ namespace Core::Instruction {
 
     /**
      * @brief Move To Special Purpose Register.
-     *        SPR = RS. Supported: XER (1), LR (8), CTR (9), GQR0-7 (912-919).
+     *        SPR = RS. Supported: XER (1), LR (8), CTR (9), UGQR0-7 (896-903) and GQR0-7 (912-919).
      * @param cpu   Interpreter state.
      * @param instr Encoded instruction (fields: rt as RS, ra, rb).
      */
@@ -61,8 +61,8 @@ namespace Core::Instruction {
     {
         const std::uint32_t spr = decodeSpr(instr.spr);
 
-        if (spr >= 912 && spr <= 919) {
-            cpu.m_gqr[spr - 912] = cpu.m_gpr[instr.rs];
+        if ((spr >= 896 && spr <= 903) || (spr >= 912 && spr <= 919)) {
+            cpu.m_gqr[spr & 7] = cpu.m_gpr[instr.rs];
             return;
         }
         switch (spr) {
