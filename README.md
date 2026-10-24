@@ -4,12 +4,12 @@
 ![Last Commit](https://img.shields.io/github/last-commit/Robouch0/WEMU/dev)
 ![Language](https://img.shields.io/github/languages/top/Robouch0/WEMU)
 ![C++23](https://img.shields.io/badge/C%2B%2B-23-blue?logo=cplusplus)
-![Platform](https://img.shields.io/badge/platform-Linux-lightgrey?logo=linux)
+![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS-lightgrey?logo=linux)
 ![GitHub Actions Status](https://img.shields.io/github/actions/workflow/status/Robouch0/WEMU/wemu-checks.yml?branch=dev&label=Build)
 
 # WEMU — Wii U Emulator
 
-WEMU is an open-source Wii U emulator for Linux, written in C++23. The project is in early development: homebrew demos run, while commercial-title booting and rendering remain experimental.
+WEMU is an open-source Wii U emulator for Linux and macOS, written in C++23. The project is in early development: homebrew demos run, while commercial-title booting and rendering remain experimental.
 
 Our goal is to accurately emulate the Wii U's PowerPC CPU and GPU in order to run Wii U software. What sets WEMU apart from existing solutions like Cemu is a companion feature: **use your phone as the Wii U GamePad**. The WEMU GamePad app (Android and iOS, in [`mobile/`](mobile/)) streams the GamePad screen from the emulator to your phone over Wi-Fi and sends buttons, sticks, touch and motion back, replacing the physical GamePad entirely. See [docs/features/mobile-gamepad.md](docs/features/mobile-gamepad.md).
 
@@ -36,7 +36,9 @@ Commercial games are not yet fully playable. Current components include:
 
 ## Building from Source
 
-**Platform:** Linux only (Ubuntu/Debian, Fedora, Arch).
+**Platforms:** Linux (Ubuntu/Debian, Fedora, Arch) and macOS on Apple Silicon (Homebrew,
+Vulkan through MoltenVK). The x86-64 JIT is Linux x86-64 only; on macOS the CPU runs on the
+interpreter or the optional LLVM compiler.
 
 ### Quick start (recommended)
 
@@ -46,7 +48,8 @@ cd WEMU
 ./setup.sh
 ```
 
-`setup.sh` detects your distribution, installs system dependencies, then builds the core,
+`setup.sh` detects your distribution (or macOS, where it needs [Homebrew](https://brew.sh)),
+installs system dependencies, then builds the core,
 GUI, and shader tool. It also builds the legacy standalone Vulkan tree if that tree is present.
 
 ```
@@ -77,11 +80,18 @@ sudo apt install cmake g++ zlib1g-dev libvulkan-dev libglfw3-dev libsdl2-dev lib
      libavcodec-dev libavutil-dev libswscale-dev qt6-base-dev qt6-declarative-dev \
      glslang-tools spirv-tools mesa-vulkan-drivers ninja-build ccache
 
+# macOS dependencies (Homebrew)
+brew install cmake ninja pkgconf ffmpeg sdl2 sdl2_image glm qt \
+     vulkan-loader vulkan-headers molten-vk glslang spirv-tools
+
 # Core emulator + Qt GUI
 git clone https://github.com/Robouch0/WEMU.git && cd WEMU
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel 2
 ```
+
+On macOS, add `-DLLVM_DIR=/opt/homebrew/opt/llvm@19/lib/cmake/llvm` (after
+`brew install llvm@19`) to the LLVM configuration below.
 
 </details>
 
