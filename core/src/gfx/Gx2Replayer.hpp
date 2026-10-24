@@ -83,6 +83,7 @@ namespace Core::Gfx {
             void setStreamOutVerificationInterval(unsigned interval) { m_streamOutVerifyEvery = interval; }
             [[nodiscard]] std::uint64_t nativeStreamOutPasses() const noexcept { return m_nativeStreamOutPasses; }
             [[nodiscard]] std::uint64_t comparedStreamOutPasses() const noexcept { return m_comparedStreamOutPasses; }
+            [[nodiscard]] std::uint64_t streamOutInputReuses() const noexcept { return m_streamOutInputReuses; }
             [[nodiscard]] std::uint64_t differingNativeDraws() const noexcept { return m_differingNativeDraws; }
             [[nodiscard]] std::uint64_t earlyDepthRejectedFragments() const noexcept { return m_earlyDepthRejectedFragments; }
             [[nodiscard]] std::uint64_t earlyDepthRejectedTriangles() const noexcept { return m_earlyDepthRejectedTriangles; }
@@ -243,12 +244,19 @@ namespace Core::Gfx {
                     std::vector<std::pair<std::uint32_t, std::vector<std::uint8_t>>> sources; // guest ranges read
                     std::shared_ptr<const DirectVertices> vertices;
                     std::uint32_t validatedFrame{~0u};
+                    std::uint64_t streamOutEpoch{};
                     std::uint64_t used{};
                     std::size_t bytes() const;
             };
             std::unordered_map<std::uint64_t, DirectVertexEntry> m_directVertexCache;
             std::unordered_map<std::uint64_t, std::uint8_t> m_directVertexSeen; // key -> sightings, then changes
             std::uint64_t m_directVertexBytes{}, m_directVertexClock{};
+            // Skinning changes palettes every frame, while its fetched geometry often stays fixed.
+            // Validate raw source bytes independently of the shader/constants and retain conversion.
+            std::unordered_map<std::uint64_t, DirectVertexEntry> m_streamOutInputs;
+            std::uint64_t m_streamOutInputBytes{}, m_streamOutInputReuses{};
+            std::uint64_t m_streamOutWriteEpoch{};
+            std::shared_ptr<const DirectVertices> streamOutInputs(const AttributeFetch &fetch, unsigned first, unsigned count);
             // Guest byte ranges [address, address + size) the fetch plan reads for vertices
             // low..high, merged; false when a read is not resident in one host range.
             static bool directVertexSources(const AttributeFetch &fetch, unsigned outputs, std::uint32_t low, std::uint32_t high,

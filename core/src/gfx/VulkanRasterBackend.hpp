@@ -46,6 +46,8 @@ namespace Core::Gfx {
             std::uint64_t depthClears() const noexcept;
             // Direct draws that continued the previous draw's render pass.
             std::uint64_t mergedRenderPasses() const noexcept;
+            // Completed transient attachments recycled after all users released them.
+            std::uint64_t reusedTargetImages() const noexcept;
             std::uint64_t targetCopyTransfers() const noexcept;
             std::uint64_t fullOverwriteDraws() const noexcept;
             std::uint64_t residentTargetCopies() const noexcept;

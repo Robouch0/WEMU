@@ -23,6 +23,11 @@ submissions preserve queue order with earlier graphics work and synchronize befo
 the CPU consumes their output. This is a synchronous implementation; it does not
 keep stream-output buffers resident for subsequent GPU vertex fetches.
 
+Converted geometry inputs can now be reused independently of the changing
+palettes, and CPU-read output buffers prefer cached host memory. See
+[fighter-count scaling](smash-fighter-scaling.md) for the cache bounds,
+four/eight-fighter scenarios and transient attachment reuse.
+
 `WEMU_NATIVE_STREAMOUT=0` selects CPU reference execution for comparisons. Native
 execution is enabled by default when a compatible raster backend is present.
 `WEMU_STREAMOUT_VERIFY_EVERY=N` re-executes every Nth native pass on the reference

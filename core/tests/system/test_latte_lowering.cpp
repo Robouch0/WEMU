@@ -4110,6 +4110,58 @@ TEST(VulkanRasterBackendTest, IndependentLiveColorAndDepthVersionsStayResidentUn
     }
 }
 
+TEST(VulkanRasterBackendTest, CompletedTransientAttachmentsReuseStorageAndPreserveLiveVersions)
+{
+    using namespace Core::Gfx;
+    if (!std::getenv("WEMU_TEST_VULKAN") || !SpirvCompiler::available())
+        GTEST_SKIP();
+    const auto shader = lowerFragmentShader(*decodeProgram({0, (CF_EXP_DONE << 23) | (1u << 21) | 0x688u}));
+    ASSERT_TRUE(shader) << shader.error;
+    for (const auto format: {ColorFormat::RGBA8, ColorFormat::RGBA32Float}) {
+        std::array<RasterDraw::Vertex, 3> vertices{{{0, 0, {}}, {8, 0, {}}, {0, 8, {}}}};
+        std::vector<std::uint8_t> target(6 * 4 * colorElementBytes(format), 19);
+        std::vector<float> depth(6 * 4, .9f);
+        RasterDraw draw{shader, vertices, {}, {}, target, 4, 4, 6, {0, 0, 4, 4}, 15, {}};
+        draw.colorFormat = format;
+        draw.depth = {true, true, 7, DepthFormat::Float32, depth, 4, 4, 6, {}};
+        VulkanRasterBackend backend(true, true);
+        for (auto &vertex: vertices) {
+            vertex.inputs[0] = {.75f, .25f, .5f, 1};
+            vertex.z = .75f;
+        }
+        auto retained = backend.renderDeferred(draw);
+        ASSERT_TRUE(retained) << backend.lastError();
+        // Keep this unresolved version while many later submissions rotate through the pool.
+        for (unsigned i = 1; i <= 20; ++i) {
+            for (auto &vertex: vertices) {
+                vertex.inputs[0][0] = float(i) / 32;
+                vertex.z = float(i) / 32;
+            }
+            auto result = backend.renderDeferred(draw);
+            ASSERT_TRUE(result) << backend.lastError();
+            result->resolve();
+            result->resolveDepth();
+            EXPECT_FLOAT_EQ(result->depth[0], float(i) / 32);
+            if (format == ColorFormat::RGBA8)
+                EXPECT_NEAR(result->rgba[0], std::round(float(i) * 255 / 32), 1);
+            else
+                EXPECT_FLOAT_EQ(readFloatColor(result->rgba.data())[0], float(i) / 32);
+            for (unsigned y = 0; y < 4; ++y) {
+                EXPECT_FLOAT_EQ(result->depth[y * 6 + 4], .9f);
+                EXPECT_EQ(result->rgba[(y * 6 + 4) * colorElementBytes(format)], 19);
+            }
+        }
+        EXPECT_GT(backend.reusedTargetImages(), 0u);
+        retained->resolve();
+        retained->resolveDepth();
+        EXPECT_FLOAT_EQ(retained->depth[0], .75f);
+        if (format == ColorFormat::RGBA8)
+            EXPECT_NEAR(retained->rgba[0], std::round(.75f * 255), 1);
+        else
+            EXPECT_FLOAT_EQ(readFloatColor(retained->rgba.data())[0], .75f);
+    }
+}
+
 TEST(VulkanRasterBackendTest, DisabledZClippingClampsWindowDepthInsteadOfClipping)
 {
     using namespace Core::Gfx;

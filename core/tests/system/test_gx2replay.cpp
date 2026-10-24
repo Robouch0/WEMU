@@ -578,6 +578,14 @@ TEST(LatteVsTest, VertexTextureSampleUsesSelectorsAndPreservesMaskedChannels)
     EXPECT_FALSE(LatteVsInterp::run(program, attributes, nullptr, 0, {}, sampler).valid);
 }
 
+TEST(TextureFormatTest, Rg4UnormExpandsIndependentNibblesAndSuppliesMissingChannels)
+{
+    for (unsigned r = 0; r < 16; ++r)
+        for (unsigned g = 0; g < 16; ++g)
+            EXPECT_EQ(Core::Gfx::decodeRg4Unorm(std::uint8_t(r | (g << 4))),
+                      (std::array<std::uint8_t, 4>{std::uint8_t(r * 17), std::uint8_t(g * 17), 0, 255}));
+}
+
 TEST(TextureFormatTest, Rgb565UsesGpuByteOrderAndIndependentNormalizedChannels)
 {
     for (const unsigned word: {0u, 0x1Fu, 0x7E0u, 0xF800u, 0xFFFFu, 0xAE91u}) {

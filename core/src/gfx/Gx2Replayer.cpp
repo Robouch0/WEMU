@@ -2135,6 +2135,13 @@ namespace Core::Gfx {
             }
             return {t[0], t[1], t[2], t[3]};
         }
+        if (fmt == 0x02) { // R4_G4_UNORM, one byte per texel (not RGBA8).
+            const auto off = tiledElementOffset(tx, ty, s.pitch, 8, tile, s.swizzle);
+            if (off >= s.imageSize || std::uint64_t(s.imagePtr) + off > UINT32_MAX)
+                return {128, 128, 128, 255};
+            const auto *px = m_mem->hostPtr(s.imagePtr + off, 1);
+            return px ? decodeRg4Unorm(*px) : std::array<std::uint8_t, 4>{128, 128, 128, 255};
+        }
         if (fmt == 0x01) { // R8_UNORM
             const std::uint32_t off = tiledElementOffset(tx, ty, s.pitch, 8, tile, s.swizzle);
             const std::uint8_t *px = m_mem->hostPtr(s.imagePtr + off);
@@ -2572,6 +2579,83 @@ namespace Core::Gfx {
         }
     }
 
+    std::shared_ptr<const Gx2Replayer::DirectVertices> Gx2Replayer::streamOutInputs(const AttributeFetch &fetch, unsigned first, unsigned count)
+    {
+        std::vector<std::pair<std::uint32_t, std::uint32_t>> ranges;
+        const auto last = std::uint64_t(first) + count - 1;
+        const bool cacheable = last <= UINT32_MAX && directVertexSources(fetch, m_vertexInputCount, first, unsigned(last), ranges);
+        std::uint64_t key = 0xCBF29CE484222325ull;
+        const auto mix = [&](std::uint64_t value) { key = (key ^ value) * 0x100000001B3ull; };
+        mix(first);
+        mix(count);
+        mix(m_vertexInputCount);
+        for (const auto &binding: m_attribs) {
+            mix(binding.addr);
+            mix(binding.stride);
+            mix(binding.size);
+        }
+        for (const auto word: m_fetchLayout)
+            mix(word);
+        for (const auto word: m_vertexSemantics)
+            mix(word);
+        if (cacheable)
+            if (auto found = m_streamOutInputs.find(key); found != m_streamOutInputs.end()) {
+                auto &entry = found->second;
+                bool matches = entry.mode == count && entry.sourceIndices.size() == 1 && entry.sourceIndices.front() == first &&
+                               entry.attributeStride == m_vertexInputCount && entry.attribs == m_attribs && entry.fetchLayout == m_fetchLayout &&
+                               entry.semantics == m_vertexSemantics && entry.sources.size() == ranges.size();
+                // Always check bytes, including within a frame: an earlier stream pass can write
+                // inputs of a later one without changing any binding or submitted snapshot.
+                for (std::size_t i = 0; matches && i < ranges.size(); ++i) {
+                    const auto &[address, bytes] = entry.sources[i];
+                    const auto *source = bufferBytes(address, bytes.size());
+                    matches = address == ranges[i].first && bytes.size() == ranges[i].second && source &&
+                              std::memcmp(source, bytes.data(), bytes.size()) == 0;
+                }
+                if (matches) {
+                    entry.used = ++m_directVertexClock;
+                    ++m_streamOutInputReuses;
+                    return entry.vertices;
+                }
+                m_streamOutInputBytes -= entry.bytes();
+                m_streamOutInputs.erase(found);
+            }
+        auto vertices = std::make_shared<DirectVertices>();
+        vertices->attributes.resize(std::size_t(count) * m_vertexInputCount);
+        for (unsigned vertex = 0; vertex < count; ++vertex)
+            if (!fetchAttributes(fetch, first + vertex,
+                                 std::span(vertices->attributes).subspan(std::size_t(vertex) * m_vertexInputCount, m_vertexInputCount)))
+                return {};
+        if (cacheable) {
+            DirectVertexEntry entry;
+            entry.mode = count;
+            entry.sourceIndices = {first};
+            entry.attributeStride = m_vertexInputCount;
+            entry.attribs = m_attribs;
+            entry.fetchLayout = m_fetchLayout;
+            entry.semantics = m_vertexSemantics;
+            entry.vertices = vertices;
+            entry.used = ++m_directVertexClock;
+            for (const auto &[address, size]: ranges) {
+                const auto *source = bufferBytes(address, size);
+                entry.sources.emplace_back(address, std::vector<std::uint8_t>(source, source + size));
+            }
+            constexpr std::uint64_t budget = 64ull * 1024 * 1024;
+            const auto bytes = entry.bytes();
+            if (bytes <= budget) {
+                while (!m_streamOutInputs.empty() && (m_streamOutInputBytes + bytes > budget || m_streamOutInputs.size() >= 512)) {
+                    const auto oldest = std::min_element(m_streamOutInputs.begin(), m_streamOutInputs.end(),
+                                                         [](const auto &a, const auto &b) { return a.second.used < b.second.used; });
+                    m_streamOutInputBytes -= oldest->second.bytes();
+                    m_streamOutInputs.erase(oldest);
+                }
+                m_streamOutInputBytes += bytes;
+                m_streamOutInputs.emplace(key, std::move(entry));
+            }
+        }
+        return vertices;
+    }
+
     bool Gx2Replayer::streamOut(const Gx2Command &cmd, bool indexed)
     {
         if (!m_mem || !m_writableMem || !m_vsShader || cmd.gpr[0] != 1 || indexed || cmd.gpr[3] != 1)
@@ -2681,18 +2765,13 @@ namespace Core::Gfx {
             }
             const auto &shader = *found->second;
             if (shader) {
-                std::vector<std::array<float, 4>> attributes(std::size_t(count) * m_vertexInputCount);
-                bool fetched = true;
-                for (unsigned vertex = 0; vertex < count && fetched; ++vertex)
-                    fetched = fetchAttributes(fetch, vertex + cmd.gpr[2],
-                                              std::span(attributes).subspan(std::size_t(vertex) * m_vertexInputCount, m_vertexInputCount));
-                if (fetched) {
+                if (const auto inputs = streamOutInputs(fetch, cmd.gpr[2], count)) {
                     std::vector<float> uniforms;
                     uniforms.reserve(shader.uniforms.size() * 4);
                     for (const auto &ref: shader.uniforms)
                         for (unsigned c = 0; c < 4; ++c)
                             uniforms.push_back(constants(ref.bank, ref.index, c));
-                    StreamOutDraw draw{shader, attributes, count, cmd.gpr[2], m_vertexInputCount, m_vsRegs, uniforms, {}};
+                    StreamOutDraw draw{shader, inputs->attributes, count, cmd.gpr[2], m_vertexInputCount, m_vsRegs, uniforms, {}};
                     for (unsigned i = 0; i < 4; ++i)
                         draw.buffers[i] = pending[i];
                     if (auto result = m_rasterBackend->streamOut(draw)) {
@@ -2761,6 +2840,8 @@ namespace Core::Gfx {
             m_streamOutWrites.emplace_back(address, bytes);
             buffer.offset += bytes;
         }
+        if (usedMask.load(std::memory_order_relaxed))
+            ++m_streamOutWriteEpoch;
         return true;
     }
 
@@ -2768,12 +2849,13 @@ namespace Core::Gfx {
     {
         if (m_streamOutEnabled && selectedColor < 0) {
             const auto nativeBefore = m_nativeStreamOutPasses;
+            const auto inputsBefore = m_streamOutInputReuses;
             const auto start = Profile::enabled() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
             const bool completed = streamOut(cmd, indexed);
             if (Profile::enabled())
-                Utils::Log::error("[STREAMOUT_PROFILE] frame={} count={} us={} completed={} native={}", m_presentCount, cmd.gpr[1],
+                Utils::Log::error("[STREAMOUT_PROFILE] frame={} count={} us={} completed={} native={} inputs_reused={}", m_presentCount, cmd.gpr[1],
                                   std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count(), completed,
-                                  m_nativeStreamOutPasses != nativeBefore);
+                                  m_nativeStreamOutPasses != nativeBefore, m_streamOutInputReuses != inputsBefore);
             if (!completed) {
                 static std::unordered_set<std::uint32_t> reported;
                 if (reported.insert(shaderHash(vsProgram())).second)
@@ -4600,7 +4682,7 @@ namespace Core::Gfx {
         std::shared_ptr<const DirectVertices> directArrays;
         bool directReused = false;
         const auto attributeStride = unsigned(std::min<std::size_t>(m_vertexInputCount, RasterDraw::Vertex{}.inputs.size()));
-        // Static geometry is converted once: a draw whose indices, fetch state and guest vertex
+        // Geometry is converted once per version: a draw whose indices, fetch state and guest vertex
         // bytes match a previous conversion reuses its arrays (and the backend its upload).
         std::uint64_t directKey = 0;
         std::vector<std::pair<std::uint32_t, std::uint32_t>> directSources;
@@ -4627,7 +4709,7 @@ namespace Core::Gfx {
                     const bool inputsMatch = entry.mode == mode && entry.attributeStride == attributeStride && entry.attribs == m_attribs &&
                                              entry.semantics == m_vertexSemantics && entry.fetchLayout == m_fetchLayout &&
                                              std::ranges::equal(entry.sourceIndices, idx) && entry.sources.size() == directSources.size();
-                    bool bytesMatch = inputsMatch && entry.validatedFrame == m_presentCount;
+                    bool bytesMatch = inputsMatch && entry.validatedFrame == m_presentCount && entry.streamOutEpoch == m_streamOutWriteEpoch;
                     for (std::size_t i = 0; inputsMatch && !bytesMatch && i < directSources.size(); ++i) {
                         const auto &[address, bytes] = entry.sources[i];
                         const auto *current = bufferBytes(address, bytes.size());
@@ -4639,19 +4721,20 @@ namespace Core::Gfx {
                     bytesMatch |= inputsMatch && directSources.empty();
                     if (bytesMatch) {
                         entry.validatedFrame = m_presentCount;
+                        entry.streamOutEpoch = m_streamOutWriteEpoch;
                         entry.used = ++m_directVertexClock;
                         directArrays = entry.vertices;
                         directReused = true;
                         ++m_directVertexReuses;
                     }
                 }
-                // Convert into the cache only from a draw's second sighting, and not for draws
-                // whose data kept changing: dynamic buffers would only churn it.
+                // Cache from the second sighting. Animated geometry changes between frames,
+                // but shadow/color passes can reuse the same conversion within each frame.
                 if (!directArrays) {
                     if (m_directVertexSeen.size() >= 65536)
                         m_directVertexSeen.clear();
                     auto &changes = m_directVertexSeen[directKey];
-                    cacheDirect = changes > 0 && changes < 4;
+                    cacheDirect = changes > 0;
                     if (found != m_directVertexCache.end() || !changes)
                         changes = std::uint8_t(std::min(changes + 1, 255));
                 }
@@ -4708,6 +4791,7 @@ namespace Core::Gfx {
                 directAttributes.clear();
                 directIndices.clear();
                 entry.validatedFrame = m_presentCount;
+                entry.streamOutEpoch = m_streamOutWriteEpoch;
                 entry.used = ++m_directVertexClock;
                 if (const auto old = m_directVertexCache.find(directKey); old != m_directVertexCache.end()) {
                     m_directVertexBytes -= old->second.bytes();
@@ -5019,7 +5103,7 @@ namespace Core::Gfx {
                 const auto format = surface.format & 0x3F;
                 // Match sample()'s four-byte representation, with typed R32 float
                 // conversion below. Other float/integer formats remain incomplete.
-                const bool rawBytes = format != 8 && (format < 0x31 || format > 0x35);
+                const bool rawBytes = format != 2 && format != 8 && (format < 0x31 || format > 0x35);
                 const unsigned texelBytes = format == 1 ? 1 : format == 7 ? 2 : 4;
                 textures.push_back(
                         {binding, surface.width, surface.height, boundSamplers[binding.sampler], [&, surface, backing](unsigned x, unsigned y) {
@@ -5108,7 +5192,7 @@ namespace Core::Gfx {
                     }
                 }
                 const bool linearView = surface.tileMode <= 1 || surface.tileMode == 16;
-                if (!backing && (!linearView || format == 8 || (format >= 0x31 && format <= 0x35)) && surface.format != 0x80E) {
+                if (!backing && (!linearView || format == 2 || format == 8 || (format >= 0x31 && format <= 0x35)) && surface.format != 0x80E) {
                     // Tiled or block-compressed guest textures: reuse the decoded base level.
                     const bool preferBlocks =
                             !vertexBinding && m_rasterBackend->supportsBlockTextures() &&

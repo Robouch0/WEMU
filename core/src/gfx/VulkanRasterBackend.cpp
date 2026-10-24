@@ -844,17 +844,22 @@ void main() {
                     VkPhysicalDeviceMemoryProperties memory{};
                     vkGetPhysicalDeviceMemoryProperties(m_context->physical, &memory);
                     bool found = false;
-                    for (unsigned i = 0; i < memory.memoryTypeCount; ++i) {
-                        constexpr auto flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-                        if (!(requirements.memoryTypeBits & (1u << i)) || (memory.memoryTypes[i].propertyFlags & flags) != flags)
-                            continue;
-                        VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-                        allocation.allocationSize = requirements.size;
-                        allocation.memoryTypeIndex = i;
-                        check(vkAllocateMemory(value->device, &allocation, nullptr, &value->memory), "allocate stream output buffer");
-                        found = true;
-                        break;
-                    }
+                    // Output is read by the CPU after each dispatch. Reading write-combined
+                    // upload memory is expensive on discrete GPUs; prefer cached host memory
+                    // for that buffer, retaining the coherent fallback on other devices.
+                    for (unsigned pass = 0; pass < 2 && !found; ++pass)
+                        for (unsigned i = 0; i < memory.memoryTypeCount; ++i) {
+                            const auto flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                                               (slot == 2 && !pass ? VK_MEMORY_PROPERTY_HOST_CACHED_BIT : 0);
+                            if (!(requirements.memoryTypeBits & (1u << i)) || (memory.memoryTypes[i].propertyFlags & flags) != flags)
+                                continue;
+                            VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+                            allocation.allocationSize = requirements.size;
+                            allocation.memoryTypeIndex = i;
+                            check(vkAllocateMemory(value->device, &allocation, nullptr, &value->memory), "allocate stream output buffer");
+                            found = true;
+                            break;
+                        }
                     if (!found)
                         throw std::runtime_error("No coherent stream output memory");
                     check(vkBindBufferMemory(value->device, value->buffer, value->memory, 0), "bind stream output buffer");
@@ -2637,6 +2642,7 @@ void main() {
 
                 std::uint64_t draws() const { return renderedDraws; }
                 std::uint64_t passMerges() const { return mergedDraws; }
+                std::uint64_t imageReuses() const { return reusedTargetImages; }
 
                 RasterResult render(const Inputs &in)
                 {
@@ -3439,6 +3445,19 @@ void main() {
 
                 std::shared_ptr<ColorImage> createImage(unsigned width, unsigned height, VkFormat format, bool depthAspect)
                 {
+                    for (auto &entry: targetImages)
+                        if (entry.image.use_count() == 1 && entry.image->width == width && entry.image->height == height &&
+                            entry.image->format == format) {
+                            // Segments retain every attachment until their completion fence has
+                            // passed. Readback tickets and texture consumers also retain it, so an
+                            // image owned only by this pool has no outstanding users.
+                            entry.used = ++targetImageClock;
+                            entry.image->initialized = false;
+                            entry.image->direct = true;
+                            ++entry.image->version;
+                            ++reusedTargetImages;
+                            return entry.image;
+                        }
                     auto image = std::make_shared<ColorImage>();
                     image->context = contextOwner;
                     image->width = width;
@@ -3467,6 +3486,23 @@ void main() {
                     view.format = format;
                     view.subresourceRange = {depthAspect ? depthAspects(format) : VkImageAspectFlags(VK_IMAGE_ASPECT_COLOR_BIT), 0, 1, 0, 1};
                     check(vkCreateImageView(device, &view, nullptr, &image->attachmentView), "create direct attachment view");
+                    constexpr VkDeviceSize budget = VkDeviceSize{256} << 20;
+                    if (requirements.size <= budget) {
+                        while (targetImageBytes + requirements.size > budget) {
+                            auto oldest = targetImages.end();
+                            for (auto it = targetImages.begin(); it != targetImages.end(); ++it)
+                                if (it->image.use_count() == 1 && (oldest == targetImages.end() || it->used < oldest->used))
+                                    oldest = it;
+                            if (oldest == targetImages.end())
+                                break;
+                            targetImageBytes -= oldest->bytes;
+                            targetImages.erase(oldest);
+                        }
+                        if (targetImageBytes + requirements.size <= budget) {
+                            targetImages.push_back({image, requirements.size, ++targetImageClock});
+                            targetImageBytes += requirements.size;
+                        }
+                    }
                     return image;
                 }
                 void imageBarrier(VkCommandBuffer command, VkImage image, VkImageAspectFlags aspect, VkImageLayout from, VkImageLayout to,
@@ -4000,6 +4036,14 @@ void main() {
                 }
                 std::size_t current{};
                 std::uint64_t renderedDraws{};
+                struct TargetImage {
+                        std::shared_ptr<ColorImage> image;
+                        VkDeviceSize bytes{};
+                        std::uint64_t used{};
+                };
+                std::vector<TargetImage> targetImages;
+                VkDeviceSize targetImageBytes{};
+                std::uint64_t targetImageClock{}, reusedTargetImages{};
                 VkCommandPool readbackPool{};
                 VkCommandBuffer readbackCommand{};
                 std::shared_ptr<Context::BatchFence> readbackFence;
@@ -4094,6 +4138,7 @@ void main() {
     std::uint64_t VulkanRasterBackend::targetClears() const noexcept { return m_impl->context ? m_impl->context->targetClears : 0; }
     std::uint64_t VulkanRasterBackend::depthClears() const noexcept { return m_impl->context ? m_impl->context->depthClears : 0; }
     std::uint64_t VulkanRasterBackend::mergedRenderPasses() const noexcept { return m_impl->direct ? m_impl->direct->passMerges() : 0; }
+    std::uint64_t VulkanRasterBackend::reusedTargetImages() const noexcept { return m_impl->direct ? m_impl->direct->imageReuses() : 0; }
     std::uint64_t VulkanRasterBackend::targetCopyTransfers() const noexcept { return m_impl->context ? m_impl->context->targetCopyTransfers : 0; }
     std::uint64_t VulkanRasterBackend::fullOverwriteDraws() const noexcept { return m_impl->context ? m_impl->context->fullOverwriteDraws : 0; }
     std::uint64_t VulkanRasterBackend::residentTargetCopies() const noexcept { return m_impl->residentTargetCopies; }
@@ -4408,6 +4453,10 @@ void main() {
             const auto *value = std::getenv("WEMU_NATIVE_TIMING");
             return value && value[0] == '1';
         }();
+        static const bool directProfile = [] {
+            const auto *setting = std::getenv("WEMU_NATIVE_DIRECT_PROFILE");
+            return setting && setting[0] == '1';
+        }();
         const auto t0 = std::chrono::steady_clock::now();
         const bool overwriteTarget = overwritesTarget(draw);
         // Modules of lowered shaders are found by their precomputed source hash and the draw's
@@ -4593,6 +4642,7 @@ void main() {
             draw.depth.target = resolvedDepth;
             draw.depth.clear.reset();
         }
+        const auto depthInputsEnd = directProfile ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
         std::shared_ptr<ColorImage> targetSource;
         std::shared_ptr<const NativeImage> targetSnapshot;
         std::optional<std::array<float, 4>> targetClear;
@@ -4609,6 +4659,7 @@ void main() {
             else
                 draw.target = draw.renderedTarget->resolve();
         }
+        const auto targetInputsEnd = directProfile ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
         std::vector<DrawResources::Texture> textures;
         textures.reserve(draw.textures.size());
         std::vector<std::vector<std::uint8_t>> packedLayers; // CPU snapshots of non-resident array layers
@@ -4849,6 +4900,7 @@ void main() {
         }
         // Layout: registers [0, 1024), sampler borders and modes [1024, 1152), static uniform-block
         // references from 1152. Values past the references are never read, so they stay unset.
+        const auto textureInputsEnd = directProfile ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
         std::array<float, Latte::kStageConstantFloats> constants, vertexConstants;
         const auto constantFloats = std::min<std::size_t>(constants.size(), std::max(draw.constants.size(), 1152 + draw.uniforms.size()));
         const auto vertexConstantFloats =
@@ -4898,20 +4950,19 @@ void main() {
         if (direct) {
             if (!m_impl->direct)
                 m_impl->direct = std::make_shared<DirectRenderer>(m_impl->context);
-            static const bool profile = [] {
-                const auto *setting = std::getenv("WEMU_NATIVE_DIRECT_PROFILE");
-                return setting && setting[0] == '1';
-            }();
-            const auto started = profile ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+            const auto started = directProfile ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
             auto result =
                     m_impl->direct->render({draw, *vertex, *fragment, constants, vertexConstants, constantFloats, vertexConstantFloats, textures,
                                             targetSource, targetSnapshot, depthSource, overwriteTarget, draw.supersedesTarget, targetClear});
-            if (profile) {
+            if (directProfile) {
                 const auto end = std::chrono::steady_clock::now();
                 const auto us = [](auto first, auto last) { return std::chrono::duration_cast<std::chrono::microseconds>(last - first).count(); };
                 if (us(t0, end) >= 100)
-                    Utils::Log::error("[NATIVE_BACKEND_PROFILE] ps={:016X} total_us={} modules_us={} context_us={} inputs_us={} direct_us={}",
-                                      draw.shader.sourceHash, us(t0, end), us(t0, t1), us(t1, t2), us(t2, started), us(started, end));
+                    Utils::Log::error("[NATIVE_BACKEND_PROFILE] ps={:016X} total_us={} modules_us={} context_us={} inputs_us={} direct_us={} "
+                                      "depth_us={} target_us={} textures_us={} constants_us={}",
+                                      draw.shader.sourceHash, us(t0, end), us(t0, t1), us(t1, t2), us(t2, started), us(started, end),
+                                      us(t2, depthInputsEnd), us(depthInputsEnd, targetInputsEnd), us(targetInputsEnd, textureInputsEnd),
+                                      us(textureInputsEnd, started));
             }
             ++m_impl->completed;
             return result;

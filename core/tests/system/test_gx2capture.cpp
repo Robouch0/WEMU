@@ -219,6 +219,35 @@ TEST_F(Gx2CaptureTest, StreamOutWritesMaskedComponentsWithoutRasterizingAndResto
     if (std::getenv("WEMU_TEST_VULKAN")) {
         EXPECT_EQ(replay.nativeStreamOutPasses(), 1u);
         EXPECT_EQ(replay.comparedStreamOutPasses(), 1u);
+        const auto repeat = [&] {
+            gx2Stream().clear();
+            record("GX2SetStreamOutContext", {0, buffer0, 1});
+            record("GX2SetStreamOutContext", {1, buffer1, 1});
+            record("GX2DrawEx", {1, 64, 0, 1});
+            record("GX2SaveStreamOutContext", {0, buffer0});
+            replay.replay(gx2Stream(), &cpu->m_memory);
+        };
+        repeat();
+        EXPECT_EQ(replay.streamOutInputReuses(), 1u);
+        EXPECT_EQ(word(data0), std::bit_cast<unsigned>(1.f));
+        // Identical bindings do not establish identical inputs: check actual submitted bytes.
+        cpu->m_memory.write<unsigned>(vertices, std::bit_cast<unsigned>(42.f));
+        repeat();
+        EXPECT_EQ(replay.streamOutInputReuses(), 1u);
+        EXPECT_EQ(word(data0), std::bit_cast<unsigned>(42.f));
+        repeat();
+        EXPECT_EQ(replay.streamOutInputReuses(), 2u);
+        // The same bytes with a different component selection require another conversion.
+        gx2Stream().clear();
+        fetch.payload = {0, 0, 0, 0x813, 0, 0, 0x02010003, 3};
+        gx2Stream().push(fetch);
+        record("GX2SetStreamOutContext", {0, buffer0, 1});
+        record("GX2SetStreamOutContext", {1, buffer1, 1});
+        record("GX2DrawEx", {1, 64, 0, 1});
+        replay.replay(gx2Stream(), &cpu->m_memory);
+        EXPECT_EQ(replay.streamOutInputReuses(), 2u);
+        EXPECT_EQ(word(data0), std::bit_cast<unsigned>(3.f));
+        EXPECT_EQ(word(data0 + 8), std::bit_cast<unsigned>(42.f));
     }
     gx2Stream().clear();
     cpu->m_memory.write<unsigned>(data0 + 64 * 16, 0xABABABAB);
@@ -590,6 +619,37 @@ TEST_F(Gx2CaptureTest, SubmittedBuffersKeepTheirBytesWhenTheCpuBuildsTheNextFram
     const auto *next = reinterpret_cast<const std::uint8_t *>(stream.bufferSnapshots()[0].data.data());
     EXPECT_EQ(next[0], 0x98);
     EXPECT_EQ(old[0], 0x12);
+}
+
+TEST_F(Gx2CaptureTest, SubmittedBufferHashesDetectChangesInEveryLaneAndPartialTail)
+{
+    constexpr std::uint32_t address = 0x28010000;
+    for (unsigned byte = 0; byte < 89; ++byte)
+        cpu->m_memory.write<std::uint8_t>(address + byte, 0);
+    Core::Gfx::Gx2Command bind{Core::Gfx::Gx2Cmd::SetAttribBuffer};
+    bind.gpr = {0, 73, 4, address};
+    Core::Gfx::Gx2CommandStream stream;
+    stream.push(bind);
+    Core::Gfx::Gx2BufferSnapshots cache;
+    cache.capture(stream, cpu->m_memory);
+    ASSERT_EQ(stream.bufferSnapshots().size(), 1u);
+    const auto original = stream.contentHash();
+    // Capture includes 16 bytes of allowed fetch overrun and rounds storage to words.
+    ASSERT_EQ(stream.bufferSnapshots()[0].bytes, 89u);
+    for (unsigned byte = 0; byte < 89; ++byte) {
+        SCOPED_TRACE(byte);
+        cpu->m_memory.write<std::uint8_t>(address + byte, 0x80);
+        cache.capture(stream, cpu->m_memory);
+        EXPECT_NE(stream.contentHash(), original);
+        cpu->m_memory.write<std::uint8_t>(address + byte, 0);
+        cache.capture(stream, cpu->m_memory);
+        EXPECT_EQ(stream.contentHash(), original);
+    }
+    // Paired sign changes must not cancel: geometry can mirror several float components.
+    cpu->m_memory.write<std::uint8_t>(address + 7, 0x80);
+    cpu->m_memory.write<std::uint8_t>(address + 39, 0x80);
+    cache.capture(stream, cpu->m_memory);
+    EXPECT_NE(stream.contentHash(), original);
 }
 
 TEST_F(Gx2CaptureTest, SubmittedBuffersDetectStoresWithoutWriteTracking)
@@ -3050,7 +3110,7 @@ TEST_F(Gx2CaptureTest, DirectVertexArraysAreReusedUntilGuestVertexBytesChange)
     const auto backend = std::make_shared<VulkanRasterBackend>(true, true);
     native.setRasterBackend(backend);
     native.setNativeVerificationInterval(0);
-    const auto frame = [&] {
+    const auto frame = [&](bool repeat = false) {
         gx2Stream().clear();
         cpu->m_fpr[1] = cpu->m_fpr[2] = cpu->m_fpr[3] = cpu->m_fpr[4] = 0;
         record("GX2ClearColor", {COLOR});
@@ -3064,6 +3124,8 @@ TEST_F(Gx2CaptureTest, DirectVertexArraysAreReusedUntilGuestVertexBytesChange)
         record("GX2SetViewport", {});
         record("GX2SetVertexUniformReg", {0, 4, UNIFORM});
         record("GX2DrawIndexedEx", {4, count, 4, INDEX, 0, 1});
+        if (repeat)
+            record("GX2DrawIndexedEx", {4, count, 4, INDEX, 0, 1});
         record("GX2CopyColorBufferToScanBuffer", {COLOR, 1});
         gx2Stream().push(Gx2Command{Gx2Cmd::SwapScanBuffers});
         reference.replay(gx2Stream(), &cpu->m_memory);
@@ -3095,6 +3157,71 @@ TEST_F(Gx2CaptureTest, DirectVertexArraysAreReusedUntilGuestVertexBytesChange)
     EXPECT_EQ(native.framebuffer(), reference.framebuffer());
     const auto &fb = native.framebuffer();
     EXPECT_NE(std::vector(fb.begin(), fb.begin() + 4), std::vector(fb.end() - 4, fb.end()));
+    // A pose that changes every frame must still reuse its conversion in a later pass.
+    // Earlier admission policy permanently abandoned such geometry after four changes.
+    for (unsigned pose = 0; pose < 10; ++pose) {
+        writeQuad(float((pose + 1) % 4) / 4);
+        const auto hits = native.directVertexReuses();
+        frame(true);
+        EXPECT_EQ(native.directVertexReuses(), hits + 1);
+        EXPECT_EQ(native.framebuffer(), reference.framebuffer());
+    }
+    // A stream-output pass can replace a cached mesh between draws in the same frame.
+    constexpr unsigned STREAM_VS = 0x28014000, STREAM_PROGRAM = 0x28015000, STREAM_BUFFER = 0x28016000, STREAM_INPUT = 0x28017000;
+    for (unsigned off = 0; off < 0x200; off += 4)
+        cpu->m_memory.write<unsigned>(STREAM_VS + off, 0);
+    cpu->m_memory.write<unsigned>(STREAM_PROGRAM, std::byteswap(1u << 15));
+    cpu->m_memory.write<unsigned>(STREAM_PROGRAM + 4, std::byteswap((0x20u << 23) | (1u << 21) | (15u << 12) | 3u));
+    cpu->m_memory.write<unsigned>(STREAM_VS + 0xD0, 8);
+    cpu->m_memory.write<unsigned>(STREAM_VS + 0xD4, STREAM_PROGRAM);
+    cpu->m_memory.write<unsigned>(STREAM_VS + 0x40, 1);
+    cpu->m_memory.write<unsigned>(STREAM_VS + 0x110, 1);
+    cpu->m_memory.write<unsigned>(STREAM_VS + 0x114, 16);
+    for (unsigned off = 0; off < 32; off += 4)
+        cpu->m_memory.write<unsigned>(STREAM_BUFFER + off, 0);
+    cpu->m_memory.write<unsigned>(STREAM_BUFFER, 64);
+    cpu->m_memory.write<unsigned>(STREAM_BUFFER + 4, VERTS);
+    // Stream exports use GPU little-endian bytes, including the graphics fetch afterwards.
+    cpu->m_memory.write<unsigned>(ATTRS + 7 * 4, 0);
+    record("GX2InitFetchShaderEx", {FETCH, 0x28002000, 1, ATTRS, 0, 0});
+    const auto gpuQuad = [&](unsigned address, float right) {
+        const std::array<std::array<float, 4>, 4> vertices{{{-1, 1, 0, 1}, {right, 1, 0, 1}, {-1, -1, 0, 1}, {right, -1, 0, 1}}};
+        for (unsigned v = 0; v < vertices.size(); ++v)
+            for (unsigned c = 0; c < 4; ++c)
+                cpu->m_memory.write<unsigned>(address + v * 16 + c * 4, std::byteswap(std::bit_cast<unsigned>(vertices[v][c])));
+    };
+    gpuQuad(VERTS, 0);
+    gpuQuad(STREAM_INPUT, 1);
+    frame();
+    frame();
+    gx2Stream().clear();
+    cpu->m_fpr[1] = cpu->m_fpr[2] = cpu->m_fpr[3] = cpu->m_fpr[4] = 0;
+    record("GX2ClearColor", {COLOR});
+    record("GX2SetScissor", {0, 0, 2, 4});
+    record("GX2DrawIndexedEx", {4, count, 4, INDEX, 0, 1});
+    record("GX2SetVertexShader", {STREAM_VS});
+    record("GX2SetAttribBuffer", {0, 64, 16, STREAM_INPUT});
+    record("GX2SetStreamOutBuffer", {0, STREAM_BUFFER});
+    record("GX2SetStreamOutContext", {0, STREAM_BUFFER, 1});
+    record("GX2SetStreamOutEnable", {1});
+    gx2Stream().push(Gx2Command{Gx2Cmd::SetRasterizerClipControl, {0, 1, 0}});
+    record("GX2DrawEx", {1, 4, 0, 1});
+    record("GX2SetStreamOutEnable", {0});
+    gx2Stream().push(Gx2Command{Gx2Cmd::SetRasterizerClipControl, {1, 1, 0}});
+    record("GX2SetVertexShader", {VS});
+    record("GX2SetAttribBuffer", {0, 64, 16, VERTS});
+    record("GX2SetScissor", {2, 0, 2, 4});
+    record("GX2DrawIndexedEx", {4, count, 4, INDEX, 0, 1});
+    record("GX2DrawIndexedEx", {4, count, 4, INDEX, 0, 1});
+    record("GX2CopyColorBufferToScanBuffer", {COLOR, 1});
+    gx2Stream().push(Gx2Command{Gx2Cmd::SwapScanBuffers});
+    reference.replay(gx2Stream(), &cpu->m_memory);
+    gpuQuad(VERTS, 0);
+    const auto hits = native.directVertexReuses();
+    native.replay(gx2Stream(), &cpu->m_memory);
+    EXPECT_EQ(native.directVertexReuses(), hits + 2);
+    EXPECT_EQ(native.framebuffer(), reference.framebuffer());
+    EXPECT_EQ(native.framebuffer()[3 * 4 + 1], 255); // New geometry reaches the right-hand scissor.
 }
 
 TEST_F(Gx2CaptureTest, IndexedVertexReusePreservesParametersAndRefreshesEachDraw)
@@ -3927,7 +4054,7 @@ TEST_F(Gx2CaptureTest, PackedAndBlockDecodeMatchReferenceForTilingPartialBlocksA
     const std::array<std::array<float, 4>, 6> corners{{{-1, 1, 0, 0}, {1, 1, 1, 0}, {-1, -1, 0, 1}, {1, 1, 1, 0}, {1, -1, 1, 1}, {-1, -1, 0, 1}}};
     std::vector<std::array<unsigned, 4>> cases;
     for (const unsigned tile: {1u, 2u, 4u})
-        for (const unsigned format: {8u, 0x31u, 0x32u, 0x33u, 0x34u, 0x35u})
+        for (const unsigned format: {2u, 8u, 0x31u, 0x32u, 0x33u, 0x34u, 0x35u})
             cases.push_back({tile, format, 7, 5});
     // A near-4K BC1 atlas should stay compressed on the native path, instead
     // of expanding to 64 MiB of RGBA or a still larger float callback upload.
@@ -3952,9 +4079,9 @@ TEST_F(Gx2CaptureTest, PackedAndBlockDecodeMatchReferenceForTilingPartialBlocksA
             if (!hardwareBlocks)
                 native.setNativeVerificationInterval(1);
         }
-        const unsigned bytes = format == 8 ? 2 : format == 0x31 || format == 0x34 ? 8 : 16;
-        const auto layout =
-                baseSurfaceLayout(format == 8 ? width : (width + 3) / 4, format == 8 ? height : (height + 3) / 4, 1, bytes, tile, width, height);
+        const bool packed = format == 2 || format == 8;
+        const unsigned bytes = format == 2 ? 1 : format == 8 ? 2 : format == 0x31 || format == 0x34 ? 8 : 16;
+        const auto layout = baseSurfaceLayout(packed ? width : (width + 3) / 4, packed ? height : (height + 3) / 4, 1, bytes, tile, width, height);
         ASSERT_TRUE(layout);
         surface(COLOR, IMAGE, 7 * 5 * 4, 7, 5, 7, 1);
         surface(TEX, BLOCKS, layout->imageSize, width, height, layout->pitch, tile);
@@ -3971,13 +4098,13 @@ TEST_F(Gx2CaptureTest, PackedAndBlockDecodeMatchReferenceForTilingPartialBlocksA
         cpu->m_memory.write<unsigned>(TEX + 0x14, format);
         cpu->m_memory.write<unsigned>(TEX + 0x84, 0x00010203);
         const bool large = width > 4000;
-        for (unsigned pass = 0; pass < (large ? 20u : 2u); ++pass) {
+        for (unsigned pass = 0; pass < (large ? 20u : 3u); ++pass) {
             // Eighteen atlases overflow the strong CPU decode cache while their GPU
             // uploads still own the snapshots. Returning to the first unchanged
             // atlas must recover its owner instead of decoding/uploading again.
             const auto image = BLOCKS + (large && pass < 18 ? pass * 0x01000000u : 0u);
             cpu->m_memory.write<unsigned>(TEX + 0x24, image);
-            if (!large || pass != 18) {
+            if (large ? pass != 18 : pass != 1) {
                 unsigned random = 0x163AE42u + pass;
                 for (unsigned i = 0; i < layout->imageSize; ++i) {
                     random = random * 1664525u + 1013904223u;
@@ -4008,6 +4135,13 @@ TEST_F(Gx2CaptureTest, PackedAndBlockDecodeMatchReferenceForTilingPartialBlocksA
             gx2Stream().push(Gx2Command{Gx2Cmd::SwapScanBuffers});
             reference.replay(gx2Stream(), &cpu->m_memory);
             native.replay(gx2Stream(), &cpu->m_memory);
+            if (format == 2) {
+                const auto raw = cpu->m_memory.read<std::uint8_t>(BLOCKS);
+                EXPECT_EQ(reference.framebuffer()[0], (raw & 15) * 17);
+                EXPECT_EQ(reference.framebuffer()[1], (raw >> 4) * 17);
+                EXPECT_EQ(reference.framebuffer()[2], 0);
+                EXPECT_EQ(reference.framebuffer()[3], 255);
+            }
             if (format == 8) {
                 const std::array<std::uint8_t, 2> raw{cpu->m_memory.read<std::uint8_t>(BLOCKS), cpu->m_memory.read<std::uint8_t>(BLOCKS + 1)};
                 const auto expected = decodeRgb565(raw.data());
@@ -4075,6 +4209,8 @@ TEST_F(Gx2CaptureTest, PackedAndBlockDecodeMatchReferenceForTilingPartialBlocksA
             if (backend) {
                 EXPECT_EQ(backend->completedDraws(), pass + 1) << backend->lastError();
                 EXPECT_EQ(native.differingNativeDraws(), 0u);
+                if (!large)
+                    EXPECT_EQ(backend->sharedTextureUploads(), pass == 2 ? 2u : 1u);
                 if (large)
                     EXPECT_EQ(backend->sharedTextureUploads(), pass < 18 ? pass + 1u : pass == 18 ? 18u : 19u);
                 if (large && pass == 0)
