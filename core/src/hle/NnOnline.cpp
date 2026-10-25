@@ -85,6 +85,13 @@ void RegisterNnOnlineFunctions()
     sh.registerSyscall("IsPreabsent__Q2_2nn2fpFv", retFalse);
     sh.registerSyscall("SetNotificationHandler__Q2_2nn2fpFUiPFQ3_2nn2fp16NotificationTypeUiPv_vPv", ok);
     sh.registerSyscall("GetMyPrincipalId__Q2_2nn2fpFv", [](Core::Interpreter &cpu) { cpu.m_gpr[3] = 0x80000001u; });
+    sh.registerSyscall("GetFriendList__Q2_2nn2fpFPUiT1UiT3", [](Core::Interpreter &cpu) {
+        // An offline account has no friends. Always initialize the out-count;
+        // returning success with stale stack bytes makes callers walk past their list.
+        if (cpu.m_gpr[4])
+            cpu.m_memory.write<std::uint32_t>(cpu.m_gpr[4], 0);
+        cpu.m_gpr[3] = kResultOk;
+    });
 
     // ---- nn::olv (Miiverse — discontinued; report unavailable so the title skips it) ----
     sh.registerSyscall("IsInitialized__Q2_2nn3olvFv", retFalse);

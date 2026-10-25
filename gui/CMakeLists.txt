@@ -24,6 +24,7 @@ qt_add_executable(appgui
     src/library/TitleScanner.cpp
     src/emulator/EmulatorLauncher.cpp
     src/emulator/GameView.cpp
+    src/emulator/SessionProbe.cpp
     src/remote/RemoteGamepadServer.cpp
 )
 
@@ -93,6 +94,10 @@ target_compile_definitions(appgui PRIVATE WEMU_CORE_BINARY="$<TARGET_FILE:wemu>"
 if(WEMU_ENABLE_LLVM)
     target_compile_definitions(appgui PRIVATE WEMU_GUI_HAS_LLVM=1)
 endif()
+get_target_property(wemu_core_features core INTERFACE_COMPILE_DEFINITIONS)
+if("WEMU_HAS_X64_JIT=1" IN_LIST wemu_core_features)
+    target_compile_definitions(appgui PRIVATE WEMU_GUI_HAS_X64_JIT=1)
+endif()
 add_dependencies(appgui wemu)
 file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/WEMU.desktop" CONTENT
 "[Desktop Entry]\nType=Application\nName=WEMU\nComment=Game library and emulator\nExec=\"$<TARGET_FILE:appgui>\"\nIcon=applications-games\nTerminal=false\nCategories=Game;Emulator;\n")
@@ -127,6 +132,9 @@ target_include_directories(wemu_session_lifecycle_tests PRIVATE src/emulator src
 target_compile_definitions(wemu_session_lifecycle_tests PRIVATE WEMU_CORE_BINARY="$<TARGET_FILE:wemu>")
 if(WEMU_ENABLE_LLVM)
     target_compile_definitions(wemu_session_lifecycle_tests PRIVATE WEMU_GUI_HAS_LLVM=1)
+endif()
+if("WEMU_HAS_X64_JIT=1" IN_LIST wemu_core_features)
+    target_compile_definitions(wemu_session_lifecycle_tests PRIVATE WEMU_GUI_HAS_X64_JIT=1)
 endif()
 target_link_libraries(wemu_session_lifecycle_tests PRIVATE Qt6::Core Qt6::Gui Qt6::Network gtest)
 add_dependencies(wemu_session_lifecycle_tests wemu)

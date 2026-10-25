@@ -104,8 +104,10 @@ declare -a APT_PKGS=(
   # Core deps
   zlib1g-dev
   libavcodec-dev
+  libavformat-dev
   libavutil-dev
   libswscale-dev
+  libswresample-dev
 
   # Vulkan stack
   libvulkan-dev
@@ -154,7 +156,7 @@ declare -a DNF_PKGS=(
   zlib-devel
   # Resolved by provide so dnf picks ffmpeg-devel (RPM Fusion) or
   # libavcodec-free-devel (Fedora) depending on which FFmpeg is installed.
-  'pkgconfig(libavcodec)' 'pkgconfig(libavutil)' 'pkgconfig(libswscale)'
+  'pkgconfig(libavcodec)' 'pkgconfig(libavformat)' 'pkgconfig(libavutil)' 'pkgconfig(libswscale)' 'pkgconfig(libswresample)'
   vulkan-loader-devel vulkan-tools vulkan-validation-layers glslang glslc
   glfw-devel SDL2-devel SDL2_image-devel glm-devel
   qt6-qtbase-devel qt6-qtdeclarative-devel qt6-qtmultimedia-devel

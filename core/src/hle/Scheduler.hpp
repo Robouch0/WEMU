@@ -44,6 +44,10 @@ namespace Core {
             bool timedWait{false}; // event wait: TRUE on signal, FALSE at wakeTick
             std::uint32_t osThreadPtr{0}; // guest OSThread* handle
             std::uint32_t joinTarget{0}; // when Waiting: handle being joined
+            std::uint32_t joinResultAddress{0}; // guest out-pointer supplied to OSJoinThread
+            std::uint32_t exitValue{0}; // return value from the thread entry or OSExitThread
+            std::uint32_t conditionMutex{0}; // mutex to reacquire when a condition wait resumes
+            std::uint32_t conditionMutexDepth{0}; // preserve recursive ownership across the wait
             std::uint32_t waitKey{0}; // when Waiting on a sync object (event/cond): its guest address
             std::uint32_t retryPc{0}; // last PC (offset-space) that took a yieldRetryOnce slice
             std::uint32_t retryCount{0}; // consecutive yieldRetryOnce slices taken at retryPc
@@ -65,7 +69,7 @@ namespace Core {
             void resume(std::uint32_t osThread); // OSResumeThread
             bool yield(Interpreter &cpu); // OSYieldThread; true if it switched
             void sleep(Interpreter &cpu, std::uint64_t ticks); // OSSleepTicks
-            bool join(Interpreter &cpu, std::uint32_t osThread); // OSJoinThread; true if it blocked/switched
+            bool join(Interpreter &cpu, std::uint32_t osThread, std::uint32_t resultAddress = 0); // true if it blocked/switched
             bool exitCurrent(Interpreter &cpu); // current thread terminates; true if switched to another
 
             // Block the current thread on a sync object (event/cond guest address). Returns true if
@@ -76,6 +80,17 @@ namespace Core {
             bool blockWithTimeout(Interpreter &cpu, std::uint32_t key, std::uint64_t ticks);
             void advanceTicks(std::uint64_t ticks);
             void advanceFrame(std::uint64_t period);
+            void waitForFrame(Interpreter &cpu, std::uint64_t period);
+            void waitForSwap(Interpreter &cpu);
+            void setSwapInterval(std::uint32_t interval)
+            {
+                if (interval < 20) {
+                    if (!m_swapInterval && interval)
+                        m_frameClockStarted = false;
+                    m_swapInterval = interval;
+                }
+            }
+            [[nodiscard]] std::uint32_t swapInterval() const { return m_swapInterval; }
 
             // OSMutex / OSFastMutex / spinlock backing: recursive, owner = OSThread handle, keyed
             // by the guest address of the lock object. mutexLock returns true when the lock is
@@ -83,6 +98,7 @@ namespace Core {
             // thread blocked and the locking SC re-executes on wake.
             bool mutexLock(Interpreter &cpu, std::uint32_t addr);
             bool mutexTryLock(std::uint32_t addr); // never blocks; true if acquired/recursed
+            bool waitCondition(Interpreter &cpu, std::uint32_t condition, std::uint32_t mutex);
             void mutexUnlock(std::uint32_t addr); // ignored unless current thread owns it
             void mutexReset(std::uint32_t addr); // OSInitMutex on live memory: drop stale state
 
@@ -125,6 +141,7 @@ namespace Core {
             void load(Interpreter &cpu, ThreadContext *t);
             ThreadContext *find(std::uint32_t osThread);
             ThreadContext *pickRunnable(ThreadContext *exclude); // may advance the clock to wake sleepers
+            std::uint64_t frameDeadline(std::uint64_t period);
             bool reschedule(Interpreter &cpu, std::uint32_t resumePc, bool timesliceOtherCores);
 
             struct MutexState {
@@ -138,6 +155,8 @@ namespace Core {
             std::size_t m_rrIndex{0}; // round-robin scan start for pickRunnable
             std::uint64_t m_now{0};
             std::uint64_t m_lastFrameTick{0};
+            bool m_frameClockStarted{false};
+            std::uint32_t m_swapInterval{1};
             std::uint32_t m_mainHandle{0xEFF00000}; // synthetic handle for the implicit main thread
     };
 } // namespace Core

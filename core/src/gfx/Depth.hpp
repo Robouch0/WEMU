@@ -5,9 +5,43 @@
 #include <bit>
 #include <cmath>
 #include <cstdint>
+#include <optional>
 
 namespace Core::Gfx {
     enum class DepthFormat { Float32, UNorm16, UNorm24 };
+
+    // DB_DEPTH_CONTROL: ALWAYS plus KEEP on every outcome neither rejects
+    // fragments nor changes stencil, independent of masks/references/storage.
+    inline bool identityStencil(std::uint32_t control)
+    {
+        const bool front = ((control >> 8) & 0xFFFu) == 7u;
+        const bool back = !(control & (1u << 7)) || ((control >> 20) & 0xFFFu) == 7u;
+        return front && back;
+    }
+
+    inline std::uint8_t stencilOperation(unsigned op, std::uint8_t stored, std::uint8_t reference)
+    {
+        switch (op) {
+            case 0:
+                return stored;
+            case 1:
+                return 0;
+            case 2:
+                return reference;
+            case 3:
+                return stored == 255 ? 255 : stored + 1;
+            case 4:
+                return stored == 0 ? 0 : stored - 1;
+            case 5:
+                return ~stored;
+            case 6:
+                return stored + 1;
+            case 7:
+                return stored - 1;
+            default:
+                return stored;
+        }
+    }
 
     inline unsigned depthElementBytes(DepthFormat format) { return format == DepthFormat::UNorm16 ? 2 : 4; }
 

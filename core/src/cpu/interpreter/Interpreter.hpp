@@ -104,6 +104,7 @@ namespace Core {
 
             void reset()
             {
+                m_vpadLcdMode = 0xFF;
                 m_h264.reset();
                 m_mvPlayer.reset();
                 m_lockedCache = {};
@@ -166,6 +167,7 @@ namespace Core {
             std::shared_ptr<MvPlayer::State> m_mvPlayer;
             std::atomic<std::uint32_t> m_controllerMask{0};
             std::uint32_t m_vpadPreviousHold{0};
+            std::uint32_t m_vpadLcdMode{0xFF};
             std::uint64_t m_vpadReadCount{0};
             bool m_hle_redirected{false};
             bool m_interruptsDisabled{false}; // OSDisableInterrupts: defers timeslice preemption

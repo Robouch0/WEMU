@@ -44,8 +44,10 @@ namespace Core {
                 GraphicsResourcesEnd = 0xF6000000
             };
 
-            static constexpr uint32_t STACK_BASE = 0xC0FF0000;
             static constexpr uint32_t STACK_SIZE = 0x100000; // 1 MB
+            // The initial SP is 0xC0FFFFF0 and the stack grows down. Back the full
+            // megabyte below that top; 0xC0FF0000 provided only 64 KB of usable stack.
+            static constexpr uint32_t STACK_BASE = 0xC1000000 - STACK_SIZE;
             // Internal HLE pool (0x26000000..0x28000000). The guest-visible MEM2 arena that the
             // title allocates from starts at 0x28000000 (see hle/MemHeap.cpp) — keep out of it.
             static constexpr uint32_t HEAP_BASE = 0x26000000;
@@ -200,11 +202,11 @@ namespace Core {
                 const auto pages = mainPages(address, bytes);
                 if (!pages)
                     return;
-                for (auto page = pages->first; page <= pages->second; ++page) {
-                    const auto bit = std::uint64_t{1} << (page % 64);
-                    if (!(m_tracking->watchedPages[page / 64].load(std::memory_order_relaxed) & bit)) {
-                        m_tracking->watchedPages[page / 64].fetch_or(bit, std::memory_order_relaxed);
-                        m_slowPages[page / 64].fetch_or(bit, std::memory_order_seq_cst);
+                for (auto word = pages->first / 64; word <= pages->second / 64; ++word) {
+                    const auto mask = pageWordMask(pages->first, pages->second, word);
+                    if ((m_tracking->watchedPages[word].load(std::memory_order_relaxed) & mask) != mask) {
+                        m_tracking->watchedPages[word].fetch_or(mask, std::memory_order_relaxed);
+                        m_slowPages[word].fetch_or(mask, std::memory_order_seq_cst);
                     }
                 }
             }
@@ -213,12 +215,16 @@ namespace Core {
                 const auto pages = mainPages(address, bytes);
                 if (!pages || m_tracking->untracked.load(std::memory_order_relaxed))
                     return std::nullopt;
-                std::uint64_t generation = 0;
-                for (auto page = pages->first; page <= pages->second; ++page) {
-                    if (!isWatchedPage(page))
+                // Validate each bitmap word once, then sum the page counters. Large
+                // texture ranges otherwise reload the same watched word 64 times.
+                for (auto word = pages->first / 64; word <= pages->second / 64; ++word) {
+                    const auto mask = pageWordMask(pages->first, pages->second, word);
+                    if ((m_tracking->watchedPages[word].load(std::memory_order_relaxed) & mask) != mask)
                         return std::nullopt;
-                    generation += m_tracking->pageWrites[page].load(std::memory_order_acquire);
                 }
+                std::uint64_t generation = 0;
+                for (auto page = pages->first; page <= pages->second; ++page)
+                    generation += m_tracking->pageWrites[page].load(std::memory_order_acquire);
                 return generation;
             }
             void setUntrackedStores(const bool untracked) noexcept { m_tracking->untracked.store(untracked, std::memory_order_relaxed); }
@@ -270,6 +276,13 @@ namespace Core {
                 (void) data;
                 (void) bytes;
 #endif
+            }
+
+            static std::uint64_t pageWordMask(std::size_t first, std::size_t last, std::size_t word) noexcept
+            {
+                const auto low = word == first / 64 ? first % 64 : 0;
+                const auto high = word == last / 64 ? last % 64 : 63;
+                return (~std::uint64_t{0} << low) & (~std::uint64_t{0} >> (63 - high));
             }
 
             struct WriteTracking {

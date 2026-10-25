@@ -3,7 +3,50 @@
 
 #include "TestFixture.hpp"
 #include "cpu/interpreter/SyscallHandler.hpp"
+#include "hle/Coreinit.hpp"
 #include "hle/CoreinitExtra.hpp"
+
+TEST_F(InstructionTest, OfflineAccountReturnsAStableValidMiiStoreRecord)
+{
+    RegisterCoreinitFunctions();
+    constexpr unsigned output = 0x28001001, name = 0x28002000;
+    std::array<std::uint8_t, 96> first{};
+    for (const char *function: {"GetMii__Q2_2nn3actFP12FFLStoreData", "GetMiiEx__Q2_2nn3actFP12FFLStoreDataUc"}) {
+        for (unsigned i = 0; i < 98; ++i)
+            cpu->m_memory.write<std::uint8_t>(output - 1 + i, 0xCC);
+        cpu->m_gpr[3] = output;
+        cpu->m_gpr[4] = 1;
+        Core::syscallHandler.get(function)(*cpu);
+        ASSERT_EQ(cpu->m_gpr[3], 0u);
+        EXPECT_EQ(cpu->m_memory.read<std::uint8_t>(output - 1), 0xCC);
+        EXPECT_EQ(cpu->m_memory.read<std::uint8_t>(output + 96), 0xCC);
+        const auto *data = std::as_const(cpu->m_memory).hostPtr(output, 96);
+        ASSERT_NE(data, nullptr);
+        // Independent, byte-fed CRC-16/CCITT validation, including the stored checksum.
+        unsigned crc = 0;
+        for (unsigned i = 0; i < 96; ++i) {
+            crc ^= unsigned(data[i]) << 8;
+            for (unsigned bit = 0; bit < 8; ++bit)
+                crc = ((crc << 1) ^ ((crc & 0x8000) ? 0x1021 : 0)) & 0xFFFF;
+        }
+        EXPECT_EQ(crc, 0u);
+        EXPECT_EQ(data[0], 3); // Mii version
+        EXPECT_EQ(data[3] >> 4, 4); // Wii U birth platform
+        EXPECT_NE(data[12] & 0x80, 0); // normal creator ID
+        const auto littleWord = [&](unsigned offset) { return unsigned(data[offset]) | (unsigned(data[offset + 1]) << 8); };
+        EXPECT_GE((littleWord(0x3A) >> 9) & 31, 3u); // minimum eyebrow position
+        EXPECT_LE(data[0x2E], 128);
+        EXPECT_LE(data[0x2F], 128);
+        if (first[0])
+            EXPECT_EQ(std::memcmp(first.data(), data, first.size()), 0);
+        else
+            std::memcpy(first.data(), data, first.size());
+        cpu->m_gpr[3] = name;
+        Core::syscallHandler.get("GetMiiName__Q2_2nn3actFPw")(*cpu);
+        for (unsigned i = 0; i < 10; ++i)
+            EXPECT_EQ(littleWord(0x1A + i * 2), i < 4 ? cpu->m_memory.read<std::uint16_t>(name + i * 2) : 0);
+    }
+}
 
 TEST(SystemConfigTest, ValidatesLanguageAndRegionWithoutReplacingTheTitleRegion)
 {

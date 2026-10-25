@@ -57,6 +57,24 @@ TEST(SessionSettingsTest, LanguageAndRegionPersistAndRejectInvalidSelections)
     settings.remove("emulation/systemRegion");
 }
 
+TEST(SessionSettingsTest, AudioVolumePersistsClampsAndHandlesMalformedSettings)
+{
+    QSettings settings;
+    settings.remove("audio/volume");
+    EmulatorLauncher first;
+    EXPECT_EQ(first.audioVolume(), 100);
+    first.setAudioVolume(37);
+    EmulatorLauncher second;
+    EXPECT_EQ(second.audioVolume(), 37);
+    second.setAudioVolume(-1);
+    EXPECT_EQ(first.audioVolume(), 0);
+    second.setAudioVolume(200);
+    EXPECT_EQ(first.audioVolume(), 100);
+    settings.setValue("audio/volume", "invalid");
+    EXPECT_EQ(first.audioVolume(), 100);
+    settings.remove("audio/volume");
+}
+
 TEST(SessionLifecycleTest, MissingFilesKeepTheLibraryAvailable)
 {
     EmulatorLauncher launcher;

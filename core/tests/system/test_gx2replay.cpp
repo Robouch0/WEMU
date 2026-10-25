@@ -73,6 +73,14 @@ TEST(TextureFormatTest, R32FloatPreservesRangePrecisionAndSelectors)
     }
 }
 
+TEST(TextureFormatTest, Rg16UnormUsesBothLittleEndianWordsWithoutByteQuantization)
+{
+    const std::array<std::uint8_t, 4> bytes{0x01, 0x00, 0xFE, 0xFF};
+    EXPECT_EQ(decodeRg16Unorm(bytes.data()), (std::array<float, 4>{1.f / 65535.f, 65534.f / 65535.f, 0.f, 1.f}));
+    const std::array<std::uint8_t, 4> endpoints{0, 0, 255, 255};
+    EXPECT_EQ(decodeRg16Unorm(endpoints.data()), (std::array<float, 4>{0, 1, 0, 1}));
+}
+
 TEST(LatteProgramTest, SharedDecoderPreservesGroupsLiteralsAndSourceModifiers)
 {
     const std::vector<std::uint32_t> words{2,
@@ -568,6 +576,14 @@ TEST(LatteVsTest, VertexTextureSampleUsesSelectorsAndPreservesMaskedChannels)
     EXPECT_FALSE(LatteVsInterp::run(program, attributes, nullptr, 0).valid);
     program[4] = (program[4] & ~31u) | 0x10u; // implicit-LOD SAMPLE is not implemented
     EXPECT_FALSE(LatteVsInterp::run(program, attributes, nullptr, 0, {}, sampler).valid);
+}
+
+TEST(TextureFormatTest, Rg4UnormExpandsIndependentNibblesAndSuppliesMissingChannels)
+{
+    for (unsigned r = 0; r < 16; ++r)
+        for (unsigned g = 0; g < 16; ++g)
+            EXPECT_EQ(Core::Gfx::decodeRg4Unorm(std::uint8_t(r | (g << 4))),
+                      (std::array<std::uint8_t, 4>{std::uint8_t(r * 17), std::uint8_t(g * 17), 0, 255}));
 }
 
 TEST(TextureFormatTest, Rgb565UsesGpuByteOrderAndIndependentNormalizedChannels)

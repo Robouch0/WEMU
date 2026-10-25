@@ -18,6 +18,8 @@
 #include <cstring>
 #include <unordered_map>
 
+#include "MessageQueue.hpp"
+#include "OfflineMii.hpp"
 #include "cpu/interpreter/Interpreter.hpp"
 #include "cpu/interpreter/SyscallHandler.hpp"
 #include "cpu/memory/Memory.hpp"
@@ -229,12 +231,32 @@ static constexpr std::uint32_t kCoreClockSpeed = 1243125000u; // busSpeed * 5
 namespace Core {
     void advanceGuestFrameClock(Interpreter &cpu)
     {
+        static const bool profile = [] {
+            const auto *setting = std::getenv("WEMU_CLOCK_PROFILE");
+            return setting && setting[0] == '1';
+        }();
+        if (profile) {
+            static const std::uint64_t every = [] {
+                const auto *setting = std::getenv("WEMU_CLOCK_PROFILE_EVERY");
+                if (!setting || *setting < '0' || *setting > '9')
+                    return 120ull;
+                char *end{};
+                const auto value = std::strtoull(setting, &end, 10);
+                return value && !*end ? value : 120ull;
+            }();
+            static const auto started = std::chrono::steady_clock::now();
+            static std::uint64_t presents{};
+            ++presents;
+            if (presents == 1 || presents % every == 0)
+                Utils::Log::error("[CLOCK] presents={} ticks={} wall={:.6f} interval={}", presents, cpu.m_scheduler.now(),
+                                  std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count(), cpu.m_scheduler.swapInterval());
+        }
         static const bool on = []() {
             const char *e = std::getenv("WEMU_FRAME_CLOCK");
             return e && e[0] == '1';
         }();
         if (on)
-            cpu.m_scheduler.advanceFrame(1035937ull); // busSpeed / 4 / 60
+            cpu.m_scheduler.waitForSwap(cpu);
     }
 } // namespace Core
 
@@ -301,6 +323,25 @@ static void hle_OSCompareAndSwapAtomic(Core::Interpreter &cpu)
     } else {
         cpu.m_gpr[3] = 0;
     }
+}
+
+// HLE calls execute without guest preemption. PPC EABI passes the aligned 64-bit
+// second argument in r5:r6 and returns a 64-bit result in r3:r4.
+static void hle_OSGetAtomic64(Core::Interpreter &cpu)
+{
+    const auto value = cpu.m_memory.read<std::uint64_t>(cpu.m_gpr[3]);
+    cpu.m_gpr[3] = static_cast<std::uint32_t>(value >> 32);
+    cpu.m_gpr[4] = static_cast<std::uint32_t>(value);
+}
+
+static void hle_OSSetAtomic64(Core::Interpreter &cpu)
+{
+    const auto address = cpu.m_gpr[3];
+    const auto value = (std::uint64_t{cpu.m_gpr[5]} << 32) | cpu.m_gpr[6];
+    const auto old = cpu.m_memory.read<std::uint64_t>(address);
+    cpu.m_memory.write<std::uint64_t>(address, value);
+    cpu.m_gpr[3] = static_cast<std::uint32_t>(old >> 32);
+    cpu.m_gpr[4] = static_cast<std::uint32_t>(old);
 }
 
 static void hle_OSCompareAndSwapAtomicEx(Core::Interpreter &cpu)
@@ -408,14 +449,37 @@ static void hle_OSSleepTicks(Core::Interpreter &cpu)
     cpu.m_scheduler.sleep(cpu, ticks);
 }
 
-static void hle_OSYieldThread(Core::Interpreter &cpu) { cpu.m_scheduler.yield(cpu); }
+static void hle_OSYieldThread(Core::Interpreter &cpu)
+{
+    // HLE bypasses the kernel instructions that select/save/restore a context.
+    // Charge a conservative scheduling cost (1280 core cycles / 20) so polling
+    // OSYieldThread cannot perform millions of host switches in one guest ms.
+    // This is a timing approximation, not an instruction-accurate kernel model.
+    cpu.m_scheduler.advanceTicks(64);
+    cpu.m_scheduler.yield(cpu);
+}
 
 static void hle_OSGetCurrentThread(Core::Interpreter &cpu) { cpu.m_gpr[3] = cpu.m_scheduler.currentHandle(); }
+
+static void hle_OSIsThreadTerminated(Core::Interpreter &cpu)
+{
+    const auto handle = cpu.m_gpr[3];
+    for (const auto &thread: cpu.m_scheduler.threads())
+        if (thread->osThreadPtr == handle) {
+            cpu.m_gpr[3] = thread->state == Core::ThreadContext::State::Finished;
+            return;
+        }
+    // Uncreated/inactive guest OSThread storage has state NONE. Known threads
+    // above use the scheduler's authoritative state, including before join.
+    const auto address = std::uint64_t(handle) + 0x324;
+    const auto *state = handle && address < 0x100000000ull ? std::as_const(cpu.m_memory).hostPtr(std::uint32_t(address), 1) : nullptr;
+    cpu.m_gpr[3] = state && (*state == 0 || *state == 8);
+}
 
 // BOOL OSJoinThread(OSThread *thread, int *result)
 static void hle_OSJoinThread(Core::Interpreter &cpu)
 {
-    cpu.m_scheduler.join(cpu, cpu.m_gpr[3]);
+    cpu.m_scheduler.join(cpu, cpu.m_gpr[3], cpu.m_gpr[4]);
     if (!cpu.m_hle_redirected)
         cpu.m_gpr[3] = 1;
 }
@@ -573,6 +637,19 @@ static void hle_OSInitMessageQueue(Core::Interpreter &cpu)
     cpu.m_gpr[3] = 0;
 }
 
+bool Core::enqueueMessage(Interpreter &cpu, const std::uint32_t queue, const std::uint32_t message)
+{
+    const auto it = g_msgQueues.find(queue);
+    if (it == g_msgQueues.end() || !it->second.capacity || it->second.count == it->second.capacity)
+        return false;
+    auto &q = it->second;
+    const std::uint32_t tail = (q.head + q.count) % q.capacity;
+    copyMessage(cpu, q.buffer + tail * kOSMessageSize, message);
+    ++q.count;
+    cpu.m_scheduler.wakeAll(queue);
+    return true;
+}
+
 // Senders park on queueAddr^1, receivers on queueAddr, so a send doesn't wake other senders.
 static void hle_OSSendMessage(Core::Interpreter &cpu)
 {
@@ -585,11 +662,8 @@ static void hle_OSSendMessage(Core::Interpreter &cpu)
         cpu.m_gpr[3] = 0;
         return;
     }
-    const std::uint32_t tail = (q.head + q.count) % q.capacity;
-    copyMessage(cpu, q.buffer + tail * kOSMessageSize, cpu.m_gpr[4]);
-    q.count++;
+    Core::enqueueMessage(cpu, queue, cpu.m_gpr[4]);
     cpu.m_gpr[3] = 1;
-    cpu.m_scheduler.wakeAll(queue);
     cpu.m_scheduler.rescheduleAfterHle(cpu);
 }
 
@@ -796,11 +870,12 @@ static void hle_SYSGetSystemApplicationTitleId(Core::Interpreter &cpu)
     cpu.m_gpr[3] = 0x00050010u;
 }
 
-// GetMii(FFLStoreData* out): zeroed Mii + OK result; real Mii data can come with FFL support.
+// GetMii/GetMiiEx: return the offline account's valid, stable store record.
 static void hle_nn_act_GetMii(Core::Interpreter &cpu)
 {
-    for (std::uint32_t off = 0; off < 0x60 && cpu.m_gpr[3]; off += 4)
-        cpu.m_memory.write<std::uint32_t>(cpu.m_gpr[3] + off, 0);
+    static constexpr auto data = Core::offlineMii();
+    for (std::uint32_t off = 0; off < data.size() && cpu.m_gpr[3]; ++off)
+        cpu.m_memory.write<std::uint8_t>(cpu.m_gpr[3] + off, data[off]);
     cpu.m_gpr[3] = 0;
 }
 
@@ -862,8 +937,29 @@ static void hle_ProcUIProcessMessages(Core::Interpreter &cpu)
 
 static void hle_VPADInit(Core::Interpreter &cpu)
 {
+    cpu.m_vpadLcdMode = 0xFF;
     cpu.m_vpadPreviousHold = 0;
     cpu.m_vpadReadCount = 0;
+    cpu.m_gpr[3] = 0;
+}
+static void hle_VPADGetLcdMode(Core::Interpreter &cpu)
+{
+    const auto channel = cpu.m_gpr[3], output = cpu.m_gpr[4];
+    if (channel || !output || !std::as_const(cpu.m_memory).hostPtr(output, 4)) {
+        cpu.m_gpr[3] = std::uint32_t(-1);
+        return;
+    }
+    cpu.m_memory.write<std::uint32_t>(output, cpu.m_vpadLcdMode);
+    cpu.m_gpr[3] = 0;
+}
+static void hle_VPADSetLcdMode(Core::Interpreter &cpu)
+{
+    const auto channel = cpu.m_gpr[3], mode = cpu.m_gpr[4];
+    if (channel || (mode != 0 && mode != 1 && mode != 0xFF)) {
+        cpu.m_gpr[3] = std::uint32_t(-1);
+        return;
+    }
+    cpu.m_vpadLcdMode = mode;
     cpu.m_gpr[3] = 0;
 }
 static void hle_VPADSetAccParam(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
@@ -1115,6 +1211,8 @@ void RegisterCoreinitFunctions()
     Core::syscallHandler.registerSyscall("OSIsDebuggerInitialized", hle_OSIsDebuggerInitialized);
     Core::syscallHandler.registerSyscall("OSEnableHomeButtonMenu", hle_OSEnableHomeButtonMenu);
     Core::syscallHandler.registerSyscall("OSCompareAndSwapAtomic", hle_OSCompareAndSwapAtomic);
+    Core::syscallHandler.registerSyscall("OSGetAtomic64", hle_OSGetAtomic64);
+    Core::syscallHandler.registerSyscall("OSSetAtomic64", hle_OSSetAtomic64);
     Core::syscallHandler.registerSyscall("OSCompareAndSwapAtomicEx", hle_OSCompareAndSwapAtomicEx);
     Core::syscallHandler.registerSyscall("OSReport", hle_OSReport);
     Core::syscallHandler.registerSyscall("OSFatal", hle_OSFatal);
@@ -1133,6 +1231,7 @@ void RegisterCoreinitFunctions()
     Core::syscallHandler.registerSyscall("OSSleepTicks", hle_OSSleepTicks);
     Core::syscallHandler.registerSyscall("OSYieldThread", hle_OSYieldThread);
     Core::syscallHandler.registerSyscall("OSGetCurrentThread", hle_OSGetCurrentThread);
+    Core::syscallHandler.registerSyscall("OSIsThreadTerminated", hle_OSIsThreadTerminated);
     Core::syscallHandler.registerSyscall("OSJoinThread", hle_OSJoinThread);
     Core::syscallHandler.registerSyscall("OSExitThread", hle_OSExitThread);
     Core::syscallHandler.registerSyscall("OSSetThreadName", hle_OSSetThreadName);
@@ -1174,6 +1273,8 @@ void RegisterCoreinitFunctions()
 
     // VPAD
     Core::syscallHandler.registerSyscall("VPADInit", hle_VPADInit);
+    Core::syscallHandler.registerSyscall("VPADGetLcdMode", hle_VPADGetLcdMode);
+    Core::syscallHandler.registerSyscall("VPADSetLcdMode", hle_VPADSetLcdMode);
     Core::syscallHandler.registerSyscall("VPADSetAccParam", hle_VPADSetAccParam);
     Core::syscallHandler.registerSyscall("VPADRead", hle_VPADRead);
     Core::syscallHandler.registerSyscall("VPADGetTPCalibratedPoint", hle_VPADGetTPCalibratedPoint);

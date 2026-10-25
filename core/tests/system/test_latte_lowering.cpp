@@ -587,6 +587,7 @@ TEST(LatteLoweringTest, WholeQuadImplicitSamplingRequiresRuntimeResourceProof)
     EXPECT_TRUE(shader.requiresDerivativeFreeSampling);
     ASSERT_EQ(shader.textures.size(), 1u);
     EXPECT_TRUE(shader.textures[0].implicitLod);
+    EXPECT_FALSE(shader.textures[0].derivativeLod);
     validateSpirv(shader);
     auto explicitWords = program->words;
     explicitWords[18] = (explicitWords[18] & ~31u) | 0x13u;
@@ -856,6 +857,54 @@ TEST(VulkanRasterBackendTest, ArrayDepthCompareSelectsLayerAndAppliesSamplerFunc
         }
 }
 
+TEST(VulkanRasterBackendTest, ShadowFilteringComparesEachTapBeforeInterpolation)
+{
+    using namespace Core::Gfx;
+    const auto program = decodeProgram(
+            {2, 1u << 23, 0, (0x28u << 23) | (1u << 21) | 0x688u, 0x18u, 0x30000000u | (0x688u << 9), (1u << 23) | (2u << 26) | (3u << 29), 0});
+    if (!std::getenv("WEMU_TEST_VULKAN") || !SpirvCompiler::available())
+        GTEST_SKIP();
+    // Each layer has a depth discontinuity. Comparing the interpolated depth
+    // yields only 0/1, whereas PCF must preserve fractional coverage.
+    const std::array<float, 8> depths{.25f, .75f, .75f, .25f, .75f, .25f, .25f, .75f};
+    const std::array<std::array<float, 2>, 5> coordinates{{{.5f, .5f}, {.375f, .625f}, {0, 1}, {-.125f, .625f}, {1.125f, .375f}}};
+    for (const auto type: {TextureType::TwoD, TextureType::TwoDArray}) {
+        const auto shader = lowerFragmentShader(*program, std::array{type});
+        ASSERT_TRUE(shader) << shader.error;
+        std::array<RasterDraw::Vertex, 3> vertices{{{0, 0, {}}, {4, 0, {}}, {0, 4, {}}}};
+        std::vector<std::uint8_t> target(4 * 4 * 4);
+        RasterDraw::Texture texture{shader.textures[0], 2, 2, {}, [](unsigned, unsigned) { return std::array{0.f, 0.f, 0.f, 0.f}; }};
+        texture.layers = type == TextureType::TwoDArray ? 2 : 1;
+        texture.r32 = std::span(depths).first(texture.layers * 4);
+        texture.sourceMipCount = 1;
+        RasterDraw draw{shader, vertices, {}, {&texture, 1}, target, 4, 4, 4, {0, 0, 4, 4}, 15, {}};
+        VulkanRasterBackend backend;
+        for (unsigned mode: {0u, 1u, 2u, 6u})
+            for (unsigned filter: {0u, 1u})
+                for (unsigned function = 0; function < 8; ++function)
+                    for (unsigned layer = 0; layer < texture.layers; ++layer)
+                        for (const auto &coord: coordinates) {
+                            SCOPED_TRACE(std::format("type={} mode={} filter={} function={} layer={} xy={},{}", unsigned(type), mode, filter,
+                                                     function, layer, coord[0], coord[1]));
+                            texture.sampler.regs[0] = mode | (mode << 3) | (filter << 9) | (filter << 12) | (function << 26);
+                            for (auto &vertex: vertices)
+                                vertex.inputs[0] = {coord[0], coord[1], float(layer), .5f};
+                            auto referenceSampler = texture.sampler;
+                            const float borderPassed = depthCompare(.5f, texture.sampler.border()[0], function) ? 1.f : 0.f;
+                            referenceSampler.regs[0] |= 3u << 22;
+                            referenceSampler.customBorder = {borderPassed, borderPassed, borderPassed, borderPassed};
+                            const auto expected = referenceSampler.sample(2, 2, coord[0], coord[1], [&](unsigned x, unsigned y) {
+                                const float passed = depthCompare(.5f, depths[layer * 4 + y * 2 + x], function) ? 1.f : 0.f;
+                                return std::array{passed, passed, passed, passed};
+                            });
+                            const auto result = backend.render(draw);
+                            ASSERT_TRUE(result) << backend.lastError();
+                            for (unsigned c = 0; c < 4; ++c)
+                                EXPECT_NEAR(result->rgba[c], expected[c] * 255.f, 1.f);
+                        }
+    }
+}
+
 TEST(VulkanRasterBackendTest, KillInstructionsDiscardMatchingPixelsAndPreserveTheTarget)
 {
     using namespace Core::Gfx;
@@ -916,6 +965,108 @@ TEST(VulkanRasterBackendTest, KillInstructionsDiscardMatchingPixelsAndPreserveTh
     }
     EXPECT_FALSE(
             lowerVertexShader(*decodeProgram({2, 8u << 26, 0, (CF_EXP_DONE << 23) | (1u << 21) | (60u) | (1u << 13), (1u << 31), OP2_KILLGT << 7})));
+}
+
+TEST(VulkanRasterBackendTest, ConstantUploadsPreserveRegisterPrefixesAndUniformTails)
+{
+    using namespace Core::Gfx;
+    if (!std::getenv("WEMU_TEST_VULKAN") || !SpirvCompiler::available())
+        GTEST_SKIP();
+    std::array<RasterDraw::Vertex, 3> vertices{{{0, 0, {}}, {8, 0, {}}, {0, 8, {}}}};
+    std::vector<std::uint8_t> target(4 * 4 * 4);
+    std::array<float, 1024> registers{};
+    for (unsigned index: {1u, 255u}) {
+        registers[index * 4] = .125f;
+        registers[index * 4 + 1] = .25f;
+        registers[index * 4 + 2] = .375f;
+    }
+    for (bool direct: {false, true}) {
+        VulkanRasterBackend backend(true, true, direct);
+        for (unsigned registerCount: {0u, 2u, 256u, 0u}) {
+            FragmentShader shader;
+            shader.constantRegisters = registerCount;
+            shader.uniforms = {{0, 0}};
+            shader.source = "#version 450\nlayout(location=0) out vec4 color;\n"
+                            "layout(set=0,binding=0,std140) uniform Constants { vec4 c[256]; vec4 borders[16]; vec4 sampling[16]; vec4 k[1]; } u;\n"
+                            "void main() { color=u.k[0]";
+            if (registerCount)
+                shader.source += std::format("+u.c[{}]", registerCount - 1);
+            shader.source += "; }\n";
+            for (float value: {.125f, .25f, .5f}) {
+                SCOPED_TRACE(std::format("direct={} registers={} uniform={}", direct, registerCount, value));
+                const std::array<float, 4> uniforms{value, value, value, 1};
+                RasterDraw draw{shader, vertices, std::span(registers).first(registerCount * 4), {}, target, 4, 4, 4, {0, 0, 4, 4}, 15, {}};
+                draw.uniforms = uniforms;
+                auto result = backend.renderDeferred(draw);
+                ASSERT_TRUE(result) << backend.lastError();
+                result->resolve();
+                const std::array<float, 4> expected{value + (registerCount ? .125f : 0), value + (registerCount ? .25f : 0),
+                                                    value + (registerCount ? .375f : 0), 1};
+                for (unsigned c = 0; c < 4; ++c)
+                    EXPECT_NEAR(result->rgba[c], expected[c] * 255.f, 1);
+            }
+        }
+    }
+}
+
+TEST(VulkanRasterBackendTest, ImplicitSamplesSelectMipFromFootprintAndSamplerBias)
+{
+    using namespace Core::Gfx;
+    const auto shader = lowerFragmentShader(
+            *decodeProgram({2, 1u << 23, 0, (0x28u << 23) | (1u << 21) | 0x688u, 0x10u, 0x30000000u | (0x688u << 9), 1u << 23, 0}));
+    ASSERT_TRUE(shader) << shader.error;
+    ASSERT_TRUE(shader.textures.at(0).derivativeLod);
+    if (!std::getenv("WEMU_TEST_VULKAN") || !SpirvCompiler::available())
+        GTEST_SKIP();
+    const std::array<std::array<float, 4>, 5> colors{{{1, 0, 0, 1}, {0, 1, 0, 1}, {0, 0, 1, 1}, {1, 1, 0, 1}, {1, 0, 1, 1}}};
+    std::array<std::vector<float>, 5> levels;
+    std::vector<RasterDraw::Texture::MipLevel> mips;
+    for (unsigned level = 0; level < levels.size(); ++level) {
+        const unsigned size = 16u >> level;
+        for (unsigned pixel = 0; pixel < size * size; ++pixel)
+            levels[level].insert(levels[level].end(), colors[level].begin(), colors[level].end());
+        if (level)
+            mips.push_back({size, size, levels[level]});
+    }
+    std::array<RasterDraw::Vertex, 3> vertices{{{0, 0, {}}, {8, 0, {}}, {0, 8, {}}}};
+    std::vector<std::uint8_t> target(4 * 4 * 4);
+    RasterDraw::Texture texture{shader.textures[0], 16, 16, {}, [](unsigned, unsigned) { return std::array{1.f, 0.f, 0.f, 1.f}; }};
+    texture.rgba32 = levels[0];
+    texture.mips = mips;
+    texture.sourceMipCount = 5;
+    texture.sampler.regs[0] = 2u | (2u << 3) | (1u << 17);
+    RasterDraw draw{shader, vertices, {}, {&texture, 1}, target, 4, 4, 4, {0, 0, 4, 4}, 15, {}};
+    for (bool direct: {false, true}) {
+        VulkanRasterBackend backend(true, true, direct);
+        vertices[0].inputs[0] = {0, 0, 0, 0};
+        vertices[1].inputs[0] = {2, 0, 0, 0};
+        vertices[2].inputs[0] = {0, 2, 0, 0};
+        for (int bias: {-1, 0, 1}) {
+            SCOPED_TRACE(std::format("direct={} bias={}", direct, bias));
+            // Four source texels per output pixel selects level 2; signed
+            // sampler bias moves that footprint one level in either direction.
+            texture.sampler.regs[1] = (256u << 10) | ((unsigned(bias * 64) & 4095u) << 20);
+            const auto result = backend.render(draw);
+            ASSERT_TRUE(result) << backend.lastError();
+            for (unsigned pixel = 0; pixel < 16; ++pixel)
+                for (unsigned c = 0; c < 4; ++c)
+                    EXPECT_EQ(result->rgba[pixel * 4 + c], colors[unsigned(2 + bias)][c] * 255.f);
+        }
+        // Constant coordinates magnify even with a linear minification filter.
+        // A checkerboard distinguishes the two filters at a texel boundary.
+        for (unsigned y = 0; y < 16; ++y)
+            for (unsigned x = 0; x < 16; ++x)
+                levels[0][(y * 16 + x) * 4] = (x + y) % 2 == 0 ? 1.f : 0.f;
+        for (auto &vertex: vertices)
+            vertex.inputs[0] = {.5f, .5f, 0, 0};
+        texture.sampler.regs[1] = 256u << 10;
+        for (unsigned mag: {0u, 1u}) {
+            texture.sampler.regs[0] = 2u | (2u << 3) | (mag << 9) | ((1u - mag) << 12) | (1u << 17);
+            const auto result = backend.render(draw);
+            ASSERT_TRUE(result) << backend.lastError();
+            EXPECT_NEAR(result->rgba[0], mag == 0 ? 255.f : 127.5f, 1.f);
+        }
+    }
 }
 
 TEST(VulkanRasterBackendTest, RenderedMipLevelsStayOnTheGpuAndSelectTheirLod)
@@ -1013,7 +1164,7 @@ TEST(VulkanRasterBackendTest, ArrayLayersMixResidentAndCpuVersions)
     std::array<RasterDraw::Vertex, 3> vertices{{{0, 0, {}}, {8, 0, {}}, {0, 8, {}}}};
     std::vector<std::uint8_t> target(4 * 4 * 4);
     RasterDraw draw{shader, vertices, {}, {&texture, 1}, target, 4, 4, 4, {0, 0, 4, 4}, 15, {}};
-    for (const auto layer: {0.f, 1.f}) {
+    for (const auto layer: {0.f, 1.f, 0.f, 1.f}) {
         SCOPED_TRACE(layer);
         for (auto &vertex: vertices)
             vertex.inputs[0] = {.5f, .5f, layer, 0};
@@ -1023,7 +1174,21 @@ TEST(VulkanRasterBackendTest, ArrayLayersMixResidentAndCpuVersions)
         EXPECT_EQ((std::array{result->rgba[0], result->rgba[1], result->rgba[2], result->rgba[3]}),
                   (layer == 0 ? std::array<std::uint8_t, 4>{255, 0, 0, 255} : std::array<std::uint8_t, 4>{0, 255, 0, 255}));
     }
-    EXPECT_EQ(backend.readbackTransfers(), 2u); // the resident layer was copied on the GPU, never read back
+    EXPECT_EQ(backend.readbackTransfers(), 4u); // only consumer results, not the resident source
+    EXPECT_EQ(backend.residentTextureCopies(), 1u);
+    EXPECT_EQ(backend.assembledTextureHits(), 3u);
+    auto blue = green;
+    for (unsigned i = 0; i < 16; ++i) {
+        blue[i * 4 + 1] = 0;
+        blue[i * 4 + 2] = 255;
+    }
+    texture.renderedLayers[1] = std::make_shared<RasterReadback>(blue.size(), [blue] { return blue; });
+    auto changed = backend.renderDeferred(draw);
+    ASSERT_TRUE(changed) << backend.lastError();
+    changed->resolve();
+    EXPECT_EQ((std::array{changed->rgba[0], changed->rgba[1], changed->rgba[2], changed->rgba[3]}), (std::array<std::uint8_t, 4>{0, 0, 255, 255}));
+    EXPECT_EQ(backend.residentTextureCopies(), 2u);
+    EXPECT_EQ(backend.assembledTextureHits(), 3u);
 }
 
 TEST(VulkanRasterBackendTest, RenderedArraysAreAssembledOncePerSourceVersion)
@@ -3942,6 +4107,58 @@ TEST(VulkanRasterBackendTest, IndependentLiveColorAndDepthVersionsStayResidentUn
                     }
                 }
         }
+    }
+}
+
+TEST(VulkanRasterBackendTest, CompletedTransientAttachmentsReuseStorageAndPreserveLiveVersions)
+{
+    using namespace Core::Gfx;
+    if (!std::getenv("WEMU_TEST_VULKAN") || !SpirvCompiler::available())
+        GTEST_SKIP();
+    const auto shader = lowerFragmentShader(*decodeProgram({0, (CF_EXP_DONE << 23) | (1u << 21) | 0x688u}));
+    ASSERT_TRUE(shader) << shader.error;
+    for (const auto format: {ColorFormat::RGBA8, ColorFormat::RGBA32Float}) {
+        std::array<RasterDraw::Vertex, 3> vertices{{{0, 0, {}}, {8, 0, {}}, {0, 8, {}}}};
+        std::vector<std::uint8_t> target(6 * 4 * colorElementBytes(format), 19);
+        std::vector<float> depth(6 * 4, .9f);
+        RasterDraw draw{shader, vertices, {}, {}, target, 4, 4, 6, {0, 0, 4, 4}, 15, {}};
+        draw.colorFormat = format;
+        draw.depth = {true, true, 7, DepthFormat::Float32, depth, 4, 4, 6, {}};
+        VulkanRasterBackend backend(true, true);
+        for (auto &vertex: vertices) {
+            vertex.inputs[0] = {.75f, .25f, .5f, 1};
+            vertex.z = .75f;
+        }
+        auto retained = backend.renderDeferred(draw);
+        ASSERT_TRUE(retained) << backend.lastError();
+        // Keep this unresolved version while many later submissions rotate through the pool.
+        for (unsigned i = 1; i <= 20; ++i) {
+            for (auto &vertex: vertices) {
+                vertex.inputs[0][0] = float(i) / 32;
+                vertex.z = float(i) / 32;
+            }
+            auto result = backend.renderDeferred(draw);
+            ASSERT_TRUE(result) << backend.lastError();
+            result->resolve();
+            result->resolveDepth();
+            EXPECT_FLOAT_EQ(result->depth[0], float(i) / 32);
+            if (format == ColorFormat::RGBA8)
+                EXPECT_NEAR(result->rgba[0], std::round(float(i) * 255 / 32), 1);
+            else
+                EXPECT_FLOAT_EQ(readFloatColor(result->rgba.data())[0], float(i) / 32);
+            for (unsigned y = 0; y < 4; ++y) {
+                EXPECT_FLOAT_EQ(result->depth[y * 6 + 4], .9f);
+                EXPECT_EQ(result->rgba[(y * 6 + 4) * colorElementBytes(format)], 19);
+            }
+        }
+        EXPECT_GT(backend.reusedTargetImages(), 0u);
+        retained->resolve();
+        retained->resolveDepth();
+        EXPECT_FLOAT_EQ(retained->depth[0], .75f);
+        if (format == ColorFormat::RGBA8)
+            EXPECT_NEAR(retained->rgba[0], std::round(.75f * 255), 1);
+        else
+            EXPECT_FLOAT_EQ(readFloatColor(retained->rgba.data())[0], .75f);
     }
 }
 

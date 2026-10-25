@@ -21,6 +21,7 @@
 #include <string>
 #include <utility>
 
+#include "audio/Output.hpp"
 #include "binary/Binary.hpp"
 #include "binary/Loader.hpp"
 #include "cpu/interpreter/Interpreter.hpp"
@@ -260,6 +261,19 @@ int main(const int ac, char const *const *av)
             }
         }
 
+        auto &audio = Core::Audio::output();
+        if (const char *value = std::getenv("WEMU_AUDIO_VOLUME")) {
+            char *end{};
+            const long percent = std::strtol(value, &end, 10);
+            if (end != value && !*end && percent >= 0 && percent <= 100)
+                audio.setVolume(percent);
+        }
+        if (const char *setting = std::getenv("WEMU_AUDIO_STRETCH"); setting && std::string(setting) == "0")
+            audio.setTimeStretchEnabled(false);
+        audio.start();
+        struct AudioCleanup {
+                ~AudioCleanup() { Core::Audio::output().stop(); }
+        } audioCleanup;
         interpreter.run();
 
         Core::Diag::dumpUnknownImports();

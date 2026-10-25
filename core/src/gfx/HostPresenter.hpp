@@ -20,7 +20,7 @@ namespace Core::Gfx {
     // Presentation/control transport, independent of the guest GPU and toolkit.
     class HostPresenter {
         public:
-            enum class Action : std::uint32_t { Pause = 1, Resume, Stop, Buttons, DrcStream };
+            enum class Action : std::uint32_t { Pause = 1, Resume, Stop, Buttons, DrcStream, AudioVolume };
             struct Command {
                     Action action{};
                     std::uint32_t value{};

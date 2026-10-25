@@ -13,4 +13,9 @@ namespace Core::Gfx {
     std::optional<LatteSurfaceLayout> latteSurfaceLayout(unsigned width, unsigned height, unsigned depth, unsigned format, unsigned dimension,
                                                          unsigned tileMode, unsigned level, unsigned use = 1);
 
+    struct LatteHtileLayout {
+            std::uint32_t alignment{}, imageSize{};
+    };
+    std::optional<LatteHtileLayout> latteHtileLayout(unsigned pitch, unsigned height, unsigned slices);
+
 } // namespace Core::Gfx

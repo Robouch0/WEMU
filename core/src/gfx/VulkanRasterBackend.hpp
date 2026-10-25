@@ -19,10 +19,14 @@ namespace Core::Gfx {
             bool supportsRenderedTextures() const override { return true; }
             bool supportsRenderedTargets() const override { return true; }
             bool supportsDepth() const override { return true; }
+            bool supportsStencil() const override { return true; }
             bool supportsPoints() const override { return true; }
             bool supportsFloatTargets() const override { return true; }
             bool supportsVertexStage() const override { return true; }
             bool supportsBlockTextures() const override { return true; }
+            bool supportsStreamOut() const override { return true; }
+            std::optional<StreamOutResult> streamOut(const StreamOutDraw &draw) override;
+            std::shared_ptr<StreamOutReadback> streamOutDeferred(const StreamOutDraw &draw) override;
             bool supportsRenderedMipLevels() const override;
             const std::string &lastError() const noexcept;
             std::uint64_t completedDraws() const noexcept;
@@ -43,6 +47,8 @@ namespace Core::Gfx {
             std::uint64_t depthClears() const noexcept;
             // Direct draws that continued the previous draw's render pass.
             std::uint64_t mergedRenderPasses() const noexcept;
+            // Completed transient attachments recycled after all users released them.
+            std::uint64_t reusedTargetImages() const noexcept;
             std::uint64_t targetCopyTransfers() const noexcept;
             std::uint64_t fullOverwriteDraws() const noexcept;
             std::uint64_t residentTargetCopies() const noexcept;

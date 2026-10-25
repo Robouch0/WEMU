@@ -33,12 +33,12 @@ namespace Core::Gfx::Latte {
             const auto cf0 = words[cf], cf1 = words[cf + 1];
             if (!isAluClause(cf1)) {
                 const auto op = cfInst(cf1);
-                if (op == CF_EXP || op == CF_EXP_DONE) {
+                if (op == CF_EXP || op == CF_EXP_DONE || (op >= 0x20 && op <= 0x23)) {
                     const auto burst = ((cf1 >> 17) & 15) + 1;
                     result->registerCount = std::max(result->registerCount, std::min(128u, ((cf0 >> 15) & 127) + burst));
                     constexpr unsigned directMask = 0x1FFFu | (3u << 13) | (127u << 15);
                     const auto base = cf0 & 0x1FFF;
-                    if (!(cf0 & ~directMask) && ((cf0 >> 13) & 3) == 0 && base < 8 && (cf1 & 0xFFF) != 0xFFF)
+                    if ((op == CF_EXP || op == CF_EXP_DONE) && !(cf0 & ~directMask) && ((cf0 >> 13) & 3) == 0 && base < 8 && (cf1 & 0xFFF) != 0xFFF)
                         for (unsigned target = base; target < std::min(8u, base + burst); ++target)
                             result->colorExportMask |= 1u << target;
                 }
