@@ -2,10 +2,11 @@
 # ==============================================================================
 # WEMU — setup.sh
 # ------------------------------------------------------------------------------
-# One-shot installer & builder for WEMU on Linux.
+# One-shot installer & builder for WEMU on Linux and macOS.
 #
 # What this script does:
-#   1. Detects your distribution (Ubuntu, Debian, Fedora, Arch).
+#   1. Detects your distribution (Ubuntu, Debian, Fedora, Arch) or macOS (Homebrew,
+#      Vulkan through MoltenVK).
 #   2. Installs every system dependency the project needs to build AND run:
 #        - Compilers + CMake + Ninja + ccache
 #        - Qt6 (base + declarative + multimedia) + QML runtime modules
@@ -34,7 +35,7 @@ set -euo pipefail
 
 # ----- defaults ---------------------------------------------------------------
 BUILD_TYPE="Release"
-JOBS="$(nproc 2>/dev/null || echo 4)"
+JOBS="$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)"
 DO_BUILD=1
 DO_TEST=0
 DO_CLEAN=0
@@ -73,12 +74,19 @@ if [[ ! -f CMakeLists.txt ]] || [[ ! -d core ]] || [[ ! -d gui ]]; then
 fi
 
 # ----- distro detection -------------------------------------------------------
-if [[ ! -f /etc/os-release ]]; then
-  die "Cannot detect distribution: /etc/os-release missing."
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  command -v brew >/dev/null || die "Homebrew is required on macOS: install it from https://brew.sh"
+  DISTRO_ID="macos"
+  DISTRO_LIKE=""
+  PRETTY_NAME="macOS $(sw_vers -productVersion) ($(uname -m))"
+else
+  if [[ ! -f /etc/os-release ]]; then
+    die "Cannot detect distribution: /etc/os-release missing."
+  fi
+  . /etc/os-release
+  DISTRO_ID="${ID:-unknown}"
+  DISTRO_LIKE="${ID_LIKE:-}"
 fi
-. /etc/os-release
-DISTRO_ID="${ID:-unknown}"
-DISTRO_LIKE="${ID_LIKE:-}"
 
 log "Detected: ${PRETTY_NAME:-$DISTRO_ID}"
 
@@ -175,6 +183,15 @@ declare -a PACMAN_PKGS=(
   gtest
 )
 
+# macOS (Homebrew) list: Vulkan is the loader + MoltenVK, Apple clang is the compiler.
+declare -a BREW_PKGS=(
+  cmake ninja ccache pkgconf
+  ffmpeg
+  vulkan-loader vulkan-headers vulkan-tools molten-vk glslang spirv-tools
+  sdl2 sdl2_image glm
+  qt
+)
+
 # ----- install dependencies ---------------------------------------------------
 install_deps_apt() {
   log "Updating apt index..."
@@ -194,7 +211,14 @@ install_deps_pacman() {
   sudo pacman -Sy --noconfirm --needed "${PACMAN_PKGS[@]}"
 }
 
+install_deps_brew() {
+  log "Installing ${#BREW_PKGS[@]} dependencies via Homebrew..."
+  brew install "${BREW_PKGS[@]}"
+}
+
 case "$DISTRO_ID" in
+  macos)
+    install_deps_brew ;;
   ubuntu|debian|linuxmint|pop|elementary|zorin)
     install_deps_apt ;;
   fedora|rhel|centos|rocky|almalinux)

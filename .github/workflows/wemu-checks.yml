@@ -100,6 +100,35 @@ jobs:
           test -n "$VK_DRIVER_FILES"
           ctest --test-dir core/build --output-on-failure --parallel 1
 
+  macos:
+    name: macOS arm64 (LLVM ${{ matrix.llvm }})
+    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        llvm: ["OFF", "ON"]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          brew install ninja pkgconf ffmpeg sdl2 sdl2_image glm qt \
+            vulkan-loader vulkan-headers molten-vk glslang spirv-tools
+          if [ "${{ matrix.llvm }}" = "ON" ]; then
+            brew install llvm@19
+          fi
+
+      # Hosted macOS runners expose no Metal device to MoltenVK: the WEMU_TEST_VULKAN tests stay skipped.
+      - name: Configure project with CMake
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DWEMU_ENABLE_LLVM=${{ matrix.llvm }} ${{ matrix.llvm == 'ON' && '-DLLVM_DIR=/opt/homebrew/opt/llvm@19/lib/cmake/llvm' || '' }}
+
+      - name: Build project
+        run: cmake --build build --parallel $(sysctl -n hw.ncpu)
+
+      - name: Run tests
+        run: ctest --test-dir build --output-on-failure --parallel 1
+
   clang-format:
     name: clang-format
     runs-on: ubuntu-24.04
