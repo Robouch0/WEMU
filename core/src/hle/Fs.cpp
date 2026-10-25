@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <format>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -11,14 +12,17 @@
 #include "cpu/interpreter/Interpreter.hpp"
 #include "cpu/interpreter/SyscallHandler.hpp"
 #include "cpu/memory/Memory.hpp"
+#include "hle/AsyncCallbacks.hpp"
+#include "hle/MessageQueue.hpp"
 #include "utils/Diagnostics.hpp"
 #include "utils/Logger.hpp"
 
 // Cafe filesystem HLE, backed by the host filesystem.
 //
 // Wii U titles read assets through paths like "/vol/content/ui/...". We translate that prefix to the
-// extracted game's content directory on the host and service the synchronous FS* calls (the only
-// variants MK8 imports) with real fopen/fread. File handles are small integers we hand out and track
+// extracted game's content directory on the host and service FS* calls with real fopen/fread.
+// Async calls publish their results through guest callbacks or message queues.
+// File handles are small integers we hand out and track
 // host-side. FSStatus: 0 = OK, negative = error (we use NOT_FOUND = -6).
 
 namespace {
@@ -83,6 +87,7 @@ namespace {
     {
         static const std::string kContent = "/vol/content";
         static const std::string kSave = "/vol/save";
+        static const std::string kSharedSave = "/vol/shared_save";
         if (isWithinMount(guestPath, kContent)) {
             const std::string rel = guestPath.substr(kContent.size());
             // Title updates overlay the base content: first root that has the file wins.
@@ -98,6 +103,12 @@ namespace {
             std::error_code ec;
             std::filesystem::create_directories(saveRoot, ec);
             return saveRoot + guestPath.substr(kSave.size());
+        }
+        if (isWithinMount(guestPath, kSharedSave)) {
+            // Shared system services also create persistent data (for example, the Mii
+            // database). Back the paths returned by SAVE with the same storage as saves,
+            // keeping each shared title's files separate from normal account saves.
+            return g_contentRoot + "/../wemu_save/shared" + guestPath.substr(kSharedSave.size());
         }
         // An unmounted guest path must not fall through to the host filesystem.
         return {};
@@ -359,6 +370,53 @@ namespace {
         traceStackForPath(cpu, guestPath, "stat");
         writeStat(cpu, cpu.m_gpr[6], sz, false);
         cpu.m_gpr[3] = FS_STATUS_OK;
+    }
+
+    // FSGetStatAsync(client, cmd, path, stat, errMask, FSAsyncData*).
+    // Submission succeeds independently of the eventual operation status.
+    void fs_GetStatAsync(Core::Interpreter &cpu)
+    {
+        const auto client = cpu.m_gpr[3], block = cpu.m_gpr[4], data = cpu.m_gpr[8];
+        if (!data || !block) {
+            cpu.m_gpr[3] = FS_STATUS_FATAL_ERROR;
+            return;
+        }
+        const auto callback = cpu.m_memory.read<std::uint32_t>(data);
+        const auto param = cpu.m_memory.read<std::uint32_t>(data + 4);
+        const auto queue = cpu.m_memory.read<std::uint32_t>(data + 8);
+        if (!callback && !queue) {
+            cpu.m_gpr[3] = FS_STATUS_FATAL_ERROR;
+            return;
+        }
+        fs_GetStat(cpu);
+        const auto status = cpu.m_gpr[3];
+        // FSCmdBlockBody is 64-byte aligned inside the public FSCmdBlock.
+        const auto result = ((block + 0x3Fu) & ~0x3Fu) + 0x96C;
+        cpu.m_memory.write<std::uint32_t>(result, callback);
+        cpu.m_memory.write<std::uint32_t>(result + 4, param);
+        cpu.m_memory.write<std::uint32_t>(result + 8, queue);
+        cpu.m_memory.write<std::uint32_t>(result + 0x0C, result);
+        cpu.m_memory.write<std::uint32_t>(result + 0x10, 0);
+        cpu.m_memory.write<std::uint32_t>(result + 0x14, 0);
+        cpu.m_memory.write<std::uint32_t>(result + 0x18, 8); // OS_FUNCTION_TYPE_FS_CMD_ASYNC
+        cpu.m_memory.write<std::uint32_t>(result + 0x1C, client);
+        cpu.m_memory.write<std::uint32_t>(result + 0x20, block);
+        cpu.m_memory.write<std::uint32_t>(result + 0x24, status);
+        if (queue) {
+            cpu.m_gpr[3] = Core::enqueueMessage(cpu, queue, result + 0x0C) ? FS_STATUS_OK : FS_STATUS_FATAL_ERROR;
+        } else {
+            Core::Async::enqueue(callback, client, block, status, param);
+            cpu.m_gpr[3] = FS_STATUS_OK;
+        }
+        if (fsTrace())
+            std::fprintf(stderr, "[FSTRACE] statasync client=%08X block=%08X status=%d callback=%08X queue=%08X\n", client, block,
+                         static_cast<std::int32_t>(status), callback, queue);
+    }
+
+    void fs_GetAsyncResult(Core::Interpreter &cpu)
+    {
+        const auto message = cpu.m_gpr[3];
+        cpu.m_gpr[3] = message && cpu.m_memory.read<std::uint32_t>(message + 0x0C) == 8 ? cpu.m_memory.read<std::uint32_t>(message) : 0;
     }
 
     // FSCloseFile(client, cmd, FSFileHandle handle, errMask)
@@ -628,8 +686,9 @@ namespace {
     // SAVEGetSharedSaveDataPath(u64 titleId, const char* file, char* out, u32 outSize)
     void save_GetSharedSaveDataPath(Core::Interpreter &cpu)
     {
+        const auto title = (std::uint64_t(cpu.m_gpr[3]) << 32) | cpu.m_gpr[4];
         const std::string file = readGuestString(cpu, cpu.m_gpr[5]);
-        writeGuestString(cpu, cpu.m_gpr[6], cpu.m_gpr[7], "/vol/shared_save/" + file);
+        writeGuestString(cpu, cpu.m_gpr[6], cpu.m_gpr[7], std::format("/vol/shared_save/{:016x}/{}", title, file));
         cpu.m_gpr[3] = FS_STATUS_OK;
     }
 
@@ -649,6 +708,8 @@ void RegisterFsFunctions()
     Core::syscallHandler.registerSyscall("FSSetPosFile", fs_SetPosFile);
     Core::syscallHandler.registerSyscall("FSGetStatFile", fs_GetStatFile);
     Core::syscallHandler.registerSyscall("FSGetStat", fs_GetStat);
+    Core::syscallHandler.registerSyscall("FSGetStatAsync", fs_GetStatAsync);
+    Core::syscallHandler.registerSyscall("FSGetAsyncResult", fs_GetAsyncResult);
     Core::syscallHandler.registerSyscall("FSCloseFile", fs_CloseFile);
     Core::syscallHandler.registerSyscall("FSGetCwd", fs_GetCwd);
     Core::syscallHandler.registerSyscall("FSChangeDir", fs_ChangeDir);

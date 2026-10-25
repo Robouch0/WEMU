@@ -9,6 +9,7 @@
 
 #include "emulator/EmulatorLauncher.hpp"
 #include "emulator/GameView.hpp"
+#include "emulator/SessionProbe.hpp"
 #include "input/InputManager.hpp"
 #include "input/InputProfileManager.hpp"
 #include "input/KeyboardInput.hpp"
@@ -63,6 +64,7 @@ int main(int argc, char *argv[])
         qFatal("The game presentation item was not created");
     QObject::connect(&launcher, &EmulatorLauncher::frameReady, gameView, &GameView::setFrame);
     QObject::connect(gameView, &GameView::framePresented, &launcher, &EmulatorLauncher::acknowledgeFrame);
+    installSessionProbe(app, launcher, *gameView);
     const int result = app.exec();
     input.stopPolling();
     return result;

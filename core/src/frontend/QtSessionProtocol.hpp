@@ -10,7 +10,7 @@
 #include "gfx/HostPresenter.hpp"
 
 namespace WemuSession {
-    constexpr quint32 version = 3;
+    constexpr quint32 version = 4;
     constexpr quint32 maximumMessage = 4096u * 4096u * 4u + 128u;
     // Frame/DrcFrame: core -> window. Gamepad: window -> core, the analog GamePad state
     // (sticks, touch, motion) of a remote GamePad; its buttons use Command/Buttons.

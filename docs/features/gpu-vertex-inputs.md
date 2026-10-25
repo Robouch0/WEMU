@@ -27,9 +27,12 @@ VTX_TC clauses: resource IDs 128–143 select GX2 uniform banks, a raw integer G
 component selects a float4 row, and an aligned byte offset can select a later row.
 Masked destination channels and selector reordering are preserved. Relative
 operands, format overrides and unsupported fetch sizes retain fallback. The native
-path reserves the remaining slots in its existing 512-vec4 constant block for
-these reads and checks that each complete bound block fits before dispatch.
-Larger blocks use reference execution; palettes are never silently truncated.
+path starts with a shared 512-vec4 budget and can grow individual bank windows
+within the 2048-vec4 constant limit. Each window covers its complete bound block
+before dispatch. Unequal palettes reserve different capacities, so a large bank
+does not unnecessarily expand every other bank. Window sizes participate in
+shader cache identity. Blocks exceeding the total budget use reference execution;
+palettes are never silently truncated.
 Readonly palette fetches are also eligible for the per-draw vertex result cache,
 whose lifetime does not cross uniform updates.
 
@@ -46,7 +49,8 @@ through context save/restore. Software triangle coverage and Vulkan pipelines us
 the same winding convention; both-face culling preserves the previous target even
 for a nominal fullscreen overwrite. Fully culled triangle lists and quads also
 bypass vertex execution and attachment preparation; point draws still execute. Rasterizer clip-control APIs retain their
-flags, and a disabled rasterizer suppresses draws. Triangle polygon offset now applies guest front/back slope, constant and clamp
+flags, and a disabled rasterizer suppresses fragment work while allowing
+stream-output vertex passes. Triangle polygon offset now applies guest front/back slope, constant and clamp
 values in both execution paths. Different visible front/back offsets retain
 reference rendering. Polygon fill modes, point/line offset and Z-clip/half-Z
 behavior still need implementation. See [depth-only shadows](depth-only-shadows.md).

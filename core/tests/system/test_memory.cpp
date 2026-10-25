@@ -12,6 +12,17 @@ static_assert(!std::is_copy_assignable_v<Core::Memory>);
 static_assert(std::is_nothrow_move_constructible_v<Core::Memory>);
 static_assert(std::is_nothrow_move_assignable_v<Core::Memory>);
 
+TEST(MemoryTest, MainStackSupportsFramesLargerThan64KiB)
+{
+    Core::Memory memory(16);
+    // A 0x10018-byte frame below a normal main-thread SP, as used during title startup.
+    constexpr unsigned previousSp = 0xC0FFFD58, frame = previousSp - 0x10018;
+    ASSERT_NO_THROW(memory.write<unsigned>(frame, previousSp));
+    EXPECT_EQ(memory.read<unsigned>(frame), previousSp);
+    EXPECT_NE(memory.hostPtr(0xC0F00000, 0x100000), nullptr);
+    EXPECT_EQ(memory.hostPtr(0xC1000000), nullptr);
+}
+
 namespace {
     constexpr std::uint32_t app = Core::Memory::ApplicationCode;
     constexpr std::array<std::pair<std::uint32_t, std::uint32_t>, 6> regions{{
@@ -166,4 +177,30 @@ TEST(MemoryTest, WriteGenerationsTrackStoresIntoWatchedPages)
     EXPECT_FALSE(memory.writeGeneration(Core::Memory::STACK_BASE, 16));
     memory.setUntrackedStores(true);
     EXPECT_FALSE(memory.writeGeneration(texture, 0x1000));
+}
+
+TEST(MemoryTest, WatchedRangesPreserveHolesAndExactBitmapWordBoundaries)
+{
+    Core::Memory memory(0x100000);
+    constexpr auto pageBytes = 0x1000u;
+    constexpr auto first = app + 63 * pageBytes;
+    memory.watchWrites(first, pageBytes);
+    memory.watchWrites(first + 2 * pageBytes, 65 * pageBytes);
+    EXPECT_FALSE(memory.writeGeneration(first, 67 * pageBytes)); // page 64 is still a hole
+    EXPECT_TRUE(memory.writeGeneration(first + 2 * pageBytes, 65 * pageBytes));
+    memory.watchWrites(first + pageBytes, pageBytes);
+    EXPECT_EQ(memory.slowPages()[0].load(), std::uint64_t{1} << 63);
+    EXPECT_EQ(memory.slowPages()[1].load(), ~std::uint64_t{0});
+    EXPECT_EQ(memory.slowPages()[2].load(), 3u);
+    const auto before = memory.writeGeneration(first, 67 * pageBytes);
+    ASSERT_TRUE(before);
+    for (unsigned page = 0; page < 67; ++page)
+        memory.write<std::uint32_t>(first + page * pageBytes, page);
+    EXPECT_EQ(memory.writeGeneration(first, 67 * pageBytes), *before + 67);
+    // Neighboring pages must remain unwatched and must not affect the range.
+    memory.write<std::uint32_t>(first - pageBytes, 1);
+    memory.write<std::uint32_t>(first + 67 * pageBytes, 2);
+    EXPECT_EQ(memory.writeGeneration(first, 67 * pageBytes), *before + 67);
+    EXPECT_FALSE(memory.writeGeneration(first - pageBytes, pageBytes));
+    EXPECT_FALSE(memory.writeGeneration(first + 67 * pageBytes, pageBytes));
 }

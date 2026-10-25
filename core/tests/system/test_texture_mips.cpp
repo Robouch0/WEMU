@@ -1,3 +1,4 @@
+#include <cmath>
 #include <gtest/gtest.h>
 
 #include "gfx/ColorTarget.hpp"
@@ -350,31 +351,117 @@ TEST(VulkanCubeTest, CompressedBaseLevelValidatesPayloadAndKeepsViewMapping)
             *decodeProgram({2, CF_TEX << 23, 0, (CF_EXP_DONE << 23) | (1u << 21) | 0x688u, 0x10, 0x30000000u | (0x688u << 9), 1u << 23, 0}));
     ASSERT_TRUE(shader) << shader.error;
     ASSERT_EQ(shader.textures.size(), 1u);
-    std::array<std::uint8_t, 32> blocks{};
-    for (unsigned i = 0; i < blocks.size(); i += 8)
-        blocks[i] = blocks[i + 1] = 255; // White endpoint, palette index zero.
-    std::array<RasterDraw::Texture, 1> textures{{{shader.textures[0], 7, 5, {}, [](unsigned, unsigned) { return std::array<float, 4>{}; }}}};
-    textures[0].blocks = blocks;
-    textures[0].blockFormat = TextureBlockFormat::BC1;
-    std::array<RasterDraw::Vertex, 1> vertices{{{.5f, .5f, {{{.5f, .5f, 0, 1}}}}}};
-    std::array<std::uint8_t, 4> target{};
-    RasterDraw draw{shader, vertices, {}, textures, target, 1, 1, 1, {0, 0, 1, 1}, 15, {}};
-    draw.topology = RasterDraw::Topology::Points;
-    VulkanRasterBackend backend;
-    auto result = backend.render(draw);
-    ASSERT_TRUE(result) << backend.lastError();
-    EXPECT_EQ(result->rgba, (std::vector<std::uint8_t>{255, 255, 255, 255}));
-    textures[0].unorm8Map = 0x04050100; // ZERO, ONE, G, R.
-    result = backend.render(draw);
-    ASSERT_TRUE(result) << backend.lastError();
-    EXPECT_EQ(result->rgba, (std::vector<std::uint8_t>{0, 255, 255, 255}));
-    textures[0].blocks = std::span(blocks).first(31);
-    EXPECT_FALSE(backend.render(draw)); // Partial block is never submitted.
-    textures[0].blocks = blocks;
-    textures[0].unorm8 = target;
-    EXPECT_FALSE(backend.render(draw)); // Ambiguous representations are rejected.
-    textures[0].unorm8 = {};
-    textures[0].blockFormat = TextureBlockFormat::None;
-    EXPECT_FALSE(backend.render(draw));
-    EXPECT_EQ(backend.completedDraws(), 2u);
+    for (const auto format: {TextureBlockFormat::BC1, TextureBlockFormat::BC2, TextureBlockFormat::BC3}) {
+        SCOPED_TRACE(unsigned(format));
+        const unsigned blockBytes = format == TextureBlockFormat::BC1 ? 8 : 16;
+        std::vector<std::uint8_t> blocks(4 * blockBytes);
+        for (unsigned i = 0; i < blocks.size(); i += blockBytes) {
+            if (blockBytes == 16)
+                std::fill_n(blocks.begin() + i, 8, 255); // Opaque alpha.
+            const unsigned color = i + (blockBytes == 16 ? 8 : 0);
+            blocks[color] = blocks[color + 1] = 255; // White endpoint, palette index zero.
+        }
+        std::array<RasterDraw::Texture, 1> textures{{{shader.textures[0], 7, 5, {}, [](unsigned, unsigned) { return std::array<float, 4>{}; }}}};
+        textures[0].blocks = blocks;
+        textures[0].blockFormat = format;
+        std::array<RasterDraw::Vertex, 1> vertices{{{.5f, .5f, {{{.5f, .5f, 0, 1}}}}}};
+        std::array<std::uint8_t, 4> target{};
+        RasterDraw draw{shader, vertices, {}, textures, target, 1, 1, 1, {0, 0, 1, 1}, 15, {}};
+        draw.topology = RasterDraw::Topology::Points;
+        VulkanRasterBackend backend;
+        auto result = backend.render(draw);
+        ASSERT_TRUE(result) << backend.lastError();
+        EXPECT_EQ(result->rgba, (std::vector<std::uint8_t>{255, 255, 255, 255}));
+        textures[0].unorm8Map = 0x04050100; // ZERO, ONE, G, R.
+        result = backend.render(draw);
+        ASSERT_TRUE(result) << backend.lastError();
+        EXPECT_EQ(result->rgba, (std::vector<std::uint8_t>{0, 255, 255, 255}));
+        textures[0].blocks = std::span(blocks).first(blocks.size() - 1);
+        EXPECT_FALSE(backend.render(draw)); // Partial block is never submitted.
+        textures[0].blocks = blocks;
+        textures[0].unorm8 = target;
+        EXPECT_FALSE(backend.render(draw)); // Ambiguous representations are rejected.
+        textures[0].unorm8 = {};
+        textures[0].blockFormat = TextureBlockFormat::None;
+        EXPECT_FALSE(backend.render(draw));
+        EXPECT_EQ(backend.completedDraws(), 2u);
+    }
+}
+
+TEST(VulkanCubeTest, CompressedMipChainsKeepTailBlocksAndSelectEveryLevel)
+{
+    using namespace Latte;
+    if (!std::getenv("WEMU_TEST_VULKAN") || !SpirvCompiler::available())
+        GTEST_SKIP();
+    const auto shader = lowerFragmentShader(*decodeProgram(
+            {2, CF_TEX << 23, 0, (CF_EXP_DONE << 23) | (1u << 21) | 0x688u, 0x11u, 0x30000000u | (0x688u << 9), (1u << 23) | (3u << 29), 0}));
+    ASSERT_TRUE(shader) << shader.error;
+    std::array<RasterDraw::Vertex, 3> vertices{{{0, 0, {}}, {8, 0, {}}, {0, 8, {}}}};
+    std::vector<std::uint8_t> target(4 * 4 * 4);
+    for (auto format: {TextureBlockFormat::BC1, TextureBlockFormat::BC2, TextureBlockFormat::BC3, TextureBlockFormat::BC4, TextureBlockFormat::BC5,
+                       TextureBlockFormat::BC4Signed, TextureBlockFormat::BC5Signed}) {
+        const bool color = format == TextureBlockFormat::BC1 || format == TextureBlockFormat::BC2 || format == TextureBlockFormat::BC3;
+        const bool signedFormat = format == TextureBlockFormat::BC4Signed || format == TextureBlockFormat::BC5Signed;
+        const bool twoChannels = format == TextureBlockFormat::BC5 || format == TextureBlockFormat::BC5Signed;
+        const unsigned bytes =
+                format == TextureBlockFormat::BC1 || format == TextureBlockFormat::BC4 || format == TextureBlockFormat::BC4Signed ? 8 : 16;
+        const std::array<unsigned, 5> rgb565{0xF800, 0x07E0, 0x001F, 0xFFFF, 0};
+        const std::array<std::array<unsigned, 4>, 5> colors{
+                {{255, 0, 0, 255}, {0, 255, 0, 255}, {0, 0, 255, 255}, {255, 255, 255, 255}, {0, 0, 0, 255}}};
+        std::array<std::vector<std::uint8_t>, 5> levels;
+        std::vector<RasterDraw::Texture::MipLevel> mips;
+        for (unsigned level = 0; level < levels.size(); ++level) {
+            const unsigned size = 16u >> level;
+            levels[level].resize(std::size_t((size + 3) / 4) * ((size + 3) / 4) * bytes);
+            for (std::size_t offset = 0; offset < levels[level].size(); offset += bytes) {
+                auto *block = levels[level].data() + offset;
+                if (color) {
+                    if (format == TextureBlockFormat::BC2)
+                        std::fill_n(block, 8, 255);
+                    if (format == TextureBlockFormat::BC3)
+                        block[0] = 255;
+                    auto *rgb = block + (format == TextureBlockFormat::BC1 ? 0 : 8);
+                    rgb[0] = std::uint8_t(rgb565[level]);
+                    rgb[1] = std::uint8_t(rgb565[level] >> 8);
+                    rgb[2] = rgb[0];
+                    rgb[3] = rgb[1];
+                } else {
+                    block[0] = std::uint8_t(16 + level * 16);
+                    if (twoChannels)
+                        block[8] = std::uint8_t(96 - level * 16);
+                }
+            }
+            if (level)
+                mips.push_back({size, size, {}, levels[level]});
+        }
+        RasterDraw::Texture texture{shader.textures[0], 16, 16, {}, [](unsigned, unsigned) { return std::array<float, 4>{}; }};
+        texture.blocks = levels[0];
+        texture.blockFormat = format;
+        texture.mips = mips;
+        texture.sourceMipCount = 5;
+        texture.unorm8Map = 0x00010203;
+        texture.sampler.regs[0] = 2u | (2u << 3) | (1u << 17);
+        texture.sampler.regs[1] = 256u << 10;
+        RasterDraw draw{shader, vertices, {}, {&texture, 1}, target, 4, 4, 4, {0, 0, 4, 4}, 15, {}};
+        for (bool direct: {false, true}) {
+            VulkanRasterBackend backend(true, true, direct);
+            for (unsigned level = 0; level < levels.size(); ++level) {
+                SCOPED_TRACE(std::format("format={} direct={} level={}", unsigned(format), direct, level));
+                for (auto &v: vertices)
+                    v.inputs[0] = {.5f, .5f, 0, float(level)};
+                const auto result = backend.render(draw);
+                ASSERT_TRUE(result) << backend.lastError();
+                const unsigned maximum = signedFormat ? 127 : 255;
+                const auto red = unsigned(std::lround(float(16 + level * 16) / float(maximum) * 255.f));
+                const auto green = unsigned(std::lround(float(96 - level * 16) / float(maximum) * 255.f));
+                const std::array<unsigned, 4> expected = color ? colors[level] : std::array<unsigned, 4>{red, twoChannels ? green : 0u, 0, 255};
+                for (unsigned c = 0; c < 4; ++c)
+                    EXPECT_NEAR(result->rgba[c], expected[c], 1);
+            }
+            // A tail still occupies a full compression block, even at 1x1.
+            mips.back().blocks = mips.back().blocks.first(bytes - 1);
+            EXPECT_FALSE(backend.render(draw));
+            mips.back().blocks = levels.back();
+        }
+    }
 }

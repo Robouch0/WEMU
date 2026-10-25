@@ -72,3 +72,21 @@ TEST(ControllerMappingTest, TheStickPushedFurthestWins)
     EXPECT_EQ(ControllerMapping::stronger(pad, phone), pad);
     EXPECT_EQ(ControllerMapping::stronger(phone, idle), phone);
 }
+
+TEST(ControllerMappingTest, KeyboardSeparatesAnalogMovementFromDpadAndSupportsCombatButtons)
+{
+    const auto input = [](const QSet<int> &held) { return ControllerMapping::keyboard([&](int key) { return held.contains(key); }); };
+    const auto diagonal = input({Qt::Key_W, Qt::Key_D, Qt::Key_J, Qt::Key_Space});
+    EXPECT_EQ(diagonal.buttons, 0x8000u | 0x2000u);
+    EXPECT_NEAR(ControllerMapping::magnitude(diagonal.leftStick), 1.f, 1e-6f);
+    EXPECT_GT(diagonal.leftStick[0], 0.f);
+    EXPECT_GT(diagonal.leftStick[1], 0.f);
+    EXPECT_EQ(input({Qt::Key_W, Qt::Key_S, Qt::Key_A, Qt::Key_D}).leftStick, (std::array<float, 2>{}));
+    const auto dpad = input({Qt::Key_Up, Qt::Key_Left});
+    EXPECT_EQ(dpad.buttons, 0x0200u | 0x0800u);
+    EXPECT_EQ(dpad.leftStick, (std::array<float, 2>{}));
+    EXPECT_EQ(input({Qt::Key_K, Qt::Key_I, Qt::Key_Shift, Qt::Key_Control, Qt::Key_Q, Qt::Key_E}).buttons,
+              0x4000u | 0x1000u | 0x0080u | 0x0040u | 0x0020u | 0x0010u);
+    EXPECT_EQ(input({Qt::Key_Return, Qt::Key_Backspace, Qt::Key_P, Qt::Key_M}).buttons, 0x8000u | 0x4000u | 0x0008u | 0x0004u);
+    EXPECT_EQ(input({}), ControllerMapping::State{});
+}

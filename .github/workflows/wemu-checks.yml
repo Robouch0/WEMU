@@ -24,7 +24,7 @@ jobs:
             cmake build-essential g++-14 pkg-config \
             qt6-base-dev qt6-tools-dev qt6-declarative-dev qt6-base-dev-tools \
             libxkbcommon-dev libsdl2-dev libsdl2-image-dev zlib1g-dev libglfw3-dev \
-            libavcodec-dev libavformat-dev libavutil-dev libswscale-dev \
+            libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev \
             libvulkan-dev vulkan-tools vulkan-validationlayers libglm-dev \
             glslang-tools spirv-tools mesa-vulkan-drivers
 
@@ -71,7 +71,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             cmake build-essential g++-14 pkg-config \
-            libavcodec-dev libavformat-dev libavutil-dev libswscale-dev \
+            libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev \
             zlib1g-dev libsdl2-dev libvulkan-dev vulkan-tools vulkan-validationlayers libglm-dev libglfw3-dev \
             glslang-tools spirv-tools mesa-vulkan-drivers
           if [ "${{ matrix.llvm }}" = "ON" ]; then
@@ -160,7 +160,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             cmake build-essential g++-14 pkg-config \
-            libavcodec-dev libavformat-dev libavutil-dev libswscale-dev \
+            libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev \
             qt6-base-dev \
             zlib1g-dev libsdl2-dev clang-tidy-19 llvm-19-dev libvulkan-dev vulkan-tools vulkan-validationlayers libglm-dev libglfw3-dev \
             glslang-tools spirv-tools

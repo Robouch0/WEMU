@@ -353,4 +353,20 @@ namespace Core::Instruction {
             quant(cpu, ea + sz, type, scale, cpu.m_ps1[i.frt]);
     }
 
+    void PSQ_LU(Interpreter &cpu, const EncodedInstruction &i)
+    {
+        const auto displacement = (i.psd & 0x800) ? std::int32_t(i.psd) - 0x1000 : std::int32_t(i.psd);
+        const auto address = cpu.m_gpr[i.ra] + std::uint32_t(displacement);
+        PSQ_L(cpu, i);
+        cpu.m_gpr[i.ra] = address;
+    }
+
+    void PSQ_STU(Interpreter &cpu, const EncodedInstruction &i)
+    {
+        const auto displacement = (i.psd & 0x800) ? std::int32_t(i.psd) - 0x1000 : std::int32_t(i.psd);
+        const auto address = cpu.m_gpr[i.ra] + std::uint32_t(displacement);
+        PSQ_ST(cpu, i);
+        cpu.m_gpr[i.ra] = address;
+    }
+
 } // namespace Core::Instruction

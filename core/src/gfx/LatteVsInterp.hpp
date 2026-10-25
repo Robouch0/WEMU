@@ -42,6 +42,12 @@ namespace Core::Gfx {
     class LatteVsInterp {
         public:
             struct Output {
+                    struct StreamWrite {
+                            unsigned buffer{}, offset{}, mask{};
+                            std::array<float, 4> value{};
+                    };
+                    std::vector<StreamWrite> streamWrites;
+                    bool completed{};
                     std::array<float, 4> pos{0.0f, 0.0f, 0.0f, 1.0f}; // EXPORT POS 60
                     std::array<std::array<float, 4>, 32> params{}; // EXPORT PARAM 0..31
                     std::array<bool, 32> paramValid{};
@@ -82,7 +88,8 @@ namespace Core::Gfx {
             // Reuse immutable decoding across all vertices of a draw. Runtime
             // attributes, constants and sampler callbacks remain call-local.
             static Output runVertex(const Program &program, std::span<const std::array<float, 4>> attribs, const float *consts,
-                                    std::uint32_t constCount, const KcacheFetch &kcache = {}, const TextureSample &textureSample = {});
+                                    std::uint32_t constCount, const KcacheFetch &kcache = {}, const TextureSample &textureSample = {},
+                                    unsigned vertexIndex = 0);
 
             // program: bytecode dwords (already byte-corrected). attribs: R1.. preloaded attribute
             // values. consts: the uniform register file (uniform-register mode / kcache-off reads).
@@ -96,7 +103,8 @@ namespace Core::Gfx {
         private:
             static Output execute(const Program &program, std::span<const std::array<float, 4>> inputs, const float *consts, std::uint32_t constCount,
                                   const KcacheFetch &kcache, const TextureSample &textureSample, bool pixelStage,
-                                  const TextureGather &textureGather = {}, const TextureFetch &textureFetch = {}, unsigned colorExport = 0);
+                                  const TextureGather &textureGather = {}, const TextureFetch &textureFetch = {}, unsigned colorExport = 0,
+                                  unsigned vertexIndex = 0);
     };
 
 } // namespace Core::Gfx

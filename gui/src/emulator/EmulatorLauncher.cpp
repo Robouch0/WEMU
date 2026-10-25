@@ -1,5 +1,7 @@
 #include "EmulatorLauncher.hpp"
 
+#include <algorithm>
+
 #include <QCoreApplication>
 #include <QDataStream>
 #include <QDateTime>
@@ -19,37 +21,6 @@
 #include "LocaleSettings.hpp"
 #include "SessionFrame.hpp"
 #include "frontend/QtSessionProtocol.hpp"
-
-namespace {
-    quint32 buttonForKey(int key)
-    {
-        switch (key) {
-            case Qt::Key_Up:
-            case Qt::Key_W:
-                return 0x0200;
-            case Qt::Key_Down:
-            case Qt::Key_S:
-                return 0x0100;
-            case Qt::Key_Left:
-            case Qt::Key_A:
-                return 0x0800;
-            case Qt::Key_Right:
-            case Qt::Key_D:
-                return 0x0400;
-            case Qt::Key_Return:
-            case Qt::Key_Enter:
-                return 0x8000;
-            case Qt::Key_Backspace:
-                return 0x4000;
-            case Qt::Key_P:
-                return 0x0008;
-            case Qt::Key_M:
-                return 0x0004;
-            default:
-                return 0;
-        }
-    }
-} // namespace
 
 EmulatorLauncher::EmulatorLauncher(QObject *parent) : QObject(parent)
 {
@@ -118,6 +89,22 @@ void EmulatorLauncher::setError(const QString &error)
     emit errorChanged();
 }
 
+int EmulatorLauncher::audioVolume() const
+{
+    bool valid{};
+    const int value = QSettings().value("audio/volume", 100).toInt(&valid);
+    return valid ? std::clamp(value, 0, 100) : 100;
+}
+
+void EmulatorLauncher::setAudioVolume(int value)
+{
+    value = std::clamp(value, 0, 100);
+    if (value == audioVolume()) return;
+    QSettings().setValue("audio/volume", value);
+    if (m_connected) sendCommand(quint32(Core::Gfx::HostPresenter::Action::AudioVolume), value);
+    emit settingsChanged();
+}
+
 int EmulatorLauncher::systemLanguage() const
 {
     bool valid{};
@@ -163,6 +150,16 @@ void EmulatorLauncher::launch(const QString &rpxPath, const QString &title, cons
     }
     // The configured build core takes priority over old copied executables.
     QString binary = QString::fromUtf8(WEMU_CORE_BINARY);
+    if (!qEnvironmentVariable("QT_WEMU_SESSION_PROBE").isEmpty()) {
+        const auto probeCore = qEnvironmentVariable("QT_WEMU_PROBE_CORE");
+        if (!probeCore.isEmpty()) {
+            if (!QFileInfo(probeCore).isExecutable()) {
+                setError("The desktop probe core executable was not found.");
+                return;
+            }
+            binary = probeCore;
+        }
+    }
     if (!QFileInfo(binary).isExecutable())
         binary = QDir(QCoreApplication::applicationDirPath()).filePath("../wemu");
     if (!QFileInfo(binary).isExecutable())
@@ -173,11 +170,17 @@ void EmulatorLauncher::launch(const QString &rpxPath, const QString &title, cons
     }
     const auto font = QSettings().value("emulation/sharedFont").toString();
     bool nativeCpu = false;
-#ifdef WEMU_GUI_HAS_LLVM
+#if defined(WEMU_GUI_HAS_LLVM) || defined(WEMU_GUI_HAS_X64_JIT)
     nativeCpu = QSettings().value("emulation/nativeCpu", true).toBool();
 #endif
+    bool x64Cpu = false;
+#ifdef WEMU_GUI_HAS_X64_JIT
+    // Prefer the complete chained backend when this core includes it. The core
+    // checks host instruction support and retains interpreter fallback.
+    x64Cpu = nativeCpu;
+#endif
     QString nativeCache;
-    if (nativeCpu) {
+    if (nativeCpu && !x64Cpu) {
         const auto cacheRoot = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
         // ObjectCache creates/checks the leaf directory with private permissions.
         // A missing/unusable cache falls back to JIT; it never prevents launch.
@@ -185,9 +188,11 @@ void EmulatorLauncher::launch(const QString &rpxPath, const QString &title, cons
     }
     const auto titleRegion = titleRegionForLaunch(rpxPath);
     const auto region = systemRegion() ? unsigned(systemRegion()) : titleRegion;
-    const auto environment = desktopLaunchEnvironment(QProcessEnvironment::systemEnvironment(), contentPath, font,
-                                                     nativeCpu, nativeCache, unsigned(systemLanguage()), region, titleRegion);
-    qInfo() << "[SESSION_CPU]" << (nativeCpu ? "native with interpreter fallback" : "interpreter")
+    auto environment = desktopLaunchEnvironment(QProcessEnvironment::systemEnvironment(), contentPath, font,
+                                                     nativeCpu, nativeCache, unsigned(systemLanguage()), region, titleRegion, x64Cpu);
+    environment.insert("WEMU_AUDIO_VOLUME", QString::number(audioVolume()));
+    qInfo() << "[SESSION_CORE]" << QFileInfo(binary).canonicalFilePath();
+    qInfo() << "[SESSION_CPU]" << (x64Cpu ? "x86-64 JIT with interpreter fallback" : nativeCpu ? "LLVM with interpreter fallback" : "interpreter")
             << "cache=" << nativeCache;
     const auto logs = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation) + "/logs";
     if (!QDir().mkpath(logs)) {
@@ -244,6 +249,7 @@ void EmulatorLauncher::clearChannel()
     m_buttons = 0;
     m_remoteButtons = 0;
     m_remoteGamepad = {};
+    m_keyboardLeftStick = {};
     m_gamepadDirty = false;
     m_gamepadTimer.stop();
     m_heldKeys.clear();
@@ -317,6 +323,7 @@ void EmulatorLauncher::readChannel()
                 if (m_connected || version != WemuSession::version || !stream.atEnd())
                     throw std::runtime_error("Incompatible game display protocol");
                 m_connected = true;
+                sendCommand(quint32(Core::Gfx::HostPresenter::Action::AudioVolume), audioVolume());
                 if (m_drcStreaming)
                     sendCommand(5, 1);
                 m_gamepadDirty = true;
@@ -385,8 +392,7 @@ void EmulatorLauncher::togglePause()
     m_suppressedKeys.unite(m_heldKeys);
     m_suppressedControllerButtons |= m_controllerButtons;
     m_pausePending = true;
-    m_buttons = 0;
-    sendCommand(4, 0);
+    sendButtons();
     sendCommand(1);
     emit sessionChanged();
 }
@@ -447,6 +453,14 @@ void EmulatorLauncher::setControllerInput(quint32 buttons, const std::array<floa
     }
 }
 
+void EmulatorLauncher::setScriptedInput(quint32 buttons, const Core::Gfx::GamepadState &state)
+{
+    setRemoteButtons(buttons);
+    setRemoteGamepad(state);
+    m_gamepadTimer.stop();
+    sendGamepad();
+}
+
 void EmulatorLauncher::sendGamepad()
 {
     if (!m_socket || !m_connected || !m_gamepadDirty)
@@ -455,6 +469,7 @@ void EmulatorLauncher::sendGamepad()
     // Touch and motion come from the phone only.
     auto gamepad = m_remoteGamepad;
     gamepad.leftStick = ControllerMapping::stronger(m_remoteGamepad.leftStick, m_controllerLeftStick);
+    gamepad.leftStick = ControllerMapping::stronger(gamepad.leftStick, m_keyboardLeftStick);
     gamepad.rightStick = ControllerMapping::stronger(m_remoteGamepad.rightStick, m_controllerRightStick);
     if (qEnvironmentVariableIntValue("QT_WEMU_INPUT_TRACE") == 1)
         qInfo("[SESSION_GAMEPAD] left=%.2f,%.2f right=%.2f,%.2f touched=%d", gamepad.leftStick[0], gamepad.leftStick[1], gamepad.rightStick[0],
@@ -479,10 +494,17 @@ void EmulatorLauncher::setDrcStreaming(bool enabled)
 void EmulatorLauncher::sendButtons()
 {
     quint32 buttons{};
+    const auto keyboard = ControllerMapping::keyboard([&](int key) {
+        return !m_paused && !m_pausePending && !m_stopping && m_heldKeys.contains(key) && !m_suppressedKeys.contains(key);
+    });
+    if (keyboard.leftStick != m_keyboardLeftStick) {
+        m_keyboardLeftStick = keyboard.leftStick;
+        m_gamepadDirty = true;
+        if (!m_gamepadTimer.isActive())
+            m_gamepadTimer.start();
+    }
     if (!m_paused && !m_pausePending && !m_stopping) {
-        for (const auto key: m_heldKeys)
-            if (!m_suppressedKeys.contains(key))
-                buttons |= buttonForKey(key);
+        buttons = keyboard.buttons;
         buttons |= m_remoteButtons;
         buttons |= m_controllerButtons & ~m_suppressedControllerButtons;
     }

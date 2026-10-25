@@ -3,14 +3,19 @@
 
 #include "TestFixture.hpp"
 #include "cpu/interpreter/SyscallHandler.hpp"
+#include "gfx/Gx2BufferSnapshots.hpp"
 #include "gfx/Gx2CommandStream.hpp"
 #include "gfx/Gx2Replayer.hpp"
+#include "gfx/LatteSurfaceLayout.hpp"
 #include "gfx/SpirvCompiler.hpp"
 #include "gfx/SurfaceLayout.hpp"
 #include "gfx/TextureFormat.hpp"
 #include "gfx/VulkanRasterBackend.hpp"
+#include "hle/CoreinitExtra.hpp"
 #include "hle/Gx2.hpp"
 #include "hle/Libc.hpp"
+#include "hle/MemHeap.hpp"
+#include "utils/DisplayTiming.hpp"
 
 // GX2 command capture: render calls are recorded into the command stream for later Vulkan replay.
 class Gx2CaptureTest : public InstructionTest {
@@ -48,6 +53,496 @@ class Gx2CaptureTest : public InstructionTest {
             call("GX2CopySurface");
         }
 };
+
+TEST_F(Gx2CaptureTest, RenderedImageSurvivesCompatibleFormatViews)
+{
+    using namespace Core::Gfx;
+    constexpr unsigned color = 0x28001000, scan = 0x28002000, image = 0x28010000;
+    surface(color, image, 256, 8, 8, 8, 1);
+    surface(scan, image, 256, 8, 8, 8, 1);
+    cpu->m_memory.write<unsigned>(color + 0x14, 0x219);
+    cpu->m_memory.write<unsigned>(scan + 0x14, 0x19);
+    cpu->m_gpr[3] = color;
+    cpu->m_fpr[1] = .25;
+    cpu->m_fpr[2] = .5;
+    cpu->m_fpr[3] = .75;
+    cpu->m_fpr[4] = 1;
+    call("GX2ClearColor");
+    cpu->m_gpr[3] = scan;
+    cpu->m_gpr[4] = 1;
+    call("GX2CopyColorBufferToScanBuffer");
+    gx2Stream().push(Gx2Command{Gx2Cmd::SwapScanBuffers});
+    Gx2Replayer reference;
+    reference.replay(gx2Stream(), &cpu->m_memory);
+    const auto &pixels = reference.framebuffer();
+    ASSERT_GE(pixels.size(), 4u);
+    EXPECT_EQ((std::array{pixels[0], pixels[1], pixels[2]}), (std::array<std::uint8_t, 3>{64, 128, 191}));
+    if (std::getenv("WEMU_TEST_VULKAN") && SpirvCompiler::available()) {
+        Gx2Replayer native;
+        native.setRasterBackend(std::make_shared<VulkanRasterBackend>(true, true));
+        native.replay(gx2Stream(), &cpu->m_memory);
+        EXPECT_EQ(native.framebuffer(), pixels);
+    }
+}
+
+TEST_F(Gx2CaptureTest, HiZSizeCoversDepthTilesAndScalesWithSurfaceSize)
+{
+    constexpr unsigned header = 0x28001000, sizeOut = 0x28002000, alignOut = 0x28002004;
+    unsigned small{};
+    for (const auto shape: {std::array{8u, 8u, 1u}, std::array{1440u, 810u, 1u}, std::array{1440u, 810u, 2u}}) {
+        surface(header, 0x28010000, 256, shape[0], shape[1], shape[0], 4);
+        cpu->m_memory.write<unsigned>(header + 0xC, shape[2]);
+        cpu->m_memory.write<unsigned>(header + 0x14, 0x80E);
+        cpu->m_gpr[3] = header;
+        cpu->m_gpr[4] = sizeOut;
+        cpu->m_gpr[5] = alignOut;
+        call("GX2CalcDepthBufferHiZInfo");
+        const auto bytes = cpu->m_memory.read<unsigned>(sizeOut);
+        const auto alignment = cpu->m_memory.read<unsigned>(alignOut);
+        ASSERT_GE(alignment, 256u);
+        EXPECT_TRUE(std::has_single_bit(alignment));
+        EXPECT_EQ(bytes % alignment, 0u);
+        EXPECT_GE(bytes, ((shape[0] + 7) / 8) * ((shape[1] + 7) / 8) * shape[2] * 4);
+        if (shape[0] == 8)
+            small = bytes;
+        else
+            EXPECT_GT(bytes, small);
+    }
+    cpu->m_memory.write<unsigned>(header + 8, 0);
+    cpu->m_gpr[3] = header;
+    cpu->m_gpr[4] = sizeOut;
+    cpu->m_gpr[5] = alignOut;
+    call("GX2CalcDepthBufferHiZInfo");
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(sizeOut), 0u);
+}
+
+TEST_F(Gx2CaptureTest, StreamOutWritesMaskedComponentsWithoutRasterizingAndRestoresOffsets)
+{
+    using namespace Core::Gfx;
+    constexpr unsigned shader = 0x2B001000, program = 0x2B002000, vertices = 0x2B003000;
+    constexpr unsigned buffer0 = 0x2B004000, buffer1 = 0x2B004100, context0 = 0x2B005000, context1 = 0x2B005100;
+    constexpr unsigned data0 = 0x2B010000, data1 = 0x2B020000;
+    const auto record = [&](const char *name, std::initializer_list<unsigned> args) {
+        unsigned reg = 3;
+        for (const auto arg: args)
+            cpu->m_gpr[reg++] = arg;
+        call(name);
+    };
+    for (unsigned off = 0; off < 0x140; off += 4)
+        cpu->m_memory.write<unsigned>(shader + off, 0);
+    const unsigned words[]{1u << 15, (0x20u << 23) | (5u << 12) | 3u, 0, (0x21u << 23) | (1u << 21) | (3u << 12) | 1u};
+    for (unsigned i = 0; i < 4; ++i)
+        cpu->m_memory.write<unsigned>(program + i * 4, std::byteswap(words[i]));
+    cpu->m_memory.write<unsigned>(shader + 0xD0, sizeof(words));
+    cpu->m_memory.write<unsigned>(shader + 0xD4, program);
+    cpu->m_memory.write<unsigned>(shader + 0x40, 1);
+    cpu->m_memory.write<unsigned>(shader + 0x110, 1);
+    cpu->m_memory.write<unsigned>(shader + 0x114, 16);
+    cpu->m_memory.write<unsigned>(shader + 0x118, 8);
+    for (unsigned i = 0; i < 12; ++i)
+        cpu->m_memory.write<unsigned>(vertices + i * 4, std::bit_cast<unsigned>(float(i + 1)));
+    for (unsigned offset = 0; offset < 64; offset += 4)
+        cpu->m_memory.write<unsigned>(data0 + offset, 0xCDCDCDCD);
+    for (const auto config: {std::array{buffer0, data0, context0, 64u}, std::array{buffer1, data1, context1, 32u}}) {
+        for (unsigned off = 0; off < 32; off += 4)
+            cpu->m_memory.write<unsigned>(config[0] + off, 0);
+        cpu->m_memory.write<unsigned>(config[0], config[3]);
+        cpu->m_memory.write<unsigned>(config[0] + 4, config[1]);
+        cpu->m_memory.write<unsigned>(config[0] + 28, config[2]);
+    }
+    Gx2Command fetch{Gx2Cmd::SetFetchShader};
+    fetch.payload = {0, 0, 0, 0x813, 0, 0, 0x00010203, 3};
+    gx2Stream().push(fetch);
+    record("GX2SetVertexShader", {shader});
+    record("GX2SetAttribBuffer", {0, 48, 16, vertices});
+    record("GX2SetStreamOutBuffer", {0, buffer0});
+    record("GX2SetStreamOutBuffer", {1, buffer1});
+    record("GX2SetStreamOutContext", {0, buffer0, 1});
+    record("GX2SetStreamOutContext", {1, buffer1, 1});
+    record("GX2SetStreamOutEnable", {1});
+    Gx2Command discard{Gx2Cmd::SetRasterizerClipControl};
+    discard.gpr = {0, 1, 1};
+    gx2Stream().push(discard);
+    record("GX2DrawEx", {1, 3, 0, 1});
+    record("GX2SaveStreamOutContext", {0, buffer0});
+    record("GX2SaveStreamOutContext", {1, buffer1});
+    Gx2BufferSnapshots submitted;
+    submitted.capture(gx2Stream(), cpu->m_memory);
+    cpu->m_memory.write<unsigned>(vertices, std::bit_cast<unsigned>(999.f));
+    Gx2Replayer replay;
+    replay.replay(gx2Stream(), &cpu->m_memory);
+    const auto word = [&](unsigned address) { return std::byteswap(cpu->m_memory.read<unsigned>(address)); };
+    for (unsigned vertex = 0; vertex < 3; ++vertex) {
+        EXPECT_EQ(word(data0 + vertex * 16), std::bit_cast<unsigned>(float(vertex * 4 + 1)));
+        EXPECT_EQ(word(data0 + vertex * 16 + 4), 0xCDCDCDCDu);
+        EXPECT_EQ(word(data0 + vertex * 16 + 8), std::bit_cast<unsigned>(float(vertex * 4 + 3)));
+        EXPECT_EQ(word(data0 + vertex * 16 + 12), 0xCDCDCDCDu);
+        EXPECT_EQ(word(data1 + vertex * 8), vertex);
+    }
+    EXPECT_EQ(word(context0), 12u);
+    EXPECT_EQ(word(context1), 6u);
+    cpu->m_memory.write<unsigned>(vertices, std::bit_cast<unsigned>(1.f));
+    gx2Stream().clear();
+    record("GX2SetStreamOutContext", {0, buffer0, 0});
+    record("GX2SetStreamOutContext", {1, buffer1, 0});
+    record("GX2DrawEx", {1, 1, 2, 1});
+    record("GX2SaveStreamOutContext", {0, buffer0});
+    replay.replay(gx2Stream(), &cpu->m_memory);
+    EXPECT_EQ(word(data0 + 48), std::bit_cast<unsigned>(9.f));
+    EXPECT_EQ(word(data1 + 24), 2u);
+    EXPECT_EQ(word(context0), 16u);
+
+    // Exercise the worker path with disjoint output records, then reject an overflowing append atomically.
+    if (std::getenv("WEMU_TEST_VULKAN")) {
+        replay.setRasterBackend(std::make_shared<VulkanRasterBackend>());
+        replay.setStreamOutVerificationInterval(1);
+    }
+    gx2Stream().clear();
+    for (unsigned i = 0; i < 64 * 4; ++i)
+        cpu->m_memory.write<unsigned>(vertices + i * 4, std::bit_cast<unsigned>(float(i + 1)));
+    cpu->m_memory.write<unsigned>(buffer0, 64 * 16);
+    cpu->m_memory.write<unsigned>(buffer1, 64 * 8);
+    record("GX2SetAttribBuffer", {0, 64 * 16, 16, vertices});
+    record("GX2SetStreamOutBuffer", {0, buffer0});
+    record("GX2SetStreamOutBuffer", {1, buffer1});
+    record("GX2SetStreamOutContext", {0, buffer0, 1});
+    record("GX2SetStreamOutContext", {1, buffer1, 1});
+    record("GX2DrawEx", {1, 64, 0, 1});
+    record("GX2SaveStreamOutContext", {0, buffer0});
+    replay.replay(gx2Stream(), &cpu->m_memory);
+    for (unsigned vertex = 0; vertex < 64; ++vertex) {
+        EXPECT_EQ(word(data0 + vertex * 16), std::bit_cast<unsigned>(float(vertex * 4 + 1)));
+        EXPECT_EQ(word(data0 + vertex * 16 + 8), std::bit_cast<unsigned>(float(vertex * 4 + 3)));
+        EXPECT_EQ(word(data1 + vertex * 8), vertex);
+    }
+    EXPECT_EQ(word(context0), 256u);
+    if (std::getenv("WEMU_TEST_VULKAN")) {
+        EXPECT_EQ(replay.nativeStreamOutPasses(), 1u);
+        EXPECT_EQ(replay.comparedStreamOutPasses(), 1u);
+        const auto repeat = [&] {
+            gx2Stream().clear();
+            record("GX2SetStreamOutContext", {0, buffer0, 1});
+            record("GX2SetStreamOutContext", {1, buffer1, 1});
+            record("GX2DrawEx", {1, 64, 0, 1});
+            record("GX2SaveStreamOutContext", {0, buffer0});
+            replay.replay(gx2Stream(), &cpu->m_memory);
+        };
+        repeat();
+        EXPECT_EQ(replay.streamOutInputReuses(), 1u);
+        EXPECT_EQ(word(data0), std::bit_cast<unsigned>(1.f));
+        // Identical bindings do not establish identical inputs: check actual submitted bytes.
+        cpu->m_memory.write<unsigned>(vertices, std::bit_cast<unsigned>(42.f));
+        repeat();
+        EXPECT_EQ(replay.streamOutInputReuses(), 1u);
+        EXPECT_EQ(word(data0), std::bit_cast<unsigned>(42.f));
+        repeat();
+        EXPECT_EQ(replay.streamOutInputReuses(), 2u);
+        // The same bytes with a different component selection require another conversion.
+        gx2Stream().clear();
+        fetch.payload = {0, 0, 0, 0x813, 0, 0, 0x02010003, 3};
+        gx2Stream().push(fetch);
+        record("GX2SetStreamOutContext", {0, buffer0, 1});
+        record("GX2SetStreamOutContext", {1, buffer1, 1});
+        record("GX2DrawEx", {1, 64, 0, 1});
+        replay.replay(gx2Stream(), &cpu->m_memory);
+        EXPECT_EQ(replay.streamOutInputReuses(), 2u);
+        EXPECT_EQ(word(data0), std::bit_cast<unsigned>(3.f));
+        EXPECT_EQ(word(data0 + 8), std::bit_cast<unsigned>(42.f));
+    }
+    gx2Stream().clear();
+    cpu->m_memory.write<unsigned>(data0 + 64 * 16, 0xABABABAB);
+    record("GX2DrawEx", {1, 1, 0, 1});
+    record("GX2SaveStreamOutContext", {0, buffer0});
+    replay.replay(gx2Stream(), &cpu->m_memory);
+    EXPECT_EQ(word(data0 + 64 * 16), 0xABABABABu);
+    EXPECT_EQ(word(context0), 256u);
+    if (!std::getenv("WEMU_TEST_VULKAN"))
+        return;
+    replay.setStreamOutVerificationInterval(0);
+    constexpr unsigned deferredPassCount = 36; // Cross both the replay and queue-submission batch limits.
+    cpu->m_memory.write<unsigned>(buffer0, deferredPassCount * 64 * 16);
+    cpu->m_memory.write<unsigned>(buffer1, deferredPassCount * 64 * 8);
+    for (unsigned off = 0; off < deferredPassCount * 64 * 16; off += 4)
+        cpu->m_memory.write<unsigned>(data0 + off, 0xCDCDCDCD);
+    gx2Stream().clear();
+    record("GX2SetStreamOutBuffer", {0, buffer0});
+    record("GX2SetStreamOutBuffer", {1, buffer1});
+    record("GX2SetStreamOutContext", {0, buffer0, 1});
+    record("GX2SetStreamOutContext", {1, buffer1, 1});
+    for (unsigned pass = 0; pass < deferredPassCount; ++pass)
+        record("GX2DrawEx", {1, 64, 0, 1});
+    record("GX2SaveStreamOutContext", {0, buffer0});
+    const auto deferredBefore = replay.deferredStreamOutPasses();
+    replay.replay(gx2Stream(), &cpu->m_memory);
+    const auto *deferSetting = std::getenv("WEMU_NATIVE_STREAMOUT_DEFER");
+    const bool deferred = !deferSetting || deferSetting[0] != '0';
+    EXPECT_EQ(replay.deferredStreamOutPasses() - deferredBefore, deferred ? deferredPassCount : 0u);
+    EXPECT_EQ(word(context0), deferredPassCount * 256);
+    for (unsigned pass = 0; pass < deferredPassCount; ++pass)
+        for (unsigned vertex = 0; vertex < 64; ++vertex) {
+            const auto address = data0 + (pass * 64 + vertex) * 16;
+            EXPECT_EQ(word(address), std::bit_cast<unsigned>(float(vertex * 4 + 3)));
+            EXPECT_EQ(word(address + 8), std::bit_cast<unsigned>(vertex ? float(vertex * 4 + 1) : 42.f));
+            EXPECT_EQ(word(address + 4), 0xCDCDCDCDu);
+            EXPECT_EQ(word(address + 12), 0xCDCDCDCDu);
+            EXPECT_EQ(word(data1 + (pass * 64 + vertex) * 8), vertex);
+        }
+    // The next pass fetches the first pass's pending output, so it must see the new
+    // GPU words before its inputs are copied, even with no graphics draw in between.
+    gx2Stream().clear();
+    fetch.payload = {0, 0, 0, 0x813, 0, 0, 0x00010203, 3};
+    gx2Stream().push(fetch);
+    record("GX2SetAttribBuffer", {0, 64 * 16, 16, vertices});
+    record("GX2SetStreamOutContext", {0, buffer0, 1});
+    record("GX2SetStreamOutContext", {1, buffer1, 1});
+    record("GX2DrawEx", {1, 64, 0, 1});
+    fetch.payload = {0, 0, 0, 0x813, 0, 0, 0x00010203, 0};
+    gx2Stream().push(fetch);
+    record("GX2SetAttribBuffer", {0, 64 * 16, 16, data0});
+    record("GX2DrawEx", {1, 64, 0, 1});
+    record("GX2SaveStreamOutContext", {0, buffer0});
+    replay.replay(gx2Stream(), &cpu->m_memory);
+    for (unsigned pass = 0; pass < 2; ++pass)
+        for (unsigned vertex = 0; vertex < 64; ++vertex) {
+            const auto address = data0 + (pass * 64 + vertex) * 16;
+            EXPECT_EQ(word(address), std::bit_cast<unsigned>(vertex ? float(vertex * 4 + 1) : 42.f));
+            EXPECT_EQ(word(address + 8), std::bit_cast<unsigned>(float(vertex * 4 + 3)));
+        }
+    EXPECT_EQ(word(context0), 512u);
+}
+
+TEST_F(Gx2CaptureTest, DepthStencilControlCapturesStackArgumentsInDirectAndRegisterForms)
+{
+    constexpr unsigned reg = 0x28001000;
+    cpu->m_gpr[1] = 0x2800F000;
+    const auto invoke = [&](const char *name, const auto &args) {
+        for (unsigned i = 0; i < args.size(); ++i)
+            if (i < 8)
+                cpu->m_gpr[3 + i] = args[i];
+            else
+                cpu->m_memory.write<unsigned>(cpu->m_gpr[1] + 8 + (i - 8) * 4, args[i]);
+        call(name);
+    };
+    const std::array<unsigned, 13> args{1, 0, 3, 1, 1, 7, 0, 0, 4, 2, 6, 3, 5};
+    const unsigned expected = 1u | (1u << 1) | (3u << 4) | (1u << 7) | (7u << 8) | (4u << 11) | (2u << 20) | (5u << 23) | (6u << 26) | (3u << 29);
+    invoke("GX2SetDepthStencilControl", args);
+    ASSERT_EQ(Core::Gfx::gx2Stream().size(), 1u);
+    EXPECT_EQ(Core::Gfx::gx2Stream().commands().back().payload, (std::vector<unsigned>{expected}));
+    std::array<unsigned, 14> initArgs{reg};
+    std::copy(args.begin(), args.end(), initArgs.begin() + 1);
+    invoke("GX2InitDepthStencilControlReg", initArgs);
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(reg), expected);
+    cpu->m_gpr[3] = reg;
+    call("GX2SetDepthStencilControlReg");
+    cpu->m_memory.write<unsigned>(reg, 0);
+    EXPECT_EQ(Core::Gfx::gx2Stream().commands().back().payload, (std::vector<unsigned>{expected}));
+}
+
+TEST_F(Gx2CaptureTest, ResourceBufferSizeRoundsUpAndRejectsOverflow)
+{
+    constexpr unsigned buffer = 0x28001000;
+    cpu->m_gpr[3] = 0x3110;
+    call("GX2RGetBufferAlignment");
+    EXPECT_EQ(cpu->m_gpr[3], 256u);
+    cpu->m_memory.write<unsigned>(buffer + 4, 13);
+    cpu->m_memory.write<unsigned>(buffer + 8, 5);
+    cpu->m_gpr[3] = buffer;
+    call("GX2RGetBufferAllocationSize");
+    EXPECT_EQ(cpu->m_gpr[3], 128u);
+    cpu->m_memory.write<unsigned>(buffer + 4, 0x80000001);
+    cpu->m_memory.write<unsigned>(buffer + 8, 2);
+    cpu->m_gpr[3] = buffer;
+    call("GX2RGetBufferAllocationSize");
+    EXPECT_EQ(cpu->m_gpr[3], 0u);
+}
+
+TEST_F(Gx2CaptureTest, UserBufferCreationAndLockExposeCallerStorage)
+{
+    constexpr unsigned buffer = 0x28001000, storage = 0x28002000;
+    cpu->m_memory.write<unsigned>(buffer, 0x3110);
+    cpu->m_memory.write<unsigned>(buffer + 4, 4);
+    cpu->m_memory.write<unsigned>(buffer + 8, 32);
+    cpu->m_gpr[3] = buffer;
+    cpu->m_gpr[4] = storage;
+    cpu->m_gpr[5] = 64;
+    call("GX2RCreateBufferUserMemory");
+    EXPECT_EQ(cpu->m_gpr[3], 0u);
+    cpu->m_gpr[3] = buffer;
+    cpu->m_gpr[4] = storage;
+    cpu->m_gpr[5] = 128;
+    call("GX2RCreateBufferUserMemory");
+    ASSERT_EQ(cpu->m_gpr[3], 1u);
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(buffer + 12), storage);
+    cpu->m_gpr[3] = buffer;
+    cpu->m_gpr[4] = 1u << 22;
+    call("GX2RLockBufferEx");
+    ASSERT_EQ(cpu->m_gpr[3], storage);
+    cpu->m_memory.write<unsigned>(cpu->m_gpr[3], 0x12345678);
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(storage), 0x12345678u);
+    cpu->m_gpr[3] = buffer;
+    call("GX2RUnlockBufferEx");
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(buffer), 0x3110u);
+    cpu->m_gpr[3] = buffer;
+    cpu->m_gpr[4] = 2;
+    cpu->m_gpr[5] = 16;
+    cpu->m_gpr[6] = 32;
+    call("GX2RSetAttributeBuffer");
+    const auto &binding = Core::Gfx::gx2Stream().commands().back();
+    EXPECT_EQ(binding.type, Core::Gfx::Gx2Cmd::SetAttribBuffer);
+    EXPECT_EQ(binding.gpr[0], 2u);
+    EXPECT_EQ(binding.gpr[1], 128u);
+    EXPECT_EQ(binding.gpr[2], 16u);
+    EXPECT_EQ(binding.gpr[3], storage + 32);
+    cpu->m_gpr[3] = buffer;
+    cpu->m_gpr[4] = 0;
+    call("GX2RDestroyBufferEx");
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(buffer + 12), storage); // caller still owns the memory
+}
+
+TEST_F(Gx2CaptureTest, OwnedResourceBuffersAllocateAlignedStorageAndReleaseIt)
+{
+    RegisterMemHeapFunctions();
+    constexpr unsigned buffer = 0x28001000;
+    cpu->m_memory.write<unsigned>(buffer, 0x3110 | (1u << 30));
+    cpu->m_memory.write<unsigned>(buffer + 4, 13);
+    cpu->m_memory.write<unsigned>(buffer + 8, 5);
+    cpu->m_memory.write<unsigned>(buffer + 12, 0);
+    cpu->m_gpr[3] = buffer;
+    call("GX2RCreateBuffer");
+    ASSERT_EQ(cpu->m_gpr[3], 1u);
+    const auto storage = cpu->m_memory.read<unsigned>(buffer + 12);
+    ASSERT_NE(storage, 0u);
+    EXPECT_EQ(storage % 256, 0u);
+    ASSERT_NE(cpu->m_memory.hostPtr(storage, 128), nullptr);
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(buffer), 0x3110u | (1u << 29));
+    cpu->m_gpr[3] = buffer;
+    call("GX2RBufferExists");
+    EXPECT_EQ(cpu->m_gpr[3], 1u);
+    cpu->m_gpr[3] = buffer;
+    call("GX2RCreateBuffer");
+    EXPECT_EQ(cpu->m_gpr[3], 0u); // an existing buffer is not leaked/replaced
+    cpu->m_gpr[3] = buffer;
+    cpu->m_gpr[4] = 1u << 19;
+    call("GX2RDestroyBufferEx");
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(buffer + 12), storage);
+    cpu->m_gpr[3] = buffer;
+    cpu->m_gpr[4] = 0;
+    call("GX2RDestroyBufferEx");
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(buffer + 12), 0u);
+    cpu->m_gpr[3] = buffer;
+    call("GX2RBufferExists");
+    EXPECT_EQ(cpu->m_gpr[3], 0u);
+    cpu->m_gpr[3] = buffer;
+    call("GX2RCreateBuffer");
+    ASSERT_EQ(cpu->m_gpr[3], 1u);
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(buffer + 12), storage); // freed range is reusable
+    cpu->m_gpr[3] = buffer;
+    cpu->m_gpr[4] = 0;
+    call("GX2RDestroyBufferEx");
+    cpu->m_memory.write<unsigned>(buffer + 4, 0x80000001);
+    cpu->m_memory.write<unsigned>(buffer + 8, 2);
+    cpu->m_gpr[3] = buffer;
+    call("GX2RCreateBuffer");
+    EXPECT_EQ(cpu->m_gpr[3], 0u);
+}
+
+TEST_F(Gx2CaptureTest, ResourceBuffersCallReplacementGuestAllocatorsAndResumeTheirCaller)
+{
+    constexpr unsigned app = Core::Memory::ApplicationCode, buffer = 0x28001000, storage = 0x28002000;
+    constexpr unsigned slots = 0x28005000, output = 0x28006000, stack = 0xC0FFFFF0;
+    const auto savedSymbols = cpu->m_binary.symbols;
+    for (const auto &[name, slot, function]:
+         {std::tuple{"MEMAllocFromDefaultHeapEx", slots, app + 0x100}, std::tuple{"MEMFreeToDefaultHeap", slots + 4, app + 0x120}}) {
+        Core::Symbol symbol{};
+        symbol.name = name;
+        symbol.meta.type = STT_OBJECT;
+        symbol.meta.virtAddress = slot;
+        cpu->m_binary.symbols.push_back(symbol);
+        cpu->m_memory.write<unsigned>(slot, function);
+    }
+    const auto write = [&](unsigned address, std::initializer_list<unsigned> words) {
+        for (const auto word: words) {
+            cpu->m_memory.write<unsigned>(address, word);
+            address += 4;
+        }
+    };
+    // Preserve the original LR/buffer in nonvolatile registers, create, then destroy.
+    write(app, {0x7FC802A6, 0x7C7F1B78, 0x48000079, 0x90690000, 0x7FE3FB78, 0x38800000, 0x48000089, 0x7FC803A6, 0x4E800020});
+    for (const auto &[name, address]: {std::pair{"GX2RCreateBuffer", app + 0x80}, std::pair{"GX2RDestroyBufferEx", app + 0xA0}}) {
+        const auto sentinel = Core::Hle::exportFunction(*cpu, name);
+        write(address, {0x3D800000u | (sentinel >> 16), 0x618C0000u | (sentinel & 0xFFFF), 0x7D8903A6, 0x4E800420});
+    }
+    // Allocator captures its size/alignment and returns caller-owned test storage.
+    write(app + 0x100, {0x90690004, 0x90890008, 0x3C600000u | (storage >> 16), 0x60630000u | (storage & 0xFFFF), 0x4E800020});
+    write(app + 0x120, {0x9069000C, 0x4E800020}); // free captures the exact allocated pointer
+    cpu->m_memory.write<unsigned>(buffer, 0x3110);
+    cpu->m_memory.write<unsigned>(buffer + 4, 13);
+    cpu->m_memory.write<unsigned>(buffer + 8, 5);
+    cpu->m_memory.write<unsigned>(buffer + 12, 0);
+    cpu->m_gpr[1] = stack;
+    cpu->m_gpr[3] = buffer;
+    cpu->m_gpr[9] = output;
+    cpu->m_lr = Core::RETURN_SENTINEL - app;
+    cpu->m_binary.header.e_entry = app;
+    cpu->run();
+    EXPECT_FALSE(cpu->failed());
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(output), 1u);
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(output + 4), 128u);
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(output + 8), 256u);
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(output + 12), storage);
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(buffer + 12), 0u);
+    EXPECT_EQ(cpu->m_gpr[1], stack);
+    EXPECT_EQ(cpu->m_lr, Core::RETURN_SENTINEL - app);
+    cpu->m_binary.symbols = savedSymbols;
+}
+
+TEST_F(Gx2CaptureTest, GeometryRingSizingDoesNotRequireStorageForNonGeometryShaders)
+{
+    for (const auto *name: {"GX2CalcGeometryShaderInputRingBufferSize", "GX2CalcGeometryShaderOutputRingBufferSize"}) {
+        cpu->m_gpr[3] = 0;
+        call(name);
+        EXPECT_EQ(cpu->m_gpr[3], 0u);
+        cpu->m_gpr[3] = 12;
+        call(name);
+        EXPECT_EQ(cpu->m_gpr[3], 12u * 0x4000);
+    }
+}
+
+TEST_F(Gx2CaptureTest, BlendAndDepthRegistersCaptureStackArguments)
+{
+    constexpr unsigned reg = 0x28001000, stack = 0x28002000;
+    cpu->m_gpr[1] = stack;
+    const auto arguments = [&](const auto &args) {
+        for (unsigned i = 0; i < args.size(); ++i)
+            if (i < 8)
+                cpu->m_gpr[3 + i] = args[i];
+            else
+                cpu->m_memory.write<unsigned>(stack + 8 + (i - 8) * 4, args[i]);
+    };
+    arguments(std::array<unsigned, 9>{reg, 2, 4, 5, 1, 1, 6, 7, 2});
+    call("GX2InitBlendControlReg");
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(reg + 4), 4u | (1u << 5) | (5u << 8) | (6u << 16) | (2u << 21) | (7u << 24) | (1u << 29));
+    cpu->m_gpr[3] = reg;
+    call("GX2SetBlendControlReg");
+    EXPECT_EQ(Core::Gfx::gx2Stream().commands().back().gpr, (std::array<std::uint32_t, 8>{2, 4, 5, 1, 1, 6, 7, 2}));
+    arguments(std::array<unsigned, 14>{reg, 1, 1, 3, 1, 1, 2, 3, 4, 5, 6, 7, 1, 2});
+    call("GX2InitDepthStencilControlReg");
+    const auto depth = 1u | 2u | 4u | (3u << 4) | (1u << 7) | (2u << 8) | (5u << 11) | (3u << 14) | (4u << 17) | (6u << 20) | (2u << 23) |
+                       (7u << 26) | (1u << 29);
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(reg), depth);
+    cpu->m_gpr[3] = reg;
+    call("GX2SetDepthStencilControlReg");
+    EXPECT_EQ(Core::Gfx::gx2Stream().commands().back().payload, (std::vector<std::uint32_t>{depth}));
+    arguments(std::array<unsigned, 5>{reg, 0xCC, 5, 1, 1});
+    call("GX2InitColorControlReg");
+    cpu->m_gpr[3] = reg;
+    call("GX2SetColorControlReg");
+    const auto &color = Core::Gfx::gx2Stream().commands().back();
+    EXPECT_EQ(color.gpr[0], 0xCCu);
+    EXPECT_EQ(color.gpr[1], 5u);
+    EXPECT_EQ(color.gpr[2], 1u);
+    EXPECT_EQ(color.gpr[3], 1u);
+}
 
 TEST_F(Gx2CaptureTest, SamplerInitializationAndCapturePreserveIndependentFields)
 {
@@ -153,6 +648,127 @@ TEST_F(Gx2CaptureTest, NoopsAreNotCaptured)
     EXPECT_TRUE(Core::Gfx::gx2Stream().empty());
 }
 
+TEST_F(Gx2CaptureTest, SubmittedBuffersKeepTheirBytesWhenTheCpuBuildsTheNextFrame)
+{
+    constexpr std::uint32_t address = 0x28010000;
+    cpu->m_memory.write<std::uint32_t>(address, 0x12345678u);
+    Core::Gfx::Gx2Command bind{Core::Gfx::Gx2Cmd::SetAttribBuffer};
+    bind.gpr = {0, 16, 4, address};
+    Core::Gfx::Gx2CommandStream stream;
+    stream.push(bind);
+    Core::Gfx::Gx2BufferSnapshots cache;
+    cache.capture(stream, cpu->m_memory);
+    ASSERT_EQ(stream.bufferSnapshots().size(), 1u);
+    const auto submitted = stream.bufferSnapshots();
+    const auto hash = stream.contentHash();
+    const auto *old = reinterpret_cast<const std::uint8_t *>(submitted[0].data.data());
+    EXPECT_EQ(old[0], 0x12);
+    cache.capture(stream, cpu->m_memory);
+    EXPECT_EQ(submitted[0].data.data(), std::as_const(stream).bufferSnapshots()[0].data.data());
+    EXPECT_EQ(stream.contentHash(), hash);
+    cpu->m_memory.write<std::uint32_t>(address, 0x98765432u);
+    cache.capture(stream, cpu->m_memory);
+    EXPECT_NE(stream.contentHash(), hash);
+    const auto *next = reinterpret_cast<const std::uint8_t *>(stream.bufferSnapshots()[0].data.data());
+    EXPECT_EQ(next[0], 0x98);
+    EXPECT_EQ(old[0], 0x12);
+}
+
+TEST_F(Gx2CaptureTest, SubmittedBufferHashesDetectChangesInEveryLaneAndPartialTail)
+{
+    constexpr std::uint32_t address = 0x28010000;
+    for (unsigned byte = 0; byte < 89; ++byte)
+        cpu->m_memory.write<std::uint8_t>(address + byte, 0);
+    Core::Gfx::Gx2Command bind{Core::Gfx::Gx2Cmd::SetAttribBuffer};
+    bind.gpr = {0, 73, 4, address};
+    Core::Gfx::Gx2CommandStream stream;
+    stream.push(bind);
+    Core::Gfx::Gx2BufferSnapshots cache;
+    cache.capture(stream, cpu->m_memory);
+    ASSERT_EQ(stream.bufferSnapshots().size(), 1u);
+    const auto original = stream.contentHash();
+    // Capture includes 16 bytes of allowed fetch overrun and rounds storage to words.
+    ASSERT_EQ(stream.bufferSnapshots()[0].bytes, 89u);
+    for (unsigned byte = 0; byte < 89; ++byte) {
+        SCOPED_TRACE(byte);
+        cpu->m_memory.write<std::uint8_t>(address + byte, 0x80);
+        cache.capture(stream, cpu->m_memory);
+        EXPECT_NE(stream.contentHash(), original);
+        cpu->m_memory.write<std::uint8_t>(address + byte, 0);
+        cache.capture(stream, cpu->m_memory);
+        EXPECT_EQ(stream.contentHash(), original);
+    }
+    // Paired sign changes must not cancel: geometry can mirror several float components.
+    cpu->m_memory.write<std::uint8_t>(address + 7, 0x80);
+    cpu->m_memory.write<std::uint8_t>(address + 39, 0x80);
+    cache.capture(stream, cpu->m_memory);
+    EXPECT_NE(stream.contentHash(), original);
+}
+
+TEST_F(Gx2CaptureTest, SubmittedBuffersDetectStoresWithoutWriteTracking)
+{
+    constexpr std::uint32_t address = 0x28010000;
+    cpu->m_memory.setUntrackedStores(true);
+    Core::Gfx::Gx2Command bind{Core::Gfx::Gx2Cmd::SetAttribBuffer};
+    bind.gpr = {0, 16, 4, address};
+    Core::Gfx::Gx2CommandStream stream;
+    stream.push(bind);
+    Core::Gfx::Gx2BufferSnapshots cache;
+    cache.capture(stream, cpu->m_memory);
+    auto *bytes = cpu->m_memory.hostPtr(address, 16);
+    bytes[0] = 91;
+    cache.capture(stream, cpu->m_memory);
+    const auto *snapshot = reinterpret_cast<const std::uint8_t *>(stream.bufferSnapshots()[0].data.data());
+    EXPECT_EQ(snapshot[0], 91);
+}
+
+TEST_F(Gx2CaptureTest, SubmittedBuffersRefreshInheritedAndRestoredContextBindings)
+{
+    constexpr std::uint32_t first = 0x28010000, second = 0x28020000;
+    Core::Gfx::Gx2CommandStream stream;
+    Core::Gfx::Gx2Command context{Core::Gfx::Gx2Cmd::SetContextState};
+    context.gpr[0] = 0x1000;
+    stream.push(context);
+    Core::Gfx::Gx2Command bind{Core::Gfx::Gx2Cmd::SetAttribBuffer};
+    bind.gpr = {0, 16, 4, first};
+    stream.push(bind);
+    context.gpr[0] = 0x2000;
+    stream.push(context);
+    bind.gpr[3] = second;
+    stream.push(bind);
+    Core::Gfx::Gx2BufferSnapshots cache;
+    cache.capture(stream, cpu->m_memory);
+    stream.clear();
+    context.gpr[0] = 0x1000;
+    stream.push(context);
+    cpu->m_memory.write<std::uint32_t>(first, 0x55000000u);
+    cache.capture(stream, cpu->m_memory);
+    const auto &snapshots = std::as_const(stream).bufferSnapshots();
+    const auto restored = std::find_if(snapshots.begin(), snapshots.end(), [&](const auto &snapshot) { return snapshot.address == first; });
+    ASSERT_NE(restored, snapshots.end());
+    EXPECT_EQ(reinterpret_cast<const std::uint8_t *>(restored->data.data())[0], 0x55);
+    stream.clear(); // the next frame need not bind the same buffer again
+    cpu->m_memory.write<std::uint32_t>(first, 0x66000000u);
+    cache.capture(stream, cpu->m_memory);
+    ASSERT_EQ(stream.bufferSnapshots().size(), 1u);
+    EXPECT_EQ(reinterpret_cast<const std::uint8_t *>(std::as_const(stream).bufferSnapshots()[0].data.data())[0], 0x66);
+}
+
+TEST_F(Gx2CaptureTest, SubmittedBuffersLeaveStreamOutputForReplayToProduce)
+{
+    constexpr std::uint32_t address = 0x28010000;
+    Core::Gfx::Gx2CommandStream stream;
+    Core::Gfx::Gx2Command bind{Core::Gfx::Gx2Cmd::SetAttribBuffer};
+    bind.gpr = {0, 16, 4, address};
+    stream.push(bind);
+    Core::Gfx::Gx2Command output{Core::Gfx::Gx2Cmd::SetStreamOutBuffer};
+    output.payload = {64, address, 0, 0, 0, 0, 0, 0};
+    stream.push(output);
+    Core::Gfx::Gx2BufferSnapshots cache;
+    cache.capture(stream, cpu->m_memory);
+    EXPECT_TRUE(stream.bufferSnapshots().empty());
+}
+
 class Gx2TimingTest : public Gx2CaptureTest {
     protected:
         static constexpr std::uint64_t PERIOD = 62156250ull / 60;
@@ -193,6 +809,69 @@ TEST_F(Gx2TimingTest, VsyncSleepsUntilBoundaryAndResumesAfterCall)
     ASSERT_TRUE(sch.rescheduleAfterHle(*cpu));
     EXPECT_EQ(sch.currentHandle(), main->osThreadPtr);
     EXPECT_EQ(cpu->m_pc, 0x1234u);
+}
+
+TEST_F(Gx2TimingTest, SwapIntervalUsesMatchingGuestAndHostFrameDurations)
+{
+    auto &sch = cpu->m_scheduler;
+    call("GX2GetSwapInterval");
+    EXPECT_EQ(cpu->m_gpr[3], 1u);
+    cpu->m_gpr[3] = 2;
+    call("GX2SetSwapInterval");
+    call("GX2GetSwapInterval");
+    ASSERT_EQ(cpu->m_gpr[3], 2u);
+    sch.waitForSwap(*cpu);
+    const auto first = sch.now();
+    sch.advanceTicks(5000); // CPU work consumes part of the display interval
+    sch.waitForSwap(*cpu);
+    EXPECT_EQ(sch.now() - first, Core::Timing::timeBaseHz / 30);
+    EXPECT_DOUBLE_EQ(Core::Timing::swapDuration(sch.swapInterval()).count(), 1.0 / 30);
+    cpu->m_gpr[3] = 1;
+    call("GX2SetSwapInterval");
+    sch.waitForSwap(*cpu);
+    EXPECT_EQ(sch.now(), first + Core::Timing::timeBaseHz / 30 + PERIOD);
+    EXPECT_DOUBLE_EQ(Core::Timing::swapDuration(sch.swapInterval()).count(), 1.0 / 60);
+}
+
+TEST_F(Gx2TimingTest, DisabledSwapWaitDoesNotAdvanceClockAndReenablingReanchorsIt)
+{
+    auto &sch = cpu->m_scheduler;
+    sch.waitForSwap(*cpu);
+    cpu->m_gpr[3] = 0;
+    call("GX2SetSwapInterval");
+    const auto before = sch.now();
+    sch.waitForSwap(*cpu);
+    EXPECT_EQ(sch.now(), before);
+    EXPECT_DOUBLE_EQ(Core::Timing::swapDuration(sch.swapInterval()).count(), 0.0);
+    sch.advanceTicks(10 * PERIOD);
+    cpu->m_gpr[3] = 1;
+    call("GX2SetSwapInterval");
+    sch.waitForSwap(*cpu); // first present anchors at the current guest tick
+    sch.waitForSwap(*cpu);
+    EXPECT_EQ(sch.now(), before + 11 * PERIOD);
+}
+
+TEST_F(Gx2TimingTest, SwapIntervalDoesNotChangeVsyncFrequency)
+{
+    cpu->m_gpr[3] = 2;
+    call("GX2SetSwapInterval");
+    call("GX2WaitForVsync");
+    EXPECT_EQ(cpu->m_scheduler.now(), PERIOD);
+    call("GX2GetSwapInterval");
+    EXPECT_EQ(cpu->m_gpr[3], 2u);
+}
+
+TEST_F(Gx2TimingTest, InvalidSwapIntervalsPreserveTheLastValidValue)
+{
+    for (const auto interval: {2u, 20u, 0xFFFFFFFFu}) {
+        cpu->m_gpr[3] = interval;
+        call("GX2SetSwapInterval");
+        call("GX2GetSwapInterval");
+        EXPECT_EQ(cpu->m_gpr[3], 2u);
+    }
+    cpu->m_scheduler = Core::Scheduler{};
+    call("GX2GetSwapInterval");
+    EXPECT_EQ(cpu->m_gpr[3], 1u);
 }
 
 TEST_F(Gx2TimingTest, VsyncWaitersShareTheSameDisplayTick)
@@ -318,6 +997,36 @@ TEST_F(Gx2CaptureTest, BaseSurfaceAllocationResolvesDefaultAndPadsTiles)
     }
 }
 
+TEST_F(Gx2CaptureTest, DepthAllocationsContainEveryTexelInTheFinalTileRow)
+{
+    constexpr unsigned header = 0x28001000;
+    for (const unsigned format: {0x80Eu, 5u, 0x11u})
+        for (const unsigned tile: {1u, 2u, 4u, 16u})
+            for (const auto dimensions: {std::array{33u, 17u}, std::array{640u, 360u}, std::array{1440u, 810u}}) {
+                SCOPED_TRACE(format);
+                SCOPED_TRACE(tile);
+                SCOPED_TRACE(dimensions[0]);
+                surface(header, 0, 0, dimensions[0], dimensions[1], 0, tile);
+                cpu->m_memory.write<unsigned>(header + 0x14, format);
+                cpu->m_memory.write<unsigned>(header + 0x1C, 5); // texture and depth attachment
+                cpu->m_gpr[3] = header;
+                call("GX2CalcSurfaceSizeAndAlignment");
+                const auto pitch = cpu->m_memory.read<unsigned>(header + 0x3C);
+                const auto bytes = cpu->m_memory.read<unsigned>(header + 0x20);
+                const auto actualTile = cpu->m_memory.read<unsigned>(header + 0x30);
+                const auto elementBytes = format == 5 ? 2u : 4u;
+                ASSERT_GE(pitch, dimensions[0]);
+                // Allocation must contain every address the replay sampler can reach,
+                // including non-contiguous addresses in the partially used final tile.
+                unsigned maximum = 0;
+                for (unsigned y = 0; y < dimensions[1]; ++y)
+                    for (unsigned x = 0; x < dimensions[0]; ++x)
+                        maximum = std::max(maximum, Core::Gfx::tiledElementOffset(x, y, pitch, elementBytes * 8, actualTile, 0));
+                EXPECT_LE(std::uint64_t(maximum) + elementBytes, bytes);
+                EXPECT_EQ(cpu->m_memory.read<unsigned>(header + 0x10), 1u);
+            }
+}
+
 TEST_F(Gx2CaptureTest, CubeMipmapAllocationIncludesPaddedFacesAndClearsUnusedOffsets)
 {
     constexpr unsigned S = 0x28001000;
@@ -422,6 +1131,143 @@ TEST_F(Gx2CaptureTest, FetchDeclarationSurvivesCallerReuse)
     EXPECT_EQ(commands[0].payload, (std::vector<std::uint32_t>(attr.begin(), attr.end())));
 }
 
+TEST_F(Gx2CaptureTest, StripsFansAndResourceShadersCoverTheWholeRectangle)
+{
+    using namespace Core::Gfx;
+    constexpr unsigned vs = 0x28001000, ps = 0x28002000, color = 0x28003000;
+    constexpr unsigned vsCode = 0x28004000, psCode = 0x28005000, vertices = 0x28006000, indices = 0x28007000;
+    const std::vector<unsigned> vertexProgram{60u | (1u << 13) | (1u << 15), (0x27u << 23) | 0x688u, (2u << 13) | (2u << 15),
+                                              (0x28u << 23) | (1u << 21) | 0x688u};
+    const std::vector<unsigned> pixelProgram{0, (0x28u << 23) | (1u << 21) | 0x688u};
+    const auto shader = [&](unsigned header, unsigned offset, unsigned resource, unsigned code, const auto &words, bool resourceBacked) {
+        for (unsigned off = 0; off < 0x140; off += 4)
+            cpu->m_memory.write<unsigned>(header + off, 0);
+        // The resource size, rather than the unused direct size, selects the bytecode.
+        cpu->m_memory.write<unsigned>(header + offset, resourceBacked ? 0 : words.size() * 4);
+        cpu->m_memory.write<unsigned>(header + offset + 4, resourceBacked ? 0 : code);
+        cpu->m_memory.write<unsigned>(header + resource + 4, 8);
+        cpu->m_memory.write<unsigned>(header + resource + 8, words.size() / 2);
+        cpu->m_memory.write<unsigned>(header + resource + 12, resourceBacked ? code : 0);
+        for (unsigned i = 0; i < words.size(); ++i)
+            cpu->m_memory.write<unsigned>(code + i * 4, std::byteswap(words[i]));
+    };
+    const auto record = [&](const char *name, std::initializer_list<unsigned> args) {
+        unsigned r = 3;
+        for (const auto arg: args)
+            cpu->m_gpr[r++] = arg;
+        call(name);
+    };
+    std::shared_ptr<VulkanRasterBackend> backend;
+    if (std::getenv("WEMU_TEST_VULKAN") && SpirvCompiler::available())
+        backend = std::make_shared<VulkanRasterBackend>();
+    for (const bool resourceBacked: {false, true})
+        for (const bool indexed: {false, true})
+            for (const unsigned mode: {4u, 5u, 6u, 0x13u, 0x14u}) {
+                SCOPED_TRACE(resourceBacked);
+                SCOPED_TRACE(indexed);
+                SCOPED_TRACE(mode);
+                gx2Stream().clear();
+                shader(vs, 0xD0, 0x124, vsCode, vertexProgram, resourceBacked);
+                shader(ps, 0xA4, 0xD8, psCode, pixelProgram, resourceBacked);
+                cpu->m_memory.write<unsigned>(vs + 0x40, 2);
+                cpu->m_memory.write<unsigned>(vs + 0x44, 0);
+                cpu->m_memory.write<unsigned>(vs + 0x48, 1);
+                cpu->m_memory.write<unsigned>(vs + 0xC, 1);
+                cpu->m_memory.write<unsigned>(vs + 0x10, 0xFFFFFF00);
+                cpu->m_memory.write<unsigned>(ps + 0x10, 1);
+                surface(color, 0x28010000, 8 * 8 * 4, 8, 8, 8, 1);
+                record("GX2SetColorBuffer", {color, 0});
+                record("GX2SetColorControl", {0xCC, 0, 0, 1});
+                cpu->m_fpr[1] = cpu->m_fpr[2] = cpu->m_fpr[5] = 0;
+                cpu->m_fpr[3] = cpu->m_fpr[4] = 8;
+                cpu->m_fpr[6] = 1;
+                record("GX2SetViewport", {});
+                record("GX2SetScissor", {0, 0, 8, 8});
+                Gx2Command polygon{Gx2Cmd::SetPolygonControl};
+                polygon.gpr[0] = 6; // clockwise front, cull back: both strip triangles must survive
+                gx2Stream().push(polygon);
+                Gx2Command fetch{Gx2Cmd::SetFetchShader};
+                fetch.payload = {0, 0, 0, 0x813, 0, 0, 0x00010203, 3, 1, 0, 16, 0x813, 0, 0, 0x00010203, 3};
+                gx2Stream().push(fetch);
+                record("GX2SetVertexShader", {vs});
+                record("GX2SetPixelShader", {ps});
+                const float positions[4][2]{{-1, 1}, {1, 1}, {-1, -1}, {1, -1}};
+                const std::vector<unsigned> order = mode == 4                   ? std::vector<unsigned>{0, 1, 2, 2, 1, 3}
+                                                    : mode == 5 || mode == 0x13 ? std::vector<unsigned>{0, 1, 3, 2}
+                                                                                : std::vector<unsigned>{0, 1, 2, 3};
+                // Nonzero first/base vertex and reordered indices must use the same topology.
+                for (unsigned i = 0; i < order.size(); ++i) {
+                    const auto corner = positions[order[i]];
+                    const std::array<float, 8> data{corner[0], corner[1], 0, 1, .25f, .625f, .75f, 1};
+                    for (unsigned c = 0; c < data.size(); ++c)
+                        cpu->m_memory.write<unsigned>(vertices + (i + 2) * 32 + c * 4, std::bit_cast<unsigned>(data[c]));
+                    cpu->m_memory.write<std::uint16_t>(indices + i * 2, i);
+                }
+                record("GX2SetAttribBuffer", {0, 8 * 32, 32, vertices});
+                if (indexed && resourceBacked) {
+                    constexpr unsigned buffer = 0x28008000;
+                    cpu->m_memory.write<unsigned>(buffer + 4, 2);
+                    cpu->m_memory.write<unsigned>(buffer + 8, order.size() + 3);
+                    cpu->m_memory.write<unsigned>(buffer + 12, indices - 6);
+                    record("GX2RDrawIndexed", {mode, buffer, 4, unsigned(order.size()), 3, 2, 1});
+                } else if (indexed)
+                    record("GX2DrawIndexedEx", {mode, unsigned(order.size()), 4, indices, 2, 1});
+                else
+                    record("GX2DrawEx", {mode, unsigned(order.size()), 2, 1});
+                record("GX2CopyColorBufferToScanBuffer", {color, 1});
+                gx2Stream().push(Gx2Command{Gx2Cmd::SwapScanBuffers});
+                Gx2Replayer reference;
+                reference.replay(gx2Stream(), &cpu->m_memory);
+                const auto &pixels = reference.framebuffer();
+                for (unsigned y = 0; y < 8; ++y)
+                    for (unsigned x = 0; x < 8; ++x) {
+                        const auto offset = (y * Gx2Replayer::kWidth + x) * 4;
+                        ASSERT_EQ((std::array{pixels[offset], pixels[offset + 1], pixels[offset + 2]}), (std::array<std::uint8_t, 3>{64, 159, 191}))
+                                << x << ',' << y;
+                    }
+                if (backend) {
+                    const auto draws = backend->completedDraws();
+                    Gx2Replayer native;
+                    native.setRasterBackend(backend);
+                    native.setNativeVerificationInterval(0); // exercise direct GPU vertex/index assembly
+                    native.replay(gx2Stream(), &cpu->m_memory);
+                    EXPECT_EQ(backend->completedDraws(), draws + 1) << backend->lastError();
+                    EXPECT_EQ(native.framebuffer(), pixels);
+                    // Explicitly enabled stencil whose front/back faces always
+                    // pass and keep their values must not force CPU rasterization.
+                    auto identity = gx2Stream();
+                    Gx2Command stencil{Gx2Cmd::SetDepthStencilControl};
+                    stencil.gpr[2] = 7;
+                    stencil.gpr[3] = 1;
+                    stencil.payload = {1u | (1u << 7) | (7u << 8) | (7u << 20)};
+                    auto &commands = identity.mutableCommands();
+                    commands.insert(
+                            std::find_if(commands.begin(), commands.end(),
+                                         [](const auto &command) { return command.type == Gx2Cmd::DrawEx || command.type == Gx2Cmd::DrawIndexedEx; }),
+                            stencil);
+                    Gx2Replayer stencilNative;
+                    stencilNative.setRasterBackend(backend);
+                    stencilNative.setNativeVerificationInterval(0);
+                    stencilNative.replay(identity, &cpu->m_memory);
+                    EXPECT_EQ(backend->completedDraws(), draws + 2) << backend->lastError();
+                    EXPECT_EQ(stencilNative.framebuffer(), pixels);
+                    // Real stencil comparisons/updates remain outside the
+                    // validated native subset and must retain the fallback.
+                    for (const unsigned active: {1u << 14, 1u << 26, 1u << 8, 1u << 20}) {
+                        auto nonIdentity = identity;
+                        for (auto &command: nonIdentity.mutableCommands())
+                            if (command.type == Gx2Cmd::SetDepthStencilControl)
+                                command.payload[0] ^= active;
+                        Gx2Replayer fallback;
+                        fallback.setRasterBackend(backend);
+                        fallback.setNativeVerificationInterval(0);
+                        fallback.replay(nonIdentity, &cpu->m_memory);
+                        EXPECT_EQ(backend->completedDraws(), draws + 2);
+                    }
+                }
+            }
+}
+
 TEST_F(Gx2CaptureTest, VertexTextureBindingSnapshotsSurface)
 {
     surface(0x28001000, 0x28020000, 1024, 16, 16, 16, 1);
@@ -505,6 +1351,10 @@ TEST_F(Gx2CaptureTest, DeclaredAttributesAndPixelSemanticRenderWithEveryIndexEnd
             {0x00010203, true, {{{255, 255, 255, 255}, {0, 0, 0, 255}, {0, 0, 0, 255}, {255, 255, 255, 255}}}, 1},
             {0x00010203, true, {{{255, 0, 0, 255}, {0, 255, 0, 255}, {0, 0, 0, 255}, {255, 255, 0, 255}}}, 7},
             {0x01000504, true, {{{0, 255, 255, 0}, {255, 0, 255, 0}, {0, 0, 255, 0}, {255, 255, 255, 0}}}, 7},
+            {0x00010203, true, {{{255, 0, 0, 255}, {0, 255, 0, 255}, {0, 0, 0, 255}, {255, 255, 0, 255}}}, 0xF},
+            {0x01000504, true, {{{0, 255, 255, 0}, {255, 0, 255, 0}, {0, 0, 255, 0}, {255, 255, 255, 0}}}, 0xF},
+            {0x00010203, true, {{{170, 0, 85, 136}, {170, 0, 85, 136}, {170, 0, 85, 136}, {170, 0, 85, 136}}}, 0x32},
+            {0x02010003, true, {{{85, 0, 170, 136}, {85, 0, 170, 136}, {85, 0, 170, 136}, {85, 0, 170, 136}}}, 0x33},
             {0x00010203, true, {{{255, 0, 0, 255}, {0, 0, 0, 255}, {0, 0, 0, 255}, {255, 0, 0, 255}}}, 0x80E},
             {0x00010203, true, {{{255, 0, 0, 255}, {0, 255, 0, 255}, {0, 0, 255, 255}, {255, 255, 0, 255}}}},
             {0x02010003, true, {{{0, 0, 255, 255}, {0, 255, 0, 255}, {255, 0, 0, 255}, {0, 255, 255, 255}}}},
@@ -523,8 +1373,19 @@ TEST_F(Gx2CaptureTest, DeclaredAttributesAndPixelSemanticRenderWithEveryIndexEnd
                     SCOPED_TRACE(compressedTile);
                     SCOPED_TRACE(samplerMode);
                     SCOPED_TRACE(type);
-                    if (textureCase.format == 1 || textureCase.format == 7) {
-                        const unsigned components = textureCase.format == 1 ? 1 : 2;
+                    const auto expectNativeFramebuffer = [&](const Gx2Replayer &native, const Gx2Replayer &reference) {
+                        const auto &actual = native.framebuffer();
+                        const auto &expected = reference.framebuffer();
+                        ASSERT_EQ(actual.size(), expected.size());
+                        // Native BC2/3 RGB interpolation rounds differently across
+                        // drivers (e.g. llvmpipe returns 169 where the CPU returns
+                        // 170). Keep alpha and all other formats byte-exact.
+                        const bool compressedRgb = textureCase.format == 0x32 || textureCase.format == 0x33;
+                        for (std::size_t i = 0; i < actual.size(); ++i)
+                            ASSERT_LE(std::abs(int(actual[i]) - int(expected[i])), compressedRgb && i % 4 < 3 ? 1 : 0) << "Framebuffer byte " << i;
+                    };
+                    if (textureCase.format == 1 || textureCase.format == 7 || textureCase.format == 0xF) {
+                        const unsigned components = textureCase.format == 1 ? 1 : textureCase.format == 0xF ? 4 : 2;
                         // Include padded rows and both micro/macro-tiled source layouts.
                         const unsigned tile = compressedTile;
                         surface(0x2800A000, 0x28050000, 64 * 32 * components, 2, 2, 64, tile);
@@ -534,20 +1395,30 @@ TEST_F(Gx2CaptureTest, DeclaredAttributesAndPixelSemanticRenderWithEveryIndexEnd
                                 const auto offset = tiledElementOffset(x, y, 64, components * 8, tile, 0);
                                 const auto color = colors[y * 2 + x];
                                 for (unsigned c = 0; c < components; ++c)
-                                    cpu->m_memory.write<std::uint8_t>(0x28050000 + offset + c, color >> (24 - c * 8));
+                                    cpu->m_memory.write<std::uint8_t>(0x28050000 + offset + c,
+                                                                      color >> (24 - (textureCase.format == 0xF ? c / 2 : c) * 8));
                             }
-                    } else if (compressedTile) {
+                    } else if (compressedTile || textureCase.format == 0x32 || textureCase.format == 0x33) {
                         // GX2 pitch is in compression blocks, not pixels. Cross both
                         // microtile and macro-tile rows with four solid-color quadrants.
-                        surface(0x2800A000, 0x28050000, 64 * 32 * 8, 256, 128, 64, compressedTile);
-                        cpu->m_memory.write<std::uint32_t>(0x2800A014, 0x31);
+                        const bool separateAlpha = textureCase.format == 0x32 || textureCase.format == 0x33;
+                        const unsigned blockBytes = separateAlpha ? 16 : 8;
+                        surface(0x2800A000, 0x28050000, 64 * 32 * blockBytes, 256, 128, 64, compressedTile);
+                        cpu->m_memory.write<std::uint32_t>(0x2800A014, separateAlpha ? textureCase.format : 0x31);
                         const std::uint16_t endpoints[4]{0xF800, 0x07E0, 0x001F, 0xFFE0};
                         for (unsigned y = 0; y < 32; y++)
                             for (unsigned x = 0; x < 64; x++) {
-                                const auto address = 0x28050000 + tiledElementOffset(x, y, 64, 64, compressedTile, 0);
+                                const auto address = 0x28050000 + tiledElementOffset(x, y, 64, blockBytes * 8, compressedTile, 0);
                                 const auto color = endpoints[(y >= 16 ? 2 : 0) + (x >= 32 ? 1 : 0)];
-                                for (unsigned b = 0; b < 8; b++)
-                                    cpu->m_memory.write<std::uint8_t>(address + b, b < 4 ? color >> ((b & 1) * 8) : 0);
+                                if (separateAlpha) {
+                                    // BC2/3 always have four RGB colors, even with c0 <= c1.
+                                    const std::array<std::uint8_t, 16> block{136, 136, 136, 136, 136, 136, 136, 136,
+                                                                             31,  0,   0,   248, 255, 255, 255, 255};
+                                    for (unsigned b = 0; b < block.size(); ++b)
+                                        cpu->m_memory.write<std::uint8_t>(address + b, textureCase.format == 0x33 && b >= 2 && b < 8 ? 0 : block[b]);
+                                } else
+                                    for (unsigned b = 0; b < 8; b++)
+                                        cpu->m_memory.write<std::uint8_t>(address + b, b < 4 ? color >> ((b & 1) * 8) : 0);
                             }
                     } else {
                         surface(0x2800A000, 0x28050000, 16, 2, 2, 2, 1);
@@ -619,8 +1490,9 @@ TEST_F(Gx2CaptureTest, DeclaredAttributesAndPixelSemanticRenderWithEveryIndexEnd
                     EXPECT_EQ(pixel(6, 1), samplerMode == 6 ? border : textureCase.expected[samplerMode == 2 ? 0 : 1]);
                     EXPECT_EQ(pixel(1, 6), samplerMode == 6 ? border : textureCase.expected[2]);
                     EXPECT_EQ(pixel(6, 6), samplerMode == 6 ? border : textureCase.expected[samplerMode == 2 ? 2 : 3]);
-                    if ((textureCase.format == 1 || textureCase.format == 7 || textureCase.format == 0x80E) && !samplerMode && !type &&
-                        std::getenv("WEMU_TEST_VULKAN") && SpirvCompiler::available()) {
+                    if ((textureCase.format == 1 || textureCase.format == 7 || textureCase.format == 0xF || textureCase.format == 0x32 ||
+                         textureCase.format == 0x33 || textureCase.format == 0x80E) &&
+                        !samplerMode && !type && std::getenv("WEMU_TEST_VULKAN") && SpirvCompiler::available()) {
                         auto backend = std::make_shared<VulkanRasterBackend>();
                         Gx2Replayer native;
                         native.setRasterBackend(backend);
@@ -628,7 +1500,7 @@ TEST_F(Gx2CaptureTest, DeclaredAttributesAndPixelSemanticRenderWithEveryIndexEnd
                         native.replay(gx2Stream(), &cpu->m_memory);
                         EXPECT_EQ(backend->completedDraws(), 1u) << backend->lastError();
                         EXPECT_EQ(native.comparedNativeDraws(), 1u);
-                        EXPECT_EQ(native.framebuffer(), replayer.framebuffer());
+                        expectNativeFramebuffer(native, replayer);
                     }
                     if (textureCase.format == 1 && textureCase.map == 0x00010203 && !compressedTile && !samplerMode && !type) {
                         auto gatherWords = ps;
@@ -749,8 +1621,10 @@ TEST_F(Gx2CaptureTest, DeclaredAttributesAndPixelSemanticRenderWithEveryIndexEnd
                         fallback.setRasterBackend(backend);
                         fallback.replay(gx2Stream(), &cpu->m_memory);
                         EXPECT_EQ(backend->calls, 1u);
-                        EXPECT_EQ(backend->firstTexel,
-                                  (textureCase.format == 1 ? std::array<float, 4>{1, 1, 1, 1} : std::array<float, 4>{1, 0, 0, 1}));
+                        std::array<float, 4> expectedTexel{};
+                        for (unsigned c = 0; c < 4; ++c)
+                            expectedTexel[c] = float(textureCase.expected[0][c]) / 255.f;
+                        EXPECT_EQ(backend->firstTexel, expectedTexel);
                         EXPECT_EQ(fallback.framebuffer(), replayer.framebuffer());
                         if (textureCase.format == 0x1A) {
                             constexpr unsigned width = 854, height = 480, image = 0x28200000, target = 0x28400000;
@@ -941,9 +1815,9 @@ TEST_F(Gx2CaptureTest, DeclaredAttributesAndPixelSemanticRenderWithEveryIndexEnd
                             native.setNativeVerificationInterval(1);
                             native.replay(gx2Stream(), &cpu->m_memory);
                             EXPECT_EQ(native.comparedNativeDraws(), 1u);
-                            EXPECT_EQ(native.differingNativeDraws(), 0u);
+                            EXPECT_EQ(native.differingNativeDraws(), native.framebuffer() == replayer.framebuffer() ? 0u : 1u);
                             EXPECT_EQ(nativeBackend->completedDraws(), 1u) << nativeBackend->lastError();
-                            EXPECT_EQ(native.framebuffer(), replayer.framebuffer());
+                            expectNativeFramebuffer(native, replayer);
                         }
                         auto accepted = std::make_shared<BackendProbe>();
                         // Disabling separate alpha blending does not disable RGB blending.
@@ -1017,7 +1891,7 @@ TEST_F(Gx2CaptureTest, DeclaredAttributesAndPixelSemanticRenderWithEveryIndexEnd
                             if (nativeBackend) {
                                 native.replay(gx2Stream(), &cpu->m_memory);
                                 EXPECT_EQ(nativeBackend->completedDraws(), pass + 3u) << nativeBackend->lastError();
-                                EXPECT_EQ(native.framebuffer(), replayer.framebuffer());
+                                expectNativeFramebuffer(native, replayer);
                                 if (pass == 2)
                                     EXPECT_GE(nativeBackend->reusedDraws(), 2u);
                             }
@@ -1194,12 +2068,21 @@ TEST_F(Gx2CaptureTest, DepthClearsExportsOcclusionAndSamplingMatchNative)
                 cpu->m_memory.write<std::uint32_t>(vertices + v * 32 + c * 4, std::bit_cast<std::uint32_t>(data[c]));
         }
     };
-    for (const unsigned format: {0x80Eu, 5u}) {
+    for (const auto config:
+         {std::array{0x80Eu, 0u}, std::array{5u, 0u}, std::array{0x80Eu, 4u}, std::array{5u, 4u}, std::array{0x11u, 0u}, std::array{0x11u, 4u}}) {
+        const auto format = config[0];
+        const auto tile = config[1];
+        SCOPED_TRACE(tile);
         SCOPED_TRACE(format);
         gx2Stream().clear();
         surface(colorHeader, colorImage, 256, 8, 8, 8, 1);
         surface(depthHeader, depthImage, 10 * 8 * (format == 5 ? 2 : 4), 8, 8, 10, 0);
         cpu->m_memory.write<std::uint32_t>(depthHeader + 0x14, format);
+        if (tile) {
+            cpu->m_memory.write<unsigned>(depthHeader + 0x30, tile);
+            cpu->m_memory.write<unsigned>(depthHeader + 0x1C, 5);
+            record("GX2CalcSurfaceSizeAndAlignment", {depthHeader});
+        }
         cpu->m_memory.write<std::uint32_t>(depthHeader + 0x80, 1);
         cpu->m_memory.write<std::uint32_t>(depthHeader + 0x84, 0x00040505); // depth,0,1,1
         for (auto &f: cpu->m_fpr)
@@ -1227,7 +2110,7 @@ TEST_F(Gx2CaptureTest, DepthClearsExportsOcclusionAndSamplingMatchNative)
         Gx2Replayer reference, native;
         std::shared_ptr<VulkanRasterBackend> backend;
         if (std::getenv("WEMU_TEST_VULKAN") && SpirvCompiler::available()) {
-            backend = std::make_shared<VulkanRasterBackend>();
+            backend = std::make_shared<VulkanRasterBackend>(true, true);
             native.setRasterBackend(backend);
             native.setNativeVerificationInterval(1);
         }
@@ -1297,6 +2180,96 @@ TEST_F(Gx2CaptureTest, DepthClearsExportsOcclusionAndSamplingMatchNative)
         EXPECT_EQ(reference.framebuffer()[0], 32);
         EXPECT_EQ(reference.framebuffer()[1], 0);
         EXPECT_EQ(native.framebuffer(), reference.framebuffer());
+        if (format == 0x11u) {
+            const auto control = [&](unsigned compare, unsigned operation, unsigned depthCompare = 7) {
+                const unsigned word = 1u | (1u << 1) | (depthCompare << 4) | (1u << 7) | (compare << 8) | (operation << 11) | (operation << 14) |
+                                      (operation << 17) | (compare << 20) | (operation << 23) | (operation << 26) | (operation << 29);
+                cpu->m_memory.write<unsigned>(0x2800D000, word);
+                record("GX2SetDepthStencilControlReg", {0x2800D000});
+            };
+            const auto replay = [&] {
+                record("GX2CopyColorBufferToScanBuffer", {colorHeader, 1});
+                gx2Stream().push(Gx2Command{Gx2Cmd::SwapScanBuffers});
+                reference.replay(gx2Stream(), &cpu->m_memory);
+                native.replay(gx2Stream(), &cpu->m_memory);
+                EXPECT_EQ(native.framebuffer(), reference.framebuffer());
+            };
+            gx2Stream().clear();
+            for (unsigned c = 1; c <= 4; ++c)
+                cpu->m_fpr[c] = c == 4 ? 1 : 0;
+            record("GX2ClearColor", {colorHeader});
+            cpu->m_fpr[1] = 1;
+            record("GX2ClearDepthStencilEx", {depthHeader, 0, 3});
+            record("GX2SetScissor", {0, 0, 4, 8});
+            record("GX2SetColorControl", {0xCC, 0, 0, 0});
+            record("GX2SetStencilMask", {255, 255, 1, 255, 255, 1});
+            control(7, 2); // ALWAYS/REPLACE, writing stencil without color or depth
+            record("GX2SetPixelShader", {psColorHeader});
+            record("GX2DrawEx", {4, 6, 0, 1});
+            mesh(0, {0, 1, 0, 1});
+            const auto beforeStencil = backend ? backend->completedDraws() : 0;
+            replay();
+            gx2Stream().clear();
+            record("GX2SetColorControl", {0xCC, 0, 0, 1});
+            record("GX2SetScissor", {0, 0, 8, 8});
+            control(2, 0); // EQUAL/KEEP, color only on the written half
+            record("GX2DrawEx", {4, 6, 0, 1});
+            replay();
+            for (unsigned y = 0; y < 8; ++y)
+                for (unsigned x = 0; x < 8; ++x)
+                    EXPECT_EQ(reference.framebuffer()[(y * Gx2Replayer::kWidth + x) * 4 + 1], x < 4 ? 255 : 0);
+            gx2Stream().clear();
+            record("GX2SetColorControl", {0xCC, 0, 0, 0});
+            record("GX2SetStencilMask", {255, 0, 9, 255, 0, 9});
+            control(7, 2); // zero write mask preserves the stored stencil
+            record("GX2DrawEx", {4, 6, 0, 1});
+            replay();
+            gx2Stream().clear();
+            record("GX2SetColorControl", {0xCC, 0, 0, 1});
+            record("GX2SetStencilMask", {255, 255, 0, 255, 255, 0});
+            control(2, 0);
+            record("GX2DrawEx", {4, 6, 0, 1});
+            mesh(0, {0, 0, 1, 1});
+            replay();
+            for (unsigned y = 0; y < 8; ++y)
+                for (unsigned x = 0; x < 8; ++x) {
+                    const auto pixel = (y * Gx2Replayer::kWidth + x) * 4;
+                    EXPECT_EQ(reference.framebuffer()[pixel + 1], x < 4 ? 255 : 0);
+                    EXPECT_EQ(reference.framebuffer()[pixel + 2], x < 4 ? 0 : 255);
+                }
+            if (backend && std::getenv("WEMU_NATIVE_DEFER_READBACK"))
+                EXPECT_EQ(backend->completedDraws(), beforeStencil + 4) << backend->lastError();
+            // Check all operations through stencil-fail, depth-fail and pass,
+            // including clamp/wrap boundaries, against fixed expected bytes.
+            for (const auto values:
+                 {std::array{0u, 5u, 9u, 5u}, std::array{1u, 5u, 9u, 0u}, std::array{2u, 5u, 9u, 9u}, std::array{3u, 255u, 9u, 255u},
+                  std::array{3u, 5u, 9u, 6u}, std::array{4u, 0u, 9u, 0u}, std::array{4u, 5u, 9u, 4u}, std::array{5u, 0xAAu, 9u, 0x55u},
+                  std::array{6u, 255u, 9u, 0u}, std::array{7u, 0u, 9u, 255u}})
+                for (unsigned outcome = 0; outcome < 3; ++outcome) {
+                    SCOPED_TRACE(::testing::PrintToString(values));
+                    SCOPED_TRACE(outcome);
+                    gx2Stream().clear();
+                    cpu->m_fpr[1] = cpu->m_fpr[2] = cpu->m_fpr[3] = 0;
+                    cpu->m_fpr[4] = 1;
+                    record("GX2ClearColor", {colorHeader});
+                    record("GX2ClearDepthStencilEx", {depthHeader, values[1], 2});
+                    record("GX2SetColorControl", {0xCC, 0, 0, 0});
+                    record("GX2SetStencilMask", {255, 255, values[2], 255, 255, values[2]});
+                    control(outcome == 0 ? 0 : 7, values[0], outcome == 1 ? 0 : 7);
+                    record("GX2DrawEx", {4, 6, 0, 1});
+                    replay();
+                    gx2Stream().clear();
+                    record("GX2SetColorControl", {0xCC, 0, 0, 1});
+                    record("GX2SetStencilMask", {255, 255, values[3], 255, 255, values[3]});
+                    control(2, 0);
+                    record("GX2DrawEx", {4, 6, 0, 1});
+                    mesh(0, {1, 1, 1, 1});
+                    replay();
+                    for (unsigned y = 0; y < 8; ++y)
+                        for (unsigned x = 0; x < 8; ++x)
+                            EXPECT_EQ(reference.framebuffer()[(y * Gx2Replayer::kWidth + x) * 4], 255);
+                }
+        }
         if (backend)
             EXPECT_EQ(native.differingNativeDraws(), 0u);
     }
@@ -2201,7 +3174,7 @@ TEST_F(Gx2CaptureTest, DirectVertexArraysAreReusedUntilGuestVertexBytesChange)
     const auto backend = std::make_shared<VulkanRasterBackend>(true, true);
     native.setRasterBackend(backend);
     native.setNativeVerificationInterval(0);
-    const auto frame = [&] {
+    const auto frame = [&](bool repeat = false) {
         gx2Stream().clear();
         cpu->m_fpr[1] = cpu->m_fpr[2] = cpu->m_fpr[3] = cpu->m_fpr[4] = 0;
         record("GX2ClearColor", {COLOR});
@@ -2215,6 +3188,8 @@ TEST_F(Gx2CaptureTest, DirectVertexArraysAreReusedUntilGuestVertexBytesChange)
         record("GX2SetViewport", {});
         record("GX2SetVertexUniformReg", {0, 4, UNIFORM});
         record("GX2DrawIndexedEx", {4, count, 4, INDEX, 0, 1});
+        if (repeat)
+            record("GX2DrawIndexedEx", {4, count, 4, INDEX, 0, 1});
         record("GX2CopyColorBufferToScanBuffer", {COLOR, 1});
         gx2Stream().push(Gx2Command{Gx2Cmd::SwapScanBuffers});
         reference.replay(gx2Stream(), &cpu->m_memory);
@@ -2246,6 +3221,71 @@ TEST_F(Gx2CaptureTest, DirectVertexArraysAreReusedUntilGuestVertexBytesChange)
     EXPECT_EQ(native.framebuffer(), reference.framebuffer());
     const auto &fb = native.framebuffer();
     EXPECT_NE(std::vector(fb.begin(), fb.begin() + 4), std::vector(fb.end() - 4, fb.end()));
+    // A pose that changes every frame must still reuse its conversion in a later pass.
+    // Earlier admission policy permanently abandoned such geometry after four changes.
+    for (unsigned pose = 0; pose < 10; ++pose) {
+        writeQuad(float((pose + 1) % 4) / 4);
+        const auto hits = native.directVertexReuses();
+        frame(true);
+        EXPECT_EQ(native.directVertexReuses(), hits + 1);
+        EXPECT_EQ(native.framebuffer(), reference.framebuffer());
+    }
+    // A stream-output pass can replace a cached mesh between draws in the same frame.
+    constexpr unsigned STREAM_VS = 0x28014000, STREAM_PROGRAM = 0x28015000, STREAM_BUFFER = 0x28016000, STREAM_INPUT = 0x28017000;
+    for (unsigned off = 0; off < 0x200; off += 4)
+        cpu->m_memory.write<unsigned>(STREAM_VS + off, 0);
+    cpu->m_memory.write<unsigned>(STREAM_PROGRAM, std::byteswap(1u << 15));
+    cpu->m_memory.write<unsigned>(STREAM_PROGRAM + 4, std::byteswap((0x20u << 23) | (1u << 21) | (15u << 12) | 3u));
+    cpu->m_memory.write<unsigned>(STREAM_VS + 0xD0, 8);
+    cpu->m_memory.write<unsigned>(STREAM_VS + 0xD4, STREAM_PROGRAM);
+    cpu->m_memory.write<unsigned>(STREAM_VS + 0x40, 1);
+    cpu->m_memory.write<unsigned>(STREAM_VS + 0x110, 1);
+    cpu->m_memory.write<unsigned>(STREAM_VS + 0x114, 16);
+    for (unsigned off = 0; off < 32; off += 4)
+        cpu->m_memory.write<unsigned>(STREAM_BUFFER + off, 0);
+    cpu->m_memory.write<unsigned>(STREAM_BUFFER, 64);
+    cpu->m_memory.write<unsigned>(STREAM_BUFFER + 4, VERTS);
+    // Stream exports use GPU little-endian bytes, including the graphics fetch afterwards.
+    cpu->m_memory.write<unsigned>(ATTRS + 7 * 4, 0);
+    record("GX2InitFetchShaderEx", {FETCH, 0x28002000, 1, ATTRS, 0, 0});
+    const auto gpuQuad = [&](unsigned address, float right) {
+        const std::array<std::array<float, 4>, 4> vertices{{{-1, 1, 0, 1}, {right, 1, 0, 1}, {-1, -1, 0, 1}, {right, -1, 0, 1}}};
+        for (unsigned v = 0; v < vertices.size(); ++v)
+            for (unsigned c = 0; c < 4; ++c)
+                cpu->m_memory.write<unsigned>(address + v * 16 + c * 4, std::byteswap(std::bit_cast<unsigned>(vertices[v][c])));
+    };
+    gpuQuad(VERTS, 0);
+    gpuQuad(STREAM_INPUT, 1);
+    frame();
+    frame();
+    gx2Stream().clear();
+    cpu->m_fpr[1] = cpu->m_fpr[2] = cpu->m_fpr[3] = cpu->m_fpr[4] = 0;
+    record("GX2ClearColor", {COLOR});
+    record("GX2SetScissor", {0, 0, 2, 4});
+    record("GX2DrawIndexedEx", {4, count, 4, INDEX, 0, 1});
+    record("GX2SetVertexShader", {STREAM_VS});
+    record("GX2SetAttribBuffer", {0, 64, 16, STREAM_INPUT});
+    record("GX2SetStreamOutBuffer", {0, STREAM_BUFFER});
+    record("GX2SetStreamOutContext", {0, STREAM_BUFFER, 1});
+    record("GX2SetStreamOutEnable", {1});
+    gx2Stream().push(Gx2Command{Gx2Cmd::SetRasterizerClipControl, {0, 1, 0}});
+    record("GX2DrawEx", {1, 4, 0, 1});
+    record("GX2SetStreamOutEnable", {0});
+    gx2Stream().push(Gx2Command{Gx2Cmd::SetRasterizerClipControl, {1, 1, 0}});
+    record("GX2SetVertexShader", {VS});
+    record("GX2SetAttribBuffer", {0, 64, 16, VERTS});
+    record("GX2SetScissor", {2, 0, 2, 4});
+    record("GX2DrawIndexedEx", {4, count, 4, INDEX, 0, 1});
+    record("GX2DrawIndexedEx", {4, count, 4, INDEX, 0, 1});
+    record("GX2CopyColorBufferToScanBuffer", {COLOR, 1});
+    gx2Stream().push(Gx2Command{Gx2Cmd::SwapScanBuffers});
+    reference.replay(gx2Stream(), &cpu->m_memory);
+    gpuQuad(VERTS, 0);
+    const auto hits = native.directVertexReuses();
+    native.replay(gx2Stream(), &cpu->m_memory);
+    EXPECT_EQ(native.directVertexReuses(), hits + 2);
+    EXPECT_EQ(native.framebuffer(), reference.framebuffer());
+    EXPECT_EQ(native.framebuffer()[3 * 4 + 1], 255); // New geometry reaches the right-hand scissor.
 }
 
 TEST_F(Gx2CaptureTest, IndexedVertexReusePreservesParametersAndRefreshesEachDraw)
@@ -2846,7 +3886,7 @@ TEST_F(Gx2CaptureTest, PolygonRegisterCapturePreservesStackArgumentsAndRoundTrip
         if (index < 8)
             cpu->m_gpr[index + 3] = args[index];
         else
-            cpu->m_memory.write<unsigned>(STACK + 8 + index * 4, args[index]);
+            cpu->m_memory.write<unsigned>(STACK + 8 + (index - 8) * 4, args[index]);
     call("GX2InitPolygonControlReg");
     const auto word = 2u | 4u | (1u << 3) | (2u << 5) | (1u << 8) | (1u << 11) | (1u << 13);
     ASSERT_EQ(cpu->m_memory.read<unsigned>(REG), word);
@@ -2861,7 +3901,7 @@ TEST_F(Gx2CaptureTest, PolygonRegisterCapturePreservesStackArgumentsAndRoundTrip
         if (index + 1 < 8)
             cpu->m_gpr[index + 4] = OUT + index * 4;
         else
-            cpu->m_memory.write<unsigned>(STACK + 8 + (index + 1) * 4, OUT + index * 4);
+            cpu->m_memory.write<unsigned>(STACK + 8 + (index + 1 - 8) * 4, OUT + index * 4);
     call("GX2GetPolygonControlReg");
     for (unsigned index = 0; index < 9; ++index)
         EXPECT_EQ(cpu->m_memory.read<unsigned>(OUT + index * 4), args[index + 1]);
@@ -3078,7 +4118,7 @@ TEST_F(Gx2CaptureTest, PackedAndBlockDecodeMatchReferenceForTilingPartialBlocksA
     const std::array<std::array<float, 4>, 6> corners{{{-1, 1, 0, 0}, {1, 1, 1, 0}, {-1, -1, 0, 1}, {1, 1, 1, 0}, {1, -1, 1, 1}, {-1, -1, 0, 1}}};
     std::vector<std::array<unsigned, 4>> cases;
     for (const unsigned tile: {1u, 2u, 4u})
-        for (const unsigned format: {8u, 0x31u, 0x32u, 0x33u, 0x34u, 0x35u})
+        for (const unsigned format: {2u, 8u, 0x31u, 0x32u, 0x33u, 0x34u, 0x35u})
             cases.push_back({tile, format, 7, 5});
     // A near-4K BC1 atlas should stay compressed on the native path, instead
     // of expanding to 64 MiB of RGBA or a still larger float callback upload.
@@ -3099,12 +4139,13 @@ TEST_F(Gx2CaptureTest, PackedAndBlockDecodeMatchReferenceForTilingPartialBlocksA
         if (std::getenv("WEMU_TEST_VULKAN")) {
             backend = std::make_shared<VulkanRasterBackend>(true, true);
             native.setRasterBackend(backend);
-            if (format != 0x31 && format != 0x34)
+            const bool hardwareBlocks = format >= 0x31 && format <= 0x35;
+            if (!hardwareBlocks)
                 native.setNativeVerificationInterval(1);
         }
-        const unsigned bytes = format == 8 ? 2 : format == 0x31 || format == 0x34 ? 8 : 16;
-        const auto layout =
-                baseSurfaceLayout(format == 8 ? width : (width + 3) / 4, format == 8 ? height : (height + 3) / 4, 1, bytes, tile, width, height);
+        const bool packed = format == 2 || format == 8;
+        const unsigned bytes = format == 2 ? 1 : format == 8 ? 2 : format == 0x31 || format == 0x34 ? 8 : 16;
+        const auto layout = baseSurfaceLayout(packed ? width : (width + 3) / 4, packed ? height : (height + 3) / 4, 1, bytes, tile, width, height);
         ASSERT_TRUE(layout);
         surface(COLOR, IMAGE, 7 * 5 * 4, 7, 5, 7, 1);
         surface(TEX, BLOCKS, layout->imageSize, width, height, layout->pitch, tile);
@@ -3121,13 +4162,13 @@ TEST_F(Gx2CaptureTest, PackedAndBlockDecodeMatchReferenceForTilingPartialBlocksA
         cpu->m_memory.write<unsigned>(TEX + 0x14, format);
         cpu->m_memory.write<unsigned>(TEX + 0x84, 0x00010203);
         const bool large = width > 4000;
-        for (unsigned pass = 0; pass < (large ? 20u : 2u); ++pass) {
+        for (unsigned pass = 0; pass < (large ? 20u : 3u); ++pass) {
             // Eighteen atlases overflow the strong CPU decode cache while their GPU
             // uploads still own the snapshots. Returning to the first unchanged
             // atlas must recover its owner instead of decoding/uploading again.
             const auto image = BLOCKS + (large && pass < 18 ? pass * 0x01000000u : 0u);
             cpu->m_memory.write<unsigned>(TEX + 0x24, image);
-            if (!large || pass != 18) {
+            if (large ? pass != 18 : pass != 1) {
                 unsigned random = 0x163AE42u + pass;
                 for (unsigned i = 0; i < layout->imageSize; ++i) {
                     random = random * 1664525u + 1013904223u;
@@ -3158,19 +4199,34 @@ TEST_F(Gx2CaptureTest, PackedAndBlockDecodeMatchReferenceForTilingPartialBlocksA
             gx2Stream().push(Gx2Command{Gx2Cmd::SwapScanBuffers});
             reference.replay(gx2Stream(), &cpu->m_memory);
             native.replay(gx2Stream(), &cpu->m_memory);
+            if (format == 2) {
+                const auto raw = cpu->m_memory.read<std::uint8_t>(BLOCKS);
+                EXPECT_EQ(reference.framebuffer()[0], (raw & 15) * 17);
+                EXPECT_EQ(reference.framebuffer()[1], (raw >> 4) * 17);
+                EXPECT_EQ(reference.framebuffer()[2], 0);
+                EXPECT_EQ(reference.framebuffer()[3], 255);
+            }
             if (format == 8) {
                 const std::array<std::uint8_t, 2> raw{cpu->m_memory.read<std::uint8_t>(BLOCKS), cpu->m_memory.read<std::uint8_t>(BLOCKS + 1)};
                 const auto expected = decodeRgb565(raw.data());
                 for (unsigned channel = 0; channel < 4; ++channel)
                     EXPECT_EQ(reference.framebuffer()[channel], expected[channel]);
             }
-            if (backend && (format == 0x31 || format == 0x34)) {
+            if (format == 0x34 || format == 0x35) {
+                // BC4/BC5 supply R or RG. Missing color channels are zero and
+                // alpha is one before the texture view applies its swizzle.
+                EXPECT_EQ(reference.framebuffer()[2], 0);
+                EXPECT_EQ(reference.framebuffer()[3], 255);
+                if (format == 0x34)
+                    EXPECT_EQ(reference.framebuffer()[1], 0);
+            }
+            if (backend && format >= 0x31 && format <= 0x35) {
                 // BC1-5 hardware interpolation is approximate. D3D11 section
                 // 19.5.2 bounds it by absolute error + 3% of endpoint distance;
                 // NVIDIA's BC1 green interpolation actually exercises this bound.
                 // The reference additionally truncates expanded endpoints and
-                // interpolants to bytes. Allow those two rounding steps for BC1,
-                // one for BC4, while keeping alpha/untouched pixels exact.
+                // interpolants to bytes. Allow those two rounding steps for BC1/2/3
+                // RGB, one for BC3/4 alpha, keeping BC1/2 alpha and untouched pixels exact.
                 // https://microsoft.github.io/DirectX-Specs/d3d/archive/D3D11_3_FunctionalSpec.htm#19.5.2
                 const auto &actual = native.framebuffer(), &expected = reference.framebuffer();
                 ASSERT_EQ(actual.size(), expected.size());
@@ -3181,19 +4237,29 @@ TEST_F(Gx2CaptureTest, PackedAndBlockDecodeMatchReferenceForTilingPartialBlocksA
                             const auto tx = unsigned((float(x) + .5f) * float(width) / 7.f + .25f) % width;
                             const auto ty = unsigned((float(y) + .5f) * float(height) / 5.f + .25f) % height;
                             const auto block = image + tiledElementOffset(tx / 4, ty / 4, layout->pitch, bytes * 8, tile, 0);
-                            if (format == 0x31) {
-                                const auto a = cpu->m_memory.read<std::uint8_t>(block) | (unsigned(cpu->m_memory.read<std::uint8_t>(block + 1)) << 8);
-                                const auto b =
-                                        cpu->m_memory.read<std::uint8_t>(block + 2) | (unsigned(cpu->m_memory.read<std::uint8_t>(block + 3)) << 8);
+                            if (format <= 0x33) {
+                                const auto colorBlock = block + (format == 0x31 ? 0 : 8);
+                                const auto a = cpu->m_memory.read<std::uint8_t>(colorBlock) |
+                                               (unsigned(cpu->m_memory.read<std::uint8_t>(colorBlock + 1)) << 8);
+                                const auto b = cpu->m_memory.read<std::uint8_t>(colorBlock + 2) |
+                                               (unsigned(cpu->m_memory.read<std::uint8_t>(colorBlock + 3)) << 8);
                                 for (unsigned c = 0; c < 3; ++c) {
                                     const unsigned shift = c == 0 ? 11 : c == 1 ? 5 : 0, mask = c == 1 ? 63 : 31;
                                     const auto distance = std::abs(int(((a >> shift) & mask) * 255 / mask) - int(((b >> shift) & mask) * 255 / mask));
                                     tolerance[c] = unsigned(std::ceil(2.0 + .03 * distance));
                                 }
+                                if (format == 0x33) {
+                                    const auto distance =
+                                            std::abs(int(cpu->m_memory.read<std::uint8_t>(block)) - int(cpu->m_memory.read<std::uint8_t>(block + 1)));
+                                    tolerance[3] = unsigned(std::ceil(1.0 + .03 * distance));
+                                }
                             } else {
-                                const auto distance =
-                                        std::abs(int(cpu->m_memory.read<std::uint8_t>(block)) - int(cpu->m_memory.read<std::uint8_t>(block + 1)));
-                                tolerance.fill(unsigned(std::ceil(1.0 + .03 * distance)));
+                                for (unsigned c = 0; c < (format == 0x35 ? 2u : 1u); ++c) {
+                                    const auto channelBlock = block + c * 8;
+                                    const auto distance = std::abs(int(cpu->m_memory.read<std::uint8_t>(channelBlock)) -
+                                                                   int(cpu->m_memory.read<std::uint8_t>(channelBlock + 1)));
+                                    tolerance[c] = unsigned(std::ceil(1.0 + .03 * distance));
+                                }
                             }
                         }
                         for (unsigned c = 0; c < 4; ++c) {
@@ -3207,6 +4273,8 @@ TEST_F(Gx2CaptureTest, PackedAndBlockDecodeMatchReferenceForTilingPartialBlocksA
             if (backend) {
                 EXPECT_EQ(backend->completedDraws(), pass + 1) << backend->lastError();
                 EXPECT_EQ(native.differingNativeDraws(), 0u);
+                if (!large)
+                    EXPECT_EQ(backend->sharedTextureUploads(), pass == 2 ? 2u : 1u);
                 if (large)
                     EXPECT_EQ(backend->sharedTextureUploads(), pass < 18 ? pass + 1u : pass == 18 ? 18u : 19u);
                 if (large && pass == 0)
@@ -3314,6 +4382,124 @@ TEST_F(Gx2CaptureTest, TrustedTextureSnapshotsStillSeeGuestStoresAndWritableView
         native.replay(gx2Stream(), &cpu->m_memory);
         ASSERT_EQ(backend->completedDraws(), frame + 1) << backend->lastError();
         EXPECT_EQ(native.framebuffer(), reference.framebuffer());
+    }
+}
+
+TEST_F(Gx2CaptureTest, ImplicitCompressedMipsReuseUploadsAndSeeGuestWrites)
+{
+    using namespace Core::Gfx;
+    if (!std::getenv("WEMU_TEST_VULKAN"))
+        GTEST_SKIP();
+    constexpr unsigned VS = 0x28001000, PS = 0x28002000, COLOR = 0x28003000, TEX = 0x28004000;
+    constexpr unsigned VSP = 0x28010000, PSP = 0x28011000, VERTS = 0x28012000, IMAGE = 0x28040000, BLOCKS = 0x28080000, MIPS = 0x28090000;
+    const auto record = [&](const char *name, std::initializer_list<unsigned> args) {
+        unsigned r = 3;
+        for (auto arg: args)
+            cpu->m_gpr[r++] = arg;
+        call(name);
+    };
+    const auto shader = [&](unsigned header, unsigned offset, unsigned pointer, const std::vector<unsigned> &words) {
+        for (unsigned i = 0; i < 0x200; i += 4)
+            cpu->m_memory.write<unsigned>(header + i, 0);
+        cpu->m_memory.write<unsigned>(header + offset, words.size() * 4);
+        cpu->m_memory.write<unsigned>(header + offset + 4, pointer);
+        for (unsigned i = 0; i < words.size(); ++i)
+            cpu->m_memory.write<unsigned>(pointer + i * 4, std::byteswap(words[i]));
+    };
+    shader(VS, 0xD0, VSP,
+           {60u | (1u << 13) | (1u << 15), (Latte::CF_EXP << 23) | 0x688u, (2u << 13) | (2u << 15),
+            (Latte::CF_EXP_DONE << 23) | (1u << 21) | 0x688u});
+    cpu->m_memory.write<unsigned>(VS + 0x40, 2);
+    cpu->m_memory.write<unsigned>(VS + 0x44, 0);
+    cpu->m_memory.write<unsigned>(VS + 0x48, 1);
+    shader(PS, 0xA4, PSP,
+           {2, Latte::CF_TEX << 23, 0, (Latte::CF_EXP_DONE << 23) | (1u << 21) | 0x688u, 0x10, 0x30000000u | (0x688u << 9), 1u << 23, 0});
+    cpu->m_memory.write<unsigned>(PS + 0x10, 1);
+    constexpr unsigned width = 7, height = 5;
+    const std::array<std::array<float, 4>, 6> corners{{{-1, 1, 0, 0}, {1, 1, 1, 0}, {-1, -1, 0, 1}, {1, 1, 1, 0}, {1, -1, 1, 1}, {-1, -1, 0, 1}}};
+    for (unsigned i = 0; i < corners.size(); ++i) {
+        const auto &v = corners[i];
+        const std::array<float, 8> data{v[0], v[1], 0, 1, v[2], v[3], 0, 1};
+        for (unsigned c = 0; c < data.size(); ++c)
+            cpu->m_memory.write<unsigned>(VERTS + i * 32 + c * 4, std::bit_cast<unsigned>(data[c]));
+    }
+    surface(COLOR, IMAGE, width * height * 4, width, height, width, 1);
+    surface(TEX, BLOCKS, 0, 16, 16, 0, 4);
+    cpu->m_memory.write<unsigned>(TEX + 0x10, 5);
+    cpu->m_memory.write<unsigned>(TEX + 0x14, 0x34);
+    cpu->m_gpr[3] = TEX;
+    call("GX2CalcSurfaceSizeAndAlignment");
+    cpu->m_memory.write<unsigned>(TEX + 0x2C, MIPS);
+    for (const unsigned header: {COLOR, TEX}) {
+        cpu->m_memory.write<unsigned>(header + 0x74, 0);
+        cpu->m_memory.write<unsigned>(header + 0x78, header == TEX ? 5 : 0);
+        cpu->m_memory.write<unsigned>(header + 0x7C, header == TEX ? 0 : 1);
+        cpu->m_memory.write<unsigned>(header + 0x80, 1);
+    }
+    cpu->m_memory.write<unsigned>(TEX + 0x84, 0x00010203);
+    std::array<unsigned, 5> pointers{}, sizes{};
+    for (unsigned level = 0; level < 5; ++level) {
+        const auto layout = latteSurfaceLayout(16, 16, 1, 0x34, 1, 4, level);
+        ASSERT_TRUE(layout);
+        pointers[level] = level == 0 ? BLOCKS : MIPS + (level == 1 ? 0 : cpu->m_memory.read<unsigned>(TEX + 0x40 + (level - 1) * 4));
+        sizes[level] = layout->imageSize;
+    }
+    const auto fill = [&](unsigned level, std::uint8_t red) {
+        for (unsigned i = 0; i < sizes[level]; ++i)
+            cpu->m_memory.write<std::uint8_t>(pointers[level] + i, i % 8 == 0 ? red : 0);
+    };
+    for (unsigned level = 0; level < 5; ++level)
+        fill(level, std::uint8_t(16 + level * 16));
+    Gx2Replayer native;
+    const auto backend = std::make_shared<VulkanRasterBackend>(true, true);
+    native.setRasterBackend(backend);
+    native.setNativeVerificationInterval(0);
+    for (unsigned frame = 0; frame < 24; ++frame) {
+        SCOPED_TRACE(frame);
+        // Unchanged frames let the snapshot become trusted; then a store and a writable view
+        // must each still reach the next draw.
+        if (frame == 6)
+            fill(2, 112);
+        if (frame == 10) {
+            auto *bytes = cpu->m_memory.hostPtr(pointers[2], sizes[2]);
+            ASSERT_NE(bytes, nullptr);
+            for (unsigned i = 0; i < sizes[2]; ++i)
+                bytes[i] = i % 8 == 0 ? 208 : 0;
+        }
+        if (frame == 20)
+            cpu->m_memory.write<unsigned>(TEX + 0x84, 0x00000405); // R,R,0,1 from the same compressed snapshot
+        if (frame == 22)
+            cpu->m_memory.write<unsigned>(TEX + 0x84, 0x00010203);
+        gx2Stream().clear();
+        record("GX2SetColorBuffer", {COLOR, 0});
+        record("GX2SetColorControl", {0xCC, 0, 0, 1});
+        cpu->m_fpr[1] = cpu->m_fpr[2] = 0;
+        cpu->m_fpr[3] = width;
+        cpu->m_fpr[4] = height;
+        record("GX2SetViewport", {});
+        record("GX2SetScissor", {0, 0, width, height});
+        Gx2Command fetch{Gx2Cmd::SetFetchShader};
+        fetch.payload = {0, 0, 0, 0x813, 0, 0, 0x00010203, 3, 1, 0, 16, 0x813, 0, 0, 0x00010203, 3};
+        gx2Stream().push(fetch);
+        record("GX2SetVertexShader", {VS});
+        record("GX2SetPixelShader", {PS});
+        record("GX2SetAttribBuffer", {0, 6 * 32, 32, VERTS});
+        record("GX2SetPixelTexture", {TEX, 0});
+        Gx2Command sampler{Gx2Cmd::SetPixelSampler};
+        sampler.payload = {1u << 17, 256u << 10, 0};
+        gx2Stream().push(sampler);
+        record("GX2DrawEx", {4, 6, 0, 1});
+        record("GX2CopyColorBufferToScanBuffer", {COLOR, 1});
+        gx2Stream().push(Gx2Command{Gx2Cmd::SwapScanBuffers});
+        native.replay(gx2Stream(), &cpu->m_memory);
+        ASSERT_EQ(backend->completedDraws(), frame + 1) << backend->lastError();
+        // The 16x16 source covers 7x5 pixels: its footprint selects level 2.
+        const auto red = frame < 6 ? 48 : frame < 10 ? 112 : 208;
+        EXPECT_EQ(native.framebuffer()[0], red);
+        EXPECT_EQ(native.framebuffer()[1], frame == 20 || frame == 21 ? red : 0);
+        EXPECT_EQ(native.framebuffer()[2], 0);
+        EXPECT_EQ(native.framebuffer()[3], 255);
+        EXPECT_EQ(backend->sharedTextureUploads(), frame < 6 ? 1u : frame < 10 ? 2u : frame < 20 ? 3u : 4u);
     }
 }
 

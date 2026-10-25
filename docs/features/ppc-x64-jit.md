@@ -1,6 +1,8 @@
 # PowerPC x86-64 recompiler
 
-`WEMU_X64_JIT=1` compiles the interpreter's decoded blocks to x86-64 and runs
+Desktop launches prefer this backend when the core includes it and native CPU
+execution is enabled. Direct core launches opt in with `WEMU_X64_JIT=1`.
+It compiles the interpreter's decoded blocks to x86-64 and runs
 them chained, returning to the interpreter loop only for what the loop handles:
 service ticks and preemption, HLE hooks and syscalls, return sentinels, code
 writes and faults. It targets Linux x86-64 only (System V ABI, `mmap` and

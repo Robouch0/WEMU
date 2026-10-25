@@ -6,6 +6,19 @@
 #include <cstdint>
 
 namespace Core::Gfx {
+    // Latte FMT_4_4: R occupies the low nibble, G the high nibble.
+    inline std::array<std::uint8_t, 4> decodeRg4Unorm(std::uint8_t value)
+    {
+        return {std::uint8_t((value & 15) * 17), std::uint8_t((value >> 4) * 17), 0, 255};
+    }
+
+    inline std::array<float, 4> decodeRg16Unorm(const std::uint8_t *p)
+    {
+        const unsigned r = unsigned(p[0]) | (unsigned(p[1]) << 8);
+        const unsigned g = unsigned(p[2]) | (unsigned(p[3]) << 8);
+        return {float(r) / 65535.f, float(g) / 65535.f, 0.f, 1.f};
+    }
+
     // Latte FMT_5_6_5 stores R in bits 0..4, G in 5..10, B in 11..15.
     // Surface words use GPU little-endian order, independent of the PPC CPU.
     inline std::array<std::uint8_t, 4> decodeRgb565(const std::uint8_t *p)

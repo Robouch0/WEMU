@@ -1,6 +1,7 @@
 #pragma once
 #include <QMap>
 #include <QString>
+#include <Qt>
 #include <array>
 #include <cmath>
 #include <utility>
@@ -12,6 +13,28 @@ namespace ControllerMapping {
             std::array<float, 2> leftStick{}, rightStick{}; // -1..1, +y is up
             bool operator==(const State &) const = default;
     };
+
+    template <typename Pressed> State keyboard(Pressed &&pressed)
+    {
+        State state;
+        constexpr std::pair<int, quint32> keys[] = {
+            {Qt::Key_Return, 0x8000}, {Qt::Key_Enter, 0x8000}, {Qt::Key_J, 0x8000},
+            {Qt::Key_Backspace, 0x4000}, {Qt::Key_K, 0x4000}, {Qt::Key_Space, 0x2000}, {Qt::Key_I, 0x1000},
+            {Qt::Key_Left, 0x0800}, {Qt::Key_Right, 0x0400}, {Qt::Key_Up, 0x0200}, {Qt::Key_Down, 0x0100},
+            {Qt::Key_Shift, 0x0080}, {Qt::Key_Control, 0x0040}, {Qt::Key_Q, 0x0020}, {Qt::Key_E, 0x0010},
+            {Qt::Key_P, 0x0008}, {Qt::Key_M, 0x0004},
+        };
+        for (const auto &[key, bit]: keys)
+            if (pressed(key))
+                state.buttons |= bit;
+        state.leftStick = {float(pressed(Qt::Key_D)) - float(pressed(Qt::Key_A)),
+                           float(pressed(Qt::Key_W)) - float(pressed(Qt::Key_S))};
+        const auto length = std::hypot(state.leftStick[0], state.leftStick[1]);
+        if (length > 1)
+            for (auto &axis: state.leftStick)
+                axis /= length;
+        return state;
+    }
 
     // Wii U buttons an InputProfile binds (InputProfileManager's keys) and their VPAD bits.
     inline constexpr std::pair<const char *, quint32> boundButtons[] = {

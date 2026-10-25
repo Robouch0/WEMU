@@ -8,9 +8,11 @@
 #include <cstring>
 #include <unordered_map>
 
+#include "audio/MovieAudio.hpp"
 #include "cpu/interpreter/Interpreter.hpp"
 #include "gfx/Gx2CommandStream.hpp"
 #include "gfx/Renderer.hpp"
+#include "hle/Ax.hpp"
 #include "hle/Fs.hpp"
 #include "utils/Logger.hpp"
 #include "video/MovieDecoder.hpp"
@@ -21,6 +23,7 @@ namespace Core::MvPlayer {
         constexpr double timerHz = 62156250.0;
         struct Player {
                 std::unique_ptr<Video::MovieDecoder> decoder;
+                std::unique_ptr<Audio::MovieAudio> audio;
                 double position{};
                 std::uint64_t started{};
                 bool playing{};
@@ -86,6 +89,12 @@ namespace Core::MvPlayer {
                         }
                         auto decoder = std::make_unique<Video::MovieDecoder>(path);
                         player.decoder = std::move(decoder);
+                        player.audio.reset();
+                        try {
+                            player.audio = std::make_unique<Audio::MovieAudio>(path);
+                        } catch (const std::exception &error) {
+                            Utils::Log::error("[MVP] audio: {}", error.what());
+                        }
                         player.position = 0;
                         player.playing = false;
                         player.lastDisplayed = 0;
@@ -103,13 +112,18 @@ namespace Core::MvPlayer {
                         player.position = player.current(cpu);
                         player.started = cpu.m_scheduler.now();
                         player.playing = slot == 9;
+                        if (player.playing && player.audio && player.audio->available())
+                            Ax::StartMovieAudio(cpu);
                         setState(cpu, object, slot == 9 ? 3 : 2);
                         break;
                     case 7: // Start/resume playback
                         if (!player.decoder)
                             return;
-                        if (!player.playing)
+                        if (!player.playing) {
                             player.started = cpu.m_scheduler.now();
+                            if (player.audio && player.audio->available())
+                                Ax::StartMovieAudio(cpu);
+                        }
                         player.playing = true;
                         setState(cpu, object, 3);
                         break;
@@ -122,6 +136,7 @@ namespace Core::MvPlayer {
                         break;
                     case 15: // Close
                         player.decoder.reset();
+                        player.audio.reset();
                         player.playing = false;
                         setState(cpu, object, unsigned(-2));
                         break;
@@ -171,6 +186,45 @@ namespace Core::MvPlayer {
             }
         }
     } // namespace
+    bool hasPlayingAudio(const Interpreter &cpu)
+    {
+        if (!cpu.m_mvPlayer)
+            return false;
+        for (const auto &[object, player]: cpu.m_mvPlayer->players)
+            if (player.playing && player.audio && player.audio->available())
+                return true;
+        return false;
+    }
+    void mixAudio(Interpreter &cpu, std::span<float> stereo, std::uint64_t frameTick)
+    {
+        if (!cpu.m_mvPlayer)
+            return;
+        for (auto &[object, player]: cpu.m_mvPlayer->players) {
+            if (!player.playing || !player.audio || !player.audio->available())
+                continue;
+            const auto skipped =
+                    frameTick < player.started
+                            ? std::min<std::size_t>(stereo.size() / 2, std::size_t(std::ceil(double(player.started - frameTick) * 48000 / timerHz)))
+                            : 0;
+            if (skipped == stereo.size() / 2)
+                continue;
+            const double position = player.position + (frameTick >= player.started ? double(frameTick - player.started) / timerHz : 0);
+            if (position >= player.decoder->duration()) {
+                player.position = player.decoder->duration();
+                player.playing = false;
+                setState(cpu, object, 2);
+                continue;
+            }
+            const auto frames =
+                    std::min<std::size_t>((stereo.size() / 2) - skipped, std::size_t(std::ceil((player.decoder->duration() - position) * 48000)));
+            try {
+                player.audio->mix(position, stereo.subspan(skipped * 2, frames * 2));
+            } catch (const std::exception &error) {
+                Utils::Log::error("[MVP] audio playback: {}", error.what());
+                player.audio.reset();
+            }
+        }
+    }
     void create(Interpreter &cpu)
     {
         const auto object = cpu.m_memory.heapAllocate(0x1BC, 8);

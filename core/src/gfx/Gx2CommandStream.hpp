@@ -53,9 +53,14 @@ namespace Core::Gfx {
         SetPolygonControl,
         SetRasterizerClipControl,
         SetPolygonOffset,
+        SetStencilMask,
         // Library video rendering, ordered with guest GX2 commands. Payload:
         // 16 clip-transform floats, 16 UV-transform floats, then RGBA8 words.
         DrawImage,
+        SetStreamOutEnable,
+        SetStreamOutBuffer,
+        SetStreamOutContext,
+        SaveStreamOutContext,
 
     };
 
@@ -133,10 +138,23 @@ namespace Core::Gfx {
             std::uint32_t callerLr{0}; // guest LR at capture time; diagnostic metadata, not frame content
     };
 
+    struct Gx2BufferSnapshot {
+            std::uint32_t address{};
+            std::size_t bytes{};
+            Gx2Payload data; // raw guest byte order, padded to whole words
+            std::uint64_t hash{};
+    };
+
     class Gx2CommandStream {
         public:
             void push(const Gx2Command &cmd) { m_commands.push_back(cmd); }
-            void clear() noexcept { m_commands.clear(); }
+            void clear() noexcept
+            {
+                m_commands.clear();
+                m_buffers.clear();
+            }
+            std::vector<Gx2BufferSnapshot> &bufferSnapshots() noexcept { return m_buffers; }
+            const std::vector<Gx2BufferSnapshot> &bufferSnapshots() const noexcept { return m_buffers; }
 
             [[nodiscard]] std::size_t size() const noexcept { return m_commands.size(); }
             [[nodiscard]] bool empty() const noexcept { return m_commands.empty(); }
@@ -148,8 +166,9 @@ namespace Core::Gfx {
             // call-time/refreshed payloads). Two frames with equal hashes produce an identical
             // rasterised image, so the replayer can skip rebuilding the framebuffer and just
             // re-present the previous one. Covers everything snapshotted into the stream; the only
-            // uncovered inputs are vertex/index/texture-image bytes read live at replay, which can
-            // change independently. DrawImage owns its pixel bytes in the payload.
+            // uncovered inputs are any vertex/index/texture-image bytes still read live at replay,
+            // which can change independently. Submitted buffer versions contribute cached hashes;
+            // DrawImage owns its pixel bytes in the payload.
             [[nodiscard]] std::uint64_t contentHash() const noexcept
             {
                 std::uint64_t h = 1469598103934665603ull; // FNV-1a offset basis
@@ -167,6 +186,11 @@ namespace Core::Gfx {
                     for (const auto p: c.payload)
                         mix(p);
                 }
+                for (const auto &buffer: m_buffers) {
+                    mix(buffer.address);
+                    mix(buffer.bytes);
+                    mix(buffer.hash);
+                }
                 return h;
             }
 
@@ -182,6 +206,7 @@ namespace Core::Gfx {
 
         private:
             std::vector<Gx2Command> m_commands;
+            std::vector<Gx2BufferSnapshot> m_buffers;
     };
 
     // Process-wide capture buffer (one GPU command queue is emulated).

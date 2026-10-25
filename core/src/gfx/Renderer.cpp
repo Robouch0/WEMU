@@ -1,20 +1,18 @@
+#include "audio/Output.hpp"
 //
 // Created by nicolas on 5/21/26.
 //
-#include "Renderer.hpp"
-
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <stdexcept>
 #include <thread>
 
 #include "GpuQuadRasterizer.hpp"
 #include "GpuRenderGraph.hpp"
+#include "Renderer.hpp"
+#include "utils/DisplayTiming.hpp"
 #include "utils/FrameProfiler.hpp"
-
-// Wii U targets 60 fps. Cap flip_tv so the interpreter doesn't run faster than real hardware when the swapchain has spare images to return
-// immediately.
-static constexpr auto kTargetFrameTime = std::chrono::duration<double>(1.0 / 60.0);
 
 
 // VPAD button bitmasks (same as wut header vpad/input.h)
@@ -50,7 +48,7 @@ Renderer::Renderer(VkInstance instance, VkSurfaceKHR surface, uint32_t w, uint32
     initVulkanPipeline();
 }
 
-void Renderer::flip_tv(const std::uint8_t *rgbx, std::uint32_t w, std::uint32_t h)
+void Renderer::flip_tv(const std::uint8_t *rgbx, std::uint32_t w, std::uint32_t h, unsigned swapInterval)
 {
     {
         Core::Profile::Scope presenting(Core::Profile::Stage::Present);
@@ -58,9 +56,9 @@ void Renderer::flip_tv(const std::uint8_t *rgbx, std::uint32_t w, std::uint32_t 
             m_presentRate.record(Core::UI::FrameRate::Clock::now());
             if (!m_hostPresenter->present({rgbx, std::size_t(w) * h * 4}, w, h, hostStatistics()))
                 m_open = false;
-            pacePresentation();
+            pacePresentation(swapInterval);
         } else
-            presentFrame(rgbx, w, h, true);
+            presentFrame(rgbx, w, h, true, swapInterval);
     }
     Core::Profile::report(guest_present_count(), movie_frame_count());
 }
@@ -80,7 +78,7 @@ Core::Gfx::GamepadState Renderer::gamepad_state() const
     return m_hostPresenter->gamepad();
 }
 
-void Renderer::presentFrame(const std::uint8_t *rgbx, std::uint32_t w, std::uint32_t h, bool guestFrame)
+void Renderer::presentFrame(const std::uint8_t *rgbx, std::uint32_t w, std::uint32_t h, bool guestFrame, unsigned swapInterval)
 {
     // The slot's previous submission must release both its upload memory and
     // acquire semaphore before either is reused by the host.
@@ -213,10 +211,9 @@ void Renderer::presentFrame(const std::uint8_t *rgbx, std::uint32_t w, std::uint
     }
     m_currentFrame = (m_currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 
-    // Software frame cap / sleep the remaining time in this 1/60 s budget so
-    // the game runs at Wii U native speed even when spare swapchain images
-    // would otherwise let vkAcquireNextImageKHR return without blocking.
-    pacePresentation();
+    // Respect the guest's refresh interval even when the swapchain has spare
+    // images. Interval two is a 30 Hz frame budget on the 60 Hz display.
+    pacePresentation(swapInterval);
 
     if (guestFrame && m_onFirstFrame) {
         auto cb = std::move(m_onFirstFrame);
@@ -224,13 +221,18 @@ void Renderer::presentFrame(const std::uint8_t *rgbx, std::uint32_t w, std::uint
     }
 }
 
-void Renderer::pacePresentation()
+void Renderer::pacePresentation(unsigned swapInterval)
 {
     Core::Profile::Scope pacing(Core::Profile::Stage::Pacing);
     using Clock = std::chrono::steady_clock;
+    static const bool unthrottled = [] {
+        const auto *setting = std::getenv("WEMU_UNTHROTTLED");
+        return setting && setting[0] == '1';
+    }();
     const auto elapsed = Clock::now() - m_lastFlip;
-    if (m_pacingReady && elapsed < kTargetFrameTime)
-        std::this_thread::sleep_for(kTargetFrameTime - elapsed);
+    const auto target = Core::Timing::swapDuration(swapInterval);
+    if (!unthrottled && m_pacingReady && elapsed < target)
+        std::this_thread::sleep_for(target - elapsed);
     m_lastFlip = Clock::now();
     m_pacingReady = true;
 }
@@ -269,6 +271,9 @@ void Renderer::processHostCommands(std::chrono::milliseconds wait)
                     m_hostButtonSamples.push_back(command.value);
                     m_hostButtons = command.value;
                 }
+                break;
+            case Action::AudioVolume:
+                Core::Audio::output().setVolume(command.value);
                 break;
             case Action::DrcStream:
                 m_drcWanted = command.value != 0;

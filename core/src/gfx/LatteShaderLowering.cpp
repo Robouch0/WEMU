@@ -501,7 +501,8 @@ namespace Core::Gfx::Latte {
     } // namespace
 
     static FragmentShader lowerShader(const Program &program, std::span<const TextureType> resourceTypes, bool vertexStage,
-                                      bool onlyColorZero = false, unsigned colorExport = 0, unsigned bufferWindow = 0)
+                                      bool onlyColorZero = false, unsigned colorExport = 0, unsigned bufferWindow = 0,
+                                      const UniformBufferWindows &bufferWindows = {}, const std::array<unsigned, 4> *streamStrides = nullptr)
     {
         FragmentShader result;
         result.exportsColor = false;
@@ -511,16 +512,22 @@ namespace Core::Gfx::Latte {
             if (!program.valid || program.words.size() < 2 || colorExport >= 8 || (!onlyColorZero && colorExport))
                 throw std::runtime_error("invalid shader structure");
             std::string body = "void main() {\n";
+            if (streamStrides)
+                body += "uint vertex=gl_GlobalInvocationID.x; if(vertex>=dispatch.count) return;\n"
+                        "r[0][0]=uintBitsToFloat(dispatch.first+vertex);\n";
             std::set<unsigned> cubeIndices, uniformBuffers;
             for (unsigned i = 0; i < 16; ++i)
-                body += vertexStage ? std::format("r[{}]=attributes[{}];\n", i + 1, i) : std::format("r[{}]=inputs[{}];\n", i, i);
+                body += streamStrides
+                                ? std::format("r[{}]={}u<dispatch.inputs ? attributes.values[vertex*dispatch.inputs+{}u] : vec4(0.0);\n", i + 1, i, i)
+                        : vertexStage ? std::format("r[{}]=attributes[{}];\n", i + 1, i)
+                                      : std::format("r[{}]=inputs[{}];\n", i, i);
             if (vertexStage)
                 body += "vec4 position=vec4(0.0,0.0,0.0,1.0); vec4 parameters[32]; for(int i=0;i<32;++i) parameters[i]=vec4(0.0);\n";
             body += "vec4 pv=vec4(0.0); float ps=0.0;\nbool pred=true,laneActive=true,wroteOutput=false,killed=false; bool activeStack[32]; uint "
                     "pc=0u;\n";
             bool exported = false, terminated = false, ignoredColorExports = false;
             bool terminalUnconditionalColor = false;
-            bool varyingWholeQuadUsed = false, implicitSamples = false;
+            bool varyingWholeQuadUsed = false, implicitSamples = false, comparisonSamples = false;
             bool maskedControl = false;
             bool rootMaskChanged = false;
             WholeQuadWrites wholeQuadWrites;
@@ -746,6 +753,8 @@ namespace Core::Gfx::Latte {
                             body += "}\n";
                             continue;
                         }
+                        if (streamStrides)
+                            throw std::runtime_error("stream output texture sampling requires reference execution");
                         if (vertexStage && texOp != 0x13)
                             throw std::runtime_error("vertex texture opcode requires explicit base LOD");
                         constexpr auto tex0Mask = 31u | (255u << 8) | (127u << 16);
@@ -765,6 +774,7 @@ namespace Core::Gfx::Latte {
                         // final word is padding, not additional instruction flags.
                         // 0x18/0x1B: SAMPLE_C/SAMPLE_C_LZ depth comparison against src.w.
                         const bool compare = texOp == 0x18 || texOp == 0x1B;
+                        comparisonSamples |= compare;
                         // 0x06: GET_COMP_TEX_LOD.
                         const bool lodQuery = texOp == 0x06;
                         if ((texOp != 0x0F && texOp != 0x10 && texOp != 0x11 && texOp != 0x13 && !compare && !lodQuery) || (t0 & ~tex0Mask) ||
@@ -788,6 +798,10 @@ namespace Core::Gfx::Latte {
                             result.textures.push_back({resource, sampler, unsigned(result.textures.size() + 1), type});
                             binding = result.textures.end() - 1;
                         }
+                        const bool derivativeLod =
+                                texOp == 0x10 && binding->type == TextureType::TwoD && allActive && !varyingWholeQuadUsed &&
+                                std::none_of(jumpTargets.begin(), jumpTargets.end(), [&](const auto &target) { return target.first > cf / 2; });
+                        binding->derivativeLod |= derivativeLod;
                         binding->implicitLod |= !explicitLod;
                         binding->explicitLod |= texOp == 0x11;
                         if (compare && binding->type != TextureType::TwoD && binding->type != TextureType::TwoDArray)
@@ -851,16 +865,21 @@ namespace Core::Gfx::Latte {
                                                 "else sampled=textureGather(tex{},coord,0);\n",
                                                 coords, binding->binding - 1, binding->binding);
                         } else if (compare) {
-                            // Shadow sample: (reference FUNC texel) with the sampler's
-                            // DEPTH_COMPARE_FUNCTION, stored in u.sampling[].w by the backend.
-                            // Array coordinates already carry the rounded layer.
-                            body += std::format("{{ float reference={}; float texel=textureLod(tex{},vec{}({}),0.0).r; "
-                                                "int compareFunction=int(u.sampling[{}].w); bool pass="
-                                                "compareFunction==1?reference<texel:compareFunction==2?reference==texel:"
-                                                "compareFunction==3?reference<=texel:compareFunction==4?reference>texel:"
-                                                "compareFunction==5?reference!=texel:compareFunction==6?reference>=texel:compareFunction==7; "
-                                                "vec4 sampled=vec4(pass?1.0:0.0);\n",
-                                                select(reg, (t2 >> 29) & 7), binding->binding, array ? 3 : 2, coords, binding->binding - 1);
+                            // Compare each shadow-map tap before filtering (PCF). Filtering
+                            // depths first invents occluders at discontinuities. A single
+                            // gather keeps the four comparisons in one texture operation.
+                            body += std::format(
+                                    "{{ float reference={}; vec{} coord=vec{}({}); vec4 state=u.sampling[{}]; vec4 sampled; "
+                                    "if(any(isnan(coord))||any(isinf(coord))) "
+                                    "sampled=vec4(compareDepthReference(vec4(u.borders[{}].r),reference,int(state.w)).x); "
+                                    "else if(state.z==1.0) {{ "
+                                    "vec4 taps=textureGather(tex{},coord,0); "
+                                    "vec4 passed=compareDepthReference(taps,reference,int(state.w)); "
+                                    "vec2 fraction=fract(coord.xy*vec2(textureSize(tex{},0).xy)-vec2(0.5)); "
+                                    "sampled=vec4(mix(mix(passed.w,passed.z,fraction.x),mix(passed.x,passed.y,fraction.x),fraction.y)); "
+                                    "}} else sampled=vec4(compareDepthReference(vec4(textureLod(tex{},coord,0.0).r),reference,int(state.w)).x);\n",
+                                    select(reg, (t2 >> 29) & 7), array ? 3 : 2, array ? 3 : 2, coords, binding->binding - 1, binding->binding - 1,
+                                    binding->binding, binding->binding, binding->binding);
                         } else if (array && texOp == 0x11) {
                             body += std::format("{{ vec4 sampled=textureLod(tex{},vec3({}),{});\n", binding->binding, coords, lod);
                         } else if (array) {
@@ -869,6 +888,8 @@ namespace Core::Gfx::Latte {
                                                 "else sampled=sampleArrayReference(tex{},vec3({}),u.sampling[{}]);\n",
                                                 select(reg, (t2 >> 20) & 7), select(reg, (t2 >> 23) & 7), select(reg, (t2 >> 26) & 7),
                                                 binding->binding - 1, binding->binding, coords, binding->binding - 1);
+                        } else if (derivativeLod) {
+                            body += std::format("{{ vec4 sampled=texture(tex{},vec2({}));\n", binding->binding, coords);
                         } else {
                             body += std::format("{{ vec4 sampled=textureLod(tex{},vec{}({}),{});\n", binding->binding, volume ? 3 : 2, coords, lod);
                         }
@@ -886,6 +907,24 @@ namespace Core::Gfx::Latte {
                         body += "}\n";
                     }
                     body += "}\n";
+                } else if (streamStrides && op >= 0x20 && op <= 0x23) {
+                    const auto buffer = op - 0x20, offset = w0 & 0x1FFF;
+                    constexpr unsigned word0Mask = 0x1FFFu | (127u << 15);
+                    constexpr unsigned word1Mask = 3u | (15u << 12) | (1u << 21) | (1u << 22) | (127u << 23) | (1u << 31);
+                    if ((w0 & ~word0Mask) || (w1 & ~word1Mask) || !(*streamStrides)[buffer] || ((*streamStrides)[buffer] & 3))
+                        throw std::runtime_error("unsupported stream output addressing or stride");
+                    const auto mask = ((w1 >> 12) & 15) & ((1u << ((w1 & 0xFFF) + 1)) - 1);
+                    for (unsigned c = 0; c < 4; ++c)
+                        if (mask & (1u << c)) {
+                            if ((std::uint64_t(offset) + c + 1) * 4 > (*streamStrides)[buffer])
+                                throw std::runtime_error("stream output exceeds vertex stride");
+                            body += std::format("outputData.values[dispatch.offsets[{}]+vertex*{}u+{}u]=floatBitsToUint(r[{}][{}]);\n", buffer,
+                                                (*streamStrides)[buffer] / 4, offset + c, (w0 >> 15) & 127, c);
+                        }
+                    // An active export also advances its stream when every
+                    // component is masked. Preserve that buffer's offset state.
+                    result.streamBufferMask |= 1u << buffer;
+                    exported = true;
                 } else if (op == CF_EXP || op == CF_EXP_DONE) {
                     if (vertexStage) {
                         const auto target = w0 & 0x1FFF, type = (w0 >> 13) & 3;
@@ -1010,6 +1049,10 @@ namespace Core::Gfx::Latte {
             }
             if (!exported || !terminated)
                 throw std::runtime_error("missing color/depth export or shader termination");
+            if (streamStrides && (maskedControl || rootMaskChanged || !jumpTargets.empty() || !result.streamBufferMask || result.kills))
+                throw std::runtime_error("masked stream output requires reference execution");
+            if (streamStrides)
+                result.streamStrides = *streamStrides;
             if (result.exportsColor && result.writesDepth && maskedControl)
                 throw std::runtime_error("conditional mixed color/depth exports require per-output lane masks");
             // Emission uses explicit base LOD. With one source mip, identical
@@ -1031,10 +1074,11 @@ namespace Core::Gfx::Latte {
             // Replay proves each bound block fits before native dispatch; larger
             // blocks retain reference execution rather than truncating a palette.
             if (!uniformBuffers.empty()) {
-                const auto capacity = bufferWindow ? bufferWindow : unsigned((512 - result.uniforms.size()) / uniformBuffers.size());
-                if (!capacity || result.uniforms.size() + std::size_t(capacity) * uniformBuffers.size() > kUniformVectors)
-                    throw std::runtime_error("dynamic uniform buffer budget exceeded");
+                const auto defaultCapacity = bufferWindow ? bufferWindow : unsigned((512 - result.uniforms.size()) / uniformBuffers.size());
                 for (const auto bank: uniformBuffers) {
+                    const auto capacity = bank < bufferWindows.size() && bufferWindows[bank] ? bufferWindows[bank] : defaultCapacity;
+                    if (!capacity || result.uniforms.size() + std::size_t(capacity) > kUniformVectors)
+                        throw std::runtime_error("dynamic uniform buffer budget exceeded");
                     result.uniformBuffers.push_back({bank, unsigned(result.uniforms.size()), capacity});
                     for (unsigned index = 0; index < capacity; ++index)
                         result.uniforms.push_back({bank, index});
@@ -1060,7 +1104,18 @@ namespace Core::Gfx::Latte {
                             "float logReference(float x) { if(isnan(x)) return x; if(x==0.0) return uintBitsToFloat(4286578688u); "
                             "if(x<0.0) return uintBitsToFloat(2143289344u); if(isinf(x)) return x; return log2(x); }\n"
                             "float logClamped(float x) { float v=logReference(x); return isinf(v)&&v<0.0 ? -uintBitsToFloat(2139095039u) : v; }\n";
-            if (vertexStage) {
+            if (streamStrides) {
+                const auto end = result.source.find("float arrayLayerReference");
+                result.source.replace(0, end,
+                                      std::format("#version 450\nlayout(local_size_x=64) in;\n"
+                                                  "layout(set=0,binding=0,std140) uniform Constants {{ vec4 c[256]; vec4 borders[16]; vec4 "
+                                                  "sampling[16]; vec4 k[{}]; }} u;\n"
+                                                  "layout(set=0,binding=1,std430) readonly buffer Attributes {{ vec4 values[]; }} attributes;\n"
+                                                  "layout(set=0,binding=2,std430) buffer OutputData {{ uint values[]; }} outputData;\n"
+                                                  "layout(push_constant) uniform Dispatch {{ uint count; uint first; uint inputs; uint unused; uvec4 "
+                                                  "offsets; }} dispatch;\n",
+                                                  kUniformVectors));
+            } else if (vertexStage) {
                 const auto end = result.source.find("float arrayLayerReference");
                 result.source.replace(
                         0, end,
@@ -1105,7 +1160,22 @@ int addressIntReference(int value) {
 float relativeConstant(int index,int channel) {
     return index < 0||index >= 256 ? uintBitsToFloat(2147483647u) : u.c[index][channel];
 }
-float arrayCoordinate(float v,int mode) {
+)";
+            // Keep unaffected shader sources byte-identical so this correction
+            // does not invalidate their disk cache or add first-use compilation.
+            if (comparisonSamples)
+                result.source += R"(vec4 compareDepthReference(vec4 texels,float reference,int function) {
+    vec4 value=vec4(reference);
+    if(function==1) return vec4(lessThan(value,texels));
+    if(function==2) return vec4(equal(value,texels));
+    if(function==3) return vec4(lessThanEqual(value,texels));
+    if(function==4) return vec4(greaterThan(value,texels));
+    if(function==5) return vec4(notEqual(value,texels));
+    if(function==6) return vec4(greaterThanEqual(value,texels));
+    return vec4(function==7 ? 1.0 : 0.0);
+}
+)";
+            result.source += R"(float arrayCoordinate(float v,int mode) {
     if(mode==0) return fract(v);
     if(mode==1) { float t=mod(v,2.0); return t>1.0 ? 2.0-t : t; }
     return clamp(v,0.0,1.0);
@@ -1172,7 +1242,9 @@ vec3 cubeDirectionReference(vec3 coord) {
             if (result.writesDepth)
                 body.insert(body.find('\n') + 1, "gl_FragDepth=gl_FragCoord.z;\n");
             result.source += body;
-            if (vertexStage)
+            if (streamStrides)
+                result.source += "}\n";
+            else if (vertexStage)
                 result.source += R"(
     gl_PointSize=1.0;
     float divisor=abs(position.w)>1e-6 ? position.w : 1.0;
@@ -1196,6 +1268,10 @@ vec3 cubeDirectionReference(vec3 coord) {
     FragmentShader lowerFragmentShader(const Program &program, std::span<const TextureType> resourceTypes, bool onlyColorZero, unsigned colorExport)
     {
         return lowerShader(program, resourceTypes, false, onlyColorZero, colorExport);
+    }
+    FragmentShader lowerStreamOutShader(const Program &program, const std::array<unsigned, 4> &strides, const UniformBufferWindows &bufferWindows)
+    {
+        return lowerShader(program, {}, true, false, 0, 0, bufferWindows, &strides);
     }
     bool FragmentShaderCache::hasUnconditionalColorOnlyEffects(const std::vector<std::uint32_t> &words)
     {
@@ -1245,19 +1321,21 @@ vec3 cubeDirectionReference(vec3 coord) {
             m_colorOnlyEffects.emplace(words, safe);
         return safe;
     }
-    VertexShader lowerVertexShader(const Program &program, std::span<const TextureType> resourceTypes, unsigned bufferWindow)
+    VertexShader lowerVertexShader(const Program &program, std::span<const TextureType> resourceTypes, unsigned bufferWindow,
+                                   const UniformBufferWindows &bufferWindows)
     {
         VertexShader shader;
-        static_cast<FragmentShader &>(shader) = lowerShader(program, resourceTypes, true, false, 0, bufferWindow);
+        static_cast<FragmentShader &>(shader) = lowerShader(program, resourceTypes, true, false, 0, bufferWindow, bufferWindows);
         return shader;
     }
-    std::shared_ptr<const VertexShader> VertexShaderCache::get(const std::vector<std::uint32_t> &words, unsigned bufferWindow)
+    std::shared_ptr<const VertexShader> VertexShaderCache::get(const std::vector<std::uint32_t> &words, unsigned bufferWindow,
+                                                               const UniformBufferWindows &bufferWindows)
     {
-        if (bufferWindow) {
+        if (bufferWindow || std::ranges::any_of(bufferWindows, [](unsigned size) { return size != 0; })) {
             // Rare: only programs whose blocks outgrow the default budget, a few window sizes each.
-            auto &shader = m_windowed[{bufferWindow, words}];
+            auto &shader = m_windowed[{bufferWindow, bufferWindows, words}];
             if (!shader)
-                shader = std::make_shared<const VertexShader>(lowerVertexShader(*decodeProgram(words), {}, bufferWindow));
+                shader = std::make_shared<const VertexShader>(lowerVertexShader(*decodeProgram(words), {}, bufferWindow, bufferWindows));
             return shader;
         }
         if (const auto it = m_entries.find(words); it != m_entries.end())

@@ -20,8 +20,15 @@ refreshes; it does not replace the saved folder.
   confirming stops the session and focuses the library carousel.
 
 During a running game, **Enter** sends Wii U A, **Backspace** sends B,
-**P** sends Plus/Start and **M** sends Minus. Arrows and WASD send the digital
-directional pad.
+**P** sends Plus/Start and **M** sends Minus. **WASD** drives the left analog
+stick; opposite directions cancel and diagonals stay within the stick's unit
+circle. Arrow keys send the separate digital directional pad.
+
+For games such as Smash, **J** also sends A (attack), **K** sends B (special),
+**Space** sends X (jump), and **I** sends Y. **Q/E** send L/R and
+**Shift/Ctrl** send ZL/ZR. These are GamePad button bindings; a game's control
+settings determine their actions. Keyboard movement stops when focus is lost
+or the game is paused, and held pause-menu keys stay suppressed until released.
 
 Controllers connected to the PC (SDL game controllers) drive the GamePad through
 the active profile of **Settings**: A, B, X, Y, the D-pad, L, R, ZL and ZR follow

@@ -78,6 +78,13 @@ namespace Core::Gfx {
             // Diagnostic only: compare sampled native draws, then retain native output.
             void setNativeVerificationInterval(std::uint64_t interval) { m_nativeVerifyEvery = interval; }
             [[nodiscard]] std::uint64_t comparedNativeDraws() const noexcept { return m_comparedNativeDraws; }
+            // Diagnostic: byte-for-byte reference comparison of every Nth native
+            // stream-output pass. Zero disables comparison.
+            void setStreamOutVerificationInterval(unsigned interval) { m_streamOutVerifyEvery = interval; }
+            [[nodiscard]] std::uint64_t nativeStreamOutPasses() const noexcept { return m_nativeStreamOutPasses; }
+            [[nodiscard]] std::uint64_t comparedStreamOutPasses() const noexcept { return m_comparedStreamOutPasses; }
+            [[nodiscard]] std::uint64_t streamOutInputReuses() const noexcept { return m_streamOutInputReuses; }
+            [[nodiscard]] std::uint64_t deferredStreamOutPasses() const noexcept { return m_deferredStreamOutPasses; }
             [[nodiscard]] std::uint64_t differingNativeDraws() const noexcept { return m_differingNativeDraws; }
             [[nodiscard]] std::uint64_t earlyDepthRejectedFragments() const noexcept { return m_earlyDepthRejectedFragments; }
             [[nodiscard]] std::uint64_t earlyDepthRejectedTriangles() const noexcept { return m_earlyDepthRejectedTriangles; }
@@ -166,14 +173,19 @@ namespace Core::Gfx {
                     std::optional<float> clear;
                     // Every pixel holds this value; a repeated clear then needs no fill.
                     std::optional<float> uniform;
+                    std::vector<std::uint8_t> stencil;
+                    std::shared_ptr<RasterReadback> pendingStencil;
+                    std::optional<std::uint8_t> stencilClear;
                     // Identity of the current pixels for the backend's upload cache (snapshotOwner).
                     // Dropped whenever pixels change, so an unchanged depth texture skips re-upload
                     // and byte comparison.
                     std::shared_ptr<const void> version;
+                    std::shared_ptr<RasterReadback> snapshot;
                     void changed()
                     {
                         uniform.reset();
                         version.reset();
+                        snapshot.reset();
                     }
                     DepthFormat format{DepthFormat::Float32};
             };
@@ -182,12 +194,21 @@ namespace Core::Gfx {
             // Current versions of an array view's layers when at least one was rendered as its own
             // surface (a pending GPU version); layers never rendered come from guest memory.
             std::vector<std::shared_ptr<RasterReadback>> renderedArrayLayers(const Surface &surface);
+            struct CpuLayerVersion {
+                    std::uint64_t generation{};
+                    std::shared_ptr<const void> owner;
+                    std::shared_ptr<RasterReadback> readback;
+                    std::size_t bytes{};
+            };
+            std::unordered_map<SurfaceKey, CpuLayerVersion, SurfaceKeyHash> m_cpuLayerVersions;
+            std::uint64_t m_cpuLayerVersionBytes{};
             // Level-major pending GPU versions of every (level, slice) of a 2D, array or cube view,
             // or empty unless all of them are still on the GPU.
             std::vector<std::shared_ptr<RasterReadback>> renderedSubresources(const Surface &surface, unsigned levels) const;
-            void clearDepthSurface(const Surface &s, float depth, unsigned flags);
+            void clearDepthSurface(const Surface &s, float depth, unsigned flags, unsigned stencil = 0);
             void drawImage(const Gx2Command &cmd);
             void drawPrimitives(const Gx2Command &cmd, bool indexed, int selectedColor = -1);
+            bool streamOut(const Gx2Command &cmd, bool indexed);
             // The bound fetch shader resolved against the attribute buffers once per draw, so
             // fetching a vertex no longer decodes formats, semantics or memory regions.
             struct AttributeFetch {
@@ -207,6 +228,8 @@ namespace Core::Gfx {
                     bool valid{};
             };
             AttributeFetch prepareAttributeFetch() const;
+            const std::uint8_t *bufferBytes(std::uint32_t address, std::size_t bytes = 1) const;
+            std::vector<Gx2BufferSnapshot> m_bufferSnapshots;
             // Compact inputs and triangle indices of a draw with a GPU vertex program.
             struct DirectVertices {
                     std::vector<std::array<float, 4>> attributes;
@@ -222,12 +245,29 @@ namespace Core::Gfx {
                     std::vector<std::pair<std::uint32_t, std::vector<std::uint8_t>>> sources; // guest ranges read
                     std::shared_ptr<const DirectVertices> vertices;
                     std::uint32_t validatedFrame{~0u};
+                    std::uint64_t streamOutEpoch{};
                     std::uint64_t used{};
                     std::size_t bytes() const;
             };
             std::unordered_map<std::uint64_t, DirectVertexEntry> m_directVertexCache;
             std::unordered_map<std::uint64_t, std::uint8_t> m_directVertexSeen; // key -> sightings, then changes
             std::uint64_t m_directVertexBytes{}, m_directVertexClock{};
+            // Skinning changes palettes every frame, while its fetched geometry often stays fixed.
+            // Validate raw source bytes independently of the shader/constants and retain conversion.
+            std::unordered_map<std::uint64_t, DirectVertexEntry> m_streamOutInputs;
+            std::uint64_t m_streamOutInputBytes{}, m_streamOutInputReuses{};
+            std::uint64_t m_streamOutWriteEpoch{};
+            struct PendingStreamOut {
+                    std::shared_ptr<StreamOutReadback> result;
+                    std::array<std::uint32_t, 4> addresses{}, sizes{};
+                    unsigned usedMask{};
+            };
+            mutable std::vector<PendingStreamOut> m_pendingStreamOut;
+            mutable std::size_t m_pendingStreamOutBytes{};
+            std::uint64_t m_deferredStreamOutPasses{};
+            void flushStreamOut() const;
+            void flushStreamOut(std::uint32_t address, std::uint64_t bytes) const;
+            std::shared_ptr<const DirectVertices> streamOutInputs(const AttributeFetch &fetch, unsigned first, unsigned count);
             // Guest byte ranges [address, address + size) the fetch plan reads for vertices
             // low..high, merged; false when a read is not resident in one host range.
             static bool directVertexSources(const AttributeFetch &fetch, unsigned outputs, std::uint32_t low, std::uint32_t high,
@@ -337,6 +377,19 @@ namespace Core::Gfx {
                     std::uint64_t generation{};
                     std::vector<Surface> levels;
                     std::vector<std::vector<float>> texels;
+                    std::vector<std::vector<std::uint8_t>> blockTexels;
+                    bool blocksOnly{}, hasRenderedSources{};
+                    std::size_t writtenSurfaceCount{};
+                    WriteValidation baseWrites, mipWrites;
+                    std::size_t bytes() const
+                    {
+                        auto total = source.size();
+                        for (const auto &level: texels)
+                            total += level.size() * sizeof(float);
+                        for (const auto &level: blockTexels)
+                            total += level.size();
+                        return total;
+                    }
                     std::vector<RasterDraw::Texture::MipLevel> mips;
                     std::vector<std::uint8_t> source;
                     // Image range of every (level, slice) view: lets a later lookup in the same frame
@@ -344,8 +397,8 @@ namespace Core::Gfx {
                     std::vector<std::pair<std::uint32_t, std::uint32_t>> sliceRanges;
             };
             std::vector<std::shared_ptr<MipSnapshot>> m_mipSnapshots;
-            std::vector<std::weak_ptr<MipSnapshot>> m_retainedMipSnapshots;
-            std::shared_ptr<MipSnapshot> mipSnapshot(const Surface &surface, bool includeMips);
+            std::unordered_multimap<unsigned, std::weak_ptr<MipSnapshot>> m_retainedMipSnapshots;
+            std::shared_ptr<MipSnapshot> mipSnapshot(const Surface &surface, bool includeMips, bool blocksOnly = false);
             static bool sampleMipSnapshot(const MipSnapshot &snapshot, const TextureSampler &sampler, const std::array<float, 4> &coords,
                                           float cubeIndex, bool explicitLod, std::array<float, 4> &rgba);
             std::shared_ptr<ArraySnapshot> arraySnapshot(const Surface &surface);
@@ -363,15 +416,15 @@ namespace Core::Gfx {
             };
             struct DecodedKey {
                     SurfaceKey surface;
-                    std::uint32_t componentMap{}, imageSize{};
+                    std::uint32_t format{}, componentMap{}, imageSize{};
                     bool blocksOnly{}, floatTexels{};
                     bool operator==(const DecodedKey &) const = default;
             };
             struct DecodedKeyHash {
                     std::size_t operator()(const DecodedKey &key) const
                     {
-                        return SurfaceKeyHash{}(key.surface) ^ std::size_t(key.componentMap) ^ std::size_t(key.imageSize) ^
-                               std::size_t(key.blocksOnly) ^ (std::size_t(key.floatTexels) << 1);
+                        return SurfaceKeyHash{}(key.surface) ^ (std::size_t(key.format) << 16) ^ std::size_t(key.componentMap) ^
+                               std::size_t(key.imageSize) ^ std::size_t(key.blocksOnly) ^ (std::size_t(key.floatTexels) << 1);
                     }
             };
             std::unordered_map<DecodedKey, std::shared_ptr<DecodedTexture>, DecodedKeyHash> m_decodedTextures;
@@ -394,6 +447,8 @@ namespace Core::Gfx {
             Surface m_depth;
             std::array<Surface, 8> m_colorBuffers{};
             bool m_depthTest{}, m_depthWrite{}, m_stencilTest{};
+            std::optional<std::uint32_t> m_stencilControl;
+            std::optional<std::array<std::uint32_t, 2>> m_stencilMasks;
             unsigned m_depthCompare{7};
             mutable std::unordered_map<SurfaceKey, DepthBacking, SurfaceKeyHash> m_depthBackings;
             std::uint32_t m_colorTarget{0}; // GX2 render target slot for the bound colour target
@@ -424,7 +479,9 @@ namespace Core::Gfx {
                     std::vector<std::uint32_t> words;
                     std::shared_ptr<const Latte::Program> declaration;
                     std::shared_ptr<const Latte::VertexShader> vertexShader;
-                    std::map<unsigned, std::shared_ptr<const Latte::VertexShader>> windowedVertexShaders; // by uniform block window
+                    std::map<std::pair<std::array<unsigned, 4>, Latte::UniformBufferWindows>, std::shared_ptr<const Latte::FragmentShader>>
+                            streamShaders;
+                    std::map<std::pair<unsigned, Latte::UniformBufferWindows>, std::shared_ptr<const Latte::VertexShader>> windowedVertexShaders;
                     std::optional<bool> colorOnlyEffects, rejectsEveryPixel;
                     // Resource types (two bits each), onlyColorZero, colorExport.
                     std::map<std::tuple<std::uint64_t, bool, unsigned>, std::shared_ptr<const Latte::FragmentShader>> fragmentShaders;
@@ -435,11 +492,14 @@ namespace Core::Gfx {
             [[nodiscard]] static std::shared_ptr<const Latte::Program> declaration(const std::shared_ptr<ShaderProgram> &program);
             [[nodiscard]] std::shared_ptr<const Latte::FragmentShader> fragmentShader(std::span<const Latte::TextureType> resourceTypes,
                                                                                       bool onlyColorZero, unsigned colorExport);
-            [[nodiscard]] std::shared_ptr<const Latte::VertexShader> vertexShader(unsigned bufferWindow = 0);
+            [[nodiscard]] std::shared_ptr<const Latte::VertexShader> vertexShader(unsigned bufferWindow = 0,
+                                                                                  const Latte::UniformBufferWindows &bufferWindows = {});
             [[nodiscard]] bool colorOnlyEffects();
             [[nodiscard]] bool rejectsEveryPixel();
             // Current vertex shader + cache keyed by the guest GX2VertexShader struct address.
             std::shared_ptr<ShaderProgram> m_vsShader;
+            std::optional<unsigned> m_streamOutVerifyEvery;
+            std::uint64_t m_nativeStreamOutPasses{}, m_comparedStreamOutPasses{};
             std::unordered_map<std::uint32_t, std::shared_ptr<ShaderProgram>> m_vsCache;
             // Vertex uniform BLOCKS (GX2SetVertexUniformBlock): payload snapshots per binding —
             // read through the shader's kcache windows in uniform-block mode.
@@ -456,6 +516,13 @@ namespace Core::Gfx {
             Latte::FragmentShaderCache m_fragmentShaderCache;
             std::array<std::vector<std::uint32_t>, 16> m_psBlocks{};
             std::array<Attrib, 8> m_attribs{};
+            struct StreamOutBuffer {
+                    std::uint32_t address{}, size{}, context{}, offset{};
+            };
+            std::array<StreamOutBuffer, 4> m_streamOutBuffers{};
+            std::array<std::uint32_t, 4> m_streamOutStrides{};
+            bool m_streamOutEnabled{};
+            std::vector<std::pair<std::uint32_t, std::uint32_t>> m_streamOutWrites;
             std::vector<std::uint32_t> m_fetchLayout;
             std::array<std::uint32_t, 32> m_vertexSemantics{0, 1, 2, 3};
             std::uint32_t m_vertexInputCount{4};
@@ -474,6 +541,8 @@ namespace Core::Gfx {
                     Surface color, depth;
                     std::array<Surface, 8> colorBuffers{};
                     bool depthTest{}, depthWrite{}, stencilTest{};
+                    std::optional<std::uint32_t> stencilControl;
+                    std::optional<std::array<std::uint32_t, 2>> stencilMasks;
                     unsigned depthCompare{7};
                     std::uint32_t colorTarget{};
                     std::array<Surface, 16> pixelTextures{}, vertexTextures{};
@@ -492,6 +561,9 @@ namespace Core::Gfx {
                     std::vector<std::uint32_t> fetchLayout;
                     std::array<std::vector<std::uint32_t>, 16> vsBlocks{}, psBlocks{};
                     std::array<Attrib, 8> attribs{};
+                    std::array<StreamOutBuffer, 4> streamOutBuffers{};
+                    std::array<std::uint32_t, 4> streamOutStrides{};
+                    bool streamOutEnabled{};
                     std::array<std::uint32_t, 32> vertexSemantics{};
                     std::uint32_t vertexInputCount{4}, pixelInputCount{4};
                     std::array<std::uint32_t, 32> vertexOutputSemantics{}, pixelInputSemantics{};
