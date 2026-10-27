@@ -102,6 +102,12 @@ Run `./build/gui/appgui`. The GUI finds the repository's `games/` folder automat
 a previously selected library folder is remembered. The folder can also be selected in
 the GUI or overridden with `--library /path/to/games`.
 
+On Linux, the GUI automatically enables NVIDIA PRIME offloading when it detects an
+NVIDIA render device using the `nvidia` driver. This applies to direct binary launches
+as well as the desktop shortcut, and is inherited by the emulator process. Explicit
+GPU environment settings take precedence; `__NV_PRIME_RENDER_OFFLOAD=0` disables
+this automatic preference.
+
 Commercial dumps use `code/*.rpx`, `content/`, and Wii U title metadata. Installed updates
 are paired with their base games. RPX demos can use `code/*.rpx` without a title ID, or
 be loose `.rpx` files inside the library or its immediate subfolders. Demo metadata and

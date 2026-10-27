@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -20,6 +21,7 @@
 #include "cpu/interpreter/Interpreter.hpp"
 #include "cpu/interpreter/SyscallHandler.hpp"
 #include "cpu/memory/Memory.hpp"
+#include "hle/AsyncCallbacks.hpp"
 #include "hle/Gx2.hpp"
 #include "hle/MvPlayer.hpp"
 #include "utils/Logger.hpp"
@@ -199,40 +201,58 @@ namespace {
     }
 
     // ---- OSAlarm --------------------------------------------------------------
-    // Store-only: alarms are registered but never fire (no timer interrupts in the cooperative
-    // scheduler yet). Cancel/user-data round-trips work so title-side bookkeeping stays coherent.
 
     struct AlarmState {
             std::uint32_t callback{0};
             std::uint32_t userData{0};
             std::uint64_t period{0};
+            std::uint64_t deadline{0};
+            std::uint32_t group{0};
+            std::uint32_t context{0};
+            bool active{false};
     };
     std::unordered_map<std::uint32_t, AlarmState> g_alarms;
 
     void hle_OSCreateAlarm(Core::Interpreter &cpu)
     {
+        const auto context = g_alarms[cpu.m_gpr[3]].context;
         g_alarms[cpu.m_gpr[3]] = AlarmState{};
+        g_alarms[cpu.m_gpr[3]].context = context;
         cpu.m_gpr[3] = 0;
     }
     void hle_OSCreateAlarmEx(Core::Interpreter &cpu) { hle_OSCreateAlarm(cpu); }
     void hle_OSSetAlarm(Core::Interpreter &cpu)
     {
-        g_alarms[cpu.m_gpr[3]].callback = cpu.m_gpr[7]; // (alarm, time hi, time lo, callback)
+        auto &alarm = g_alarms[cpu.m_gpr[3]];
+        const auto delay = (std::uint64_t(cpu.m_gpr[5]) << 32) | cpu.m_gpr[6];
+        alarm.callback = cpu.m_gpr[7]; // r4 padding; OSTime uses aligned r5:r6
+        alarm.deadline = cpu.m_scheduler.now() + delay;
+        alarm.period = 0;
+        alarm.active = alarm.callback != 0;
         cpu.m_gpr[3] = 1;
     }
     void hle_OSSetPeriodicAlarm(Core::Interpreter &cpu)
     {
         auto &a = g_alarms[cpu.m_gpr[3]];
-        a.period = (static_cast<std::uint64_t>(cpu.m_gpr[6]) << 32) | cpu.m_gpr[7];
-        a.callback = cpu.m_gpr[8];
+        a.deadline = (std::uint64_t(cpu.m_gpr[5]) << 32) | cpu.m_gpr[6];
+        a.period = (std::uint64_t(cpu.m_gpr[7]) << 32) | cpu.m_gpr[8];
+        a.callback = cpu.m_gpr[9];
+        a.active = a.callback && a.period;
         cpu.m_gpr[3] = 1;
     }
     void hle_OSCancelAlarm(Core::Interpreter &cpu)
     {
-        g_alarms.erase(cpu.m_gpr[3]);
-        cpu.m_gpr[3] = 1;
+        auto &alarm = g_alarms[cpu.m_gpr[3]];
+        cpu.m_gpr[3] = alarm.active;
+        alarm.active = false;
     }
-    void hle_OSCancelAlarms(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
+    void hle_OSCancelAlarms(Core::Interpreter &cpu)
+    {
+        for (auto &[address, alarm]: g_alarms)
+            if (alarm.group == cpu.m_gpr[3])
+                alarm.active = false;
+        cpu.m_gpr[3] = 0;
+    }
     void hle_OSSetAlarmUserData(Core::Interpreter &cpu)
     {
         g_alarms[cpu.m_gpr[3]].userData = cpu.m_gpr[4];
@@ -753,8 +773,45 @@ void InstallTitleSeqPoolFix(Core::Interpreter &interp)
     Utils::Log::info("[HLE] title-sequence frame-pool fix armed at 0x{:08X}", kSeqRefillPc);
 }
 
+void ProcessCoreinitAlarms(Core::Interpreter &cpu)
+{
+    std::vector<std::pair<std::uint64_t, std::uint32_t>> due;
+    for (const auto &[address, alarm]: g_alarms)
+        if (alarm.active && alarm.deadline <= cpu.m_scheduler.now())
+            due.emplace_back(alarm.deadline, address);
+    std::sort(due.begin(), due.end());
+    for (const auto &[deadline, address]: due) {
+        auto &alarm = g_alarms[address];
+        if (alarm.period)
+            alarm.deadline += ((cpu.m_scheduler.now() - deadline) / alarm.period + 1) * alarm.period;
+        else
+            alarm.active = false;
+        // Callbacks receive a valid snapshot of the interrupted context. Their
+        // live execution registers belong to the deferred system thread.
+        if (!alarm.context)
+            alarm.context = cpu.m_memory.heapAllocate(0x320, 8);
+        const auto context = alarm.context;
+        std::memset(cpu.m_memory.hostPtr(context, 0x320), 0, 0x320);
+        cpu.m_memory.write<std::uint64_t>(context, 0x4F53436F6E747874ull);
+        for (unsigned i = 0; i < 32; ++i) {
+            cpu.m_memory.write<std::uint32_t>(context + 8 + i * 4, cpu.m_gpr[i]);
+            cpu.m_memory.write<std::uint64_t>(context + 0xB8 + i * 8, std::bit_cast<std::uint64_t>(cpu.m_fpr[i]));
+        }
+        cpu.m_memory.write<std::uint32_t>(context + 0x88, cpu.m_cr.raw);
+        cpu.m_memory.write<std::uint32_t>(context + 0x8C, cpu.m_lr + Core::Memory::ApplicationCode);
+        cpu.m_memory.write<std::uint32_t>(context + 0x90, cpu.m_ctr);
+        cpu.m_memory.write<std::uint32_t>(context + 0x94, cpu.m_xer.raw);
+        cpu.m_memory.write<std::uint32_t>(context + 0x98, cpu.m_pc + Core::Memory::ApplicationCode);
+        for (unsigned i = 0; i < 8; ++i)
+            cpu.m_memory.write<std::uint32_t>(context + 0x1BC + i * 4, cpu.m_gqr[i]);
+        Core::Async::enqueue(alarm.callback, address, context);
+    }
+}
+
 void RegisterCoreinitExtraFunctions()
 {
+    g_alarms.clear();
+    Core::Async::Reset();
     auto &sh = Core::syscallHandler;
 
     // mvplayer.rpl
@@ -798,6 +855,7 @@ void RegisterCoreinitExtraFunctions()
     sh.registerSyscall("OSCancelAlarm", hle_OSCancelAlarm);
     sh.registerSyscall("OSCancelAlarms", hle_OSCancelAlarms);
     sh.registerSyscall("OSSetAlarmUserData", hle_OSSetAlarmUserData);
+    sh.registerSyscall("OSSetAlarmTag", [](Core::Interpreter &cpu) { g_alarms[cpu.m_gpr[3]].group = cpu.m_gpr[4]; });
     sh.registerSyscall("OSGetAlarmUserData", hle_OSGetAlarmUserData);
 
     // GHS runtime

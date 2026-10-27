@@ -143,6 +143,8 @@ int main(const int ac, char const *const *av)
         const std::filesystem::path rpxPath(executable);
         const std::filesystem::path contentRoot = rpxPath.parent_path().parent_path() / "content";
         SetFsContentRoot(contentRoot.string());
+        if (const char *sdRoot = std::getenv("WEMU_SD_ROOT"))
+            SetFsSdRoot(sdRoot);
         std::cout << "FS content root: " << contentRoot.string() << std::endl;
         // WEMU_CONTENT_LAYER="/path/to/base/content:/more": fallback roots checked after the
         // primary one — lets an update title's partial content overlay the base game's.
@@ -201,8 +203,14 @@ int main(const int ac, char const *const *av)
         interpreter.m_gpr[1] = 0xC0FFFFF0u; // r1 = stack top
         interpreter.m_gpr[2] = interpreter.m_binary.sda2Base; // r2 = small-data area 2 base (from FILEINFO)
         interpreter.m_gpr[13] = interpreter.m_binary.sdaBase; // r13 = small-data area base (from FILEINFO)
-        interpreter.m_gpr[3] = 0u; // argc
-        interpreter.m_gpr[4] = 0u; // argv
+        // Homebrew may retain argv[0] when constructing a new command line.
+        const auto programName = rpxPath.filename().string();
+        const auto argv = interpreter.m_memory.heapAllocate(8 + programName.size() + 1, 4);
+        interpreter.m_memory.write<std::uint32_t>(argv, argv + 8);
+        interpreter.m_memory.write<std::uint32_t>(argv + 4, 0);
+        std::memcpy(interpreter.m_memory.hostPtr(argv + 8), programName.c_str(), programName.size() + 1);
+        interpreter.m_gpr[3] = 1u; // argc
+        interpreter.m_gpr[4] = argv;
 
         // Seed LR with a trampoline so a return from the entry stops the emulator cleanly.
         interpreter.m_lr = Core::RETURN_SENTINEL - Core::Memory::MemoryMap::ApplicationCode;

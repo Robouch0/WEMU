@@ -15,6 +15,12 @@ namespace WemuSession {
             quint64(width) * height * 4 != quint64(body.size() - offset))
             throw std::runtime_error("Invalid game framebuffer storage");
         auto storage = std::make_unique<QByteArray>(std::move(body));
+        // TV/GamePad scan-out is RGBX. Guests commonly leave X at zero;
+        // QImage's RGBX format requires 255 there, including the software scene
+        // graph path which may otherwise blend successive frames as transparent.
+        auto *opaque = reinterpret_cast<unsigned char *>(storage->data() + offset);
+        for (quint64 i = 3, bytes = quint64(width) * height * 4; i < bytes; i += 4)
+            opaque[i] = 255;
         const auto *pixels = reinterpret_cast<const uchar *>(storage->constData() + offset);
         QImage image(
                 pixels, int(width), int(height), int(width * 4), QImage::Format_RGBX8888,

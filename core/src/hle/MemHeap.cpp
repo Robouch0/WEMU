@@ -174,6 +174,9 @@ namespace {
         cpu.m_memory.write<std::uint32_t>(base + OFF_TAG, tag);
         cpu.m_memory.write<std::uint32_t>(base + OFF_DATA_START, base + HEADER_RESERVE);
         cpu.m_memory.write<std::uint32_t>(base + OFF_DATA_END, base + size);
+        cpu.m_memory.write<std::uint32_t>(base + 0x40, base + HEADER_RESERVE);
+        cpu.m_memory.write<std::uint32_t>(base + 0x44, base + size);
+        cpu.m_memory.write<std::uint32_t>(base + 0x48, 0);
         g_heaps[base].init(base + HEADER_RESERVE, base + size);
         Utils::Log::debug("[MEM] heap 0x{:08X} [0x{:08X}..0x{:08X}]", base, base + HEADER_RESERVE, base + size);
         return base;
@@ -245,6 +248,18 @@ namespace {
         cpu.m_gpr[3] = h ? h->totalFree() : 0;
     }
 
+    // MEMGetSizeForMBlockExpHeap takes the allocation pointer, not a heap handle.
+    void mem_GetSizeForMBlockExpHeap(Core::Interpreter &cpu)
+    {
+        const auto pointer = cpu.m_gpr[3];
+        for (const auto &[handle, heap]: g_heaps)
+            if (const auto block = heap.used.find(pointer); block != heap.used.end()) {
+                cpu.m_gpr[3] = block->second;
+                return;
+            }
+        cpu.m_gpr[3] = 0;
+    }
+
     // Default heap = MEM2 base heap (matches the Cafe runtime, which routes the exported
     // MEMAllocFromDefaultHeap[Ex] pointers there with 0x40 alignment).
     void mem_AllocFromDefaultHeap(Core::Interpreter &cpu)
@@ -267,8 +282,108 @@ namespace {
         cpu.m_gpr[3] = 0;
     }
 
-    // Frame-heap allocs share the ExpHeap backend; state save/free-all semantics can come later.
-    void mem_AllocFromFrmHeapEx(Core::Interpreter &cpu) { heapAlloc(cpu, cpu.m_gpr[3], cpu.m_gpr[4], static_cast<std::int32_t>(cpu.m_gpr[5])); }
+    // Frame heaps have two cursors and a stack of checkpoints stored in the heap.
+    // Keep the free-range bookkeeping coherent for clients creating a child heap
+    // from the remaining frame-heap arena.
+    void syncFrameHeap(Core::Interpreter &cpu, std::uint32_t heap)
+    {
+        auto *h = findHeap(heap);
+        const auto head = cpu.m_memory.read<std::uint32_t>(heap + 0x40);
+        const auto tail = cpu.m_memory.read<std::uint32_t>(heap + 0x44);
+        h->free.clear();
+        if (tail > head)
+            h->free[head] = tail - head;
+        std::erase_if(h->used, [&](const auto &block) { return block.first >= head && std::uint64_t(block.first) + block.second <= tail; });
+    }
+
+    void mem_AllocFromFrmHeapEx(Core::Interpreter &cpu)
+    {
+        const auto heap = cpu.m_gpr[3];
+        auto *h = findHeap(heap);
+        if (!h) {
+            cpu.m_gpr[3] = 0;
+            return;
+        }
+        const auto head = cpu.m_memory.read<std::uint32_t>(heap + 0x40);
+        const auto tail = cpu.m_memory.read<std::uint32_t>(heap + 0x44);
+        const auto signedAlign = static_cast<std::int32_t>(cpu.m_gpr[5]);
+        const auto align = std::max(4u, signedAlign < 0 ? 0u - cpu.m_gpr[5] : cpu.m_gpr[5]);
+        const auto size = (std::uint64_t(std::max(1u, cpu.m_gpr[4])) + 3) & ~std::uint64_t(3);
+        const auto address = signedAlign < 0 ? (std::uint64_t(tail) - std::min(size, std::uint64_t(tail))) & ~std::uint64_t(align - 1)
+                                             : (std::uint64_t(head) + align - 1) & ~std::uint64_t(align - 1);
+        if ((align & (align - 1)) || address < head || address + size > tail) {
+            cpu.m_gpr[3] = 0;
+            return;
+        }
+        cpu.m_memory.write<std::uint32_t>(heap + (signedAlign < 0 ? 0x44 : 0x40), signedAlign < 0 ? address : address + size);
+        h->used[address] = size;
+        syncFrameHeap(cpu, heap);
+        cpu.m_gpr[3] = address;
+    }
+
+    void mem_RecordStateForFrmHeap(Core::Interpreter &cpu)
+    {
+        const auto heap = cpu.m_gpr[3], tag = cpu.m_gpr[4];
+        if (!findHeap(heap)) {
+            cpu.m_gpr[3] = 0;
+            return;
+        }
+        const auto head = cpu.m_memory.read<std::uint32_t>(heap + 0x40);
+        const auto tail = cpu.m_memory.read<std::uint32_t>(heap + 0x44);
+        const auto previous = cpu.m_memory.read<std::uint32_t>(heap + 0x48);
+        cpu.m_gpr[4] = 16;
+        cpu.m_gpr[5] = 4;
+        mem_AllocFromFrmHeapEx(cpu);
+        const auto state = cpu.m_gpr[3];
+        if (!state)
+            return;
+        cpu.m_memory.write<std::uint32_t>(state, tag);
+        cpu.m_memory.write<std::uint32_t>(state + 4, head);
+        cpu.m_memory.write<std::uint32_t>(state + 8, tail);
+        cpu.m_memory.write<std::uint32_t>(state + 12, previous);
+        cpu.m_memory.write<std::uint32_t>(heap + 0x48, state);
+        cpu.m_gpr[3] = 1;
+    }
+
+    void mem_FreeByStateToFrmHeap(Core::Interpreter &cpu)
+    {
+        const auto heap = cpu.m_gpr[3], tag = cpu.m_gpr[4];
+        auto *h = findHeap(heap);
+        if (!h) {
+            cpu.m_gpr[3] = 0;
+            return;
+        }
+        auto state = cpu.m_memory.read<std::uint32_t>(heap + 0x48);
+        // Bound traversal by the arena size, including malformed guest chains.
+        for (auto remaining = (h->dataEnd - h->dataStart) / 16; state && remaining; --remaining) {
+            if (state < h->dataStart || std::uint64_t(state) + 16 > h->dataEnd)
+                break;
+            if (!tag || cpu.m_memory.read<std::uint32_t>(state) == tag) {
+                cpu.m_memory.write<std::uint32_t>(heap + 0x40, cpu.m_memory.read<std::uint32_t>(state + 4));
+                cpu.m_memory.write<std::uint32_t>(heap + 0x44, cpu.m_memory.read<std::uint32_t>(state + 8));
+                cpu.m_memory.write<std::uint32_t>(heap + 0x48, cpu.m_memory.read<std::uint32_t>(state + 12));
+                syncFrameHeap(cpu, heap);
+                cpu.m_gpr[3] = 1;
+                return;
+            }
+            state = cpu.m_memory.read<std::uint32_t>(state + 12);
+        }
+        cpu.m_gpr[3] = 0;
+    }
+
+    void mem_FreeToFrmHeap(Core::Interpreter &cpu)
+    {
+        const auto heap = cpu.m_gpr[3], mode = cpu.m_gpr[4];
+        if (const auto *h = findHeap(heap)) {
+            if (mode & 1)
+                cpu.m_memory.write<std::uint32_t>(heap + 0x40, h->dataStart);
+            if (mode & 2)
+                cpu.m_memory.write<std::uint32_t>(heap + 0x44, h->dataEnd);
+            if (mode & 3)
+                cpu.m_memory.write<std::uint32_t>(heap + 0x48, 0);
+            syncFrameHeap(cpu, heap);
+        }
+    }
 
     void allocatorExpAlloc(Core::Interpreter &cpu)
     {
@@ -341,10 +456,14 @@ void RegisterMemHeapFunctions()
     Core::syscallHandler.registerSyscall("MEMFreeToExpHeap", mem_FreeToExpHeap);
     Core::syscallHandler.registerSyscall("MEMGetAllocatableSizeForExpHeapEx", mem_GetAllocatableSizeForExpHeapEx);
     Core::syscallHandler.registerSyscall("MEMGetTotalFreeSizeForExpHeap", mem_GetTotalFreeSizeForExpHeap);
+    Core::syscallHandler.registerSyscall("MEMGetSizeForMBlockExpHeap", mem_GetSizeForMBlockExpHeap);
     Core::syscallHandler.registerSyscall("MEMAllocFromDefaultHeap", mem_AllocFromDefaultHeap);
     Core::syscallHandler.registerSyscall("MEMAllocFromDefaultHeapEx", mem_AllocFromDefaultHeapEx);
     Core::syscallHandler.registerSyscall("MEMFreeToDefaultHeap", mem_FreeToDefaultHeap);
     Core::syscallHandler.registerSyscall("MEMAllocFromFrmHeapEx", mem_AllocFromFrmHeapEx);
+    Core::syscallHandler.registerSyscall("MEMRecordStateForFrmHeap", mem_RecordStateForFrmHeap);
+    Core::syscallHandler.registerSyscall("MEMFreeByStateToFrmHeap", mem_FreeByStateToFrmHeap);
+    Core::syscallHandler.registerSyscall("MEMFreeToFrmHeap", mem_FreeToFrmHeap);
     Core::syscallHandler.registerSyscall("MEMGetAllocatableSizeForFrmHeapEx", mem_GetAllocatableSizeForExpHeapEx);
     Core::syscallHandler.registerSyscall("MEMInitAllocatorForExpHeap", mem_InitAllocatorForExpHeap);
     Core::syscallHandler.registerSyscall("MEMAllocFromAllocator", allocatorDispatch<0>);

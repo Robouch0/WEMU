@@ -35,14 +35,25 @@
 
 // ── Framebuffer addresses (TV=0, DRC=1) ──────────────────────────────────────
 
-static std::uint32_t s_fb_addr[2] = {0, 0};
+struct ScreenBuffer {
+        std::uint32_t base{};
+        unsigned draw{};
+        bool enabled{};
+};
+static ScreenBuffer s_screens[2];
+static constexpr std::uint32_t screenWidth(unsigned id) { return id == 0 ? 1280 : 854; }
+static constexpr std::uint32_t screenPitch(unsigned id) { return id == 0 ? 1280 : 896; }
+static constexpr std::uint32_t screenHeight(unsigned id) { return id == 0 ? 720 : 480; }
+static constexpr std::uint32_t screenBytes(unsigned id) { return screenPitch(id) * screenHeight(id) * 4; }
+static std::uint32_t screenDrawAddress(unsigned id) { return s_screens[id].base ? s_screens[id].base + s_screens[id].draw * screenBytes(id) : 0; }
 
 // ── 8x16 bitmap font (public domain, IBM PC style) ────────────────────────────
 
 
 // ── Font blit helper ──────────────────────────────────────────────────────────
 
-static void blit_char(std::uint8_t *fb, std::uint32_t stride_px, int col_px, int row_px, char ch, std::uint32_t fg_color)
+static void blit_char(std::uint8_t *fb, std::uint32_t stride_px, std::uint32_t width, std::uint32_t height, int col_px, int row_px, char ch,
+                      std::uint32_t fg_color)
 {
     if ((unsigned char) ch >= 128)
         ch = '?';
@@ -56,7 +67,7 @@ static void blit_char(std::uint8_t *fb, std::uint32_t stride_px, int col_px, int
             if (glyph[y] & (0x80 >> x)) {
                 int px = col_px + x;
                 int py = row_px + y;
-                if (px < (int) stride_px) {
+                if (px >= 0 && py >= 0 && px < static_cast<int>(width) && py < static_cast<int>(height)) {
                     std::uint8_t *dst = fb + static_cast<std::ptrdiff_t>(py * (int) stride_px + px) * 4;
                     dst[0] = r;
                     dst[1] = g;
@@ -76,14 +87,18 @@ static std::unordered_map<std::uint32_t, std::array<std::uint32_t, 64>> s_tls; /
 
 // ---- OSScreen ----
 
-static void hle_OSScreenInit(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
+static void hle_OSScreenInit(Core::Interpreter &cpu)
+{
+    std::fill(std::begin(s_screens), std::end(s_screens), ScreenBuffer{});
+    cpu.m_gpr[3] = 0;
+}
 static void hle_OSScreenShutdown(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
 
 static void hle_OSScreenGetBufferSizeEx(Core::Interpreter &cpu)
 {
     std::uint32_t id = cpu.m_gpr[3];
 
-    cpu.m_gpr[3] = (id == 0) ? (1280 * 720 * 4) : (854 * 480 * 4);
+    cpu.m_gpr[3] = id < 2 ? 2 * screenBytes(id) : 0;
 }
 
 static void hle_OSScreenSetBufferEx(Core::Interpreter &cpu)
@@ -92,11 +107,16 @@ static void hle_OSScreenSetBufferEx(Core::Interpreter &cpu)
     std::uint32_t ppc_addr = cpu.m_gpr[4];
 
     if (id < 2)
-        s_fb_addr[id] = ppc_addr;
+        s_screens[id].base = ppc_addr;
     cpu.m_gpr[3] = 0;
 }
 
-static void hle_OSScreenEnableEx(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
+static void hle_OSScreenEnableEx(Core::Interpreter &cpu)
+{
+    if (cpu.m_gpr[3] < 2)
+        s_screens[cpu.m_gpr[3]].enabled = cpu.m_gpr[4] != 0;
+    cpu.m_gpr[3] = 0;
+}
 
 static void hle_OSScreenClearBufferEx(Core::Interpreter &cpu)
 {
@@ -105,13 +125,13 @@ static void hle_OSScreenClearBufferEx(Core::Interpreter &cpu)
     if (id >= 2)
         return;
 
-    std::uint32_t fb_addr = s_fb_addr[id];
+    std::uint32_t fb_addr = screenDrawAddress(id);
     if (!fb_addr)
         return;
 
-    std::uint32_t width = (id == 0) ? 1280u : 854u;
+    std::uint32_t width = screenPitch(id);
     std::uint32_t height = (id == 0) ? 720u : 480u;
-    std::uint8_t *fb = cpu.m_memory.hostPtr(fb_addr);
+    std::uint8_t *fb = cpu.m_memory.hostPtr(fb_addr, screenBytes(id));
     if (!fb)
         return;
 
@@ -134,12 +154,12 @@ static void hle_OSScreenPutPixelEx(Core::Interpreter &cpu)
 {
     const std::uint32_t id = cpu.m_gpr[3], x = cpu.m_gpr[4], y = cpu.m_gpr[5], color = cpu.m_gpr[6];
     cpu.m_gpr[3] = 0;
-    if (id >= 2 || !s_fb_addr[id])
+    if (id >= 2 || !screenDrawAddress(id))
         return;
-    const std::uint32_t width = id == 0 ? 1280u : 854u, height = id == 0 ? 720u : 480u;
+    const std::uint32_t width = screenWidth(id), height = screenHeight(id);
     if (x >= width || y >= height)
         return;
-    std::uint8_t *pixel = cpu.m_memory.hostPtr(s_fb_addr[id] + (y * width + x) * 4);
+    std::uint8_t *pixel = cpu.m_memory.hostPtr(screenDrawAddress(id) + (y * screenPitch(id) + x) * 4);
     if (!pixel)
         return;
     pixel[0] = color >> 24;
@@ -157,15 +177,15 @@ static void hle_OSScreenPutFontEx(Core::Interpreter &cpu)
     if (id >= 2)
         return;
 
-    std::uint32_t fb_addr = s_fb_addr[id];
+    std::uint32_t fb_addr = screenDrawAddress(id);
     if (!fb_addr)
         return;
 
-    std::uint8_t *fb = cpu.m_memory.hostPtr(fb_addr);
+    std::uint8_t *fb = cpu.m_memory.hostPtr(fb_addr, screenBytes(id));
     if (!fb)
         return;
 
-    std::uint32_t width = (id == 0) ? 1280u : 854u;
+    std::uint32_t width = screenPitch(id);
     int x_px = (int) (col * 8);
     int y_px = (int) (row * 16);
 
@@ -173,7 +193,7 @@ static void hle_OSScreenPutFontEx(Core::Interpreter &cpu)
         std::uint8_t ch = cpu.m_memory.read<std::uint8_t>(str_addr++);
         if (!ch)
             break;
-        blit_char(fb, width, x_px, y_px, (char) ch, 0xFFFFFF00u);
+        blit_char(fb, width, screenWidth(id), screenHeight(id), x_px, y_px, (char) ch, 0xFFFFFF00u);
         x_px += 8;
     }
     cpu.m_gpr[3] = 0;
@@ -181,42 +201,27 @@ static void hle_OSScreenPutFontEx(Core::Interpreter &cpu)
 
 static void hle_OSScreenFlipBuffersEx(Core::Interpreter &cpu)
 {
-    std::uint32_t id = cpu.m_gpr[3];
-    if (id > 1 || !cpu.m_renderer)
+    const auto id = cpu.m_gpr[3];
+    cpu.m_gpr[3] = 0;
+    if (id >= 2)
         return;
-
-    if (id == 1) {
-        // GamePad buffer: only forwarded while a remote GamePad displays it.
-        if (cpu.m_renderer->drc_wanted() && s_fb_addr[1] && cpu.m_memory.hostPtr(s_fb_addr[1] + 854 * 480 * 4 - 1))
-            cpu.m_renderer->flip_drc(cpu.m_memory.hostPtr(s_fb_addr[1]), 854, 480);
-        cpu.m_gpr[3] = 0;
+    const auto address = screenDrawAddress(id);
+    s_screens[id].draw ^= 1;
+    if (!address || !s_screens[id].enabled || !cpu.m_renderer)
         return;
-    }
-
-    std::uint32_t fb_addr = s_fb_addr[0];
-    if (!fb_addr)
-        return;
-
-    std::uint8_t *fb = cpu.m_memory.hostPtr(fb_addr);
+    const auto *fb = std::as_const(cpu.m_memory).hostPtr(address, screenBytes(id));
     if (!fb)
         return;
-
-    cpu.m_renderer->flip_tv(fb, 1280, 720);
-
-    // FPS counter
-    static std::uint32_t frames = 0;
-
-    // multiplied by 1000 to get in milliseconds
-    static std::uint64_t last_ms = SDL_GetPerformanceCounter() * 1000 / SDL_GetPerformanceFrequency();
-    ++frames;
-    std::uint64_t now = SDL_GetPerformanceCounter() * 1000 / SDL_GetPerformanceFrequency();
-    if (now - last_ms >= 1000) {
-        fprintf(stderr, "[FPS] %u\n", frames);
-        frames = 0;
-        last_ms = now;
+    if (id == 0) {
+        cpu.m_renderer->flip_tv(fb, screenWidth(id), screenHeight(id));
+    } else if (cpu.m_renderer->drc_wanted()) {
+        // Scanout excludes the padded columns in each GamePad row.
+        const auto rowBytes = std::size_t(screenWidth(id)) * 4;
+        std::vector<std::uint8_t> packed(rowBytes * screenHeight(id));
+        for (unsigned y = 0; y < screenHeight(id); ++y)
+            std::memcpy(packed.data() + std::size_t(y) * rowBytes, fb + std::size_t(y) * screenPitch(id) * 4, rowBytes);
+        cpu.m_renderer->flip_drc(packed.data(), screenWidth(id), screenHeight(id));
     }
-
-    cpu.m_gpr[3] = 0;
 }
 
 // ---- OS misc ----
@@ -323,6 +328,25 @@ static void hle_OSCompareAndSwapAtomic(Core::Interpreter &cpu)
     } else {
         cpu.m_gpr[3] = 0;
     }
+}
+
+// Guest threads cannot preempt a host HLE call, so each read/modify/write is
+// atomic with respect to every guest thread. Return the value before the change.
+static void hle_OSSwapAtomic(Core::Interpreter &cpu)
+{
+    const auto address = cpu.m_gpr[3];
+    const auto old = cpu.m_memory.read<std::uint32_t>(address);
+    cpu.m_memory.write<std::uint32_t>(address, cpu.m_gpr[4]);
+    cpu.m_gpr[3] = old;
+}
+
+static void hle_OSAddAtomic(Core::Interpreter &cpu)
+{
+    const auto address = cpu.m_gpr[3];
+    const auto old = cpu.m_memory.read<std::uint32_t>(address);
+    // Unsigned arithmetic preserves PPC's 32-bit wraparound without host UB.
+    cpu.m_memory.write<std::uint32_t>(address, old + cpu.m_gpr[4]);
+    cpu.m_gpr[3] = old;
 }
 
 // HLE calls execute without guest preemption. PPC EABI passes the aligned 64-bit
@@ -437,9 +461,15 @@ static void hle_OSCreateThread(Core::Interpreter &cpu)
 
 static void hle_OSResumeThread(Core::Interpreter &cpu)
 {
-    cpu.m_scheduler.resume(cpu.m_gpr[3]);
-    cpu.m_gpr[3] = 1; // previous suspend count (good enough)
+    cpu.m_gpr[3] = cpu.m_scheduler.resume(cpu.m_gpr[3]);
     cpu.m_scheduler.rescheduleAfterHle(cpu);
+}
+
+static void hle_OSSuspendThread(Core::Interpreter &cpu)
+{
+    const auto previous = cpu.m_scheduler.suspend(cpu, cpu.m_gpr[3]);
+    if (!cpu.m_hle_redirected)
+        cpu.m_gpr[3] = previous;
 }
 
 // void OSSleepTicks(OSTime ticks) — 64-bit OSTime passed as r3:r4 (high:low).
@@ -460,6 +490,28 @@ static void hle_OSYieldThread(Core::Interpreter &cpu)
 }
 
 static void hle_OSGetCurrentThread(Core::Interpreter &cpu) { cpu.m_gpr[3] = cpu.m_scheduler.currentHandle(); }
+
+static void hle_OSIsThreadSuspended(Core::Interpreter &cpu)
+{
+    const auto handle = cpu.m_gpr[3];
+    for (const auto &thread: cpu.m_scheduler.threads())
+        if (thread->osThreadPtr == handle) {
+            cpu.m_gpr[3] = thread->suspendCount != 0;
+            return;
+        }
+    cpu.m_gpr[3] = 0;
+}
+
+static void hle_OSGetThreadAffinity(Core::Interpreter &cpu)
+{
+    const auto handle = cpu.m_gpr[3];
+    for (const auto &thread: cpu.m_scheduler.threads())
+        if (thread->osThreadPtr == handle) {
+            cpu.m_gpr[3] = thread->affinity;
+            return;
+        }
+    cpu.m_gpr[3] = 0;
+}
 
 static void hle_OSIsThreadTerminated(Core::Interpreter &cpu)
 {
@@ -1211,6 +1263,8 @@ void RegisterCoreinitFunctions()
     Core::syscallHandler.registerSyscall("OSIsDebuggerInitialized", hle_OSIsDebuggerInitialized);
     Core::syscallHandler.registerSyscall("OSEnableHomeButtonMenu", hle_OSEnableHomeButtonMenu);
     Core::syscallHandler.registerSyscall("OSCompareAndSwapAtomic", hle_OSCompareAndSwapAtomic);
+    Core::syscallHandler.registerSyscall("OSSwapAtomic", hle_OSSwapAtomic);
+    Core::syscallHandler.registerSyscall("OSAddAtomic", hle_OSAddAtomic);
     Core::syscallHandler.registerSyscall("OSGetAtomic64", hle_OSGetAtomic64);
     Core::syscallHandler.registerSyscall("OSSetAtomic64", hle_OSSetAtomic64);
     Core::syscallHandler.registerSyscall("OSCompareAndSwapAtomicEx", hle_OSCompareAndSwapAtomicEx);
@@ -1228,9 +1282,12 @@ void RegisterCoreinitFunctions()
     // OS Thread
     Core::syscallHandler.registerSyscall("OSCreateThread", hle_OSCreateThread);
     Core::syscallHandler.registerSyscall("OSResumeThread", hle_OSResumeThread);
+    Core::syscallHandler.registerSyscall("OSSuspendThread", hle_OSSuspendThread);
     Core::syscallHandler.registerSyscall("OSSleepTicks", hle_OSSleepTicks);
     Core::syscallHandler.registerSyscall("OSYieldThread", hle_OSYieldThread);
     Core::syscallHandler.registerSyscall("OSGetCurrentThread", hle_OSGetCurrentThread);
+    Core::syscallHandler.registerSyscall("OSIsThreadSuspended", hle_OSIsThreadSuspended);
+    Core::syscallHandler.registerSyscall("OSGetThreadAffinity", hle_OSGetThreadAffinity);
     Core::syscallHandler.registerSyscall("OSIsThreadTerminated", hle_OSIsThreadTerminated);
     Core::syscallHandler.registerSyscall("OSJoinThread", hle_OSJoinThread);
     Core::syscallHandler.registerSyscall("OSExitThread", hle_OSExitThread);

@@ -7,6 +7,47 @@
 
 #include "cpu/memory/Memory.hpp"
 
+TEST(MemoryTest, ReallocationPreservesContentsAcrossGrowthShrinkAndMove)
+{
+    Core::Memory memory;
+    auto p = memory.heapReallocate(0, 4);
+    memory.write<unsigned>(p, 0x12345678);
+    // An intervening allocation makes this exercise a real copy.
+    const auto neighbor = memory.heapAllocate(16, 8);
+    memory.write<unsigned>(neighbor, 0xDEADBEEF);
+    p = memory.heapReallocate(p, 32);
+    ASSERT_NE(p, 0u);
+    EXPECT_EQ(memory.read<unsigned>(p), 0x12345678u);
+    EXPECT_EQ(memory.read<unsigned>(neighbor), 0xDEADBEEFu);
+    Core::Memory moved(std::move(memory));
+    p = moved.heapReallocate(p, 2);
+    ASSERT_NE(p, 0u);
+    EXPECT_EQ(moved.read<std::uint16_t>(p), 0x1234);
+    EXPECT_EQ(moved.heapReallocate(p, 0), 0u);
+    EXPECT_EQ(moved.heapReallocate(p, 4), 0u); // old allocation is no longer live
+}
+
+TEST(MemoryTest, FreedAllocationsCoalesceAndRepeatedAlignedAllocationsStayBounded)
+{
+    Core::Memory memory;
+    const auto a = memory.heapAllocate(64, 64);
+    const auto b = memory.heapAllocate(64, 64);
+    const auto neighbor = memory.heapAllocate(32, 8);
+    memory.write<unsigned>(neighbor, 0x12345678);
+    memory.heapFree(b);
+    memory.heapFree(a);
+    EXPECT_EQ(memory.heapAllocate(128, 64), a);
+    memory.heapFree(a);
+    for (unsigned i = 0; i < 10000; ++i) {
+        const auto p = memory.heapAllocate(80, 16);
+        ASSERT_EQ(p, a);
+        memory.heapFree(p);
+    }
+    EXPECT_EQ(memory.read<unsigned>(neighbor), 0x12345678u);
+    EXPECT_EQ(memory.heapAllocate(4, 6), 0u);
+    EXPECT_EQ(memory.heapAllocate(0xFFFFFFFFu, 8), 0u);
+}
+
 static_assert(!std::is_copy_constructible_v<Core::Memory>);
 static_assert(!std::is_copy_assignable_v<Core::Memory>);
 static_assert(std::is_nothrow_move_constructible_v<Core::Memory>);
@@ -130,7 +171,7 @@ TEST(MemoryTest, LoaderAllocationValidatesTheCompleteMainMemoryRange)
 
 TEST(MemoryTest, MovesKeepAllRegionPointersAndHeapProgressStable)
 {
-    Core::Memory source(16);
+    Core::Memory source(Core::Memory::HEAP_BASE - app + 32);
     auto *mainPointer = source.hostPtr(app);
     auto *stackPointer = source.hostPtr(Core::Memory::STACK_BASE);
     auto *importPointer = source.hostPtr(Core::Memory::DIMPORT_BASE);

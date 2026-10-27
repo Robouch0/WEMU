@@ -86,6 +86,12 @@ namespace Core::Instruction {
         cpu.m_memory.write<std::uint32_t>(ea, std::byteswap(cpu.m_gpr[instr.rs]));
     }
 
+    void STHBRX(Interpreter &cpu, const EncodedInstruction &instr)
+    {
+        const auto ea = (instr.ra == 0 ? 0 : cpu.m_gpr[instr.ra]) + cpu.m_gpr[instr.rb];
+        cpu.m_memory.write<std::uint16_t>(ea, std::byteswap(static_cast<std::uint16_t>(cpu.m_gpr[instr.rs])));
+    }
+
     /**
      * @brief Store Word Conditional Indexed (stwcx.). EA = (RA|0) + RB; MEM(EA,4) = RS if the
      *        lwarx reservation is still held (context switches clear it, so a CAS interleaved

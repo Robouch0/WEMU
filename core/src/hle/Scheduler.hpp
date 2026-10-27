@@ -40,6 +40,7 @@ namespace Core {
 
             enum class State : std::uint8_t { Ready, Running, Sleeping, Waiting, Finished, Paused };
             State state{State::Ready};
+            std::uint32_t suspendCount{0}; // orthogonal to sleeping/event/join waits
             std::uint64_t wakeTick{0}; // when Sleeping: scheduler tick to wake at
             bool timedWait{false}; // event wait: TRUE on signal, FALSE at wakeTick
             std::uint32_t osThreadPtr{0}; // guest OSThread* handle
@@ -66,7 +67,8 @@ namespace Core {
                                   std::uint32_t stackTop, std::int32_t priority = 16);
             void setPriority(std::uint32_t osThread, std::int32_t priority); // OSSetThreadPriority
             void setAffinity(std::uint32_t osThread, std::uint32_t mask); // OSSetThreadAffinity
-            void resume(std::uint32_t osThread); // OSResumeThread
+            std::uint32_t resume(std::uint32_t osThread); // previous suspend count
+            std::uint32_t suspend(Interpreter &cpu, std::uint32_t osThread);
             bool yield(Interpreter &cpu); // OSYieldThread; true if it switched
             void sleep(Interpreter &cpu, std::uint64_t ticks); // OSSleepTicks
             bool join(Interpreter &cpu, std::uint32_t osThread, std::uint32_t resultAddress = 0); // true if it blocked/switched

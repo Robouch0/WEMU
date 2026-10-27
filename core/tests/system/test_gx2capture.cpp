@@ -29,6 +29,20 @@ class Gx2CaptureTest : public InstructionTest {
 
         static void call(const char *name) { Core::syscallHandler.get(name)(*cpu); }
 
+        // Sample inside the TV interval covered by a source pixel. Rounding a
+        // scaled center directly can select its neighbor at fractional ratios.
+        static std::size_t scanOffset(unsigned x, unsigned y, unsigned width, unsigned height)
+        {
+            const auto firstX = (std::uint64_t(x) * Core::Gfx::Gx2Replayer::kWidth + width - 1) / width;
+            const auto endX = ((std::uint64_t(x) + 1) * Core::Gfx::Gx2Replayer::kWidth + width - 1) / width;
+            const auto firstY = (std::uint64_t(y) * Core::Gfx::Gx2Replayer::kHeight + height - 1) / height;
+            const auto endY = ((std::uint64_t(y) + 1) * Core::Gfx::Gx2Replayer::kHeight + height - 1) / height;
+            const auto tx = (firstX + endX - 1) / 2;
+            const auto ty = (firstY + endY - 1) / 2;
+            return (ty * Core::Gfx::Gx2Replayer::kWidth + tx) * 4;
+        }
+
+
         void surface(std::uint32_t header, std::uint32_t image, std::uint32_t size, std::uint32_t width, std::uint32_t height, std::uint32_t pitch,
                      std::uint32_t tile)
         {
@@ -444,6 +458,82 @@ TEST_F(Gx2CaptureTest, OwnedResourceBuffersAllocateAlignedStorageAndReleaseIt)
     cpu->m_gpr[3] = buffer;
     call("GX2RCreateBuffer");
     EXPECT_EQ(cpu->m_gpr[3], 0u);
+}
+
+TEST_F(Gx2CaptureTest, ResourceSurfacesPreserveCallerOwnershipAndAllocateMipStorage)
+{
+    RegisterMemHeapFunctions();
+    constexpr unsigned header = 0x28019000, image = 0x28020000;
+    surface(header, 0, 0, 32, 16, 0, 1);
+    cpu->m_memory.write<unsigned>(header + 0x10, 3);
+    cpu->m_gpr[3] = header;
+    cpu->m_gpr[4] = 0x7803;
+    call("GX2RCreateSurface");
+    ASSERT_EQ(cpu->m_gpr[3], 1u);
+    const auto storage = cpu->m_memory.read<unsigned>(header + 0x24);
+    const auto mipmap = cpu->m_memory.read<unsigned>(header + 0x2C);
+    const auto alignment = cpu->m_memory.read<unsigned>(header + 0x38);
+    ASSERT_NE(storage, 0u);
+    EXPECT_EQ(storage % alignment, 0u);
+    EXPECT_GT(mipmap, storage);
+    cpu->m_gpr[3] = header;
+    cpu->m_gpr[4] = 0;
+    call("GX2RDestroySurfaceEx");
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(header + 0x24), 0u);
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(header + 0x2C), 0u);
+
+    cpu->m_gpr[3] = header;
+    cpu->m_gpr[4] = image;
+    cpu->m_gpr[5] = image + 0x10000;
+    cpu->m_gpr[6] = 0x20007803;
+    call("GX2RCreateSurfaceUserMemory");
+    ASSERT_EQ(cpu->m_gpr[3], 1u);
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(header + 0x1C) & (1u << 29), 0u);
+    cpu->m_gpr[3] = header;
+    cpu->m_gpr[4] = 1;
+    cpu->m_gpr[5] = 0;
+    call("GX2RLockSurfaceEx");
+    EXPECT_EQ(cpu->m_gpr[3], image + 0x10000);
+    cpu->m_gpr[3] = header;
+    cpu->m_gpr[4] = 0;
+    call("GX2RDestroySurfaceEx");
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(header + 0x24), image);
+}
+
+TEST_F(Gx2CaptureTest, ResourceAllocatorCallbacksReceiveFlagsSizeAndAlignment)
+{
+    constexpr unsigned app = Core::Memory::ApplicationCode, header = 0x28019000, storage = 0x28020000, output = 0x28018000;
+    const auto write = [&](unsigned address, std::initializer_list<unsigned> words) {
+        for (auto word: words) {
+            cpu->m_memory.write<unsigned>(address, word);
+            address += 4;
+        }
+    };
+    // Return the resource allocation result through the original caller.
+    write(app, {0x7FC802A6, 0x4800007D, 0x90690000, 0x7FC803A6, 0x4E800020});
+    const auto sentinel = Core::Hle::exportFunction(*cpu, "GX2RCreateSurface");
+    write(app + 0x80, {0x3D800000u | (sentinel >> 16), 0x618C0000u | (sentinel & 0xFFFF), 0x7D8903A6, 0x4E800420});
+    write(app + 0x100, {0x90690004, 0x90890008, 0x90A9000C, 0x3C600000u | (storage >> 16), 0x60630000u | (storage & 0xFFFF), 0x4E800020});
+    cpu->m_gpr[3] = app + 0x100;
+    cpu->m_gpr[4] = 0;
+    call("GX2RSetAllocator");
+    surface(header, 0, 0, 32, 16, 0, 1);
+    cpu->m_memory.write<unsigned>(header + 0x10, 1);
+    cpu->m_gpr[1] = 0xC0FFFFF0;
+    cpu->m_gpr[3] = header;
+    cpu->m_gpr[4] = 0x7803;
+    cpu->m_gpr[9] = output;
+    cpu->m_lr = Core::RETURN_SENTINEL - app;
+    cpu->m_binary.header.e_entry = app;
+    cpu->run();
+    EXPECT_FALSE(cpu->failed());
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(output), 1u);
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(output + 4), 0x7803u);
+    EXPECT_GE(cpu->m_memory.read<unsigned>(output + 8), 32u * 16 * 4);
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(output + 12), cpu->m_memory.read<unsigned>(header + 0x38));
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(header + 0x24), storage);
+    cpu->m_gpr[3] = cpu->m_gpr[4] = 0;
+    call("GX2RSetAllocator");
 }
 
 TEST_F(Gx2CaptureTest, ResourceBuffersCallReplacementGuestAllocatorsAndResumeTheirCaller)
@@ -1176,6 +1266,9 @@ TEST_F(Gx2CaptureTest, StripsFansAndResourceShadersCoverTheWholeRectangle)
                 cpu->m_memory.write<unsigned>(vs + 0x10, 0xFFFFFF00);
                 cpu->m_memory.write<unsigned>(ps + 0x10, 1);
                 surface(color, 0x28010000, 8 * 8 * 4, 8, 8, 8, 1);
+                // Resource-backed variants also exercise the renderer's resolved
+                // AA representation on both reference and accelerated paths.
+                cpu->m_memory.write<unsigned>(color + 0x18, resourceBacked ? 2 : 0);
                 record("GX2SetColorBuffer", {color, 0});
                 record("GX2SetColorControl", {0xCC, 0, 0, 1});
                 cpu->m_fpr[1] = cpu->m_fpr[2] = cpu->m_fpr[5] = 0;
@@ -1482,7 +1575,7 @@ TEST_F(Gx2CaptureTest, DeclaredAttributesAndPixelSemanticRenderWithEveryIndexEnd
                     const auto &fb = replayer.framebuffer();
                     ASSERT_FALSE(fb.empty());
                     auto pixel = [&](unsigned x, unsigned y) {
-                        const auto off = (y * Gx2Replayer::kWidth + x) * 4;
+                        const auto off = scanOffset(x, y, 8, 8);
                         return std::array<std::uint8_t, 4>{fb[off], fb[off + 1], fb[off + 2], fb[off + 3]};
                     };
                     const std::array<std::uint8_t, 4> border{255, 0, 255, 255};
@@ -1512,7 +1605,7 @@ TEST_F(Gx2CaptureTest, DeclaredAttributesAndPixelSemanticRenderWithEveryIndexEnd
                                 command.payload[4] = 1;
                         Gx2Replayer reference;
                         reference.replay(gatherStream, &cpu->m_memory);
-                        const auto offset = (Gx2Replayer::kWidth + 1) * 4;
+                        const auto offset = scanOffset(1, 1, 8, 8);
                         const auto &gathered = reference.framebuffer();
                         ASSERT_GT(gathered.size(), offset + 3);
                         EXPECT_EQ((std::array<std::uint8_t, 4>{gathered[offset], gathered[offset + 1], gathered[offset + 2], gathered[offset + 3]}),
@@ -1651,15 +1744,22 @@ TEST_F(Gx2CaptureTest, DeclaredAttributesAndPixelSemanticRenderWithEveryIndexEnd
                             Gx2Replayer wide;
                             wide.setRasterWorkerCount(1);
                             wide.replay(wideStream, &cpu->m_memory);
-                            unsigned maxError = 0;
+                            unsigned maxError = 0, errorX = 0, errorY = 0;
                             for (unsigned y = 0; y < height; ++y)
                                 for (unsigned x = 0; x < width; ++x) {
                                     const int expected = ((x ^ y) & 1) ? 255 : 0;
-                                    const auto offset = (y * Gx2Replayer::kWidth + x) * 4;
-                                    for (unsigned c = 0; c < 3; ++c)
-                                        maxError = std::max(maxError, unsigned(std::abs(int(wide.framebuffer()[offset + c]) - expected)));
+                                    const auto offset = scanOffset(x, y, width, height);
+                                    for (unsigned c = 0; c < 3; ++c) {
+                                        const auto error = unsigned(std::abs(int(wide.framebuffer()[offset + c]) - expected));
+                                        if (error > maxError) {
+                                            maxError = error;
+                                            errorX = x;
+                                            errorY = y;
+                                        }
+                                    }
                                 }
-                            EXPECT_LE(maxError, 1u) << "One-to-one linear sampling must not drift across texel centers";
+                            EXPECT_LE(maxError, 1u)
+                                    << "One-to-one linear sampling must not drift across texel centers at " << errorX << "," << errorY;
                             Gx2Replayer wideParallel;
                             wideParallel.setRasterWorkerCount(4, 0);
                             wideParallel.replay(wideStream, &cpu->m_memory);
@@ -1792,10 +1892,11 @@ TEST_F(Gx2CaptureTest, DeclaredAttributesAndPixelSemanticRenderWithEveryIndexEnd
                                 verifyCommands.insert(verifyPresent,
                                                       {whiteTexture, drawCommand, Gx2Command{Gx2Cmd::SetScissor, {8, 8, 8, 8}}, drawCommand});
                                 auto verificationProbe = std::make_shared<VerificationProbe>();
-                                for (unsigned y = 0; y < 8; ++y) {
-                                    const auto row = replayer.framebuffer().begin() + y * Gx2Replayer::kWidth * 4;
-                                    verificationProbe->firstPixels.insert(verificationProbe->firstPixels.end(), row, row + 8 * 4);
-                                }
+                                for (unsigned y = 0; y < 8; ++y)
+                                    for (unsigned x = 0; x < 8; ++x) {
+                                        const auto pixel = replayer.framebuffer().begin() + scanOffset(x, y, 8, 8);
+                                        verificationProbe->firstPixels.insert(verificationProbe->firstPixels.end(), pixel, pixel + 4);
+                                    }
                                 Gx2Replayer verified;
                                 verified.setRasterBackend(verificationProbe);
                                 // Draw 0 is checked, draw 1 stays deferred, and
@@ -2217,7 +2318,7 @@ TEST_F(Gx2CaptureTest, DepthClearsExportsOcclusionAndSamplingMatchNative)
             replay();
             for (unsigned y = 0; y < 8; ++y)
                 for (unsigned x = 0; x < 8; ++x)
-                    EXPECT_EQ(reference.framebuffer()[(y * Gx2Replayer::kWidth + x) * 4 + 1], x < 4 ? 255 : 0);
+                    EXPECT_EQ(reference.framebuffer()[scanOffset(x, y, 8, 8) + 1], x < 4 ? 255 : 0);
             gx2Stream().clear();
             record("GX2SetColorControl", {0xCC, 0, 0, 0});
             record("GX2SetStencilMask", {255, 0, 9, 255, 0, 9});
@@ -2233,7 +2334,7 @@ TEST_F(Gx2CaptureTest, DepthClearsExportsOcclusionAndSamplingMatchNative)
             replay();
             for (unsigned y = 0; y < 8; ++y)
                 for (unsigned x = 0; x < 8; ++x) {
-                    const auto pixel = (y * Gx2Replayer::kWidth + x) * 4;
+                    const auto pixel = scanOffset(x, y, 8, 8);
                     EXPECT_EQ(reference.framebuffer()[pixel + 1], x < 4 ? 255 : 0);
                     EXPECT_EQ(reference.framebuffer()[pixel + 2], x < 4 ? 0 : 255);
                 }
@@ -2267,7 +2368,7 @@ TEST_F(Gx2CaptureTest, DepthClearsExportsOcclusionAndSamplingMatchNative)
                     replay();
                     for (unsigned y = 0; y < 8; ++y)
                         for (unsigned x = 0; x < 8; ++x)
-                            EXPECT_EQ(reference.framebuffer()[(y * Gx2Replayer::kWidth + x) * 4], 255);
+                            EXPECT_EQ(reference.framebuffer()[scanOffset(x, y, 8, 8)], 255);
                 }
         }
         if (backend)
@@ -2402,7 +2503,7 @@ TEST_F(Gx2CaptureTest, EarlyDepthRejectsPointsAndTrianglesButPreservesDepthExpor
         mesh(-.75f);
         reference.replay(gx2Stream(), &cpu->m_memory);
         native.replay(gx2Stream(), &cpu->m_memory);
-        const auto depthOnlyCenter = (2 * Gx2Replayer::kWidth + 2) * 4;
+        const auto depthOnlyCenter = scanOffset(2, 2, 4, 4);
         EXPECT_EQ(reference.framebuffer()[depthOnlyCenter], 32u);
         EXPECT_EQ(native.framebuffer(), reference.framebuffer());
         gx2Stream().clear();
@@ -2426,7 +2527,7 @@ TEST_F(Gx2CaptureTest, EarlyDepthRejectsPointsAndTrianglesButPreservesDepthExpor
         mesh(-.75f); // Window .125 equals the previous shader's depth export.
         reference.replay(gx2Stream(), &cpu->m_memory);
         native.replay(gx2Stream(), &cpu->m_memory);
-        const auto center = (2 * Gx2Replayer::kWidth + 2) * 4;
+        const auto center = scanOffset(2, 2, 4, 4);
         EXPECT_EQ(reference.framebuffer()[center], 32u);
         EXPECT_EQ(reference.framebuffer()[center + 3], 255u);
         if (mode == 4) {
@@ -2701,7 +2802,7 @@ TEST_F(Gx2CaptureTest, IndexedPointsPreserveHdrFloatTargetsThroughVertexTextureS
             record("GX2DrawIndexedEx", {1, 96, type, INDEX, 0, 1});
             record("GX2CopyColorBufferToScanBuffer", {OUT, 1});
             reference.replay(gx2Stream(), &cpu->m_memory);
-            const auto offset = 4;
+            const auto offset = scanOffset(1, 0, 4, 2);
             const auto &fb = reference.framebuffer();
             EXPECT_EQ((std::array{fb[offset], fb[offset + 1], fb[offset + 2], fb[offset + 3]}),
                       (std::array<std::uint8_t, 4>{128, 0, 16, static_cast<std::uint8_t>(hdrFormat == 0x816 ? 32 : 64)}));
@@ -2890,7 +2991,7 @@ TEST_F(Gx2CaptureTest, RenderedHdrArraySamplingPreservesLayersMappingAndChangedV
     }
 }
 
-TEST_F(Gx2CaptureTest, ScanoutClearsOnlyMarginsAndInvalidSourcesDoNotRetainPreviousPixels)
+TEST_F(Gx2CaptureTest, ScanoutScalesSmallSourcesAndInvalidSourcesDoNotRetainPreviousPixels)
 {
     using namespace Core::Gfx;
     constexpr std::uint32_t header = 0x28001000, image = 0x28100000;
@@ -2926,7 +3027,8 @@ TEST_F(Gx2CaptureTest, ScanoutClearsOnlyMarginsAndInvalidSourcesDoNotRetainPrevi
         };
         EXPECT_EQ(pixel(0, 0), (format == 0x1A ? std::array<std::uint8_t, 4>{73, 73, 73, 73} : std::array<std::uint8_t, 4>{51, 102, 153, 255}));
         for (const auto xy: {std::array{2u, 0u}, std::array{0u, 3u}, std::array{1279u, 719u}})
-            EXPECT_EQ(pixel(xy[0], xy[1]), (std::array<std::uint8_t, 4>{64, 128, 191, 255}));
+            EXPECT_EQ(pixel(xy[0], xy[1]),
+                      (format == 0x1A ? std::array<std::uint8_t, 4>{73, 73, 73, 73} : std::array<std::uint8_t, 4>{51, 102, 153, 255}));
     }
     present(2, 3, 0x1A, 0); // Invalid scan source still produces the complete clear frame.
     EXPECT_EQ(replayer.framebuffer()[0], 64);
@@ -3430,7 +3532,7 @@ TEST_F(Gx2CaptureTest, IndexedVertexReusePreservesParametersAndRefreshesEachDraw
         cached.replay(gx2Stream(), &cpu->m_memory);
         for (unsigned y = 0; y < 8; ++y)
             for (unsigned x = 1; x < 7; ++x) {
-                const auto offset = (y * Gx2Replayer::kWidth + x) * 4;
+                const auto offset = scanOffset(x, y, 8, 8);
                 EXPECT_EQ(cached.framebuffer()[offset], !whollyBehind && y >= 6 ? 255 : 0) << x << ',' << y;
                 EXPECT_EQ(cached.framebuffer()[offset + 2], whollyBehind || y < 6 ? 255 : 0) << x << ',' << y;
             }
@@ -4059,7 +4161,8 @@ TEST_F(Gx2CaptureTest, SignedBlockTexturesKeepNegativeValuesFilteringAndChangedB
             EXPECT_EQ(reference.framebuffer()[1], format == 0x235 ? 159 : 96);
             EXPECT_EQ(reference.framebuffer()[2], 96);
             EXPECT_EQ(reference.framebuffer()[3], 223);
-            EXPECT_EQ(reference.framebuffer()[3 * 4], pass ? 95 : 31) << "Linear filtering mixes signed texels before shader remapping";
+            EXPECT_EQ(reference.framebuffer()[scanOffset(3, 0, 8, 4)], pass ? 95 : 31)
+                    << "Linear filtering mixes signed texels before shader remapping";
             EXPECT_EQ(native.framebuffer(), reference.framebuffer());
             if (backend) {
                 EXPECT_EQ(backend->completedDraws(), pass + 1) << backend->lastError();
@@ -4230,8 +4333,8 @@ TEST_F(Gx2CaptureTest, PackedAndBlockDecodeMatchReferenceForTilingPartialBlocksA
                 // https://microsoft.github.io/DirectX-Specs/d3d/archive/D3D11_3_FunctionalSpec.htm#19.5.2
                 const auto &actual = native.framebuffer(), &expected = reference.framebuffer();
                 ASSERT_EQ(actual.size(), expected.size());
-                for (unsigned y = 0; y < Gx2Replayer::kHeight; ++y)
-                    for (unsigned x = 0; x < Gx2Replayer::kWidth; ++x) {
+                for (unsigned y = 0; y < 5; ++y)
+                    for (unsigned x = 0; x < 7; ++x) {
                         std::array<unsigned, 4> tolerance{};
                         if (x < 7 && y < 5) {
                             const auto tx = unsigned((float(x) + .5f) * float(width) / 7.f + .25f) % width;
@@ -4263,7 +4366,7 @@ TEST_F(Gx2CaptureTest, PackedAndBlockDecodeMatchReferenceForTilingPartialBlocksA
                             }
                         }
                         for (unsigned c = 0; c < 4; ++c) {
-                            const auto i = (std::size_t(y) * Gx2Replayer::kWidth + x) * 4 + c;
+                            const auto i = scanOffset(x, y, 7, 5) + c;
                             ASSERT_LE(unsigned(std::abs(int(actual[i]) - int(expected[i]))), tolerance[c]) << x << ',' << y << ',' << c;
                         }
                     }
@@ -4553,7 +4656,7 @@ TEST_F(Gx2CaptureTest, MovieImageDrawUsesViewportTransformUvScissorAndOrderedTar
     for (unsigned y = 0; y < 8; ++y)
         for (unsigned x = 0; x < 8; ++x) {
             const bool covered = x >= 3 && x < 6 && y >= 2 && y < 6;
-            const auto offset = (y * 1280 + x) * 4;
+            const auto offset = scanOffset(x, y, 8, 8);
             EXPECT_EQ(frame[offset], covered ? 200 : 0) << x << ',' << y;
             EXPECT_EQ(frame[offset + 1], covered ? 50 : 0);
             EXPECT_EQ(frame[offset + 2], covered ? 25 : 255);

@@ -4433,12 +4433,14 @@ void main() {
                  texture.renderedLayers.size() != std::size_t(texture.layers) * renderedLevels || texture.unorm8Pitch < texture.width ||
                  (renderedLevels == 1 ? binding.type != Latte::TextureType::TwoDArray && binding.type != Latte::TextureType::Cube
                                       : binding.type == Latte::TextureType::ThreeD) ||
-                 std::any_of(texture.renderedLayers.begin(), texture.renderedLayers.end(), [&](const auto &layer) {
-                     return !layer ||
-                            (renderedLevels == 1 && std::uint64_t(texture.unorm8Pitch) * texture.height *
-                                                                    (texture.renderedDepth ? 4u : colorElementBytes(texture.renderedFormat)) !=
-                                                            layer->size());
-                 })))
+                 std::any_of(
+                         texture.renderedLayers.begin(), texture.renderedLayers.end(),
+                         [&](const auto &layer) {
+                             return !layer || (renderedLevels == 1 &&
+                                               std::uint64_t(texture.unorm8Pitch) * texture.height *
+                                                               (texture.renderedDepth ? 4u : colorElementBytes(texture.renderedFormat)) !=
+                                                       layer->size());
+                         })))
                 return reject("Invalid rendered array layers");
             if (texture.rendered &&
                 (texture.unorm8Pitch < texture.width ||

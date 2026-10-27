@@ -49,6 +49,74 @@ TEST_F(ExpHeapTest, AllocationsStayWithinRegion)
     EXPECT_LT(b + 0x100, BASE + SIZE);
 }
 
+TEST_F(ExpHeapTest, FrameHeapCheckpointsRestoreBothEndsAndPopNewerStates)
+{
+    constexpr unsigned heap = 0x28300000;
+    cpu->m_gpr[3] = heap;
+    cpu->m_gpr[4] = 0x1000;
+    cpu->m_gpr[5] = 0;
+    call("MEMCreateFrmHeapEx");
+    auto allocate = [&](unsigned size, int alignment) {
+        cpu->m_gpr[3] = heap;
+        cpu->m_gpr[4] = size;
+        cpu->m_gpr[5] = alignment;
+        call("MEMAllocFromFrmHeapEx");
+        return cpu->m_gpr[3];
+    };
+    auto record = [&](unsigned tag) {
+        cpu->m_gpr[3] = heap;
+        cpu->m_gpr[4] = tag;
+        call("MEMRecordStateForFrmHeap");
+        return cpu->m_gpr[3];
+    };
+    auto restore = [&](unsigned tag) {
+        cpu->m_gpr[3] = heap;
+        cpu->m_gpr[4] = tag;
+        call("MEMFreeByStateToFrmHeap");
+        return cpu->m_gpr[3];
+    };
+    const auto first = allocate(32, 32);
+    const auto tail = allocate(64, -64);
+    EXPECT_EQ(record(0x1111), 1u);
+    const auto afterCheckpoint = allocate(100, 4);
+    EXPECT_EQ(record(0x2222), 1u);
+    EXPECT_NE(allocate(128, -32), 0u);
+    EXPECT_EQ(restore(0xFFFF), 0u);
+    EXPECT_EQ(restore(0x1111), 1u);
+    EXPECT_EQ(restore(0x2222), 0u);
+    EXPECT_EQ(allocate(100, 4), afterCheckpoint - 16); // checkpoint itself was released
+    EXPECT_EQ(allocate(64, -64), tail - 64);
+    cpu->m_gpr[3] = heap;
+    cpu->m_gpr[4] = 1;
+    call("MEMFreeToFrmHeap");
+    EXPECT_EQ(allocate(32, 32), first);
+    EXPECT_EQ(allocate(64, -64), tail - 128); // head reset preserves tail allocations
+    cpu->m_gpr[3] = heap;
+    cpu->m_gpr[4] = 3;
+    call("MEMFreeToFrmHeap");
+    EXPECT_EQ(allocate(64, -64), tail);
+    EXPECT_EQ(restore(0), 0u);
+}
+
+TEST_F(ExpHeapTest, BlockSizeQueryFindsExactLiveAllocationWithoutHeapArgument)
+{
+    constexpr unsigned base = 0x28100000;
+    const auto heap = createHeap(base, 0x10000);
+    const auto block = alloc(heap, 99, 0x40);
+    cpu->m_gpr[3] = block;
+    call("MEMGetSizeForMBlockExpHeap");
+    EXPECT_EQ(cpu->m_gpr[3], 100u);
+    cpu->m_gpr[3] = block + 1;
+    call("MEMGetSizeForMBlockExpHeap");
+    EXPECT_EQ(cpu->m_gpr[3], 0u);
+    cpu->m_gpr[3] = heap;
+    cpu->m_gpr[4] = block;
+    call("MEMFreeToExpHeap");
+    cpu->m_gpr[3] = block;
+    call("MEMGetSizeForMBlockExpHeap");
+    EXPECT_EQ(cpu->m_gpr[3], 0u);
+}
+
 TEST_F(ExpHeapTest, OutOfSpaceReturnsZero)
 {
     constexpr std::uint32_t BASE = 0x28100000, SIZE = 0x1000;

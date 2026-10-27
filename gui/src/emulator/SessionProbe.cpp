@@ -11,6 +11,7 @@
 #include <QMap>
 #include <QTextStream>
 #include <QTimer>
+#include <QQuickWindow>
 #include <memory>
 
 #include "EmulatorLauncher.hpp"
@@ -28,6 +29,7 @@ void installSessionProbe(QCoreApplication &application, EmulatorLauncher &launch
     const auto rpx = config["rpx"].toString();
     const auto output = config["output"].toString();
     const auto limit = config["frames"].toInt(4200), measureFrom = config["measureFrom"].toInt(3200);
+    const auto captureEvery = config["captureEvery"].toInt(0);
     QFile script(config["script"].toString());
     if (!QFileInfo(rpx).isFile() || output.isEmpty() || limit <= measureFrom || measureFrom < 1 || !script.open(QIODevice::ReadOnly) ||
         !QDir().mkpath(output))
@@ -51,8 +53,25 @@ void installSessionProbe(QCoreApplication &application, EmulatorLauncher &launch
         qFatal("Cannot open desktop frame measurements");
     probe->csv.write("sequence,received_seconds,presented_seconds,ack_ms,reported_fps\n");
     probe->clock.start();
+    const auto setInput = [&launcher](const QJsonObject &event) {
+        const auto left = event["left_stick"].toArray(), right = event["right_stick"].toArray();
+        Core::Gfx::GamepadState pad;
+        pad.leftStick = {float(left[0].toDouble()), float(left[1].toDouble())};
+        pad.rightStick = {float(right[0].toDouble()), float(right[1].toDouble())};
+        pad.touched = event["touched"].toBool();
+        pad.touchX = event["touch_x"].toInt();
+        pad.touchY = event["touch_y"].toInt();
+        launcher.setScriptedInput(event["buttons"].toInt(), pad);
+    };
+    if (probe->events[0].toObject().contains("seconds")) {
+        for (const auto &entry: probe->events) {
+            const auto event = entry.toObject();
+            QTimer::singleShot(300 + int(event["seconds"].toDouble() * 1000), &application, [setInput, event] { setInput(event); });
+        }
+        probe->next = probe->events.size();
+    }
     QObject::connect(&launcher, &EmulatorLauncher::frameReady, &application,
-                     [probe, &launcher, output, measureFrom, limit](const QImage &image, quint64 sequence) {
+                     [probe, &launcher, output, measureFrom, limit, captureEvery](const QImage &image, quint64 sequence) {
                          if (!sequence)
                              return;
                          const auto now = double(probe->clock.nsecsElapsed()) / 1e9;
@@ -65,7 +84,7 @@ void installSessionProbe(QCoreApplication &application, EmulatorLauncher &launch
                              pad.rightStick = {float(right[0].toDouble()), float(right[1].toDouble())};
                              launcher.setScriptedInput(event["buttons"].toInt(), pad);
                          }
-                         if (sequence == 2600 || sequence == 2700 || sequence == 2800 || (sequence >= 3000 && sequence % 300 == 0))
+                         if ((captureEvery > 0 && sequence % captureEvery == 0) || sequence == 2600 || sequence == 2700 || sequence == 2800 || (sequence >= 3000 && sequence % 300 == 0))
                              image.save(output + QString("/frame_%1.ppm").arg(sequence, 5, 10, QChar('0')), "PPM");
                          if (sequence >= quint64(measureFrom) && sequence <= quint64(limit)) {
                              if (!probe->measured)
@@ -77,7 +96,9 @@ void installSessionProbe(QCoreApplication &application, EmulatorLauncher &launch
                              qInfo("[DESKTOP_PROBE] frame=%llu seconds=%.3f fps=%.2f", static_cast<unsigned long long>(sequence), now,
                                    launcher.presentFps());
                      });
-    QObject::connect(&view, &GameView::framePresented, &application, [probe, &launcher, limit, output](quint64 sequence) {
+    QObject::connect(&view, &GameView::framePresented, &application, [probe, &launcher, &view, limit, output, captureEvery](quint64 sequence) {
+        if (captureEvery > 0 && sequence % captureEvery == 0 && view.window())
+            view.window()->grabWindow().save(output + QString("/desktop_%1.png").arg(sequence, 5, 10, QChar('0')));
         const auto now = double(probe->clock.nsecsElapsed()) / 1e9;
         if (auto it = probe->received.find(sequence); it != probe->received.end()) {
             QTextStream row(&probe->csv);

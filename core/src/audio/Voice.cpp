@@ -42,8 +42,11 @@ namespace Core::Audio {
             history2 = history1;
             history1 = decoded;
         }
-        if (current >= end) {
-            if (loopFlag && loop <= end) {
+        // Streaming clients can loop into a second buffer at a higher address,
+        // then update the end offset in their next AX frame callback. The end
+        // marker is an address comparison, not a bound on the loop destination.
+        if (current == end) {
+            if (loopFlag) {
                 current = loop;
                 ++loopCount;
                 if (format == 0) {
@@ -66,7 +69,7 @@ namespace Core::Audio {
     }
     float Voice::render(const Memory &memory)
     {
-        if (state != 1 || !base || current > end || !std::isfinite(ratio) || ratio < 0 || ratio > 64)
+        if (state != 1 || !base || !std::isfinite(ratio) || ratio < 0 || ratio > 64)
             return 0;
         float result = sample(memory);
         if (srcType != 0 && fraction > 0) {

@@ -143,6 +143,10 @@ void Core::Loader::loadSectionHeader(Section &section)
 
 void Core::Loader::loadSectionData(Section &section)
 {
+    // NOBITS sections occupy guest memory but have no bytes in the RPX file.
+    // loadSectionsInMemory allocates and zeroes them using sh_size.
+    if (section.raw.header.sh_type == SHT_NOBITS)
+        return;
     section.raw.data.resize(section.raw.header.sh_size);
     m_beDecoder.extract<>(section.raw.data.data(), section.raw.header.sh_size);
 }
@@ -209,10 +213,9 @@ void Core::Loader::loadSectionsMeta()
         section.meta.size = section.raw.data.size();
         section.meta.type = section.raw.header.sh_type;
         const auto start = section.meta.virtAddress;
-        const auto end = section.meta.virtAddress + section.meta.size;
-
         if (section.meta.type == SHT_NOBITS)
             section.meta.size = section.raw.header.sh_size;
+        const auto end = section.meta.virtAddress + section.meta.size;
         if (section.meta.type == SHT_PROGBITS || section.meta.type == SHT_NOBITS)
             loadAddressRangeProgram(section, start, end);
         if (section.meta.type == SHT_RPL_IMPORTS)
@@ -443,6 +446,17 @@ void Core::Loader::applyRelocation(const Elf32_Rela &rela)
         }
         case R_PPC_REL32:
             mem.write<std::uint32_t>(P, value - P);
+            break;
+        // Cafe RPL uses the Green Hills numbering here, which differs from
+        // GNU ELF's REL16 family: 251=HA, 252=HI, 253=LO.
+        case 251:
+            mem.write<std::uint16_t>(P, static_cast<std::uint16_t>(((value - P) + 0x8000u) >> 16));
+            break;
+        case 252:
+            mem.write<std::uint16_t>(P, static_cast<std::uint16_t>((value - P) >> 16));
+            break;
+        case 253:
+            mem.write<std::uint16_t>(P, static_cast<std::uint16_t>(value - P));
             break;
         case R_PPC_RELATIVE:
             mem.write<std::uint32_t>(P, value);

@@ -21,6 +21,7 @@
 #include "hle/ApplicationBoot.hpp"
 #include "hle/AsyncCallbacks.hpp"
 #include "hle/Ax.hpp"
+#include "hle/CoreinitExtra.hpp"
 #include "hle/Gx2.hpp"
 #include "utils/Diagnostics.hpp"
 #include "utils/FrameProfiler.hpp"
@@ -400,6 +401,7 @@ void Core::Interpreter::run()
             m_scheduler.advanceTicks(timerTicks);
             nextServiceTickAt = m_retired + kServiceTickInstructions;
             Core::Ax::OnFrameTick(*this); // may mark the AX callback thread Ready
+            ProcessCoreinitAlarms(*this);
             Core::Async::OnTick(*this); // may arm the deferred async-callback pump thread
             if (reportIps || threadDumpPeriod.count() > 0) {
                 const auto now = std::chrono::steady_clock::now();

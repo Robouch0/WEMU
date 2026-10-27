@@ -17,6 +17,7 @@ namespace Core {
 } // namespace Core
 
 namespace Core::Async {
+    void Reset();
 
     // Queue a guest function to be called soon with up to four word-sized arguments (r3..r6).
     // Safe to call from any HLE handler; the call runs later on the async pump thread.

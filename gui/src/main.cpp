@@ -1,5 +1,6 @@
 #include <QCommandLineParser>
 #include <QDir>
+#include <QFileInfo>
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
@@ -16,8 +17,34 @@
 #include "library/TitleScanner.hpp"
 #include "remote/RemoteGamepadServer.hpp"
 
+namespace {
+    void configureGpuPreference()
+    {
+#ifdef Q_OS_LINUX
+        // PRIME must be configured before SDL/Qt initialize graphics. Respect explicit device choices.
+        for (const auto *key : {"__NV_PRIME_RENDER_OFFLOAD", "__NV_PRIME_RENDER_OFFLOAD_PROVIDER",
+                                "__GLX_VENDOR_LIBRARY_NAME", "__VK_LAYER_NV_optimus", "DRI_PRIME",
+                                "VK_DRIVER_FILES", "VK_ICD_FILENAMES"}) {
+            if (qEnvironmentVariableIsSet(key)) return;
+        }
+        // A render node bound to nvidia identifies an available NVIDIA driver, including its open kernel module.
+        const QDir drm(QStringLiteral("/sys/class/drm"));
+        for (const auto &node : drm.entryList({QStringLiteral("renderD*")}, QDir::Dirs)) {
+            const auto driver = QFileInfo(drm.filePath(node + "/device/driver")).canonicalFilePath();
+            if (QFileInfo(driver).fileName() != "nvidia") continue;
+            qputenv("__NV_PRIME_RENDER_OFFLOAD", "1");
+            qputenv("__GLX_VENDOR_LIBRARY_NAME", "nvidia");
+            qputenv("__VK_LAYER_NV_optimus", "NVIDIA_only");
+            qInfo("[GPU] NVIDIA PRIME offloading enabled");
+            break;
+        }
+#endif
+    }
+}
+
 int main(int argc, char *argv[])
 {
+    configureGpuPreference();
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
     if (SDL_Init(SDL_INIT_GAMECONTROLLER) != 0) qFatal("SDL_Init failed: %s", SDL_GetError());
     QGuiApplication app(argc, argv);

@@ -3,6 +3,7 @@
 #include "TestFixture.hpp"
 #include "cpu/interpreter/SyscallHandler.hpp"
 #include "cpu/memory/Memory.hpp"
+#include "hle/AsyncCallbacks.hpp"
 #include "hle/Coreinit.hpp"
 #include "hle/CoreinitExtra.hpp"
 
@@ -38,6 +39,209 @@ class SchedulerTest : public InstructionTest {
 };
 
 static constexpr std::uint32_t APP = Core::Memory::MemoryMap::ApplicationCode;
+
+TEST_F(SchedulerTest, AlarmDeadlinesUseAligned64BitArgumentsAndCancellationPreservesUserData)
+{
+    RegisterCoreinitExtraFunctions();
+    cpu->m_scheduler.bootstrap(*cpu);
+    const auto call = [&](const char *name) { Core::syscallHandler.get(name)(*cpu); };
+    constexpr unsigned alarm = 0x28001000;
+    cpu->m_gpr[3] = alarm;
+    call("OSCreateAlarm");
+    cpu->m_gpr[3] = alarm;
+    cpu->m_gpr[4] = 0x12345678;
+    call("OSSetAlarmUserData");
+    cpu->m_gpr[3] = alarm;
+    cpu->m_gpr[4] = 0xDEADBEEF;
+    cpu->m_gpr[5] = 1;
+    cpu->m_gpr[6] = 9;
+    cpu->m_gpr[7] = APP + 0x100;
+    call("OSSetAlarm");
+    cpu->m_scheduler.advanceTicks(0x100000008ull);
+    ProcessCoreinitAlarms(*cpu);
+    cpu->m_gpr[3] = alarm;
+    call("OSCancelAlarm");
+    EXPECT_EQ(cpu->m_gpr[3], 1u);
+    cpu->m_gpr[3] = alarm;
+    call("OSGetAlarmUserData");
+    EXPECT_EQ(cpu->m_gpr[3], 0x12345678u);
+    cpu->m_gpr[3] = alarm;
+    cpu->m_gpr[5] = 0;
+    cpu->m_gpr[6] = 10;
+    cpu->m_gpr[7] = APP + 0x100;
+    call("OSSetAlarm");
+    cpu->m_scheduler.advanceTicks(10);
+    ProcessCoreinitAlarms(*cpu);
+    cpu->m_gpr[3] = alarm;
+    call("OSCancelAlarm");
+    EXPECT_EQ(cpu->m_gpr[3], 0u);
+    Core::Async::OnTick(*cpu);
+    const auto &threads = cpu->m_scheduler.threads();
+    ASSERT_GE(threads.size(), 2u);
+    EXPECT_EQ(threads.back()->pc, 0x100u);
+    EXPECT_EQ(threads.back()->gpr[3], alarm);
+    EXPECT_NE(threads.back()->gpr[4], 0u);
+    EXPECT_EQ(cpu->m_memory.read<std::uint64_t>(threads.back()->gpr[4]), 0x4F53436F6E747874ull);
+    Core::Async::Reset();
+}
+
+TEST_F(SchedulerTest, ScreenBuffersAlternateWithoutClearingOrOverwritingTheOtherBuffer)
+{
+    RegisterCoreinitFunctions();
+    const auto call = [&](const char *name, unsigned a, unsigned b = 0, unsigned c = 0, unsigned d = 0) {
+        cpu->m_gpr[3] = a;
+        cpu->m_gpr[4] = b;
+        cpu->m_gpr[5] = c;
+        cpu->m_gpr[6] = d;
+        Core::syscallHandler.get(name)(*cpu);
+        return cpu->m_gpr[3];
+    };
+    call("OSScreenInit", 0);
+    for (unsigned screen = 0; screen < 2; ++screen) {
+        const unsigned pitch = screen ? 896 : 1280, height = screen ? 480 : 720;
+        const unsigned bytes = pitch * height * 4, base = 0x29000000 + screen * 0x1000000;
+        EXPECT_EQ(call("OSScreenGetBufferSizeEx", screen), bytes * 2);
+        call("OSScreenSetBufferEx", screen, base);
+        call("OSScreenClearBufferEx", screen, 0x11223344);
+        call("OSScreenFlipBuffersEx", screen); // flips even with no host renderer
+        call("OSScreenClearBufferEx", screen, 0x55667788);
+        EXPECT_EQ(cpu->m_memory.read<unsigned>(base), 0x11223344u);
+        EXPECT_EQ(cpu->m_memory.read<unsigned>(base + bytes), 0x55667788u);
+        call("OSScreenPutPixelEx", screen, 3, 2, 0xAABBCCDD);
+        EXPECT_EQ(cpu->m_memory.read<unsigned>(base + bytes + (pitch * 2 + 3) * 4), 0xAABBCCDDu);
+        call("OSScreenFlipBuffersEx", screen);
+        call("OSScreenPutPixelEx", screen, 3, 2, 0x01020304);
+        EXPECT_EQ(cpu->m_memory.read<unsigned>(base + (pitch * 2 + 3) * 4), 0x01020304u);
+        EXPECT_EQ(cpu->m_memory.read<unsigned>(base + bytes + (pitch * 2 + 3) * 4), 0xAABBCCDDu);
+        // A GamePad padding column cannot be drawn through the visible pixel API.
+        if (screen) {
+            call("OSScreenPutPixelEx", screen, 854, 2, 0xFFFFFFFF);
+            EXPECT_EQ(cpu->m_memory.read<unsigned>(base + (pitch * 2 + 854) * 4), 0x11223344u);
+        }
+    }
+}
+
+TEST_F(SchedulerTest, NestedSuspensionPreservesSleepAndSelfSuspendResumesAtCaller)
+{
+    RegisterCoreinitFunctions();
+    auto &s = cpu->m_scheduler;
+    s.bootstrap(*cpu);
+    const auto main = s.currentHandle();
+    constexpr unsigned worker = 0x28001000;
+    auto *t = s.create(*cpu, worker, APP + 0x100, 0, 0, 0x28010000);
+    ASSERT_NE(t, nullptr);
+    EXPECT_EQ(s.suspend(*cpu, worker), 1u);
+    EXPECT_EQ(s.resume(worker), 2u);
+    EXPECT_FALSE(s.yield(*cpu));
+    EXPECT_EQ(s.resume(worker), 1u);
+    ASSERT_TRUE(s.yield(*cpu));
+    ASSERT_EQ(s.currentHandle(), worker);
+    cpu->m_lr = 0x1234;
+    cpu->m_hle_redirected = false;
+    cpu->m_gpr[3] = worker;
+    Core::syscallHandler.get("OSSuspendThread")(*cpu);
+    EXPECT_TRUE(cpu->m_hle_redirected);
+    EXPECT_EQ(s.currentHandle(), main);
+    EXPECT_EQ(t->pc, 0x1234u);
+    EXPECT_EQ(t->gpr[3], 0u);
+    EXPECT_EQ(s.resume(worker), 1u);
+    ASSERT_TRUE(s.yield(*cpu));
+    EXPECT_EQ(cpu->m_pc, 0x1234u);
+    s.sleep(*cpu, 100);
+    EXPECT_EQ(s.suspend(*cpu, worker), 0u);
+    EXPECT_EQ(s.resume(worker), 1u);
+    EXPECT_EQ(t->state, Core::ThreadContext::State::Sleeping);
+    EXPECT_EQ(s.resume(worker), 0u); // redundant resume must not wake a sleeper
+    EXPECT_EQ(t->state, Core::ThreadContext::State::Sleeping);
+    s.advanceTicks(100);
+    EXPECT_EQ(t->state, Core::ThreadContext::State::Ready);
+}
+
+TEST_F(SchedulerTest, ThreadQueriesDistinguishSuspensionFromSleepAndTrackAffinityAndReuse)
+{
+    RegisterCoreinitFunctions();
+    auto &scheduler = cpu->m_scheduler;
+    scheduler.bootstrap(*cpu);
+    constexpr unsigned worker = 0x28001000;
+    const auto query = [&](const char *name, unsigned handle) {
+        cpu->m_gpr[3] = handle;
+        Core::syscallHandler.get(name)(*cpu);
+        return cpu->m_gpr[3];
+    };
+    EXPECT_EQ(query("OSIsThreadSuspended", scheduler.mainHandle()), 0u);
+    EXPECT_EQ(query("OSGetThreadAffinity", scheduler.mainHandle()), 2u);
+    EXPECT_EQ(query("OSIsThreadSuspended", 0), 0u);
+    EXPECT_EQ(query("OSGetThreadAffinity", 0xFFFFFF00), 0u);
+    ASSERT_NE(scheduler.create(*cpu, worker, APP + 0x100, 0, 0, 0x28010000), nullptr);
+    EXPECT_EQ(query("OSIsThreadSuspended", worker), 1u);
+    scheduler.setAffinity(worker, 5);
+    EXPECT_EQ(query("OSGetThreadAffinity", worker), 5u);
+    scheduler.resume(worker);
+    EXPECT_EQ(query("OSIsThreadSuspended", worker), 0u);
+    ASSERT_TRUE(scheduler.yield(*cpu));
+    ASSERT_EQ(scheduler.currentHandle(), worker);
+    EXPECT_EQ(query("OSIsThreadSuspended", worker), 0u);
+    scheduler.sleep(*cpu, 100);
+    EXPECT_EQ(query("OSIsThreadSuspended", worker), 0u); // sleeping is not suspended
+    scheduler.advanceTicks(100);
+    ASSERT_TRUE(scheduler.yield(*cpu));
+    ASSERT_EQ(scheduler.currentHandle(), worker);
+    ASSERT_TRUE(scheduler.exitCurrent(*cpu));
+    EXPECT_EQ(query("OSIsThreadSuspended", worker), 0u);
+    ASSERT_NE(scheduler.create(*cpu, worker, APP + 0x200, 0, 0, 0x28010000), nullptr);
+    EXPECT_EQ(query("OSIsThreadSuspended", worker), 1u);
+    EXPECT_EQ(query("OSGetThreadAffinity", worker), 2u);
+}
+
+TEST_F(SchedulerTest, AtomicAddAndSwapReturnPreviousValuesAndWrapAt32Bits)
+{
+    RegisterCoreinitFunctions();
+    constexpr unsigned address = 0x28001000;
+    const auto add = [&](unsigned initial, unsigned increment, unsigned expected) {
+        cpu->m_memory.write<unsigned>(address, initial);
+        cpu->m_memory.write<unsigned>(address + 4, 0xCAFEBABE);
+        cpu->m_gpr[3] = address;
+        cpu->m_gpr[4] = increment;
+        Core::syscallHandler.get("OSAddAtomic")(*cpu);
+        EXPECT_EQ(cpu->m_gpr[3], initial);
+        EXPECT_EQ(cpu->m_memory.read<unsigned>(address), expected);
+        EXPECT_EQ(cpu->m_memory.read<unsigned>(address + 4), 0xCAFEBABEu);
+    };
+    add(7, static_cast<unsigned>(-3), 4);
+    add(0x7FFFFFFF, 1, 0x80000000);
+    add(0xFFFFFFFF, 1, 0);
+    cpu->m_gpr[3] = address;
+    cpu->m_gpr[4] = 0x12345678;
+    Core::syscallHandler.get("OSSwapAtomic")(*cpu);
+    EXPECT_EQ(cpu->m_gpr[3], 0u);
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(address), 0x12345678u);
+    cpu->m_gpr[3] = address;
+    cpu->m_gpr[4] = 0x87654321;
+    Core::syscallHandler.get("OSSwapAtomic")(*cpu);
+    EXPECT_EQ(cpu->m_gpr[3], 0x12345678u);
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(address), 0x87654321u);
+}
+
+TEST_F(SchedulerTest, OfflineSocketCallsFailWithoutInventingDescriptorsOrModifyingReceiveBuffers)
+{
+    RegisterCoreinitFunctions();
+    constexpr unsigned buffer = 0x28001000, length = 0x28001100;
+    cpu->m_memory.write<unsigned>(buffer, 0x12345678);
+    cpu->m_memory.write<unsigned>(length, 16);
+    Core::syscallHandler.get("socket_lib_init")(*cpu);
+    EXPECT_EQ(cpu->m_gpr[3], 0u);
+    for (const char *name:
+         {"socket", "connect", "bind", "listen", "accept", "send", "sendto", "recv", "recvfrom", "setsockopt", "shutdown", "socketclose"}) {
+        SCOPED_TRACE(name);
+        cpu->m_gpr[3] = 2;
+        cpu->m_gpr[4] = buffer;
+        cpu->m_gpr[5] = length;
+        Core::syscallHandler.get(name)(*cpu);
+        EXPECT_EQ(static_cast<std::int32_t>(cpu->m_gpr[3]), -1);
+        EXPECT_EQ(cpu->m_memory.read<unsigned>(buffer), 0x12345678u);
+        EXPECT_EQ(cpu->m_memory.read<unsigned>(length), 16u);
+    }
+}
 
 TEST_F(SchedulerTest, ThreadTerminationQueryTracksCreationExitAndHandleReuse)
 {

@@ -17,10 +17,10 @@ namespace {
     // Loads then stores, D-form and X-form (with update variants).
     constexpr Form kLoads[] = {{34, false, false}, {35, false, true}, {40, false, false}, {41, false, true}, {42, false, false}, {43, false, true},
                                {32, false, false}, {33, false, true}, {87, true, false},  {119, true, true}, {279, true, false}, {311, true, true},
-                               {343, true, false}, {375, true, true}, {23, true, false},  {55, true, true},  {534, true, false}};
+                               {343, true, false}, {375, true, true}, {23, true, false},  {55, true, true},  {534, true, false}, {790, true, false}};
     constexpr Form kStores[] = {{38, false, false}, {39, false, true},  {44, false, false}, {45, false, true},  {36, false, false},
                                 {37, false, true},  {215, true, false}, {247, true, true},  {407, true, false}, {439, true, true},
-                                {151, true, false}, {183, true, true},  {662, true, false}};
+                                {151, true, false}, {183, true, true},  {662, true, false}, {918, true, false}};
 } // namespace
 
 class X64JitMemoryTest : public X64JitTest {
