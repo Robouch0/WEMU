@@ -518,7 +518,7 @@ namespace Core::Gfx {
         else
             return nullptr;
         if (!m_mem || !s.imagePtr || !s.width || !s.height || s.width > 4096 || s.height > 4096 || s.pitch < s.width ||
-            std::uint64_t(s.pitch) * s.height > 16ull * 1024 * 1024 || s.aa || s.dimension != 1 || s.depth > 1 || s.firstMip || s.firstSlice)
+            std::uint64_t(s.pitch) * s.height > 16ull * 1024 * 1024 || s.aa > 3 || s.dimension != 1 || s.depth > 1 || s.firstMip || s.firstSlice)
             return nullptr;
         auto key = makeSurfaceKey(s);
         key.format = s.format; // Depth storage retains numeric type, not just element layout.
@@ -1847,13 +1847,13 @@ namespace Core::Gfx {
         while (!resourceTypes.empty() && resourceTypes.back() == Latte::TextureType::TwoD)
             resourceTypes = resourceTypes.first(resourceTypes.size() - 1);
         if (!m_psShader || resourceTypes.size() > 32)
-            return m_fragmentShaderCache.get(psProgram(), resourceTypes, onlyColorZero, colorExport);
+            return m_fragmentShaderCache.get(psProgram(), resourceTypes, onlyColorZero, colorExport, m_pixelPositionRegister);
         std::uint64_t types{};
         for (std::size_t i = 0; i < resourceTypes.size(); ++i)
             types |= std::uint64_t(resourceTypes[i]) << (i * 2);
-        auto &shader = m_psShader->fragmentShaders[{types, onlyColorZero, colorExport}];
+        auto &shader = m_psShader->fragmentShaders[{types, onlyColorZero, colorExport, m_pixelPositionRegister}];
         if (!shader)
-            shader = m_fragmentShaderCache.get(m_psShader->words, resourceTypes, onlyColorZero, colorExport);
+            shader = m_fragmentShaderCache.get(m_psShader->words, resourceTypes, onlyColorZero, colorExport, m_pixelPositionRegister);
         return shader;
     }
 
@@ -3980,7 +3980,8 @@ namespace Core::Gfx {
             return snapshot && sampleMipSnapshot(*snapshot, m_pixelSamplers[request.sampler], coords, request.cubeIndex, request.explicitLod, rgba);
         };
         bool pixelFallbackReported = false;
-        auto shadeTexel = [&](float u, float v, const std::array<std::array<float, 4>, 32> &params, LatteVsInterp::Output *output) {
+        auto shadeTexel = [&](float u, float v, const std::array<std::array<float, 4>, 32> &params, const std::array<float, 4> &position,
+                              LatteVsInterp::Output *output) {
             if (skipColorShader) {
                 output->colorValid = true;
                 return std::array<std::uint8_t, 4>{};
@@ -3990,7 +3991,10 @@ namespace Core::Gfx {
                 for (unsigned i = 0; i < m_pixelInputCount; i++)
                     if (pixelInputParams[i] >= 0)
                         inputs[i] = params[pixelInputParams[i]];
-                const auto pixel = LatteVsInterp::runPixel(*pixelProgram, std::span(inputs).first(m_pixelInputCount), m_psRegs, 64, pixelSample,
+                if (m_pixelPositionRegister < inputs.size())
+                    inputs[m_pixelPositionRegister] = position;
+                const auto inputCount = m_pixelPositionRegister < 32 ? std::max(m_pixelInputCount, m_pixelPositionRegister + 1) : m_pixelInputCount;
+                const auto pixel = LatteVsInterp::runPixel(*pixelProgram, std::span(inputs).first(inputCount), m_psRegs, 64, pixelSample,
                                                            pixelConstants, pixelGather, pixelFetch, colorExport);
                 *output = pixel;
                 if (pixel.discarded)
@@ -4168,10 +4172,14 @@ namespace Core::Gfx {
         const bool stencilIdentity = !m_stencilTest || (m_stencilControl && identityStencil(*m_stencilControl));
         const bool nativeStencil = m_stencilTest && !stencilIdentity && drawDepth && drawDepth->format == DepthFormat::UNorm24 && m_stencilControl &&
                                    m_stencilMasks && m_rasterBackend && m_rasterBackend->supportsStencil();
+        // Both replay paths currently store one resolved color/depth value per
+        // pixel. AA surfaces use that same representation on the native path;
+        // retaining their flag must not force shader interpretation on the CPU.
+        // This does not yet implement per-sample coverage or MSAA texture fetches.
         const bool collectBackend = m_rasterBackend && !m_gpuRenderer && !rawTarget && (stencilIdentity || nativeStencil) && !m_multiWriteEnable &&
                                     (!drawDepth || !splitBias) && (!m_depthTest || !m_depth.imagePtr || drawDepth) &&
                                     (!drawDepth || (nativeDepthEnabled && m_rasterBackend->supportsDepth())) && pixelProgram && useViewBacking() &&
-                                    m_pixelInputCount <= 16 && m_color.pitch >= m_color.width && !m_color.aa && m_color.dimension == 1 &&
+                                    m_pixelInputCount <= 16 && m_color.pitch >= m_color.width && m_color.aa <= 3 && m_color.dimension == 1 &&
                                     !m_color.firstMip && !m_color.firstSlice && (mode != 1 || m_rasterBackend->supportsPoints()) &&
                                     (targetFormat == ColorFormat::RGBA8 || m_rasterBackend->supportsFloatTargets()) &&
                                     std::none_of(m_vertexTextures.begin(), m_vertexTextures.end(), vertexFeedback);
@@ -4425,7 +4433,10 @@ namespace Core::Gfx {
                         }
                         LatteVsInterp::Output pixel;
                         const auto texel = shadeTexel(w0 * rv[0].u + w1 * rv[1].u + w2 * rv[2].u, w0 * rv[0].v + w1 * rv[1].v + w2 * rv[2].v,
-                                                      interpolateParams(rv, w0, w1, w2), &pixel);
+                                                      interpolateParams(rv, w0, w1, w2),
+                                                      {float(xx) + 0.5f, float(yy) + 0.5f, interpolateValue(rv[0].z, rv[1].z, rv[2].z, w0, w1, w2),
+                                                       w0 * rv[0].reciprocalW + w1 * rv[1].reciprocalW + w2 * rv[2].reciprocalW},
+                                                      &pixel);
                         if (pixel.discarded)
                             continue;
                         const float incoming =
@@ -4529,7 +4540,7 @@ namespace Core::Gfx {
                 }
             }
             LatteVsInterp::Output pixel;
-            const auto texel = shadeTexel(rv.u, rv.v, rv.params, &pixel);
+            const auto texel = shadeTexel(rv.u, rv.v, rv.params, {float(x) + 0.5f, float(y) + 0.5f, rv.z, rv.reciprocalW}, &pixel);
             if (pixel.discarded)
                 return;
             const auto incoming = clampDepth(pixel.depthValid ? pixel.depth : rv.z);
@@ -5958,6 +5969,7 @@ namespace Core::Gfx {
         state.vertexSemantics = m_vertexSemantics;
         state.vertexInputCount = m_vertexInputCount;
         state.pixelInputCount = m_pixelInputCount;
+        state.pixelPositionRegister = m_pixelPositionRegister;
         state.vertexOutputSemantics = m_vertexOutputSemantics;
         state.pixelInputSemantics = m_pixelInputSemantics;
         std::copy(std::begin(m_vp), std::end(m_vp), state.viewport.begin());
@@ -6008,6 +6020,7 @@ namespace Core::Gfx {
         m_vertexSemantics = state.vertexSemantics;
         m_vertexInputCount = state.vertexInputCount;
         m_pixelInputCount = state.pixelInputCount;
+        m_pixelPositionRegister = state.pixelPositionRegister;
         m_vertexOutputSemantics = state.vertexOutputSemantics;
         m_pixelInputSemantics = state.pixelInputSemantics;
         std::copy(state.viewport.begin(), state.viewport.end(), std::begin(m_vp));
@@ -6054,6 +6067,30 @@ namespace Core::Gfx {
         }
         const std::uint32_t rows = std::min(kHeight, s.height);
         const std::uint32_t cols = std::min(kWidth, s.width);
+        if (s.width && s.height && (s.width != kWidth || s.height != kHeight)) {
+            // The TV scan-out scales a render target to its output mode. A smaller
+            // source is not a rectangle to paste into the top-left of the TV.
+            const auto format = colorFormat(s.format);
+            const auto elementBytes = colorElementBytes(format);
+            buildClearFrame(kWidth, kHeight);
+            std::array<std::size_t, kWidth> columns;
+            for (unsigned x = 0; x < kWidth; ++x)
+                columns[x] = std::uint64_t(x) * s.width / kWidth * elementBytes;
+            for (unsigned y = 0; y < kHeight; ++y) {
+                const auto *row = base + (std::uint64_t(y) * s.height / kHeight) * s.pitch * elementBytes;
+                for (unsigned x = 0; x < kWidth; ++x) {
+                    auto *dst = m_fb.data() + (std::size_t(y) * kWidth + x) * 4;
+                    if (format == ColorFormat::RGBA8)
+                        std::memcpy(dst, row + columns[x], 4);
+                    else {
+                        const auto value = readFloatColor(row + columns[x], format);
+                        for (unsigned c = 0; c < 4; ++c)
+                            dst[c] = byteFromUnit(value[c]);
+                    }
+                }
+            }
+            return;
+        }
         buildClearFrame(cols, rows);
         if (colorFormat(s.format) == ColorFormat::R11G11B10Float) {
             // Pikmin 3 scans out both screens in this format every frame.
@@ -6598,6 +6635,12 @@ namespace Core::Gfx {
                     m_psShader.reset();
                     if (!m_mem || !sh)
                         break;
+                    if (m_trace)
+                        Utils::Log::error("[GX2TRACE] PS regs resources={:08X} exports={:08X} input0={:08X} input1={:08X} count={}",
+                                          m_mem->read<std::uint32_t>(sh), m_mem->read<std::uint32_t>(sh + 4), m_mem->read<std::uint32_t>(sh + 8),
+                                          m_mem->read<std::uint32_t>(sh + 12), m_mem->read<std::uint32_t>(sh + 16));
+                    const auto inputControl = m_mem->read<std::uint32_t>(sh + 8);
+                    m_pixelPositionRegister = inputControl & 0x100 ? (inputControl >> 10) & 31 : 32;
                     m_pixelInputSemantics.fill(255);
                     const auto inputCount = std::min(m_mem->read<std::uint32_t>(sh + 0x10), 32u);
                     m_pixelInputCount = inputCount ? inputCount : 4;

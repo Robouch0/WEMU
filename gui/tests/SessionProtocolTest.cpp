@@ -83,6 +83,17 @@ TEST(SessionProtocolTest, FrameStorageSurvivesPacketReuseAndWritableCopiesDetach
     EXPECT_THROW(WemuSession::frameImage(QByteArray(7, '\0'), 0, 2, 1), std::runtime_error);
 }
 
+TEST(SessionProtocolTest, ScanoutPaddingIsOpaqueEvenWhenTheGuestClearsItToZero)
+{
+    const QByteArray packet("\x11\x22\x33\x00\x44\x55\x66\x40", 8);
+    auto image = WemuSession::frameImage(packet, 0, 2, 1);
+    EXPECT_EQ(image.constBits()[0], 0x11);
+    EXPECT_EQ(image.constBits()[3], 255);
+    EXPECT_EQ(image.constBits()[7], 255);
+    EXPECT_EQ(static_cast<unsigned char>(packet[3]), 0); // shared wire packet stays immutable
+    EXPECT_EQ(image.pixelColor(0, 0).alpha(), 255);
+}
+
 TEST(SessionProtocolTest, GamepadStateRoundTripsAndClampsUntrustedValues)
 {
     Core::Gfx::GamepadState state;

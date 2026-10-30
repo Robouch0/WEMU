@@ -121,7 +121,9 @@ namespace {
             struct BufferAllocatorCall {
                     std::uint32_t stack, lr, buffer;
                     bool freeing;
+                    bool surface{};
             };
+            std::uint32_t resourceAlloc{}, resourceFree{};
             std::unordered_map<std::uint32_t, std::vector<BufferAllocatorCall>> bufferCalls;
             std::unique_ptr<Core::Gfx::Gx2Replayer> replayer;
             bool nativeInitialized{};
@@ -138,16 +140,27 @@ namespace {
 
     // Cafe exports its default allocators as writable data pointers. Application
     // preinit may replace them after reserving the base heap for its own arena.
-    bool callBufferAllocator(Core::Interpreter &cpu, const char *name, std::uint32_t buffer, bool freeing)
+    bool callBufferAllocator(Core::Interpreter &cpu, const char *name, std::uint32_t buffer, bool freeing, bool surface = false)
     {
+        auto function = freeing ? hostReplayState().resourceFree : hostReplayState().resourceAlloc;
+        const bool custom = function != 0;
         for (const auto &symbol: cpu.m_binary.symbols) {
+            if (function)
+                break;
             if (symbol.name != name || symbol.meta.type != STT_OBJECT)
                 continue;
-            const auto function = cpu.m_memory.read<std::uint32_t>(symbol.meta.virtAddress);
-            if (!function || function >= 0xC0000000u || (function & 3))
-                return false;
+            function = cpu.m_memory.read<std::uint32_t>(symbol.meta.virtAddress);
+        }
+        if (!function || function >= 0xC0000000u || (function & 3))
+            return false;
+        {
+            if (custom) {
+                cpu.m_gpr[5] = cpu.m_gpr[4];
+                cpu.m_gpr[4] = cpu.m_gpr[3];
+                cpu.m_gpr[3] = cpu.m_memory.read<std::uint32_t>(buffer + (surface ? 0x1C : 0));
+            }
             const auto stack = cpu.m_gpr[1];
-            hostReplayState().bufferCalls[cpu.m_scheduler.currentHandle()].push_back({stack, cpu.m_lr, buffer, freeing});
+            hostReplayState().bufferCalls[cpu.m_scheduler.currentHandle()].push_back({stack, cpu.m_lr, buffer, freeing, surface});
             cpu.m_gpr[1] = stack - 0x20;
             cpu.m_memory.write<std::uint32_t>(cpu.m_gpr[1], stack);
             cpu.m_lr = Core::Gx2::bufferAllocatorReturn - Core::Memory::ApplicationCode;
@@ -155,7 +168,6 @@ namespace {
             cpu.m_hle_redirected = true;
             return true;
         }
-        return false;
     }
 
     constexpr std::uint32_t alignUp(std::uint32_t v, std::uint32_t a) { return (v + a - 1) & ~(a - 1); }
@@ -1522,6 +1534,7 @@ void ReleaseGx2HostResources() noexcept
     // are still alive, rather than during process-static destruction.
     auto &host = hostReplayState();
     host.bufferCalls.clear();
+    host.resourceAlloc = host.resourceFree = 0;
     host.worker.reset(); // finish the frame in flight before its replayer goes away
     host.bufferSnapshots.reset();
     host.replayer.reset();
@@ -1561,14 +1574,21 @@ void Core::Gx2::onBufferAllocatorReturn(Interpreter &cpu)
     if (it->second.empty())
         calls.erase(it);
     const auto memory = cpu.m_gpr[3];
+    const auto pointerOffset = call.surface ? 0x24 : 12;
+    const auto flagsOffset = call.surface ? 0x1C : 0;
     if (call.freeing) {
-        cpu.m_memory.write<std::uint32_t>(call.buffer + 12, 0);
-        cpu.m_gpr[3] = 0;
+        cpu.m_memory.write<std::uint32_t>(call.buffer + pointerOffset, 0);
+        if (call.surface)
+            cpu.m_memory.write<std::uint32_t>(call.buffer + 0x2C, 0);
+        cpu.m_gpr[3] = call.surface ? 1 : 0;
     } else {
         if (memory) {
-            const auto flags = (cpu.m_memory.read<std::uint32_t>(call.buffer) & ~(1u << 30)) | (1u << 29);
-            cpu.m_memory.write<std::uint32_t>(call.buffer, flags);
-            cpu.m_memory.write<std::uint32_t>(call.buffer + 12, memory);
+            const auto flags = (cpu.m_memory.read<std::uint32_t>(call.buffer + flagsOffset) & ~(1u << 30)) | (1u << 29);
+            cpu.m_memory.write<std::uint32_t>(call.buffer + flagsOffset, flags);
+            cpu.m_memory.write<std::uint32_t>(call.buffer + pointerOffset, memory);
+            if (call.surface && cpu.m_memory.read<std::uint32_t>(call.buffer + 0x28))
+                cpu.m_memory.write<std::uint32_t>(call.buffer + 0x2C, memory + alignUp(cpu.m_memory.read<std::uint32_t>(call.buffer + 0x20),
+                                                                                       cpu.m_memory.read<std::uint32_t>(call.buffer + 0x38)));
         }
         cpu.m_gpr[3] = memory ? 1 : 0;
     }
@@ -1579,6 +1599,84 @@ void Core::Gx2::onBufferAllocatorReturn(Interpreter &cpu)
 
 void RegisterGx2Functions()
 {
+    Core::syscallHandler.registerSyscall("GX2RSetAllocator", [](Core::Interpreter &cpu) {
+        hostReplayState().resourceAlloc = cpu.m_gpr[3];
+        hostReplayState().resourceFree = cpu.m_gpr[4];
+    });
+    Core::syscallHandler.registerSyscall("GX2RCreateSurfaceUserMemory", [](Core::Interpreter &cpu) {
+        const auto surface = cpu.m_gpr[3], image = cpu.m_gpr[4], mipmap = cpu.m_gpr[5], flags = cpu.m_gpr[6];
+        gx2_CalcSurfaceSizeAndAlignment(cpu);
+        const auto imageSize = cpu.m_memory.read<std::uint32_t>(surface + 0x20);
+        const auto mipSize = cpu.m_memory.read<std::uint32_t>(surface + 0x28);
+        if (!image || !imageSize || !cpu.m_memory.hostPtr(image, imageSize) || (mipSize && !cpu.m_memory.hostPtr(mipmap, mipSize))) {
+            cpu.m_gpr[3] = 0;
+            return;
+        }
+        cpu.m_memory.write<std::uint32_t>(surface + 0x1C, flags & ~((1u << 29) | (1u << 30)));
+        cpu.m_memory.write<std::uint32_t>(surface + 0x24, image);
+        cpu.m_memory.write<std::uint32_t>(surface + 0x2C, mipmap);
+        cpu.m_gpr[3] = 1;
+    });
+    Core::syscallHandler.registerSyscall("GX2RLockSurfaceEx", [](Core::Interpreter &cpu) {
+        const auto surface = cpu.m_gpr[3];
+        const auto level = static_cast<std::int32_t>(cpu.m_gpr[4]);
+        const auto flags = cpu.m_memory.read<std::uint32_t>(surface + 0x1C);
+        cpu.m_memory.write<std::uint32_t>(surface + 0x1C, flags | (1u << 30) | (cpu.m_gpr[5] & (1u << 22)));
+        if (level <= 0)
+            cpu.m_gpr[3] = cpu.m_memory.read<std::uint32_t>(surface + 0x24);
+        else if (level <= 13)
+            cpu.m_gpr[3] = cpu.m_memory.read<std::uint32_t>(surface + 0x2C) +
+                           (level == 1 ? 0 : cpu.m_memory.read<std::uint32_t>(surface + 0x40 + (level - 1) * 4));
+        else
+            cpu.m_gpr[3] = 0;
+    });
+    Core::syscallHandler.registerSyscall("GX2RUnlockSurfaceEx", [](Core::Interpreter &cpu) {
+        const auto surface = cpu.m_gpr[3];
+        cpu.m_memory.write<std::uint32_t>(surface + 0x1C, cpu.m_memory.read<std::uint32_t>(surface + 0x1C) & ~((1u << 30) | (1u << 22)));
+        cpu.m_gpr[3] = 0;
+    });
+    Core::syscallHandler.registerSyscall("GX2RCreateSurface", [](Core::Interpreter &cpu) {
+        const auto surface = cpu.m_gpr[3], flags = cpu.m_gpr[4];
+        cpu.m_memory.write<std::uint32_t>(surface + 0x1C, flags);
+        gx2_CalcSurfaceSizeAndAlignment(cpu);
+        const auto alignment = cpu.m_memory.read<std::uint32_t>(surface + 0x38);
+        const auto imageBytes = cpu.m_memory.read<std::uint32_t>(surface + 0x20);
+        const auto mipBytes = cpu.m_memory.read<std::uint32_t>(surface + 0x28);
+        const auto bytes = std::uint64_t(alignUp(imageBytes, alignment)) + mipBytes;
+        if (!imageBytes || bytes > 0xFFFFFFFFu) {
+            cpu.m_gpr[3] = 0;
+            return;
+        }
+        cpu.m_gpr[3] = bytes;
+        cpu.m_gpr[4] = alignment;
+        if (callBufferAllocator(cpu, "MEMAllocFromDefaultHeapEx", surface, false, true))
+            return;
+        Core::syscallHandler.get("MEMAllocFromDefaultHeapEx")(cpu);
+        const auto memory = cpu.m_gpr[3];
+        cpu.m_memory.write<std::uint32_t>(surface + 0x24, memory);
+        cpu.m_memory.write<std::uint32_t>(surface + 0x2C, memory && mipBytes ? memory + alignUp(imageBytes, alignment) : 0);
+        if (memory)
+            cpu.m_memory.write<std::uint32_t>(surface + 0x1C, flags | (1u << 29));
+        cpu.m_gpr[3] = memory ? 1 : 0;
+    });
+    Core::syscallHandler.registerSyscall("GX2RDestroySurfaceEx", [](Core::Interpreter &cpu) {
+        const auto surface = cpu.m_gpr[3], options = cpu.m_gpr[4];
+        const auto memory = cpu.m_memory.read<std::uint32_t>(surface + 0x24);
+        const auto flags = cpu.m_memory.read<std::uint32_t>(surface + 0x1C);
+        if (memory && (flags & (1u << 29)) && !(options & (1u << 19))) {
+            cpu.m_gpr[3] = memory;
+            if (callBufferAllocator(cpu, "MEMFreeToDefaultHeap", surface, true, true))
+                return;
+            Core::syscallHandler.get("MEMFreeToDefaultHeap")(cpu);
+            cpu.m_memory.write<std::uint32_t>(surface + 0x24, 0);
+            cpu.m_memory.write<std::uint32_t>(surface + 0x2C, 0);
+        }
+        cpu.m_gpr[3] = 1;
+    });
+    // Report the connected displays using Cafe's enum values. Zero means no
+    // display and causes applications to reject video initialization.
+    Core::syscallHandler.registerSyscall("GX2GetSystemTVScanMode", [](Core::Interpreter &cpu) { cpu.m_gpr[3] = 4; }); // 720p
+    Core::syscallHandler.registerSyscall("GX2GetSystemDRCScanMode", [](Core::Interpreter &cpu) { cpu.m_gpr[3] = 1; }); // single
     Core::syscallHandler.registerSyscall("GX2RGetBufferAlignment", [](Core::Interpreter &cpu) { cpu.m_gpr[3] = 256; });
     Core::syscallHandler.registerSyscall("GX2RGetBufferAllocationSize", [](Core::Interpreter &cpu) {
         const auto buffer = cpu.m_gpr[3];

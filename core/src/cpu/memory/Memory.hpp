@@ -10,10 +10,12 @@
 #include <format>
 #include <iomanip>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -238,13 +240,70 @@ namespace Core {
             [[nodiscard]] std::uint32_t heapAllocate(const std::uint32_t size, std::uint32_t align)
             {
                 align = std::max(align, MIN_HEAP_ALIGN);
+                if (align & (align - 1))
+                    return 0;
+                const auto bytes = std::max(size, 1u);
+                for (const auto [start, available]: m_heapFree) {
+                    const auto address = (std::uint64_t(start) + align - 1) & ~std::uint64_t(align - 1);
+                    if (address + bytes > std::uint64_t(start) + available)
+                        continue;
+                    m_heapFree.erase(start);
+                    if (address > start)
+                        m_heapFree[start] = address - start;
+                    if (address + bytes < std::uint64_t(start) + available)
+                        m_heapFree[address + bytes] = start + available - address - bytes;
+                    m_heapAllocations[address] = bytes;
+                    return address;
+                }
+                const auto address = (std::uint64_t(m_heapPtr) + align - 1) & ~std::uint64_t(align - 1);
+                if (address + bytes > ApplicationMemoryEnd || !std::as_const(*this).hostPtr(address, bytes))
+                    return 0;
+                m_heapPtr = address + bytes;
+                m_heapAllocations[address] = bytes;
+                return address;
+            }
 
-                // if (align & (align - 1))
-                //     throw MemoryException(std::format("[MEM] Heap alignment not a power of two: {}", align));
+            void heapFree(const std::uint32_t address)
+            {
+                const auto allocation = m_heapAllocations.find(address);
+                if (allocation == m_heapAllocations.end())
+                    return;
+                const auto bytes = allocation->second;
+                m_heapAllocations.erase(allocation);
+                auto block = m_heapFree.emplace(address, bytes).first;
+                if (const auto next = std::next(block); next != m_heapFree.end() && block->first + block->second == next->first) {
+                    block->second += next->second;
+                    m_heapFree.erase(next);
+                }
+                if (block != m_heapFree.begin()) {
+                    const auto previous = std::prev(block);
+                    if (previous->first + previous->second == block->first) {
+                        previous->second += block->second;
+                        m_heapFree.erase(block);
+                    }
+                }
+            }
 
-                m_heapPtr = alignUp(m_heapPtr, align);
-                m_heapPtr += size;
-                return m_heapPtr - size;
+            [[nodiscard]] std::uint32_t heapReallocate(const std::uint32_t old, const std::uint32_t size)
+            {
+                if (!old)
+                    return heapAllocate(size, 8);
+                const auto it = m_heapAllocations.find(old);
+                if (it == m_heapAllocations.end())
+                    return 0;
+                if (!size) {
+                    heapFree(old);
+                    return 0;
+                }
+                const auto bytes = std::min(size, it->second);
+                const auto replacement = heapAllocate(size, 8);
+                auto *dst = hostPtr(replacement, size);
+                const auto *src = std::as_const(*this).hostPtr(old, bytes);
+                if (!dst || !src)
+                    return 0;
+                std::memcpy(dst, src, bytes);
+                heapFree(old);
+                return replacement;
             }
 
             [[nodiscard]] std::vector<char> &getMemory() noexcept { return m_memory; }
@@ -331,6 +390,8 @@ namespace Core {
             bool m_codeWritten{false};
             std::uint64_t m_codeEpoch{1}; // blocks start at epoch 0, i.e. unvalidated
             std::size_t m_heapPtr = HEAP_BASE;
+            std::unordered_map<std::uint32_t, std::uint32_t> m_heapAllocations;
+            std::map<std::uint32_t, std::uint32_t> m_heapFree;
             std::size_t m_virtAddress;
             std::size_t m_memSize;
     };

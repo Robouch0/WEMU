@@ -40,13 +40,9 @@ static void hle_calloc(Core::Interpreter &cpu)
     cpu.m_gpr[3] = addr;
 }
 
-static void hle_realloc(Core::Interpreter &cpu)
-{
-    // bump allocator: just allocate new block (old one leaked, acceptable for pong)
-    cpu.m_gpr[3] = cpu.m_memory.heapAllocate(cpu.m_gpr[4], 8);
-}
+static void hle_realloc(Core::Interpreter &cpu) { cpu.m_gpr[3] = cpu.m_memory.heapReallocate(cpu.m_gpr[3], cpu.m_gpr[4]); }
 
-static void hle_free(Core::Interpreter &cpu) { (void) cpu; }
+static void hle_free(Core::Interpreter &cpu) { cpu.m_memory.heapFree(cpu.m_gpr[3]); }
 
 static void hle_memcpy(Core::Interpreter &cpu)
 {

@@ -31,6 +31,10 @@ namespace {
     void retTrue(Core::Interpreter &cpu) { cpu.m_gpr[3] = 1; }
     void retFalse(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
 
+    // No host socket backend exists yet. A zero result would invent a usable
+    // descriptor or report zero bytes sent, trapping ordinary send loops.
+    void socketUnavailable(Core::Interpreter &cpu) { cpu.m_gpr[3] = static_cast<std::uint32_t>(-1); }
+
     // A C++ constructor returns `this` (r3), which arrives already in r3 — so leaving the registers
     // untouched is the correct behaviour. (The default unknown-import path would wrongly zero r3,
     // handing the caller a NULL object.)
@@ -149,6 +153,9 @@ void RegisterNnOnlineFunctions()
     sh.registerSyscall("socket_lib_init", ok);
     sh.registerSyscall("curl_global_init_mem", ok);
     sh.registerSyscall("socket_lib_finish", ok);
+    for (const char *name:
+         {"socket", "connect", "bind", "listen", "accept", "send", "sendto", "recv", "recvfrom", "setsockopt", "shutdown", "socketclose"})
+        sh.registerSyscall(name, socketUnavailable);
     sh.registerSyscall("NSSLInit", ok);
     sh.registerSyscall("NSSLFinish", ok);
     sh.registerSyscall("OSGetSecurityLevel", ok);

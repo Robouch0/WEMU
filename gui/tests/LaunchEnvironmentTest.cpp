@@ -1,8 +1,12 @@
 #include "LaunchEnvironment.hpp"
 #include <QDebug>
+#include <QTemporaryDir>
 
 int main()
 {
+    QTemporaryDir title;
+    if (!title.isValid() || !QDir(title.path()).mkpath("content") || !QDir(title.path()).mkpath("sdcard")) return 1;
+    if (desktopLaunchEnvironment({}, title.path() + "/content", {}).value("WEMU_SD_ROOT") != title.path() + "/sdcard") return 1;
     QProcessEnvironment inherited;
     inherited.insert("DISPLAY", ":17");
     inherited.insert("PATH", "/usr/bin");

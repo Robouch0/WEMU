@@ -2,6 +2,8 @@
 
 #include <QProcessEnvironment>
 #include <QString>
+#include <QDir>
+#include <QFileInfo>
 
 inline QProcessEnvironment desktopLaunchEnvironment(QProcessEnvironment environment, const QString &contentPath,
                                                     const QString &sharedFont, bool nativeCpu = false,
@@ -16,6 +18,9 @@ inline QProcessEnvironment desktopLaunchEnvironment(QProcessEnvironment environm
     // every frame and let the GPU caches reuse verified resources instead.
     environment.insert("WEMU_NO_FRAMESKIP", "1");
     environment.insert("WEMU_CONTENT_LAYER", contentPath);
+    const auto sdRoot = QDir(contentPath).absoluteFilePath("../sdcard");
+    if (QFileInfo(sdRoot).isDir())
+        environment.insert("WEMU_SD_ROOT", QDir::cleanPath(sdRoot));
     environment.insert("WEMU_SYSTEM_LANGUAGE", QString::number(language));
     environment.insert("WEMU_SYSTEM_REGION", QString::number(region));
     environment.insert("WEMU_TITLE_REGION", QString::number(titleRegion));

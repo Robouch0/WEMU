@@ -403,6 +403,27 @@ TEST_F(AudioVoiceTest, Pcm8LoopsAndReportsLoopCountAcrossMultipleWraps)
     EXPECT_EQ(voice.state, 1u);
 }
 
+TEST_F(AudioVoiceTest, StreamingLoopCanJumpBeyondTheOldEndUntilTheCallbackMovesIt)
+{
+    for (unsigned i = 0; i < 8; ++i)
+        cpu->m_memory.write<std::int16_t>(data + i * 2, 1000 + i * 100);
+    auto voice = pcm(2);
+    voice.loopFlag = 1;
+    voice.loop = data / 2 + 4;
+    EXPECT_EQ(voice.render(cpu->m_memory), 1000);
+    EXPECT_EQ(voice.render(cpu->m_memory), 1100);
+    EXPECT_EQ(voice.current, data / 2 + 4);
+    EXPECT_EQ(voice.state, 1u);
+    EXPECT_EQ(voice.render(cpu->m_memory), 1400);
+    voice.end = data / 2 + 7;
+    voice.loop = data / 2;
+    EXPECT_EQ(voice.render(cpu->m_memory), 1500);
+    EXPECT_EQ(voice.render(cpu->m_memory), 1600);
+    EXPECT_EQ(voice.render(cpu->m_memory), 1700);
+    EXPECT_EQ(voice.current, data / 2);
+    EXPECT_EQ(voice.loopCount, 2u);
+}
+
 TEST_F(AudioVoiceTest, SrcInterpolatesAndPreservesFractionAndEnvelopeBetweenFrames)
 {
     for (unsigned i = 0; i < 8; ++i)

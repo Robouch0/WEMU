@@ -100,7 +100,7 @@ if("WEMU_HAS_X64_JIT=1" IN_LIST wemu_core_features)
 endif()
 add_dependencies(appgui wemu)
 file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/WEMU.desktop" CONTENT
-"[Desktop Entry]\nType=Application\nName=WEMU\nComment=Game library and emulator\nExec=\"$<TARGET_FILE:appgui>\"\nIcon=applications-games\nTerminal=false\nCategories=Game;Emulator;\n")
+"[Desktop Entry]\nType=Application\nName=WEMU\nComment=Game library and emulator\nExec=\"$<TARGET_FILE:appgui>\"\nIcon=applications-games\nTerminal=false\nCategories=Game;Emulator;\nPrefersNonDefaultGPU=true\n")
 
 add_executable(wemu_library_tests tests/TitleScannerTest.cpp src/library/TitleScanner.cpp src/library/TitleScanner.hpp)
 target_include_directories(wemu_library_tests PRIVATE src/library)

@@ -9,6 +9,9 @@ void RegisterFsFunctions();
 // Sets the host directory that backs "/vol/content" (typically "<gamedir>/content").
 void SetFsContentRoot(const std::string &hostPath);
 
+// Optional host SD card root. Empty disables SD card emulation.
+void SetFsSdRoot(const std::string &hostPath);
+
 // Registers a fallback content root (title-update layering: primary root first, then layers).
 void AddFsContentLayer(const std::string &hostPath);
 

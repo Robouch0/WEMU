@@ -15,6 +15,32 @@
 
 using namespace Core::Gfx::Latte;
 
+TEST(VulkanRasterTest, PixelPositionInputUsesRasterCoordinatesAndHasSeparateShaderCacheEntries)
+{
+    using namespace Core::Gfx;
+    const std::vector<unsigned> words{0, (CF_EXP_DONE << 23) | (1u << 21) | 0x688u};
+    FragmentShaderCache cache;
+    const auto varying = cache.get(words);
+    const auto position = cache.get(words, {}, false, 0, 0);
+    ASSERT_TRUE(*varying) << varying->error;
+    ASSERT_TRUE(*position) << position->error;
+    EXPECT_NE(varying, position);
+    EXPECT_EQ(cache.get(words, {}, false, 0, 0), position);
+    EXPECT_NE(varying->sourceHash, position->sourceHash);
+    if (!std::getenv("WEMU_TEST_VULKAN"))
+        GTEST_SKIP();
+    std::array<RasterDraw::Vertex, 1> points{{{.5f, .5f, {}}}};
+    points[0].inputs[0] = {.25f, .75f, 1.f, 1.f};
+    std::vector<std::uint8_t> target(4);
+    RasterDraw draw{*position, points, {}, {}, target, 1, 1, 1, {0, 0, 1, 1}, 15, {}};
+    draw.topology = RasterDraw::Topology::Points;
+    VulkanRasterBackend backend(true, true);
+    const auto result = backend.render(draw);
+    ASSERT_TRUE(result) << backend.lastError();
+    EXPECT_NEAR(result->rgba[0], 127.5, .5); // UNORM conversion can round the half step either way
+    EXPECT_NEAR(result->rgba[1], 127.5, .5);
+}
+
 TEST(ColorTargetTest, PackedHdrRoundTripsFiniteValuesAndRoundsTiesToEven)
 {
     using namespace Core::Gfx;

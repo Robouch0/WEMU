@@ -73,6 +73,9 @@ namespace Core::Jit {
                 case E_LWBRX:
                     a = {4, true, false, false, true};
                     return true;
+                case E_LHBRX:
+                    a = {2, true, false, false, true};
+                    return true;
                 default:
                     return false;
             }
@@ -119,6 +122,9 @@ namespace Core::Jit {
                     return true;
                 case E_STWBRX:
                     a = {4, true, false, false, true};
+                    return true;
+                case E_STHBRX:
+                    a = {2, true, false, false, true};
                     return true;
                 default:
                     return false;
@@ -204,8 +210,12 @@ namespace Core::Jit {
         if ((m_layout.nativeMask & FamilyLoad) && lookupLoad(id, a)) {
             effectiveAddress(i, a.indexed, a.update);
             load(a.bytes, a.signExtend);
-            if (a.byteReverse)
-                bswap(eax);
+            if (a.byteReverse) {
+                if (a.bytes == 2)
+                    ror(ax, 8);
+                else
+                    bswap(eax);
+            }
             mov(gpr(i.rt), eax);
             if (a.update)
                 mov(gpr(i.ra), ecx);
@@ -218,8 +228,12 @@ namespace Core::Jit {
         if ((m_layout.nativeMask & FamilyStore) && lookupStore(id, a)) {
             effectiveAddress(i, a.indexed, a.update);
             mov(eax, gpr(i.rs)); // read before the update: RS may be RA
-            if (a.byteReverse)
-                bswap(eax);
+            if (a.byteReverse) {
+                if (a.bytes == 2)
+                    ror(ax, 8);
+                else
+                    bswap(eax);
+            }
             if (a.update)
                 store(a.bytes, [this, ra = i.ra] { mov(gpr(ra), ecx); });
             else

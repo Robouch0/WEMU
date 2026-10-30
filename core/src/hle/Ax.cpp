@@ -112,6 +112,9 @@ namespace {
         for (auto &voice: g_voices) {
             if (!voice.used || voice.state != 1)
                 continue;
+            if (std::getenv("WEMU_AX_TRACE") && g_frameCount <= 12)
+                Utils::Log::error("[AX_VOICE] frame={} base={:08X} format={} current={} loop={} end={} looping={} ratio={}", g_frameCount, voice.base,
+                                  voice.format, voice.current, voice.loop, voice.end, voice.loopFlag, voice.ratio);
             std::array<float, kSamples> mono{};
             for (unsigned i = 0; i < g_inputSamples; ++i)
                 mono[i] = voice.render(cpu.m_memory);
@@ -337,6 +340,7 @@ namespace {
         cpu.m_memory.write<std::uint32_t>(osThread + OS_THREAD_TAG_OFFSET, 0x74487244u); // 'tHrD'
         g_axStackTop = cpu.m_memory.heapAllocate(kAxStackSize, 0x10) + kAxStackSize;
         g_axThread = cpu.m_scheduler.create(cpu, osThread, Core::AX_FRAME_SENTINEL, 0, 0, g_axStackTop, kAxThreadPriority);
+        g_axThread->suspendCount = 0; // internal pump is parked, not guest-suspended
         g_axThread->name = "AXFrame";
         // Its own core: on hardware the AX ISR runs beside the app cores, so a callback that
         // spins on guest state must not starve the threads that will satisfy the spin. The

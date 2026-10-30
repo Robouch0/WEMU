@@ -20,6 +20,7 @@ namespace Core {
 } // namespace Core
 
 void RegisterCoreinitExtraFunctions();
+void ProcessCoreinitAlarms(Core::Interpreter &cpu);
 
 // Installs per-method intercepts for the MVPlayer (menu movie) vtable. Must run before
 // Interpreter::run() so the hook PC range is known. See MvPlayer.cpp for the library implementation.

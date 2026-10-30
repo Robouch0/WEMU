@@ -68,6 +68,7 @@ namespace {
         cpu.m_memory.write<std::uint32_t>(osThread + OS_THREAD_TAG_OFFSET, 0x74487244u); // 'tHrD'
         g_pumpStackTop = cpu.m_memory.heapAllocate(kPumpStackSize, 0x10) + kPumpStackSize;
         g_pumpThread = cpu.m_scheduler.create(cpu, osThread, Core::ASYNC_CB_SENTINEL, 0, 0, g_pumpStackTop, kPumpPriority);
+        g_pumpThread->suspendCount = 0; // internal pump is parked, not guest-suspended
         g_pumpThread->name = "nnAsync";
         g_pumpThread->affinity = 4;
         // create() leaves it Paused, which doubles as our "idle/parked" state.
@@ -117,6 +118,13 @@ namespace {
 } // namespace
 
 namespace Core::Async {
+    void Reset()
+    {
+        g_queue.clear();
+        g_inFlight = false;
+        g_pumpThread = nullptr;
+        g_pumpStackTop = 0;
+    }
 
     void enqueue(std::uint32_t func, std::uint32_t a0, std::uint32_t a1, std::uint32_t a2, std::uint32_t a3)
     {

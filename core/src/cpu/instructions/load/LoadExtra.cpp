@@ -98,6 +98,12 @@ namespace Core::Instruction {
         cpu.m_gpr[instr.rt] = std::byteswap(cpu.m_memory.read<std::uint32_t>(ea));
     }
 
+    void LHBRX(Interpreter &cpu, const EncodedInstruction &instr)
+    {
+        const auto ea = (instr.ra == 0 ? 0 : cpu.m_gpr[instr.ra]) + cpu.m_gpr[instr.rb];
+        cpu.m_gpr[instr.rt] = std::byteswap(cpu.m_memory.read<std::uint16_t>(ea));
+    }
+
     /**
      * @brief Load Word and Reserve Indexed. EA = (RA|0) + RB; RT = MEM(EA,4); set reservation.
      *        The reservation is cleared on every scheduler context switch, so an lwarx/stwcx.

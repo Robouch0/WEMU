@@ -13,18 +13,20 @@
 namespace Core::Gfx::Latte {
     std::shared_ptr<const FragmentShader> FragmentShaderCache::get(const std::vector<std::uint32_t> &words,
                                                                    std::span<const TextureType> resourceTypes, bool onlyColorZero,
-                                                                   unsigned colorExport)
+                                                                   unsigned colorExport, unsigned positionRegister)
     {
         // Missing resource types default to 2D, so trailing defaults are equivalent.
         while (!resourceTypes.empty() && resourceTypes.back() == TextureType::TwoD)
             resourceTypes = resourceTypes.first(resourceTypes.size() - 1);
-        if (const auto found = m_entries.find(KeyView{words, resourceTypes, onlyColorZero, colorExport}); found != m_entries.end()) {
+        if (const auto found = m_entries.find(KeyView{words, resourceTypes, onlyColorZero, colorExport, positionRegister});
+            found != m_entries.end()) {
             ++m_hits;
             return found->second;
         }
         ++m_misses;
-        Key key{words, {resourceTypes.begin(), resourceTypes.end()}, onlyColorZero, colorExport};
-        auto shader = std::make_shared<const FragmentShader>(lowerFragmentShader(*decodeProgram(words), resourceTypes, onlyColorZero, colorExport));
+        Key key{words, {resourceTypes.begin(), resourceTypes.end()}, onlyColorZero, colorExport, positionRegister};
+        auto shader = std::make_shared<const FragmentShader>(
+                lowerFragmentShader(*decodeProgram(words), resourceTypes, onlyColorZero, colorExport, positionRegister));
         constexpr std::size_t maxBytes = std::size_t{256} * 1024 * 1024;
         const auto bytes = words.size() * sizeof(std::uint32_t) + resourceTypes.size() * sizeof(TextureType) + shader->source.size() +
                            shader->error.size() + shader->textures.size() * sizeof(TextureBinding);
@@ -502,7 +504,8 @@ namespace Core::Gfx::Latte {
 
     static FragmentShader lowerShader(const Program &program, std::span<const TextureType> resourceTypes, bool vertexStage,
                                       bool onlyColorZero = false, unsigned colorExport = 0, unsigned bufferWindow = 0,
-                                      const UniformBufferWindows &bufferWindows = {}, const std::array<unsigned, 4> *streamStrides = nullptr)
+                                      const UniformBufferWindows &bufferWindows = {}, const std::array<unsigned, 4> *streamStrides = nullptr,
+                                      unsigned positionRegister = 32)
     {
         FragmentShader result;
         result.exportsColor = false;
@@ -521,6 +524,8 @@ namespace Core::Gfx::Latte {
                                 ? std::format("r[{}]={}u<dispatch.inputs ? attributes.values[vertex*dispatch.inputs+{}u] : vec4(0.0);\n", i + 1, i, i)
                         : vertexStage ? std::format("r[{}]=attributes[{}];\n", i + 1, i)
                                       : std::format("r[{}]=inputs[{}];\n", i, i);
+            if (!vertexStage && positionRegister < 32)
+                body += std::format("r[{}]=gl_FragCoord;\n", positionRegister);
             if (vertexStage)
                 body += "vec4 position=vec4(0.0,0.0,0.0,1.0); vec4 parameters[32]; for(int i=0;i<32;++i) parameters[i]=vec4(0.0);\n";
             body += "vec4 pv=vec4(0.0); float ps=0.0;\nbool pred=true,laneActive=true,wroteOutput=false,killed=false; bool activeStack[32]; uint "
@@ -533,6 +538,8 @@ namespace Core::Gfx::Latte {
             WholeQuadWrites wholeQuadWrites;
             std::map<unsigned, WholeQuadWrites> incomingWholeQuadWrites;
             UniformValues uniformValues(vertexStage);
+            if (!vertexStage && positionRegister < 32)
+                uniformValues.registers[positionRegister].fill(false);
             std::map<unsigned, UniformValues> incomingUniformValues;
             bool maskUniform = true, allActive = true;
             bool varyingControlSeen = false;
@@ -1265,9 +1272,10 @@ vec3 cubeDirectionReference(vec3 coord) {
             result.sourceHash = std::hash<std::string_view>{}(result.source) | 1u;
         return result;
     }
-    FragmentShader lowerFragmentShader(const Program &program, std::span<const TextureType> resourceTypes, bool onlyColorZero, unsigned colorExport)
+    FragmentShader lowerFragmentShader(const Program &program, std::span<const TextureType> resourceTypes, bool onlyColorZero, unsigned colorExport,
+                                       unsigned positionRegister)
     {
-        return lowerShader(program, resourceTypes, false, onlyColorZero, colorExport);
+        return lowerShader(program, resourceTypes, false, onlyColorZero, colorExport, 0, {}, nullptr, positionRegister);
     }
     FragmentShader lowerStreamOutShader(const Program &program, const std::array<unsigned, 4> &strides, const UniformBufferWindows &bufferWindows)
     {

@@ -30,6 +30,7 @@ constexpr bool isStoreInstruction(const InstructionID id) noexcept
         case E_STSWI:
         case E_STWCX_:
         case E_STWBRX:
+        case E_STHBRX:
         case E_DCBZ:
         case E_STFS:
         case E_STFSU:

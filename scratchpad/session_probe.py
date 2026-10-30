@@ -157,7 +157,7 @@ def main():
                 body = read_exact(connection, size)
                 kind, = struct.unpack_from("<I", body)
                 if kind == 1:
-                    if body != struct.pack("<II", 1, 3):
+                    if body != struct.pack("<II", 1, 4):
                         raise ValueError("unsupported desktop protocol version")
                 elif kind == 2:
                     _, sequence, width, height, fps, movie_fps, presents, movies = struct.unpack_from("<IQIIddQQ", body)

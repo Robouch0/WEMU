@@ -484,7 +484,7 @@ namespace Core::Gfx {
                     std::map<std::pair<unsigned, Latte::UniformBufferWindows>, std::shared_ptr<const Latte::VertexShader>> windowedVertexShaders;
                     std::optional<bool> colorOnlyEffects, rejectsEveryPixel;
                     // Resource types (two bits each), onlyColorZero, colorExport.
-                    std::map<std::tuple<std::uint64_t, bool, unsigned>, std::shared_ptr<const Latte::FragmentShader>> fragmentShaders;
+                    std::map<std::tuple<std::uint64_t, bool, unsigned, unsigned>, std::shared_ptr<const Latte::FragmentShader>> fragmentShaders;
             };
             [[nodiscard]] static const std::vector<std::uint32_t> &programWords(const std::shared_ptr<ShaderProgram> &program);
             [[nodiscard]] const std::vector<std::uint32_t> &vsProgram() const { return programWords(m_vsShader); }
@@ -527,6 +527,7 @@ namespace Core::Gfx {
             std::array<std::uint32_t, 32> m_vertexSemantics{0, 1, 2, 3};
             std::uint32_t m_vertexInputCount{4};
             std::uint32_t m_pixelInputCount{4};
+            unsigned m_pixelPositionRegister{32};
             std::array<std::uint32_t, 32> m_vertexOutputSemantics{0, 1, 2, 3};
             std::array<std::uint32_t, 32> m_pixelInputSemantics{0, 1, 2, 3};
             float m_vp[4]{0.0f, 0.0f, static_cast<float>(kWidth), static_cast<float>(kHeight)}; // x,y,w,h
@@ -566,6 +567,7 @@ namespace Core::Gfx {
                     bool streamOutEnabled{};
                     std::array<std::uint32_t, 32> vertexSemantics{};
                     std::uint32_t vertexInputCount{4}, pixelInputCount{4};
+                    unsigned pixelPositionRegister{32};
                     std::array<std::uint32_t, 32> vertexOutputSemantics{}, pixelInputSemantics{};
                     std::array<float, 4> viewport{};
                     float viewportNear{}, viewportFar{};

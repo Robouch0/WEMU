@@ -24,7 +24,11 @@ class FsTest : public InstructionTest {
             RegisterFsFunctions();
         }
 
-        void TearDown() override { std::filesystem::remove_all(root); }
+        void TearDown() override
+        {
+            SetFsSdRoot("");
+            std::filesystem::remove_all(root);
+        }
 
         // Writes a NUL-terminated string into guest memory.
         void putStr(std::uint32_t addr, const std::string &s)
@@ -86,6 +90,84 @@ TEST_F(FsTest, OpenMissingFileFails)
     cpu->m_gpr[7] = OUT;
     call("FSOpenFile");
     EXPECT_LT(static_cast<std::int32_t>(cpu->m_gpr[3]), 0); // negative FSStatus
+}
+
+TEST_F(FsTest, OptionalSdMountServesFilesAndUnmountRemovesAccess)
+{
+    constexpr unsigned SOURCE = 0x02101000, TARGET = 0x02101400;
+    constexpr unsigned PATH = 0x02101500, MODE = 0x02101600, OUT = 0x02101700;
+    const auto source = [&] {
+        cpu->m_gpr[5] = 0;
+        cpu->m_gpr[6] = SOURCE;
+        call("FSGetMountSource");
+    };
+    SetFsSdRoot("");
+    source();
+    EXPECT_EQ(static_cast<std::int32_t>(cpu->m_gpr[3]), -6);
+    SetFsSdRoot(root.string());
+    source();
+    ASSERT_EQ(cpu->m_gpr[3], 0u);
+    cpu->m_gpr[5] = SOURCE;
+    cpu->m_gpr[6] = TARGET;
+    cpu->m_gpr[7] = 4; // too small: must not mount or truncate the path
+    call("FSMount");
+    EXPECT_LT(static_cast<std::int32_t>(cpu->m_gpr[3]), 0);
+    cpu->m_gpr[5] = SOURCE;
+    cpu->m_gpr[6] = TARGET;
+    cpu->m_gpr[7] = 128;
+    call("FSMount");
+    ASSERT_EQ(cpu->m_gpr[3], 0u);
+    EXPECT_STREQ(reinterpret_cast<char *>(cpu->m_memory.hostPtr(TARGET)), "/vol/external01");
+    putStr(MODE, "rb");
+    const auto open = [&](const std::string &path) {
+        putStr(PATH, path);
+        cpu->m_gpr[3] = 0;
+        cpu->m_gpr[5] = PATH;
+        cpu->m_gpr[6] = MODE;
+        cpu->m_gpr[7] = OUT;
+        call("FSOpenFile");
+    };
+    open("/vol/external01/ui/hello.bin");
+    ASSERT_EQ(cpu->m_gpr[3], 0u);
+    cpu->m_gpr[5] = cpu->m_memory.read<unsigned>(OUT);
+    call("FSCloseFile");
+    open("/vol/external01/../../ui/hello.bin");
+    EXPECT_LT(static_cast<std::int32_t>(cpu->m_gpr[3]), 0);
+    cpu->m_gpr[5] = TARGET;
+    call("FSUnmount");
+    open("/vol/external01/ui/hello.bin");
+    EXPECT_LT(static_cast<std::int32_t>(cpu->m_gpr[3]), 0);
+}
+
+TEST_F(FsTest, OpenFileExWritesHandleToEighthArgumentAndMakeDirCreatesDirectory)
+{
+    constexpr unsigned PATH = 0x02100000, MODE = 0x02100100, OUT = 0x02100200, BUFFER = 0x02100300;
+    putStr(PATH, "/vol/content/config");
+    cpu->m_gpr[5] = PATH;
+    call("FSMakeDir");
+    ASSERT_EQ(cpu->m_gpr[3], 0u);
+    EXPECT_TRUE(std::filesystem::is_directory(root / "config"));
+    putStr(PATH, "/vol/content/ui/hello.bin");
+    putStr(MODE, "r");
+    cpu->m_gpr[5] = PATH;
+    cpu->m_gpr[6] = MODE;
+    cpu->m_gpr[7] = 0660; // permission bits, not an output pointer
+    cpu->m_gpr[8] = 0;
+    cpu->m_gpr[9] = 0;
+    cpu->m_gpr[10] = OUT;
+    call("FSOpenFileEx");
+    ASSERT_EQ(cpu->m_gpr[3], 0u);
+    const auto handle = cpu->m_memory.read<unsigned>(OUT);
+    ASSERT_NE(handle, 0u);
+    cpu->m_gpr[5] = BUFFER;
+    cpu->m_gpr[6] = 1;
+    cpu->m_gpr[7] = 8;
+    cpu->m_gpr[8] = handle;
+    call("FSReadFile");
+    EXPECT_EQ(cpu->m_gpr[3], 8u);
+    EXPECT_EQ(cpu->m_memory.read<std::uint8_t>(BUFFER), 'M');
+    cpu->m_gpr[5] = handle;
+    call("FSCloseFile");
 }
 
 TEST_F(FsTest, SharedSavePathsSupportDatabaseCreationAndKeepTitlesSeparate)

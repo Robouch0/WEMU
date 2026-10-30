@@ -34,6 +34,8 @@ namespace {
     constexpr std::int32_t FS_STATUS_FATAL_ERROR = -0x400;
 
     std::string g_contentRoot; // host dir backing "/vol/content"
+    std::string g_sdRoot;
+    bool g_sdMounted = false;
     std::vector<std::string> g_contentLayers; // fallback roots (e.g. base game under an update)
     std::unordered_map<std::uint32_t, std::string> g_workingDirectories;
 
@@ -88,6 +90,9 @@ namespace {
         static const std::string kContent = "/vol/content";
         static const std::string kSave = "/vol/save";
         static const std::string kSharedSave = "/vol/shared_save";
+        static const std::string kSd = "/vol/external01";
+        if (g_sdMounted && isWithinMount(guestPath, kSd))
+            return g_sdRoot + guestPath.substr(kSd.size());
         if (isWithinMount(guestPath, kContent)) {
             const std::string rel = guestPath.substr(kContent.size());
             // Title updates overlay the base content: first root that has the file wins.
@@ -254,6 +259,32 @@ namespace {
             std::fprintf(stderr, "[FSTRACE] open handle=%u path=%s host=%s\n", handle, guestPath.c_str(), host.c_str());
         Utils::Log::debug("[FS] OpenFile {} -> {} handle={}", guestPath, host, handle);
         cpu.m_gpr[3] = FS_STATUS_OK;
+    }
+
+    // FSOpenFileEx adds create permissions, flags and preallocation before the
+    // handle output (the eighth argument, r10). Normal host files need no
+    // console encryption handling; preallocation is not modeled.
+    void fs_OpenFileEx(Core::Interpreter &cpu)
+    {
+        if (cpu.m_gpr[8] != 0) {
+            cpu.m_gpr[3] = FS_STATUS_FATAL_ERROR;
+            return;
+        }
+        cpu.m_gpr[7] = cpu.m_gpr[10];
+        fs_OpenFile(cpu);
+    }
+
+    void fs_MakeDir(Core::Interpreter &cpu)
+    {
+        const auto guestPath = resolveGuestPath(cpu.m_gpr[3], readGuestString(cpu, cpu.m_gpr[5]));
+        const auto host = translatePath(guestPath);
+        if (host.empty()) {
+            cpu.m_gpr[3] = FS_STATUS_NOT_FOUND;
+            return;
+        }
+        std::error_code ec;
+        const bool created = std::filesystem::create_directory(host, ec);
+        cpu.m_gpr[3] = ec ? FS_STATUS_NOT_FOUND : (created ? FS_STATUS_OK : -5); // ALREADY_EXISTS
     }
 
     // Copies `bytes` from the file into the guest buffer; returns bytes actually read (or -1).
@@ -557,9 +588,44 @@ namespace {
         cpu.m_gpr[3] = static_cast<std::int32_t>(written / size);
     }
 
-    // Mount sources aren't modeled (no SD card / USB); report none so titles skip external media.
-    void fs_GetMountSource(Core::Interpreter &cpu) { cpu.m_gpr[3] = FS_STATUS_NOT_FOUND; }
-    void fs_Mount(Core::Interpreter &cpu) { cpu.m_gpr[3] = FS_STATUS_NOT_FOUND; }
+    // FSMountSource is an opaque 0x300-byte object. Only expose an SD source when
+    // the user has configured an existing host directory.
+    constexpr std::uint32_t kSdSource = 0x57455344; // private opaque token
+    void fs_GetMountSource(Core::Interpreter &cpu)
+    {
+        std::error_code ec;
+        const auto out = cpu.m_gpr[6];
+        if (cpu.m_gpr[5] != 0 || !out || g_sdRoot.empty() || !std::filesystem::is_directory(g_sdRoot, ec)) {
+            cpu.m_gpr[3] = FS_STATUS_NOT_FOUND;
+            return;
+        }
+        for (std::uint32_t off = 0; off < 0x300; off += 4)
+            cpu.m_memory.write<std::uint32_t>(out + off, 0);
+        cpu.m_memory.write<std::uint32_t>(out, kSdSource);
+        cpu.m_gpr[3] = FS_STATUS_OK;
+    }
+
+    void fs_Mount(Core::Interpreter &cpu)
+    {
+        constexpr char target[] = "/vol/external01";
+        std::error_code ec;
+        if (!cpu.m_gpr[5] || !cpu.m_gpr[6] || cpu.m_gpr[7] < sizeof(target) || g_sdRoot.empty() || !std::filesystem::is_directory(g_sdRoot, ec) ||
+            cpu.m_memory.read<std::uint32_t>(cpu.m_gpr[5]) != kSdSource) {
+            cpu.m_gpr[3] = FS_STATUS_NOT_FOUND;
+            return;
+        }
+        for (std::uint32_t off = 0; off < sizeof(target); ++off)
+            cpu.m_memory.write<std::uint8_t>(cpu.m_gpr[6] + off, target[off]);
+        g_sdMounted = true;
+        cpu.m_gpr[3] = FS_STATUS_OK;
+    }
+
+    void fs_Unmount(Core::Interpreter &cpu)
+    {
+        if (readGuestString(cpu, cpu.m_gpr[5]) == "/vol/external01")
+            g_sdMounted = false;
+        cpu.m_gpr[3] = FS_STATUS_OK;
+    }
 
     // ---- SAVE library ----
     // SAVE* mirror the FS* calls with an account slot inserted as the third argument (r5) and
@@ -695,6 +761,11 @@ namespace {
 } // namespace
 
 void SetFsContentRoot(const std::string &hostPath) { g_contentRoot = hostPath; }
+void SetFsSdRoot(const std::string &hostPath)
+{
+    g_sdRoot = hostPath;
+    g_sdMounted = false;
+}
 void AddFsContentLayer(const std::string &hostPath) { g_contentLayers.push_back(hostPath); }
 
 void RegisterFsFunctions()
@@ -703,6 +774,8 @@ void RegisterFsFunctions()
     Core::syscallHandler.registerSyscall("FSDelClient", fs_DelClient);
     Core::syscallHandler.registerSyscall("FSGetVolumeState", fs_GetVolumeState);
     Core::syscallHandler.registerSyscall("FSOpenFile", fs_OpenFile);
+    Core::syscallHandler.registerSyscall("FSOpenFileEx", fs_OpenFileEx);
+    Core::syscallHandler.registerSyscall("FSMakeDir", fs_MakeDir);
     Core::syscallHandler.registerSyscall("FSReadFile", fs_ReadFile);
     Core::syscallHandler.registerSyscall("FSReadFileWithPos", fs_ReadFileWithPos);
     Core::syscallHandler.registerSyscall("FSSetPosFile", fs_SetPosFile);
@@ -719,7 +792,7 @@ void RegisterFsFunctions()
     Core::syscallHandler.registerSyscall("FSWriteFile", fs_WriteFile);
     Core::syscallHandler.registerSyscall("FSGetMountSource", fs_GetMountSource);
     Core::syscallHandler.registerSyscall("FSMount", fs_Mount);
-    Core::syscallHandler.registerSyscall("FSUnmount", fs_noop_ok);
+    Core::syscallHandler.registerSyscall("FSUnmount", fs_Unmount);
     Core::syscallHandler.registerSyscall("FSSetCmdPriority", fs_noop_ok);
     Core::syscallHandler.registerSyscall("FSFlushQuota", fs_noop_ok);
     Core::syscallHandler.registerSyscall("SAVEOpenDir", save_OpenDir);

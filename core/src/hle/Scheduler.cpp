@@ -84,7 +84,7 @@ namespace Core {
             for (std::size_t i = 0; i < n; i++) {
                 const std::size_t idx = (m_rrIndex + 1 + i) % n;
                 ThreadContext *t = m_threads[idx].get();
-                if (t != exclude && t->state == ThreadContext::State::Ready && (!best || t->priority < best->priority)) {
+                if (t != exclude && !t->suspendCount && t->state == ThreadContext::State::Ready && (!best || t->priority < best->priority)) {
                     best = t;
                     bestIdx = idx;
                 }
@@ -106,7 +106,7 @@ namespace Core {
             advanceTicks(earliest->wakeTick > m_now ? earliest->wakeTick - m_now : 0);
             if (ThreadContext *t = scan())
                 return t;
-            if (exclude && exclude->state == ThreadContext::State::Ready)
+            if (exclude && !exclude->suspendCount && exclude->state == ThreadContext::State::Ready)
                 return exclude;
         }
         return nullptr;
@@ -153,6 +153,7 @@ namespace Core {
         t->gpr[4] = argv;
         t->osThreadPtr = osThread;
         t->state = ThreadContext::State::Paused; // Cafe threads start suspended
+        t->suspendCount = 1;
         ThreadContext *p = t.get();
         if (existing) {
             // Reusing guest OSThread storage must replace its finished context;
@@ -166,10 +167,37 @@ namespace Core {
         return p;
     }
 
-    void Scheduler::resume(const std::uint32_t osThread)
+    std::uint32_t Scheduler::resume(const std::uint32_t osThread)
     {
-        if (ThreadContext *t = find(osThread); t && (t->state == ThreadContext::State::Paused || t->state == ThreadContext::State::Waiting))
+        auto *t = find(osThread);
+        if (!t || t->state == ThreadContext::State::Finished)
+            return 0;
+        const auto previous = t->suspendCount;
+        if (t->suspendCount)
+            --t->suspendCount;
+        if (!t->suspendCount && t->state == ThreadContext::State::Paused)
             t->state = ThreadContext::State::Ready;
+        // A resume does not satisfy an unrelated mutex, event, join or sleep.
+        return previous;
+    }
+
+    std::uint32_t Scheduler::suspend(Interpreter &cpu, const std::uint32_t osThread)
+    {
+        auto *t = find(osThread);
+        if (!t || t->state == ThreadContext::State::Finished)
+            return 0;
+        const auto previous = t->suspendCount++;
+        if (t != m_current)
+            return previous;
+        auto *next = pickRunnable(t);
+        if (!next)
+            throw std::runtime_error("No runnable guest thread after OSSuspendThread");
+        save(cpu, t, cpu.m_lr);
+        t->gpr[3] = previous;
+        t->state = ThreadContext::State::Ready;
+        load(cpu, next);
+        cpu.m_hle_redirected = true;
+        return previous;
     }
 
     bool Scheduler::yield(Interpreter &cpu)
@@ -184,8 +212,8 @@ namespace Core {
         for (std::size_t i = 0; i < count; ++i) {
             const auto index = (m_rrIndex + 1 + i) % count;
             auto *candidate = m_threads[index].get();
-            if (candidate != m_current && candidate->state == ThreadContext::State::Ready && (candidate->affinity & coreMask) &&
-                (!next || candidate->priority < next->priority)) {
+            if (candidate != m_current && !candidate->suspendCount && candidate->state == ThreadContext::State::Ready &&
+                (candidate->affinity & coreMask) && (!next || candidate->priority < next->priority)) {
                 next = candidate;
                 nextIndex = index;
             }
@@ -471,7 +499,7 @@ namespace Core {
         for (std::size_t i = 0; i < n; i++) {
             const std::size_t idx = (m_rrIndex + 1 + i) % n;
             ThreadContext *t = m_threads[idx].get();
-            if (t == prev || t->state != ThreadContext::State::Ready)
+            if (t == prev || t->suspendCount || t->state != ThreadContext::State::Ready)
                 continue;
             const bool higherPriority = t->priority < prev->priority;
             const bool disjointCores = (t->affinity & prev->affinity) == 0;

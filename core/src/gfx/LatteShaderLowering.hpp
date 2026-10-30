@@ -79,7 +79,7 @@ namespace Core::Gfx::Latte {
     // execute masks can retain live values across reconvergence. Varying escaping
     // values retain fallback; implicit consumers require derivative-free textures.
     FragmentShader lowerFragmentShader(const Program &program, std::span<const TextureType> resourceTypes = {}, bool onlyColorZero = false,
-                                       unsigned colorExport = 0);
+                                       unsigned colorExport = 0, unsigned positionRegister = 32);
     struct VertexShader : FragmentShader {};
     using UniformBufferWindows = std::array<unsigned, 16>;
     // Compute form of an unmasked, uniform-buffer-only vertex stream-output pass.
@@ -106,7 +106,7 @@ namespace Core::Gfx::Latte {
             // re-lowers (and recompiles) every shader each frame.
             static constexpr std::size_t maxEntries = 4096;
             std::shared_ptr<const FragmentShader> get(const std::vector<std::uint32_t> &words, std::span<const TextureType> resourceTypes = {},
-                                                      bool onlyColorZero = false, unsigned colorExport = 0);
+                                                      bool onlyColorZero = false, unsigned colorExport = 0, unsigned positionRegister = 32);
             // Coverage/depth-effect proof, without requiring usable texture results.
             bool hasUnconditionalColorOnlyEffects(const std::vector<std::uint32_t> &words);
             std::size_t size() const { return m_entries.size(); }
@@ -119,13 +119,15 @@ namespace Core::Gfx::Latte {
                     std::span<const TextureType> resourceTypes;
                     bool onlyColorZero{};
                     unsigned colorExport{};
+                    unsigned positionRegister{32};
             };
             struct Key {
                     std::vector<std::uint32_t> words;
                     std::vector<TextureType> resourceTypes;
                     bool onlyColorZero{};
                     unsigned colorExport{};
-                    operator KeyView() const { return {words, resourceTypes, onlyColorZero, colorExport}; }
+                    unsigned positionRegister{32};
+                    operator KeyView() const { return {words, resourceTypes, onlyColorZero, colorExport, positionRegister}; }
             };
             struct KeyHash {
                     using is_transparent = void;
@@ -134,15 +136,16 @@ namespace Core::Gfx::Latte {
                         auto hash = ProgramWordsHash{}(key.words);
                         for (const auto type: key.resourceTypes)
                             hash = hash * 31 + std::size_t(type);
-                        return hash ^ (std::size_t(key.onlyColorZero) << 8) ^ (std::size_t(key.colorExport) << 16);
+                        return hash ^ (std::size_t(key.onlyColorZero) << 8) ^ (std::size_t(key.colorExport) << 16) ^
+                               (std::size_t(key.positionRegister) << 24);
                     }
             };
             struct KeyEqual {
                     using is_transparent = void;
                     bool operator()(const KeyView &a, const KeyView &b) const noexcept
                     {
-                        return a.onlyColorZero == b.onlyColorZero && a.colorExport == b.colorExport && std::ranges::equal(a.words, b.words) &&
-                               std::ranges::equal(a.resourceTypes, b.resourceTypes);
+                        return a.onlyColorZero == b.onlyColorZero && a.colorExport == b.colorExport && a.positionRegister == b.positionRegister &&
+                               std::ranges::equal(a.words, b.words) && std::ranges::equal(a.resourceTypes, b.resourceTypes);
                     }
             };
             std::unordered_map<Key, std::shared_ptr<const FragmentShader>, KeyHash, KeyEqual> m_entries;
