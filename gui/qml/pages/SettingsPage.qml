@@ -4,393 +4,186 @@ import QtQuick.Layouts
 import gui 1.0
 
 Rectangle {
-    color: "#e8e8ed"
+    id: page
+    color: Theme.bg
     anchors.fill: parent
 
-    property string listeningFor: ""
+    readonly property var tabs: ["General", "Controllers", "Mobile GamePad"]
+    readonly property string listeningFor: controllersTab.listeningFor
+
+    function goHome() {
+        rootWindow.settingsTab = 0
+        mainLoader.source = "pages/MainMenu.qml"
+    }
+
+    function enterTab() { tabStack.children[rail.currentIndex].enter() }
+
+    function changeTab(step) {
+        const next = rail.currentIndex + step
+        if (next < 0 || next >= tabs.length) return
+        controllersTab.listeningFor = ""
+        rail.currentIndex = next
+        rail.forceActiveFocus()
+    }
+
+    Component.onCompleted: rail.forceActiveFocus()
+
+    // Page Up and Page Down arrive from LB and RB, wherever focus is inside the page.
+    Keys.onPressed: event => {
+        if (event.key === Qt.Key_PageUp) changeTab(-1)
+        else if (event.key === Qt.Key_PageDown) changeTab(1)
+        else return
+        event.accepted = true
+    }
+
+    Binding {
+        target: MenuKeys
+        property: "suspended"
+        value: page.listeningFor !== ""
+    }
+
+    Timer {
+        interval: 5000
+        running: page.listeningFor !== ""
+        onTriggered: controllersTab.listeningFor = ""
+    }
 
     Connections {
         target: InputManager
 
         function onButtonChanged(button, pressed, device) {
-            if (!pressed) return
-
-            if (listeningFor !== "") {
-                if (InputProfileManager.isKnownXboxButton(button)) {
-                    InputProfileManager.setBinding(listeningFor, button)
-                    listeningFor = ""
-                }
-                return
-            }
-
-            // B → back to the main menu, mirroring the "← Home" button.
-            if (button === "B")
-                mainLoader.source = "pages/MainMenu.qml"
+            if (!pressed || page.listeningFor === "") return
+            if (InputProfileManager.isKnownXboxButton(button)) controllersTab.finishCapture(button)
         }
     }
 
-    ColumnLayout {
+    RowLayout {
         anchors.fill: parent
-        anchors.margins: 20
-        spacing: 12
+        spacing: 0
 
         Rectangle {
-            Layout.fillWidth: true
-            height: 50
-            color: "#ffffff"
-            radius: 8
-            border.color: "#d0d0d5"
-            border.width: 1
+            Layout.fillHeight: true
+            Layout.preferredWidth: 240
+            color: Theme.surface
 
-            Row {
+            Rectangle {
+                anchors.right: parent.right
+                width: 1
+                height: parent.height
+                color: Theme.separator
+            }
+
+            ColumnLayout {
                 anchors.fill: parent
-                anchors.leftMargin: 10
-                anchors.rightMargin: 10
-                anchors.verticalCenter: parent.verticalCenter
-                spacing: 16
+                anchors.margins: Theme.space4
+                spacing: Theme.space4
 
-                Rectangle {
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: 110
-                    height: 34
-                    radius: 6
-                    color: homeMouseArea.containsMouse ? "#d0d0d5" : "#e4e4ea"
-                    Behavior on color { ColorAnimation { duration: 100 } }
+                MenuButton {
+                    Layout.fillWidth: true
+                    text: "← Library"
+                    focusPolicy: Qt.NoFocus
+                    onClicked: page.goHome()
+                }
 
-                    Text {
-                        anchors.centerIn: parent
-                        text: "← Home"
-                        color: "#1a1a1a"
-                        font.pixelSize: 13
-                        font.bold: true
-                    }
+                Text {
+                    Layout.leftMargin: Theme.space2
+                    text: "Settings"
+                    font.pixelSize: Theme.fontTitle
+                    font.bold: true
+                    color: Theme.text
+                }
 
-                    MouseArea {
-                        id: homeMouseArea
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: mainLoader.source = "pages/MainMenu.qml"
+                ListView {
+                    id: rail
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    spacing: Theme.space2
+                    interactive: false
+                    currentIndex: rootWindow.settingsTab
+                    keyNavigationEnabled: true
+                    model: page.tabs
+
+                    Keys.onRightPressed: page.enterTab()
+                    Keys.onSpacePressed: page.enterTab()
+                    Keys.onReturnPressed: page.enterTab()
+                    Keys.onEnterPressed: page.enterTab()
+                    Keys.onEscapePressed: page.goHome()
+
+                    delegate: Rectangle {
+                        id: railItem
+                        required property string modelData
+                        required property int index
+                        readonly property bool selected: ListView.isCurrentItem
+
+                        width: rail.width
+                        height: Theme.controlHeight + Theme.space1
+                        radius: Theme.radiusSmall
+                        color: selected ? Theme.accentSoft
+                                        : railMouse.containsMouse ? Theme.surfaceMuted : "transparent"
+
+                        Rectangle {
+                            visible: railItem.selected
+                            anchors.left: parent.left
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: 4
+                            height: parent.height - 2 * Theme.space3
+                            radius: 2
+                            color: Theme.accent
+                        }
+
+                        Text {
+                            anchors.left: parent.left
+                            anchors.leftMargin: Theme.space4
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: railItem.modelData
+                            font.pixelSize: Theme.fontBody
+                            font.bold: railItem.selected
+                            color: railItem.selected ? Theme.accent : Theme.text
+                            elide: Text.ElideRight
+                        }
+
+                        FocusRing {
+                            anchors.margins: -Theme.focusRingWidth
+                            shown: railItem.selected && rail.activeFocus
+                        }
+
+                        MouseArea {
+                            id: railMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                controllersTab.listeningFor = ""
+                                rail.currentIndex = railItem.index
+                                rail.forceActiveFocus()
+                            }
+                        }
                     }
                 }
 
                 Text {
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: "Settings"
-                    color: "#1a1a1a"
-                    font.pixelSize: 18
-                    font.bold: true
-                }
-            }
-        }
-
-        Rectangle {
-            Layout.fillWidth: true
-            implicitHeight: consoleSettings.implicitHeight + 24
-            color: "#f5f5f8"
-            radius: 10
-            border.color: "#d0d0d5"
-
-            ColumnLayout {
-                id: consoleSettings
-                anchors.fill: parent
-                anchors.margins: 12
-                spacing: 8
-
-                RowLayout {
                     Layout.fillWidth: true
-                    spacing: 12
-                    Label { text: "Game language"; color: "#1a1a1a" }
-                    ComboBox {
-                        id: languageChoice
-                        objectName: "systemLanguageChoice"
-                        Layout.preferredWidth: 190
-                        model: ["Japanese", "English", "French", "German", "Italian", "Spanish",
-                                "Chinese (simplified)", "Korean", "Dutch", "Portuguese", "Russian", "Chinese (traditional)"]
-                        currentIndex: EmulatorLauncher.systemLanguage
-                        onActivated: EmulatorLauncher.systemLanguage = currentIndex
-                    }
-                    Label { text: "Console region"; color: "#1a1a1a" }
-                    ComboBox {
-                        objectName: "systemRegionChoice"
-                        Layout.fillWidth: true
-                        property var regionIds: [0, 1, 2, 4, 16, 32, 64]
-                        model: ["Automatic (game region)", "Japan", "North America", "Europe", "China", "Korea", "Taiwan"]
-                        currentIndex: regionIds.indexOf(EmulatorLauncher.systemRegion)
-                        onActivated: EmulatorLauncher.systemRegion = regionIds[currentIndex]
-                    }
-                }
-                Label {
-                    Layout.fillWidth: true
-                    text: "Applies when you next launch a game. Text and subtitles use languages included in the game."
-                    color: "#555555"
+                    text: "LB / RB switch tabs · B back"
+                    font.pixelSize: Theme.fontCaption
+                    color: Theme.textMuted
                     wrapMode: Text.WordWrap
                 }
             }
         }
 
-        RowLayout {
+        StackLayout {
+            id: tabStack
             Layout.fillWidth: true
-            Label { text: "Volume"; color: "#1a1a1a" }
-            Slider {
-                objectName: "audioVolumeSlider"
-                Layout.fillWidth: true
-                from: 0; to: 100; stepSize: 1
-                value: EmulatorLauncher.audioVolume
-                onMoved: EmulatorLauncher.audioVolume = Math.round(value)
-            }
-            Label {
-                text: EmulatorLauncher.audioVolume === 0 ? "Muted" : EmulatorLauncher.audioVolume + "%"
-                color: "#1a1a1a"
-                Layout.preferredWidth: 60
-            }
-        }
-
-        RemoteGamepadPanel {
-            Layout.fillWidth: true
-        }
-
-        RowLayout {
-            id: mainRow
             Layout.fillHeight: true
-            Layout.fillWidth: true
-            spacing: 20
+            currentIndex: rail.currentIndex
 
-            Rectangle {
-                Layout.preferredWidth: 3
-                Layout.fillWidth: true
-                Layout.fillHeight: true
-
-                color: "#f5f5f8"
-                radius: 10
-                border.color: "#d0d0d5"
-
-                Column {
-                    width: parent.width
-                    spacing: 25
-                    padding: 12
-
-                    Text {
-                        text: "Physical Controller"
-                        font.pixelSize: 20
-                        color: "#1a1a1a"
-                    }
-
-                    ControllerPreview {
-                        anchors.horizontalCenter: parent.horizontalCenter
-                    }
-                }
+            SettingsGeneralTab { onLeaveRequested: rail.forceActiveFocus() }
+            SettingsControllersTab {
+                id: controllersTab
+                onLeaveRequested: rail.forceActiveFocus()
             }
-
-            Rectangle {
-                Layout.preferredWidth: 4
-                Layout.fillWidth: true
-                Layout.fillHeight: true
-
-                color: "#f5f5f8"
-                radius: 10
-                border.color: "#d0d0d5"
-
-                Column {
-                    width: parent.width
-                    spacing: 12
-                    padding: 12
-
-                    Text {
-                        text: "Mapping"
-                        font.pixelSize: 20
-                        color: "#1a1a1a"
-                    }
-
-                    Row {
-                        spacing: 6
-
-                        Repeater {
-                            model: 3
-
-                            Rectangle {
-                                width: 90
-                                height: 28
-                                radius: 4
-                                color: InputProfileManager.currentProfileIndex === index ? "#3498ff" : "#e4e4ea"
-                                border.color: InputProfileManager.currentProfileIndex === index ? "#2980d9" : "#cccccc"
-
-                                Text {
-                                    anchors.centerIn: parent
-                                    text: "Profile " + (index + 1)
-                                    font.pixelSize: 12
-                                    color: InputProfileManager.currentProfileIndex === index ? "white" : "#444444"
-                                }
-
-                                MouseArea {
-                                    anchors.fill: parent
-                                    cursorShape: Qt.PointingHandCursor
-                                    onClicked: {
-                                        listeningFor = ""
-                                        InputProfileManager.selectProfile(index)
-                                    }
-                                }
-                            }
-                        }
-
-                    }
-
-                    Rectangle {
-                        width: parent.width - 24
-                        height: 28
-                        color: "#e4e4ea"
-                        radius: 4
-
-                        RowLayout {
-                            anchors.fill: parent
-                            anchors.leftMargin: 8
-                            anchors.rightMargin: 8
-                            spacing: 5
-
-                            Text {
-                                Layout.fillWidth: true
-                                text: "Xbox"
-                                font.pixelSize: 12
-                                font.bold: true
-                                color: "#444444"
-                            }
-
-                            Text {
-                                Layout.fillWidth: true
-                                text: "Wii U"
-                                font.pixelSize: 12
-                                font.bold: true
-                                color: "#444444"
-                            }
-                        }
-                    }
-
-                    Rectangle {
-                        width: parent.width - 24
-                        height: bindingRepeater.count * 36
-                        color: "#ffffff"
-                        radius: 6
-                        border.color: "#cccccc"
-                        clip: true
-
-                        Column {
-                            anchors.fill: parent
-
-                            Repeater {
-                                id: bindingRepeater
-                                model: InputProfileManager.bindingModel
-
-                                BindingRow {
-                                    width: parent.width
-                                    wiiuLabel: modelData.wiiuLabel
-                                    xboxButton: modelData.xboxButton
-                                    isListening: listeningFor === modelData.wiiu
-                                    onRowClicked: listeningFor = modelData.wiiu
-                                }
-                            }
-                        }
-                    }
-
-                    Item {
-                        width: parent.width - 24
-                        height: 26
-
-                        Rectangle {
-                            anchors.left: parent.left
-                            anchors.verticalCenter: parent.verticalCenter
-                            visible: listeningFor !== ""
-                            height: 26
-                            width: listeningText.implicitWidth + 28
-                            radius: 13
-                            color: "#f5a623"
-
-                            SequentialAnimation on opacity {
-                                running: listeningFor !== ""
-                                loops: Animation.Infinite
-                                NumberAnimation { to: 0.55; duration: 600; easing.type: Easing.InOutQuad }
-                                NumberAnimation { to: 1.0;  duration: 600; easing.type: Easing.InOutQuad }
-                            }
-
-                            Text {
-                                id: listeningText
-                                anchors.centerIn: parent
-                                text: "● Press a button on the controller…"
-                                color: "white"
-                                font.pixelSize: 12
-                                font.bold: true
-                            }
-                        }
-
-                        Text {
-                            anchors.left: parent.left
-                            anchors.verticalCenter: parent.verticalCenter
-                            visible: listeningFor === ""
-                            text: InputManager.connectedDevices().length > 0
-                                  ? "Connected: " + InputManager.connectedDevices().join(", ")
-                                  : "No controller connected"
-                            color: "#888888"
-                            font.pixelSize: 11
-                        }
-
-                        Rectangle {
-                            anchors.right: parent.right
-                            anchors.verticalCenter: parent.verticalCenter
-                            width: resetText.implicitWidth + 18
-                            height: 22
-                            radius: 4
-                            color: resetMouseArea.containsMouse ? "#f3d6d3" : "#e4e4ea"
-                            border.color: "#cccccc"
-                            Behavior on color { ColorAnimation { duration: 100 } }
-
-                            Text {
-                                id: resetText
-                                anchors.centerIn: parent
-                                text: "Reset to default"
-                                font.pixelSize: 10
-                                font.bold: true
-                                color: "#c0392b"
-                            }
-
-                            MouseArea {
-                                id: resetMouseArea
-                                anchors.fill: parent
-                                hoverEnabled: true
-                                cursorShape: Qt.PointingHandCursor
-                                onClicked: {
-                                    listeningFor = ""
-                                    InputProfileManager.resetCurrentProfile()
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            Rectangle {
-                Layout.preferredWidth: 3
-                Layout.fillWidth: true
-                Layout.fillHeight: true
-
-                color: "#f5f5f8"
-                radius: 10
-                border.color: "#d0d0d5"
-
-                Column {
-                    width: parent.width
-                    spacing: 25
-                    padding: 12
-
-                    Text {
-                        text: "Virtual Gamepad Controller"
-                        font.pixelSize: 20
-                        color: "#1a1a1a"
-                    }
-
-                    GamepadPreview {
-                        anchors.horizontalCenter: parent.horizontalCenter
-                    }
-                }
-            }
+            RemoteGamepadPanel { onLeaveRequested: rail.forceActiveFocus() }
         }
     }
 }

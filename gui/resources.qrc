@@ -13,6 +13,5 @@
         <file>qml/pages/SettingsPage.qml</file>
         <file>qml/pages/GameSessionView.qml</file>
         <file>qml/components/SessionMenuButton.qml</file>
-        <file>qml/components/Theme.js</file>
     </qresource>
 </RCC>

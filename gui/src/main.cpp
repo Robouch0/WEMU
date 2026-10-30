@@ -14,6 +14,7 @@
 #include "input/InputManager.hpp"
 #include "input/InputProfileManager.hpp"
 #include "input/KeyboardInput.hpp"
+#include "input/MenuKeyBridge.hpp"
 #include "library/TitleScanner.hpp"
 #include "remote/RemoteGamepadServer.hpp"
 
@@ -69,6 +70,9 @@ int main(int argc, char *argv[])
         library = TitleScanner::defaultLibraryPath(QCoreApplication::applicationDirPath(), QDir::currentPath());
     if (!library.isEmpty()) scanner.scanDirectory(library, !parser.isSet("library"));
     RemoteGamepadServer remoteGamepad(launcher, scanner);
+    MenuKeyBridge menuKeys([&launcher] { return !launcher.running(); });
+    QObject::connect(&input, &InputManager::buttonChanged, &menuKeys, &MenuKeyBridge::onButtonChanged);
+    QObject::connect(&input, &InputManager::axisChanged, &menuKeys, &MenuKeyBridge::onAxisChanged);
     QQmlApplicationEngine engine;
     qmlRegisterType<GameView>("Wemu", 1, 0, "GameView");
     engine.rootContext()->setContextProperty("InputManager", &input);
@@ -76,6 +80,7 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty("TitleScanner", &scanner);
     engine.rootContext()->setContextProperty("EmulatorLauncher", &launcher);
     engine.rootContext()->setContextProperty("RemoteGamepad", &remoteGamepad);
+    engine.rootContext()->setContextProperty("MenuKeys", &menuKeys);
     QObject::connect(&input, &InputManager::inputUpdated, &launcher, [&input, &profiles, &launcher] {
         const auto pad = input.controllerState(profiles.bindings());
         launcher.setControllerInput(pad.buttons, pad.leftStick, pad.rightStick);
@@ -86,6 +91,7 @@ int main(int argc, char *argv[])
     QObject::connect(&app, &QGuiApplication::aboutToQuit, &launcher, &EmulatorLauncher::stop);
     engine.load(QUrl("qrc:/assets/qml/Main.qml"));
     if (engine.rootObjects().isEmpty()) return 1;
+    menuKeys.setWindow(qobject_cast<QWindow *>(engine.rootObjects().first()));
     auto *gameView = engine.rootObjects().first()->findChild<GameView *>("gameView");
     if (!gameView)
         qFatal("The game presentation item was not created");

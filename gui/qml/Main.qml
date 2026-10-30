@@ -11,6 +11,10 @@ ApplicationWindow {
     minimumHeight: 640
     title: EmulatorLauncher.running ? "WEMU — " + EmulatorLauncher.gameTitle : "WEMU Library"
 
+    // Survive the page swap between the library and Settings.
+    property int libraryIndex: 0
+    property int settingsTab: 0
+
     Loader {
         id: mainLoader
         anchors.fill: parent

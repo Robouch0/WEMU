@@ -5,6 +5,7 @@
 #include <QFileInfo>
 #include <QSettings>
 #include <QTemporaryDir>
+#include <QThread>
 #include <QUrl>
 #include <QDebug>
 #include <stdexcept>
@@ -48,6 +49,16 @@ int main(int argc, char **argv)
         TitleScanner scanner;
         scanner.scanDirectory(QUrl::fromLocalFile(root).toString());
         require(scanner.rowCount({}) == 2, "base/update deduplication or orphan filtering failed");
+        const auto sizeOf = [&](int row) { return scanner.data(scanner.index(row), TitleScanner::SizeBytesRole).toLongLong(); };
+        require(sizeOf(0) == -1, "size must be pending until it has been measured");
+        for (int attempt = 0; attempt < 500 && (sizeOf(0) < 0 || sizeOf(1) < 0); ++attempt) {
+            QCoreApplication::processEvents();
+            QThread::msleep(1);
+        }
+        require(sizeOf(0) > 0, "game size was not measured in the background");
+        const auto updatedTitle = sizeOf(0) > sizeOf(1) ? sizeOf(0) : sizeOf(1);
+        const auto baseOnly = sizeOf(0) > sizeOf(1) ? sizeOf(1) : sizeOf(0);
+        require(updatedTitle > baseOnly, "a title's size must include its installed update");
         const auto first = scanner.index(0, 0);
         require(scanner.data(first, TitleScanner::NameRole) == "First title", "update replaced display metadata");
         require(scanner.data(first, TitleScanner::RpxPathRole) == update + "/code/program.rpx", "highest numeric update not selected");

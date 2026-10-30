@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
+import gui 1.0
 
 Rectangle {
     id: root
@@ -7,18 +8,21 @@ Rectangle {
     property string wiiuLabel: ""
     property string xboxButton: ""
     property bool isListening: false
+    property bool focused: false
 
     signal rowClicked()
 
-    height: 36
-    color: root.isListening
-        ? "#fff5e0"
-        : (mouseArea.containsMouse ? "#ececf0" : "transparent")
-    radius: 4
-    border.color: root.isListening ? "#f5a623" : "transparent"
-    border.width: root.isListening ? 1 : 0
+    height: 40
+    radius: Theme.radiusSmall
+    color: root.isListening ? Theme.accentSoft
+                            : (mouseArea.containsMouse ? Theme.surfaceMuted : "transparent")
+    Behavior on color { ColorAnimation { duration: Theme.durationFast } }
 
-    Behavior on color { ColorAnimation { duration: 120 } }
+    FocusRing {
+        anchors.margins: 0
+        shown: root.focused
+        cornerRadius: 0
+    }
 
     MouseArea {
         id: mouseArea
@@ -30,52 +34,27 @@ Rectangle {
 
     RowLayout {
         anchors.fill: parent
-        anchors.leftMargin: 8
-        anchors.rightMargin: 8
+        anchors.leftMargin: Theme.space3
+        anchors.rightMargin: Theme.space3
         spacing: 0
 
-        Rectangle {
+        Text {
             Layout.fillWidth: true
-            Layout.fillHeight: true
-            color: "transparent"
-
-            Text {
-                anchors.verticalCenter: parent.verticalCenter
-                text: root.isListening ? "..." : (root.xboxButton !== "" ? root.xboxButton : "—")
-                color: root.isListening ? "#c46a00" : "#1a1a1a"
-                font.pixelSize: 13
-                font.italic: root.isListening
-            }
+            Layout.preferredWidth: 1
+            text: root.isListening ? "Press a button…" : (root.xboxButton !== "" ? root.xboxButton : "—")
+            color: root.isListening ? Theme.accent : Theme.text
+            font.pixelSize: Theme.fontBody
+            font.bold: root.isListening
+            elide: Text.ElideRight
         }
 
-        Rectangle {
-            width: 1
-            Layout.fillHeight: true
-            color: "#d0d0d5"
-            Layout.topMargin: 6
-            Layout.bottomMargin: 6
-        }
-
-        Rectangle {
+        Text {
             Layout.fillWidth: true
-            Layout.fillHeight: true
-            color: "transparent"
-
-            Text {
-                anchors.verticalCenter: parent.verticalCenter
-                anchors.left: parent.left
-                anchors.leftMargin: 15
-                text: root.wiiuLabel
-                color: "#555555"
-                font.pixelSize: 13
-            }
+            Layout.preferredWidth: 1
+            text: root.wiiuLabel
+            color: Theme.textMuted
+            font.pixelSize: Theme.fontBody
+            elide: Text.ElideRight
         }
-    }
-
-    Rectangle {
-        anchors.bottom: parent.bottom
-        width: parent.width
-        height: 1
-        color: "#e0e0e5"
     }
 }

@@ -1,153 +1,138 @@
 import QtQuick
-import QtQuick.Controls
 import QtQuick.Layouts
+import gui 1.0
 
 // Mobile GamePad pairing and status: the PIN a phone enters, where to reach this PC, and which
 // phones are remembered.
-Rectangle {
-    id: panel
-    implicitWidth: 420
-    implicitHeight: content.implicitHeight + 32
-    radius: 12
-    color: "#ffffff"
-    border.color: "#d0d0d5"
-
-    ColumnLayout {
-        id: content
-        anchors.fill: parent
-        anchors.margins: 16
-        spacing: 12
+SettingsTabPage {
+    SettingsCard {
+        Layout.fillWidth: true
 
         RowLayout {
             Layout.fillWidth: true
-            spacing: 10
+            spacing: Theme.space3
 
             PhoneGlyph { connected: RemoteGamepad.clientConnected }
 
             ColumnLayout {
                 Layout.fillWidth: true
                 spacing: 2
-                Label {
+                Text {
                     text: "Mobile GamePad"
-                    font.pixelSize: 16
+                    font.pixelSize: Theme.fontSubtitle
                     font.bold: true
-                    color: "#1a1a1a"
+                    color: Theme.text
                 }
-                Label {
+                Text {
                     Layout.fillWidth: true
                     elide: Text.ElideRight
-                    color: RemoteGamepad.clientConnected ? "#1e9e5a" : "#666666"
-                    text: !RemoteGamepad.enabled ? "Off"
+                    font.pixelSize: Theme.fontBody
+                    color: RemoteGamepad.error !== "" ? Theme.danger
+                         : RemoteGamepad.clientConnected ? Theme.success : Theme.textMuted
+                    text: !RemoteGamepad.enabled ? "Turned off"
                           : RemoteGamepad.error !== "" ? RemoteGamepad.error
                           : RemoteGamepad.clientConnected ? "Connected · " + RemoteGamepad.clientName + (RemoteGamepad.streaming ? " · streaming" : "")
                           : "Waiting for a phone on Wi-Fi…"
                 }
             }
 
-            Switch {
+            MenuSwitch {
                 checked: RemoteGamepad.enabled
                 onToggled: RemoteGamepad.enabled = checked
-            }
-        }
-
-        Rectangle {
-            Layout.fillWidth: true
-            visible: RemoteGamepad.enabled && !RemoteGamepad.clientConnected
-            implicitHeight: pairing.implicitHeight + 24
-            radius: 10
-            color: "#f3f6fb"
-            border.color: "#dce4f0"
-
-            ColumnLayout {
-                id: pairing
-                anchors.fill: parent
-                anchors.margins: 12
-                spacing: 8
-
-                Label {
-                    Layout.fillWidth: true
-                    wrapMode: Text.WordWrap
-                    color: "#444444"
-                    text: "Open the WEMU GamePad app on a phone connected to the same Wi-Fi, pick this PC, then enter:"
-                }
-
-                RowLayout {
-                    Layout.alignment: Qt.AlignHCenter
-                    spacing: 8
-                    Repeater {
-                        model: RemoteGamepad.pin.split("")
-                        Rectangle {
-                            width: 44
-                            height: 54
-                            radius: 8
-                            color: "#ffffff"
-                            border.color: "#3498ff"
-                            border.width: 2
-                            Label {
-                                anchors.centerIn: parent
-                                text: modelData
-                                font.pixelSize: 28
-                                font.bold: true
-                                font.family: "monospace"
-                                color: "#1a1a1a"
-                            }
-                        }
-                    }
-                    ToolButton {
-                        text: "↻"
-                        font.pixelSize: 18
-                        ToolTip.visible: hovered
-                        ToolTip.text: "New PIN"
-                        onClicked: RemoteGamepad.regeneratePin()
-                    }
-                }
-
-                Label {
-                    Layout.fillWidth: true
-                    horizontalAlignment: Text.AlignHCenter
-                    color: "#666666"
-                    font.family: "monospace"
-                    text: RemoteGamepad.addresses.length === 0 ? "No network connection"
-                          : RemoteGamepad.addresses.map(a => a + ":" + RemoteGamepad.port).join("   ")
-                }
             }
         }
 
         RowLayout {
             Layout.fillWidth: true
             visible: RemoteGamepad.clientConnected
-            Label {
+            spacing: Theme.space3
+            Text {
                 Layout.fillWidth: true
-                color: "#444444"
+                font.pixelSize: Theme.fontBody
+                color: Theme.textMuted
                 wrapMode: Text.WordWrap
                 text: "Games launched here or from the phone show the GamePad screen on " + RemoteGamepad.clientName + "."
             }
-            Button {
+            MenuButton {
                 text: "Disconnect"
                 onClicked: RemoteGamepad.disconnectClient()
             }
         }
+    }
 
-        Label {
-            visible: RemoteGamepad.pairedDevices.length > 0
-            text: "Paired phones"
-            font.bold: true
-            color: "#1a1a1a"
+    SettingsCard {
+        Layout.fillWidth: true
+        visible: RemoteGamepad.enabled && !RemoteGamepad.clientConnected
+        title: "Pair a phone"
+
+        Text {
+            Layout.fillWidth: true
+            wrapMode: Text.WordWrap
+            font.pixelSize: Theme.fontBody
+            color: Theme.textMuted
+            text: "Open the WEMU GamePad app on a phone connected to the same Wi-Fi, pick this PC, then enter:"
         }
+
+        RowLayout {
+            Layout.alignment: Qt.AlignHCenter
+            spacing: Theme.space2
+            Repeater {
+                model: RemoteGamepad.pin.split("")
+                Rectangle {
+                    width: 52
+                    height: 64
+                    radius: Theme.radiusSmall
+                    color: Theme.surface
+                    border.color: Theme.accent
+                    border.width: 2
+                    Text {
+                        anchors.centerIn: parent
+                        text: modelData
+                        font.pixelSize: Theme.fontTitle
+                        font.bold: true
+                        font.family: "monospace"
+                        color: Theme.text
+                    }
+                }
+            }
+            MenuButton {
+                Layout.leftMargin: Theme.space3
+                text: "New PIN"
+                onClicked: RemoteGamepad.regeneratePin()
+            }
+        }
+
+        Text {
+            Layout.fillWidth: true
+            horizontalAlignment: Text.AlignHCenter
+            color: Theme.textMuted
+            font.pixelSize: Theme.fontBody
+            font.family: "monospace"
+            wrapMode: Text.WrapAnywhere
+            text: RemoteGamepad.addresses.length === 0 ? "No network connection"
+                  : RemoteGamepad.addresses.map(a => a + ":" + RemoteGamepad.port).join("   ")
+        }
+    }
+
+    SettingsCard {
+        Layout.fillWidth: true
+        visible: RemoteGamepad.pairedDevices.length > 0
+        title: "Paired phones"
 
         Repeater {
             model: RemoteGamepad.pairedDevices
             RowLayout {
                 Layout.fillWidth: true
-                Label {
+                spacing: Theme.space3
+                Text {
                     Layout.fillWidth: true
                     elide: Text.ElideRight
-                    color: "#333333"
+                    font.pixelSize: Theme.fontBody
+                    color: Theme.text
                     text: modelData.name + (modelData.platform ? "  (" + modelData.platform + ")" : "")
                 }
-                Button {
+                MenuButton {
                     text: "Forget"
-                    flat: true
                     onClicked: RemoteGamepad.forgetDevice(modelData.id)
                 }
             }
@@ -162,7 +147,7 @@ Rectangle {
             anchors.fill: parent
             radius: 5
             color: "transparent"
-            border.color: connected ? "#1e9e5a" : "#3498ff"
+            border.color: connected ? Theme.success : Theme.accent
             border.width: 2.5
         }
         Rectangle {
@@ -172,7 +157,7 @@ Rectangle {
             width: 8
             height: 2.5
             radius: 1
-            color: connected ? "#1e9e5a" : "#3498ff"
+            color: connected ? Theme.success : Theme.accent
         }
     }
 }

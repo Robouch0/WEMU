@@ -3,7 +3,7 @@ import QtQuick.Layouts
 import QtQuick.Controls
 import Wemu 1.0
 import "../components"
-import "../components/Theme.js" as Theme
+import gui 1.0
 
 Item {
     id: page
@@ -192,7 +192,7 @@ Item {
             Text {
                 anchors.horizontalCenter: parent.horizontalCenter
                 text: "Starting " + EmulatorLauncher.gameTitle
-                color: Theme.panelText
+                color: Theme.sessionPanelText
                 font.pixelSize: 24
             }
             BusyIndicator {
@@ -220,7 +220,7 @@ Item {
             width: Math.min(500, parent.width - 48)
             height: menuColumn.implicitHeight + 56
             radius: 16
-            color: Theme.panel
+            color: Theme.sessionPanel
             border.color: "#485970"
             border.width: 1
             Column {
@@ -230,7 +230,7 @@ Item {
                 spacing: 14
                 Text {
                     width: parent.width
-                    color: Theme.panelText
+                    color: Theme.sessionPanelText
                     font.pixelSize: 28
                     font.bold: true
                     text: EmulatorLauncher.stopping ? "Returning to library…" : EmulatorLauncher.pausePending ? (EmulatorLauncher.paused ? "Resuming…" : "Pausing…") : page.confirmingQuit ? "Return to library?" : "Game paused"
@@ -238,7 +238,7 @@ Item {
                 Text {
                     width: parent.width
                     wrapMode: Text.WordWrap
-                    color: Theme.mutedText
+                    color: Theme.sessionMutedText
                     font.pixelSize: 14
                     text: page.confirmingQuit ? "The game will stop. Unsaved progress will be lost." : "O, Escape or the controller's Guide button to resume."
                 }
@@ -259,7 +259,7 @@ Item {
                     width: parent.width
                     visible: !page.confirmingQuit
                     enabled: EmulatorLauncher.paused && !EmulatorLauncher.pausePending && !EmulatorLauncher.stopping
-                    Label { text: "Volume"; color: Theme.panelText }
+                    Label { text: "Volume"; color: Theme.sessionPanelText }
                     Slider {
                         objectName: "sessionVolumeSlider"
                         Layout.fillWidth: true
@@ -269,13 +269,13 @@ Item {
                     }
                     Label {
                         text: EmulatorLauncher.audioVolume === 0 ? "Muted" : EmulatorLauncher.audioVolume + "%"
-                        color: Theme.panelText
+                        color: Theme.sessionPanelText
                         Layout.preferredWidth: 50
                     }
                 }
                 Text {
                     width: parent.width
-                    color: Theme.mutedText
+                    color: Theme.sessionMutedText
                     font.pixelSize: 12
                     text: "↑ / ↓ select     Enter or A accept     ← / → volume"
                 }

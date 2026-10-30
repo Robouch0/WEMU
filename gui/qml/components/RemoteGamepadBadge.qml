@@ -1,61 +1,23 @@
 import QtQuick
-import QtQuick.Controls
+import gui 1.0
 
-// Header pill: mobile GamePad status at a glance; opens the pairing panel.
-Rectangle {
+// Header button: mobile GamePad status at a glance. The pairing details live in Settings.
+MenuButton {
     id: badge
-    width: label.implicitWidth + 40
-    height: 36
-    radius: 18
-    color: mouse.containsMouse ? "#d0d0d5" : "#e4e4ea"
+
+    readonly property bool connected: RemoteGamepad.clientConnected
+
     visible: RemoteGamepad.enabled
-    Behavior on color { ColorAnimation { duration: 100 } }
+    textLeftInset: Theme.space4
+    text: connected ? "GamePad: " + RemoteGamepad.clientName : "Pair phone · " + RemoteGamepad.pin
 
     Rectangle {
-        id: dot
         anchors.left: parent.left
-        anchors.leftMargin: 14
+        anchors.leftMargin: Theme.space4
         anchors.verticalCenter: parent.verticalCenter
-        width: 9
-        height: 9
-        radius: 4.5
-        color: RemoteGamepad.clientConnected ? "#1e9e5a" : "#f0a020"
-        SequentialAnimation on opacity {
-            running: !RemoteGamepad.clientConnected
-            loops: Animation.Infinite
-            NumberAnimation { to: 0.35; duration: 800; easing.type: Easing.InOutSine }
-            NumberAnimation { to: 1.0; duration: 800; easing.type: Easing.InOutSine }
-        }
-    }
-
-    Text {
-        id: label
-        anchors.left: dot.right
-        anchors.leftMargin: 8
-        anchors.verticalCenter: parent.verticalCenter
-        font.pixelSize: 13
-        font.bold: true
-        color: "#1a1a1a"
-        text: RemoteGamepad.clientConnected ? "GamePad: " + RemoteGamepad.clientName : "Pair phone · " + RemoteGamepad.pin
-    }
-
-    MouseArea {
-        id: mouse
-        anchors.fill: parent
-        hoverEnabled: true
-        cursorShape: Qt.PointingHandCursor
-        onClicked: popup.open()
-    }
-
-    Popup {
-        id: popup
-        y: badge.height + 8
-        x: badge.width - width
-        padding: 0
-        modal: false
-        focus: true
-        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
-        background: Item {}
-        RemoteGamepadPanel { width: 420 }
+        width: 10
+        height: 10
+        radius: 5
+        color: badge.connected ? Theme.success : Theme.warning
     }
 }

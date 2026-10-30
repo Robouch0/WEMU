@@ -1,8 +1,11 @@
 #pragma once
 #include <QAbstractListModel>
 #include <QFileSystemWatcher>
+#include <QHash>
 #include <QString>
 #include <QList>
+#include <QThreadPool>
+#include <atomic>
 
 class TitleScanner : public QAbstractListModel {
     Q_OBJECT
@@ -17,6 +20,8 @@ public:
         QString rpxPath;
         QString contentPath;
         QString titleId;
+        QStringList sizePaths;
+        qint64 sizeBytes = -1; // -1 until the background measurement finishes.
     };
 
     enum Roles {
@@ -27,9 +32,11 @@ public:
         RpxPathRole,
         ContentPathRole,
         TitleIdRole,
+        SizeBytesRole,
     };
 
     explicit TitleScanner(QObject *parent = nullptr);
+    ~TitleScanner() override;
 
     static QString defaultLibraryPath(const QString &applicationDirectory, const QString &workingDirectory);
 
@@ -48,8 +55,14 @@ signals:
     void searchPathChanged();
 
 private:
+    void measureSizes();
+    void applySize(const QString &key, qint64 bytes);
+
     QList<GameTitle>     m_titles;
     QString              m_searchPath;
     bool                 m_rememberLibrary = true;
     QFileSystemWatcher  *m_watcher;
+    QHash<QString, qint64> m_sizes;
+    QThreadPool          m_sizePool;
+    std::atomic_bool     m_stopMeasuring = false;
 };

@@ -20,6 +20,7 @@ qt_add_executable(appgui
     src/input/KeyboardInput.cpp
     src/input/SDLGamepadInput.cpp
     src/input/InputManager.cpp
+    src/input/MenuKeyBridge.cpp
     src/input/InputProfileManager.cpp
     src/library/TitleScanner.cpp
     src/emulator/EmulatorLauncher.cpp
@@ -33,6 +34,7 @@ target_sources(appgui PRIVATE
         src/input/IInputDevice.hpp
         src/input/KeyboardInput.hpp
         src/input/InputManager.hpp
+        src/input/MenuKeyBridge.hpp
         src/input/SDLGamepadInput.hpp
         src/input/InputProfile.hpp
         src/input/ControllerMapping.hpp
@@ -41,6 +43,8 @@ target_sources(appgui PRIVATE
         src/remote/RemoteProtocol.hpp
         src/remote/RemoteGamepadServer.hpp
 )
+
+set_source_files_properties(qml/components/Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 
 qt_add_qml_module(appgui
     URI gui
@@ -51,6 +55,17 @@ qt_add_qml_module(appgui
         qml/pages/MainMenu.qml
         qml/pages/SettingsPage.qml
         qml/pages/GameSessionView.qml
+        qml/components/Theme.qml
+        qml/components/FocusRing.qml
+        qml/components/MenuButton.qml
+        qml/components/MenuComboBox.qml
+        qml/components/MenuSlider.qml
+        qml/components/MenuSwitch.qml
+        qml/components/SettingsCard.qml
+        qml/components/SettingsRow.qml
+        qml/components/SettingsTabPage.qml
+        qml/components/SettingsGeneralTab.qml
+        qml/components/SettingsControllersTab.qml
         qml/components/SessionMenuButton.qml
         qml/components/ControllerPreview.qml
         qml/components/ControllerButton.qml
@@ -126,6 +141,12 @@ add_executable(wemu_controller_mapping_tests tests/ControllerMappingTest.cpp)
 target_include_directories(wemu_controller_mapping_tests PRIVATE src/input)
 target_link_libraries(wemu_controller_mapping_tests PRIVATE Qt6::Core gtest_main)
 add_test(NAME wemu_controller_mapping_tests COMMAND wemu_controller_mapping_tests)
+
+add_executable(wemu_menu_key_bridge_tests tests/MenuKeyBridgeTest.cpp src/input/MenuKeyBridge.cpp src/input/MenuKeyBridge.hpp)
+target_include_directories(wemu_menu_key_bridge_tests PRIVATE src/input)
+find_package(Qt6 REQUIRED COMPONENTS Test)
+target_link_libraries(wemu_menu_key_bridge_tests PRIVATE Qt6::Core Qt6::Gui Qt6::Test gtest)
+add_test(NAME wemu_menu_key_bridge_tests COMMAND wemu_menu_key_bridge_tests)
 
 add_executable(wemu_session_lifecycle_tests tests/SessionLifecycleTest.cpp src/emulator/EmulatorLauncher.cpp)
 target_include_directories(wemu_session_lifecycle_tests PRIVATE src/emulator src/input ../core/src)
