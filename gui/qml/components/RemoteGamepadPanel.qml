@@ -18,7 +18,7 @@ SettingsTabPage {
                 Layout.fillWidth: true
                 spacing: 2
                 Text {
-                    text: "Mobile GamePad"
+                    text: qsTr("Mobile GamePad")
                     font.pixelSize: Theme.fontSubtitle
                     font.bold: true
                     color: Theme.text
@@ -29,10 +29,10 @@ SettingsTabPage {
                     font.pixelSize: Theme.fontBody
                     color: RemoteGamepad.error !== "" ? Theme.danger
                          : RemoteGamepad.clientConnected ? Theme.success : Theme.textMuted
-                    text: !RemoteGamepad.enabled ? "Turned off"
+                    text: !RemoteGamepad.enabled ? qsTr("Turned off")
                           : RemoteGamepad.error !== "" ? RemoteGamepad.error
-                          : RemoteGamepad.clientConnected ? "Connected · " + RemoteGamepad.clientName + (RemoteGamepad.streaming ? " · streaming" : "")
-                          : "Waiting for a phone on Wi-Fi…"
+                          : RemoteGamepad.clientConnected ? (RemoteGamepad.streaming ? qsTr("Connected · %1 · streaming") : qsTr("Connected · %1")).arg(RemoteGamepad.clientName)
+                          : qsTr("Waiting for a phone on Wi-Fi…")
                 }
             }
 
@@ -51,10 +51,10 @@ SettingsTabPage {
                 font.pixelSize: Theme.fontBody
                 color: Theme.textMuted
                 wrapMode: Text.WordWrap
-                text: "Games launched here or from the phone show the GamePad screen on " + RemoteGamepad.clientName + "."
+                text: qsTr("Games launched here or from the phone show the GamePad screen on %1.").arg(RemoteGamepad.clientName)
             }
             MenuButton {
-                text: "Disconnect"
+                text: qsTr("Disconnect")
                 onClicked: RemoteGamepad.disconnectClient()
             }
         }
@@ -63,14 +63,14 @@ SettingsTabPage {
     SettingsCard {
         Layout.fillWidth: true
         visible: RemoteGamepad.enabled && !RemoteGamepad.clientConnected
-        title: "Pair a phone"
+        title: qsTr("Pair a phone")
 
         Text {
             Layout.fillWidth: true
             wrapMode: Text.WordWrap
             font.pixelSize: Theme.fontBody
             color: Theme.textMuted
-            text: "Open the WEMU GamePad app on a phone connected to the same Wi-Fi, pick this PC, then enter:"
+            text: qsTr("Open the WEMU GamePad app on a phone connected to the same Wi-Fi, pick this PC, then enter:")
         }
 
         RowLayout {
@@ -97,7 +97,7 @@ SettingsTabPage {
             }
             MenuButton {
                 Layout.leftMargin: Theme.space3
-                text: "New PIN"
+                text: qsTr("New PIN")
                 onClicked: RemoteGamepad.regeneratePin()
             }
         }
@@ -109,7 +109,7 @@ SettingsTabPage {
             font.pixelSize: Theme.fontBody
             font.family: "monospace"
             wrapMode: Text.WrapAnywhere
-            text: RemoteGamepad.addresses.length === 0 ? "No network connection"
+            text: RemoteGamepad.addresses.length === 0 ? qsTr("No network connection")
                   : RemoteGamepad.addresses.map(a => a + ":" + RemoteGamepad.port).join("   ")
         }
     }
@@ -117,7 +117,7 @@ SettingsTabPage {
     SettingsCard {
         Layout.fillWidth: true
         visible: RemoteGamepad.pairedDevices.length > 0
-        title: "Paired phones"
+        title: qsTr("Paired phones")
 
         Repeater {
             model: RemoteGamepad.pairedDevices
@@ -132,7 +132,7 @@ SettingsTabPage {
                     text: modelData.name + (modelData.platform ? "  (" + modelData.platform + ")" : "")
                 }
                 MenuButton {
-                    text: "Forget"
+                    text: qsTr("Forget")
                     onClicked: RemoteGamepad.forgetDevice(modelData.id)
                 }
             }

@@ -6,7 +6,7 @@ import gui 1.0
 SettingsCard {
     id: card
 
-    title: "Live input"
+    title: qsTr("Live input")
 
     property var axes: ({})
     property var held: []
@@ -168,13 +168,13 @@ SettingsCard {
         spacing: Theme.space6
 
         StickPad {
-            label: "Left stick"
+            label: qsTr("Left stick")
             stickX: card.axis("LX")
             stickY: card.axis("LY")
         }
 
         StickPad {
-            label: "Right stick"
+            label: qsTr("Right stick")
             stickX: card.axis("RX")
             stickY: card.axis("RY")
         }
@@ -202,16 +202,16 @@ SettingsCard {
 
     Reading {
         Layout.fillWidth: true
-        label: "Buttons held"
-        value: card.held.length > 0 ? card.held.join(" + ") : "None"
+        label: qsTr("Buttons held")
+        value: card.held.length > 0 ? card.held.join(" + ") : qsTr("None")
     }
 
     Reading {
         Layout.fillWidth: true
-        label: "Last press"
-        value: card.lastButton === "" ? "None"
-             : card.held.indexOf(card.lastButton) >= 0 ? card.lastButton + " · holding"
-             : card.lastButton + " · held " + card.lastHeldMs + " ms"
+        label: qsTr("Last press")
+        value: card.lastButton === "" ? qsTr("None")
+             : card.held.indexOf(card.lastButton) >= 0 ? qsTr("%1 · holding").arg(card.lastButton)
+             : qsTr("%1 · held %2 ms").arg(card.lastButton).arg(card.lastHeldMs)
     }
 
     Item { Layout.fillHeight: true }
@@ -225,7 +225,7 @@ SettingsCard {
 
         Text {
             anchors.centerIn: parent
-            text: "Hold B to exit test mode"
+            text: qsTr("Hold B to exit test mode")
             font.pixelSize: Theme.fontBody
             font.bold: true
             color: Theme.accent

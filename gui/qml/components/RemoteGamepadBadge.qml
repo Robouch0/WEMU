@@ -9,5 +9,5 @@ MenuButton {
     soft: true
     iconPath: Theme.iconPhone
     iconColor: connected ? Theme.success : Theme.warning
-    text: connected ? "GamePad: " + RemoteGamepad.clientName : "Pair phone · " + RemoteGamepad.pin
+    text: connected ? qsTr("GamePad: %1").arg(RemoteGamepad.clientName) : qsTr("Pair phone · %1").arg(RemoteGamepad.pin)
 }

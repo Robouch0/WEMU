@@ -7,7 +7,7 @@ Basic.Switch {
 
     implicitHeight: Theme.controlHeight
     font.pixelSize: Theme.fontBody
-    text: checked ? "On" : "Off"
+    text: checked ? qsTr("On") : qsTr("Off")
     spacing: Theme.space2
 
     Keys.onReturnPressed: toggle()

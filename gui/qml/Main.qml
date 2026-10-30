@@ -5,7 +5,7 @@ import "pages"
 
 ApplicationWindow {
     id: rootWindow
-    visible: true
+    visibility: AppPreferences.fullscreen ? Window.FullScreen : Window.Windowed
     width: 1280
     height: 720
     minimumWidth: 800
@@ -16,6 +16,12 @@ ApplicationWindow {
     // Survive the page swap between the library and Settings.
     property int libraryIndex: 0
     property int settingsTab: 0
+    property bool startupSelectionDone: false
+
+    Shortcut {
+        sequence: "F11"
+        onActivated: AppPreferences.fullscreen = !AppPreferences.fullscreen
+    }
 
     Loader {
         id: mainLoader

@@ -63,7 +63,7 @@ EmulatorLauncher::EmulatorLauncher(QObject *parent) : QObject(parent)
         qInfo("[SESSION_EXIT] code=%d status=%d requested=%d", code, int(status), int(m_stopping));
         m_stopTimer.stop();
         if (!m_stopping && (code != 0 || status != QProcess::NormalExit))
-            setError(QStringLiteral("Emulation stopped (exit %1). See the session log.").arg(code));
+            setError(tr("Emulation stopped (exit %1). See the session log.").arg(code));
         m_stopping = false;
         emit sessionChanged();
     });
@@ -145,7 +145,7 @@ void EmulatorLauncher::launch(const QString &rpxPath, const QString &title, cons
     m_showFps = false;
     m_suppressedControllerButtons = m_controllerButtons;
     if (!QFileInfo(rpxPath).isFile() || !QDir(contentPath).exists()) {
-        setError("Game files are missing. Refresh the library.");
+        setError(tr("Game files are missing. Choose the games folder again."));
         return;
     }
     // The configured build core takes priority over old copied executables.
@@ -165,7 +165,7 @@ void EmulatorLauncher::launch(const QString &rpxPath, const QString &title, cons
     if (!QFileInfo(binary).isExecutable())
         binary = QDir(QCoreApplication::applicationDirPath()).filePath("wemu");
     if (!QFileInfo(binary).isExecutable()) {
-        setError("The WEMU core executable was not found.");
+        setError(tr("The WEMU core executable was not found."));
         return;
     }
     const auto font = QSettings().value("emulation/sharedFont").toString();
@@ -196,7 +196,7 @@ void EmulatorLauncher::launch(const QString &rpxPath, const QString &title, cons
             << "cache=" << nativeCache;
     const auto logs = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation) + "/logs";
     if (!QDir().mkpath(logs)) {
-        setError("Cannot create the session log directory.");
+        setError(tr("Cannot create the session log directory."));
         return;
     }
     m_logPath = logs + "/session-" + QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss-zzz") + ".log";
@@ -207,7 +207,7 @@ void EmulatorLauncher::launch(const QString &rpxPath, const QString &title, cons
     m_process.setStandardOutputFile(m_logPath);
     const auto channel = QStringLiteral("wemu-%1").arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
     if (!m_server.listen(channel)) {
-        setError("Cannot open the game display channel: " + m_server.errorString());
+        setError(tr("Cannot open the game display channel: %1").arg(m_server.errorString()));
         return;
     }
     emit sessionChanged();

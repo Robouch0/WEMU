@@ -255,6 +255,13 @@ void TitleScanner::applySize(const QString &key, qint64 bytes)
     }
 }
 
+int TitleScanner::indexOfGame(const QString &rpxPath) const
+{
+    for (int row = 0; row < m_titles.size(); ++row)
+        if (m_titles[row].rpxPath == rpxPath) return row;
+    return -1;
+}
+
 int TitleScanner::rowCount(const QModelIndex &parent) const { return parent.isValid() ? 0 : m_titles.size(); }
 QHash<int, QByteArray> TitleScanner::roleNames() const
 {

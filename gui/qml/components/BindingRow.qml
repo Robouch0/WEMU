@@ -41,7 +41,7 @@ Rectangle {
         Text {
             Layout.fillWidth: true
             Layout.preferredWidth: 1
-            text: root.isListening ? "Press a button…" : (root.xboxButton !== "" ? root.xboxButton : "—")
+            text: root.isListening ? qsTr("Press a button…") : (root.xboxButton !== "" ? root.xboxButton : "—")
             color: root.isListening ? Theme.accent : Theme.text
             font.pixelSize: Theme.fontBody
             font.bold: root.isListening

@@ -9,7 +9,7 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Quick QuickControls2 Network)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Quick QuickControls2 Network LinguistTools)
 
 qt_standard_project_setup(REQUIRES 6.6.2)
 find_package(SDL2 REQUIRED)
@@ -17,6 +17,9 @@ find_package(SDL2_image REQUIRED)
 
 qt_add_executable(appgui
     src/main.cpp
+    src/i18n/AppLanguage.cpp
+    src/settings/AppPreferences.cpp
+    src/gfx/GlobeDots.cpp
     src/input/KeyboardInput.cpp
     src/input/SDLGamepadInput.cpp
     src/input/InputManager.cpp
@@ -31,6 +34,10 @@ qt_add_executable(appgui
 
 
 target_sources(appgui PRIVATE
+        src/i18n/AppLanguage.hpp
+        src/settings/AppPreferences.hpp
+        src/gfx/GlobeDots.hpp
+        src/gfx/GlobeLand.hpp
         src/input/IInputDevice.hpp
         src/input/KeyboardInput.hpp
         src/input/InputManager.hpp
@@ -64,7 +71,10 @@ qt_add_qml_module(appgui
         qml/components/MenuSwitch.qml
         qml/components/SettingsCard.qml
         qml/components/SettingsRow.qml
+        qml/components/SettingsToggleRow.qml
         qml/components/SettingsTabPage.qml
+        qml/components/DottedGlobe.qml
+        qml/components/SettingsAudioTab.qml
         qml/components/SettingsGeneralTab.qml
         qml/components/SettingsLiveInput.qml
         qml/components/SettingsControllersTab.qml
@@ -77,6 +87,11 @@ qt_add_qml_module(appgui
         qml/components/BindingRow.qml
         qml/components/RemoteGamepadBadge.qml
         qml/components/RemoteGamepadPanel.qml
+)
+
+qt_add_translations(appgui
+    TS_FILES i18n/wemu_fr.ts i18n/wemu_es.ts i18n/wemu_ko.ts
+    RESOURCE_PREFIX "/i18n"
 )
 
 qt_add_resources(APPGUI_QRC resources.qrc)
@@ -143,6 +158,16 @@ add_executable(wemu_controller_mapping_tests tests/ControllerMappingTest.cpp)
 target_include_directories(wemu_controller_mapping_tests PRIVATE src/input)
 target_link_libraries(wemu_controller_mapping_tests PRIVATE Qt6::Core gtest_main)
 add_test(NAME wemu_controller_mapping_tests COMMAND wemu_controller_mapping_tests)
+
+add_executable(wemu_app_preferences_tests tests/AppPreferencesTest.cpp src/settings/AppPreferences.cpp src/settings/AppPreferences.hpp)
+target_include_directories(wemu_app_preferences_tests PRIVATE src/settings)
+target_link_libraries(wemu_app_preferences_tests PRIVATE Qt6::Core gtest)
+add_test(NAME wemu_app_preferences_tests COMMAND wemu_app_preferences_tests)
+
+add_executable(wemu_app_language_tests tests/AppLanguageTest.cpp src/i18n/AppLanguage.cpp src/i18n/AppLanguage.hpp)
+target_include_directories(wemu_app_language_tests PRIVATE src/i18n)
+target_link_libraries(wemu_app_language_tests PRIVATE Qt6::Core gtest)
+add_test(NAME wemu_app_language_tests COMMAND wemu_app_language_tests)
 
 add_executable(wemu_input_profile_tests tests/InputProfileManagerTest.cpp src/input/InputProfileManager.cpp src/input/InputProfileManager.hpp)
 target_include_directories(wemu_input_profile_tests PRIVATE src/input)

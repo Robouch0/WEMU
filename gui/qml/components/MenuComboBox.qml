@@ -50,7 +50,7 @@ Basic.ComboBox {
         font: control.font
 
         contentItem: Text {
-            text: option.modelData
+            text: control.textRole !== "" ? option.modelData[control.textRole] : option.modelData
             font: option.font
             color: option.highlighted ? Theme.textOnAccent : Theme.text
             verticalAlignment: Text.AlignVCenter

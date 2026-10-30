@@ -118,7 +118,7 @@ SettingsTabPage {
 
                 Text {
                     Layout.fillWidth: true
-                    text: tab.controllers.length > 0 ? tab.controllers.join(", ") : "No controller connected"
+                    text: tab.controllers.length > 0 ? tab.controllers.join(", ") : qsTr("No controller connected")
                     font.pixelSize: Theme.fontSubtitle
                     font.bold: true
                     color: Theme.text
@@ -130,7 +130,7 @@ SettingsTabPage {
                 primary: tab.testing
                 soft: !tab.testing
                 iconPath: Theme.iconTest
-                text: tab.testing ? "Exit test" : "Test"
+                text: tab.testing ? qsTr("Exit test") : qsTr("Test")
                 Keys.onEscapePressed: event => {
                     if (tab.testing) tab.testing = false
                     else event.accepted = false
@@ -153,7 +153,7 @@ SettingsTabPage {
             Layout.fillHeight: true
             id: mappingCard
             visible: !tab.testing
-            title: "Button mapping"
+            title: qsTr("Button mapping")
 
             RowLayout {
                 Layout.fillWidth: true
@@ -164,7 +164,7 @@ SettingsTabPage {
                     Layout.fillWidth: true
                     leftPadding: Theme.space1
                     rightPadding: Theme.space1
-                    text: "Profile 1"
+                    text: qsTr("Profile %1").arg(1)
                     soft: tab.viewedProfile === 0
                     font.bold: soft
                     iconPath: tab.activeProfile === 0 ? Theme.iconCheck : ""
@@ -179,7 +179,7 @@ SettingsTabPage {
                     Layout.fillWidth: true
                     leftPadding: Theme.space1
                     rightPadding: Theme.space1
-                    text: "Profile 2"
+                    text: qsTr("Profile %1").arg(2)
                     soft: tab.viewedProfile === 1
                     font.bold: soft
                     iconPath: tab.activeProfile === 1 ? Theme.iconCheck : ""
@@ -195,7 +195,7 @@ SettingsTabPage {
                     Layout.fillWidth: true
                     leftPadding: Theme.space1
                     rightPadding: Theme.space1
-                    text: "Profile 3"
+                    text: qsTr("Profile %1").arg(3)
                     soft: tab.viewedProfile === 2
                     font.bold: soft
                     iconPath: tab.activeProfile === 2 ? Theme.iconCheck : ""
@@ -214,7 +214,7 @@ SettingsTabPage {
 
                 Text {
                     Layout.fillWidth: true
-                    text: useButton.visible ? "Games use Profile " + (tab.activeProfile + 1) : "Games use this profile"
+                    text: useButton.visible ? qsTr("Games use Profile %1").arg(tab.activeProfile + 1) : qsTr("Games use this profile")
                     font.pixelSize: Theme.fontCaption
                     color: Theme.textMuted
                     elide: Text.ElideRight
@@ -225,7 +225,7 @@ SettingsTabPage {
                     implicitHeight: 36
                     primary: true
                     visible: tab.viewedProfile !== tab.activeProfile
-                    text: "Use for games"
+                    text: qsTr("Use for games")
                     KeyNavigation.up: tab.viewedProfileButton
                     KeyNavigation.down: bindingList
                     onClicked: {
@@ -244,7 +244,7 @@ SettingsTabPage {
                 Text {
                     Layout.fillWidth: true
                     Layout.preferredWidth: 1
-                    text: "Controller"
+                    text: qsTr("Controller")
                     font.pixelSize: Theme.fontCaption
                     font.bold: true
                     color: Theme.textMuted
@@ -319,7 +319,7 @@ SettingsTabPage {
                 Text {
                     Layout.fillWidth: true
                     visible: tab.listeningFor !== ""
-                    text: "Esc cancels"
+                    text: qsTr("Esc cancels")
                     font.pixelSize: Theme.fontCaption
                     font.bold: true
                     color: Theme.warning
@@ -333,7 +333,7 @@ SettingsTabPage {
 
                 MenuButton {
                     id: resetButton
-                    text: "Reset to default"
+                    text: qsTr("Reset to default")
                     destructive: true
                     onClicked: {
                         tab.listeningFor = ""
@@ -359,7 +359,7 @@ SettingsTabPage {
             Layout.fillWidth: true
             Layout.preferredWidth: 7
             Layout.fillHeight: true
-            title: "Virtual GamePad"
+            title: qsTr("Virtual GamePad")
             highlighted: tab.testing
             ScaledPreview {
                 Layout.fillWidth: true

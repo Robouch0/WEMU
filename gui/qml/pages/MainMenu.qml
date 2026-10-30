@@ -18,6 +18,7 @@ Rectangle {
 
     function launchCurrent() {
         if (EmulatorLauncher.running || !selected) return
+        AppPreferences.lastGame = selected.gameRpxPath
         EmulatorLauncher.launch(selected.gameRpxPath, selected.gameName, selected.gameContentPath)
     }
 
@@ -32,7 +33,7 @@ Rectangle {
     }
 
     function formatSize(bytes) {
-        const units = ["KB", "MB", "GB", "TB"]
+        const units = [qsTr("KB"), qsTr("MB"), qsTr("GB"), qsTr("TB")]
         let value = bytes / 1024
         let unit = 0
         while (value >= 1024 && unit < units.length - 1) {
@@ -47,6 +48,11 @@ Rectangle {
     OpacityAnimator on opacity { from: 0; to: 1; duration: Theme.durationNormal }
 
     Component.onCompleted: {
+        if (!rootWindow.startupSelectionDone) {
+            rootWindow.startupSelectionDone = true
+            if (AppPreferences.rememberLastGame)
+                rootWindow.libraryIndex = Math.max(0, TitleScanner.indexOfGame(AppPreferences.lastGame))
+        }
         selectIndex(rootWindow.libraryIndex)
         // Wait for the view's size. Positioning helpers ignore the top margin, so the first row is set directly.
         Qt.callLater(() => {
@@ -58,7 +64,7 @@ Rectangle {
 
     FolderDialog {
         id: libraryDialog
-        title: "Game library folder"
+        title: qsTr("Game library folder")
         onAccepted: TitleScanner.scanDirectory(selectedFolder.toString())
     }
 
@@ -96,7 +102,7 @@ Rectangle {
             Text {
                 Layout.leftMargin: Theme.space2
                 visible: grid.count > 0
-                text: grid.count + (grid.count === 1 ? " game" : " games")
+                text: grid.count === 1 ? qsTr("1 game") : qsTr("%1 games").arg(grid.count)
                 font.pixelSize: Theme.fontBody
                 color: Theme.textMuted
             }
@@ -106,14 +112,14 @@ Rectangle {
             RemoteGamepadBadge {
                 id: phoneButton
                 KeyNavigation.right: folderButton
-                onClicked: page.openSettings(2)
+                onClicked: page.openSettings(3)
             }
 
             MenuButton {
                 id: folderButton
                 soft: true
                 iconPath: Theme.iconFolder
-                text: "Games folder"
+                text: qsTr("Games folder")
                 KeyNavigation.left: phoneButton
                 KeyNavigation.right: settingsButton
                 onClicked: libraryDialog.open()
@@ -123,7 +129,7 @@ Rectangle {
                 id: settingsButton
                 soft: true
                 iconPath: Theme.iconSettings
-                text: "Settings"
+                text: qsTr("Settings")
                 KeyNavigation.left: folderButton
                 onClicked: page.openSettings(0)
             }
@@ -150,7 +156,7 @@ Rectangle {
 
             Text {
                 Layout.alignment: Qt.AlignHCenter
-                text: "No games found"
+                text: qsTr("No games found")
                 font.pixelSize: Theme.fontTitle
                 font.bold: true
                 color: Theme.text
@@ -158,8 +164,8 @@ Rectangle {
 
             Text {
                 Layout.fillWidth: true
-                text: TitleScanner.searchPath === "" ? "Choose the folder that holds your Wii U games."
-                                                     : "This folder has no games or RPX demos. Choose another one."
+                text: TitleScanner.searchPath === "" ? qsTr("Choose the folder that holds your Wii U games.")
+                                                     : qsTr("This folder has no games or RPX demos. Choose another one.")
                 font.pixelSize: Theme.fontBody
                 color: Theme.textMuted
                 horizontalAlignment: Text.AlignHCenter
@@ -182,7 +188,7 @@ Rectangle {
                 Layout.alignment: Qt.AlignHCenter
                 Layout.topMargin: Theme.space2
                 primary: true
-                text: "Choose folder"
+                text: qsTr("Choose folder")
                 KeyNavigation.up: settingsButton
                 onClicked: libraryDialog.open()
             }
@@ -274,8 +280,8 @@ Rectangle {
                 text: {
                     if (!page.selected) return ""
                     const size = page.selected.gameSize
-                    const parts = page.selected.gameVersion !== "" ? ["Version " + page.selected.gameVersion] : []
-                    parts.push(size < 0 ? "Measuring size…" : page.formatSize(size))
+                    const parts = page.selected.gameVersion !== "" ? [qsTr("Version %1").arg(page.selected.gameVersion)] : []
+                    parts.push(size < 0 ? qsTr("Measuring size…") : page.formatSize(size))
                     return parts.join(" · ")
                 }
                 font.pixelSize: Theme.fontCaption
@@ -285,7 +291,7 @@ Rectangle {
 
             Text {
                 Layout.fillWidth: true
-                text: "Controls: Profile " + (InputProfileManager.currentProfileIndex + 1)
+                text: qsTr("Controls: Profile %1").arg(InputProfileManager.currentProfileIndex + 1)
                 font.pixelSize: Theme.fontCaption
                 color: Theme.textMuted
                 elide: Text.ElideRight
@@ -298,7 +304,7 @@ Rectangle {
                 primary: true
                 focusPolicy: Qt.NoFocus
                 font.pixelSize: Theme.fontSubtitle
-                text: "▶  Play"
+                text: qsTr("▶  Play")
                 onClicked: page.launchCurrent()
             }
 
@@ -318,7 +324,7 @@ Rectangle {
                 id: logButton
                 Layout.fillWidth: true
                 visible: EmulatorLauncher.logPath !== ""
-                text: "Session log"
+                text: qsTr("Session log")
                 KeyNavigation.right: grid
                 onClicked: EmulatorLauncher.openLog()
             }
@@ -327,8 +333,8 @@ Rectangle {
 
             Text {
                 Layout.fillWidth: true
-                text: grid.activeFocus ? "A play · Up from the top row for the menu"
-                                       : "A select · B back to games"
+                text: grid.activeFocus ? qsTr("A play · Up from the top row for the menu")
+                                       : qsTr("A select · B back to games")
                 font.pixelSize: Theme.fontCaption
                 color: Theme.textMuted
                 wrapMode: Text.WordWrap
@@ -407,7 +413,7 @@ Rectangle {
 
             readonly property bool isCurrent: GridView.isCurrentItem
             readonly property bool focused: isCurrent && grid.activeFocus
-            readonly property string gameName: model.name !== "" ? model.name : "Unknown"
+            readonly property string gameName: model.name !== "" ? model.name : qsTr("Unknown")
             readonly property string gamePublisher: model.publisher
             readonly property string gameVersion: model.version
             readonly property string gameRpxPath: model.rpxPath

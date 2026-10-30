@@ -8,7 +8,7 @@ Rectangle {
     color: Theme.bg
     anchors.fill: parent
 
-    readonly property var tabs: ["General", "Controllers", "Mobile GamePad"]
+    readonly property var tabs: [qsTr("General"), qsTr("Audio"), qsTr("Controllers"), qsTr("Mobile GamePad")]
     readonly property string listeningFor: controllersTab.listeningFor
 
     function goHome() {
@@ -83,7 +83,7 @@ Rectangle {
                 spacing: Theme.space4
 
                 MenuButton {
-                    text: "← Library"
+                    text: qsTr("← Library")
                     focusPolicy: Qt.NoFocus
                     onClicked: page.goHome()
                 }
@@ -165,10 +165,10 @@ Rectangle {
 
                 Text {
                     Layout.fillWidth: true
-                    text: controllersTab.testing ? "Hold B to exit test mode"
-                        : page.listeningFor !== "" ? "Waiting for a button"
-                        : rail.activeFocus ? "Down open · LB / RB tabs · B library"
-                        : "A select · LB / RB tabs · B back"
+                    text: controllersTab.testing ? qsTr("Hold B to exit test mode")
+                        : page.listeningFor !== "" ? qsTr("Waiting for a button")
+                        : rail.activeFocus ? qsTr("Down open · LB / RB tabs · B library")
+                        : qsTr("A select · LB / RB tabs · B back")
                     font.pixelSize: Theme.fontCaption
                     color: Theme.textMuted
                     horizontalAlignment: Text.AlignRight
@@ -191,6 +191,7 @@ Rectangle {
             }
 
             SettingsGeneralTab { onLeaveRequested: rail.forceActiveFocus() }
+            SettingsAudioTab { onLeaveRequested: rail.forceActiveFocus() }
             SettingsControllersTab {
                 id: controllersTab
                 onLeaveRequested: rail.forceActiveFocus()
