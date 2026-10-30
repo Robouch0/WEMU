@@ -12,7 +12,7 @@ Rectangle {
 
     signal rowClicked()
 
-    height: 40
+    height: 30
     radius: Theme.radiusSmall
     color: root.isListening ? Theme.accentSoft
                             : (mouseArea.containsMouse ? Theme.surfaceMuted : "transparent")

@@ -18,6 +18,8 @@ class InputManager final : public QObject {
         Q_INVOKABLE [[nodiscard]] bool isButtonPressed(const QString &buttonName) const;
         Q_INVOKABLE [[nodiscard]] bool isButtonReleased(const QString &buttonName) const;
         Q_INVOKABLE [[nodiscard]] QStringList connectedDevices() const;
+        // Hardware names of the connected controllers, for showing to the player.
+        Q_INVOKABLE [[nodiscard]] QStringList controllerNames() const;
         Q_INVOKABLE [[nodiscard]] float getAxis(const QString &axisName) const;
         // Every connected controller (not the keyboard) as GamePad input, through a profile's bindings.
         [[nodiscard]] ControllerMapping::State controllerState(const QMap<QString, QString> &bindings) const;
@@ -27,6 +29,7 @@ class InputManager final : public QObject {
 
     signals:
         void inputUpdated();
+        void devicesChanged();
         void axisChanged(QString axisName, float value, QString deviceName);
         void buttonChanged(QString buttonName, bool pressed, QString deviceName);
 

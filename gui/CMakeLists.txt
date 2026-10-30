@@ -57,6 +57,7 @@ qt_add_qml_module(appgui
         qml/pages/GameSessionView.qml
         qml/components/Theme.qml
         qml/components/FocusRing.qml
+        qml/components/MenuIcon.qml
         qml/components/MenuButton.qml
         qml/components/MenuComboBox.qml
         qml/components/MenuSlider.qml
@@ -65,6 +66,7 @@ qt_add_qml_module(appgui
         qml/components/SettingsRow.qml
         qml/components/SettingsTabPage.qml
         qml/components/SettingsGeneralTab.qml
+        qml/components/SettingsLiveInput.qml
         qml/components/SettingsControllersTab.qml
         qml/components/SessionMenuButton.qml
         qml/components/ControllerPreview.qml
@@ -141,6 +143,11 @@ add_executable(wemu_controller_mapping_tests tests/ControllerMappingTest.cpp)
 target_include_directories(wemu_controller_mapping_tests PRIVATE src/input)
 target_link_libraries(wemu_controller_mapping_tests PRIVATE Qt6::Core gtest_main)
 add_test(NAME wemu_controller_mapping_tests COMMAND wemu_controller_mapping_tests)
+
+add_executable(wemu_input_profile_tests tests/InputProfileManagerTest.cpp src/input/InputProfileManager.cpp src/input/InputProfileManager.hpp)
+target_include_directories(wemu_input_profile_tests PRIVATE src/input)
+target_link_libraries(wemu_input_profile_tests PRIVATE Qt6::Core gtest_main)
+add_test(NAME wemu_input_profile_tests COMMAND wemu_input_profile_tests)
 
 add_executable(wemu_menu_key_bridge_tests tests/MenuKeyBridgeTest.cpp src/input/MenuKeyBridge.cpp src/input/MenuKeyBridge.hpp)
 target_include_directories(wemu_menu_key_bridge_tests PRIVATE src/input)

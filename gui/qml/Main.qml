@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import gui 1.0
 import "pages"
 
 ApplicationWindow {
@@ -9,6 +10,7 @@ ApplicationWindow {
     height: 720
     minimumWidth: 800
     minimumHeight: 640
+    color: Theme.bg
     title: EmulatorLauncher.running ? "WEMU — " + EmulatorLauncher.gameTitle : "WEMU Library"
 
     // Survive the page swap between the library and Settings.

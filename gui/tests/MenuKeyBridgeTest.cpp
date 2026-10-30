@@ -50,7 +50,8 @@ TEST_F(MenuKeyBridgeTest, ButtonsBecomeKeys) {
       {Qt::Key_Up, true, false},     {Qt::Key_Down, true, false},
       {Qt::Key_Left, true, false},   {Qt::Key_Right, true, false},
       {Qt::Key_Space, true, false},  {Qt::Key_Escape, true, false},
-      {Qt::Key_PageUp, true, false}, {Qt::Key_PageDown, true, false}};
+      {Qt::Key_PageUp, true, false},
+      {Qt::Key_PageDown, true, false}};
   EXPECT_EQ(window.keys, expected);
 }
 

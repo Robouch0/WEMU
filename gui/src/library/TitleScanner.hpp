@@ -5,6 +5,7 @@
 #include <QString>
 #include <QList>
 #include <QThreadPool>
+#include <QTimer>
 #include <atomic>
 
 class TitleScanner : public QAbstractListModel {
@@ -55,6 +56,7 @@ signals:
     void searchPathChanged();
 
 private:
+    void directoryChanged(const QString &path);
     void measureSizes();
     void applySize(const QString &key, qint64 bytes);
 
@@ -62,6 +64,7 @@ private:
     QString              m_searchPath;
     bool                 m_rememberLibrary = true;
     QFileSystemWatcher  *m_watcher;
+    QTimer               m_rescan;
     QHash<QString, qint64> m_sizes;
     QThreadPool          m_sizePool;
     std::atomic_bool     m_stopMeasuring = false;

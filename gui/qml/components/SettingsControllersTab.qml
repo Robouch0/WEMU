@@ -5,12 +5,51 @@ import gui 1.0
 SettingsTabPage {
     id: tab
 
+    contentMargin: Theme.space4
+
     // The Wii U button waiting for a controller button; empty when not capturing.
     property string listeningFor: ""
+    // Test mode gives every input to the previews, so none of it moves through the menus.
+    property bool testing: false
+    property real stopProgress: 0
+    readonly property bool holdsInput: listeningFor !== "" || testing
+    property var controllers: InputManager.controllerNames()
 
-    function selectProfile(profile) {
+    function cancelInputModes() {
         listeningFor = ""
-        InputProfileManager.selectProfile(profile)
+        testing = false
+    }
+
+    onTestingChanged: stopHold.stop()
+
+    Connections {
+        target: InputManager
+        function onDevicesChanged() { tab.controllers = InputManager.controllerNames() }
+        function onButtonChanged(button, pressed, device) {
+            if (!tab.testing || button !== "B") return
+            if (pressed) stopHold.restart()
+            else stopHold.stop()
+        }
+    }
+
+    SequentialAnimation {
+        id: stopHold
+        onStopped: tab.stopProgress = 0
+        NumberAnimation { target: tab; property: "stopProgress"; from: 0; to: 1; duration: 1200 }
+        ScriptAction { script: tab.testing = false }
+    }
+
+    readonly property int activeProfile: InputProfileManager.currentProfileIndex
+    readonly property int viewedProfile: InputProfileManager.editedProfileIndex
+    readonly property Item viewedProfileButton: [profile1, profile2, profile3][viewedProfile]
+    readonly property Item belowProfiles: useButton.visible ? useButton : bindingList
+
+    Component.onCompleted: InputProfileManager.editProfile(activeProfile)
+
+    function openProfile(profile) {
+        listeningFor = ""
+        InputProfileManager.editProfile(profile)
+        if (useButton.visible) useButton.forceActiveFocus()
     }
 
     // Replacing the binding list resets the view, so put the cursor back on the row just changed.
@@ -30,9 +69,15 @@ SettingsTabPage {
     component ScaledPreview: Item {
         id: frame
         default property Item preview
-        readonly property real fit: preview ? Math.min(1, width / preview.width) : 1
+        // Both drawings share one scale and box, so their fronts and backs line up across the page.
+        // nudge is in drawing pixels and centers this drawing's art on the shared rows.
+        property real nudge: 0
+        readonly property real naturalHeight: 520
+        readonly property real artWidth: 345
+        readonly property real tallestFit: (tab.height - 2 * tab.contentMargin - 100) / naturalHeight
+        readonly property real fit: Math.min(1, width / artWidth, stacked.columns > 1 ? tallestFit : 1)
         // The drawings run past the size they declare, so measure what they actually cover.
-        implicitHeight: preview ? preview.childrenRect.height * fit : 0
+        implicitHeight: naturalHeight * fit
         onPreviewChanged: {
             preview.parent = frame
             preview.transformOrigin = Item.TopLeft
@@ -45,11 +90,17 @@ SettingsTabPage {
         Binding {
             target: frame.preview
             property: "y"
-            value: Math.max(0, (frame.height - frame.implicitHeight) / 2)
+            value: Math.max(0, (frame.height - frame.implicitHeight) / 2) + frame.nudge * frame.fit
+        }
+        Binding {
+            target: frame.preview
+            property: "x"
+            value: frame.preview ? (frame.width - frame.preview.width * frame.fit) / 2 : 0
         }
     }
 
     GridLayout {
+        id: stacked
         Layout.fillWidth: true
         columns: width >= 880 ? 3 : 1
         columnSpacing: Theme.space4
@@ -57,21 +108,52 @@ SettingsTabPage {
 
         SettingsCard {
             Layout.fillWidth: true
-            Layout.preferredWidth: 3
+            Layout.preferredWidth: 7
             Layout.fillHeight: true
-            title: "Physical controller"
+            highlighted: tab.testing
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: Theme.space3
+
+                Text {
+                    Layout.fillWidth: true
+                    text: tab.controllers.length > 0 ? tab.controllers.join(", ") : "No controller connected"
+                    font.pixelSize: Theme.fontSubtitle
+                    font.bold: true
+                    color: Theme.text
+                    elide: Text.ElideRight
+                }
+
+            MenuButton {
+                id: testButton
+                primary: tab.testing
+                soft: !tab.testing
+                iconPath: Theme.iconTest
+                text: tab.testing ? "Exit test" : "Test"
+                Keys.onEscapePressed: event => {
+                    if (tab.testing) tab.testing = false
+                    else event.accepted = false
+                }
+                onClicked: tab.testing = !tab.testing
+            }
+            }
+
             ScaledPreview {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
+                nudge: -11
                 ControllerPreview {}
             }
         }
 
         SettingsCard {
             Layout.fillWidth: true
-            Layout.preferredWidth: 4
+            Layout.preferredWidth: 6
             Layout.fillHeight: true
-            title: "Mapping"
+            id: mappingCard
+            visible: !tab.testing
+            title: "Button mapping"
 
             RowLayout {
                 Layout.fillWidth: true
@@ -80,30 +162,76 @@ SettingsTabPage {
                 MenuButton {
                     id: profile1
                     Layout.fillWidth: true
+                    leftPadding: Theme.space1
+                    rightPadding: Theme.space1
                     text: "Profile 1"
-                    primary: InputProfileManager.currentProfileIndex === 0
+                    soft: tab.viewedProfile === 0
+                    font.bold: soft
+                    iconPath: tab.activeProfile === 0 ? Theme.iconCheck : ""
+                    KeyNavigation.up: testButton
                     KeyNavigation.right: profile2
-                    KeyNavigation.down: bindingList
-                    onClicked: tab.selectProfile(0)
+                    KeyNavigation.down: tab.belowProfiles
+                    onActiveFocusChanged: if (activeFocus) InputProfileManager.editProfile(0)
+                    onClicked: tab.openProfile(0)
                 }
                 MenuButton {
                     id: profile2
                     Layout.fillWidth: true
+                    leftPadding: Theme.space1
+                    rightPadding: Theme.space1
                     text: "Profile 2"
-                    primary: InputProfileManager.currentProfileIndex === 1
+                    soft: tab.viewedProfile === 1
+                    font.bold: soft
+                    iconPath: tab.activeProfile === 1 ? Theme.iconCheck : ""
+                    KeyNavigation.up: testButton
                     KeyNavigation.left: profile1
                     KeyNavigation.right: profile3
-                    KeyNavigation.down: bindingList
-                    onClicked: tab.selectProfile(1)
+                    KeyNavigation.down: tab.belowProfiles
+                    onActiveFocusChanged: if (activeFocus) InputProfileManager.editProfile(1)
+                    onClicked: tab.openProfile(1)
                 }
                 MenuButton {
                     id: profile3
                     Layout.fillWidth: true
+                    leftPadding: Theme.space1
+                    rightPadding: Theme.space1
                     text: "Profile 3"
-                    primary: InputProfileManager.currentProfileIndex === 2
+                    soft: tab.viewedProfile === 2
+                    font.bold: soft
+                    iconPath: tab.activeProfile === 2 ? Theme.iconCheck : ""
+                    KeyNavigation.up: testButton
                     KeyNavigation.left: profile2
+                    KeyNavigation.down: tab.belowProfiles
+                    onActiveFocusChanged: if (activeFocus) InputProfileManager.editProfile(2)
+                    onClicked: tab.openProfile(2)
+                }
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 36
+                spacing: Theme.space3
+
+                Text {
+                    Layout.fillWidth: true
+                    text: useButton.visible ? "Games use Profile " + (tab.activeProfile + 1) : "Games use this profile"
+                    font.pixelSize: Theme.fontCaption
+                    color: Theme.textMuted
+                    elide: Text.ElideRight
+                }
+
+                MenuButton {
+                    id: useButton
+                    implicitHeight: 36
+                    primary: true
+                    visible: tab.viewedProfile !== tab.activeProfile
+                    text: "Use for games"
+                    KeyNavigation.up: tab.viewedProfileButton
                     KeyNavigation.down: bindingList
-                    onClicked: tab.selectProfile(2)
+                    onClicked: {
+                        InputProfileManager.selectProfile(tab.viewedProfile)
+                        tab.viewedProfileButton.forceActiveFocus()
+                    }
                 }
             }
 
@@ -146,7 +274,8 @@ SettingsTabPage {
                 Keys.onUpPressed: {
                     if (tab.listeningFor !== "") return
                     if (currentIndex > 0) currentIndex--
-                    else [profile1, profile2, profile3][InputProfileManager.currentProfileIndex].forceActiveFocus()
+                    else if (useButton.visible) useButton.forceActiveFocus()
+                    else tab.viewedProfileButton.forceActiveFocus()
                 }
                 Keys.onDownPressed: {
                     if (tab.listeningFor !== "") return
@@ -189,14 +318,17 @@ SettingsTabPage {
 
                 Text {
                     Layout.fillWidth: true
-                    text: tab.listeningFor !== "" ? "Press a controller button. Esc or waiting 5 seconds cancels."
-                                                  : InputManager.connectedDevices().length > 0
-                                                    ? "Connected: " + InputManager.connectedDevices().join(", ")
-                                                    : "No controller connected"
+                    visible: tab.listeningFor !== ""
+                    text: "Esc cancels"
                     font.pixelSize: Theme.fontCaption
-                    font.bold: tab.listeningFor !== ""
-                    color: tab.listeningFor !== "" ? Theme.warning : Theme.textMuted
-                    wrapMode: Text.WordWrap
+                    font.bold: true
+                    color: Theme.warning
+                    elide: Text.ElideRight
+                }
+
+                Item {
+                    Layout.fillWidth: true
+                    visible: tab.listeningFor === ""
                 }
 
                 MenuButton {
@@ -205,20 +337,34 @@ SettingsTabPage {
                     destructive: true
                     onClicked: {
                         tab.listeningFor = ""
-                        InputProfileManager.resetCurrentProfile()
+                        InputProfileManager.resetEditedProfile()
                     }
                 }
             }
+
+            Item { Layout.fillHeight: true }
+        }
+
+        SettingsLiveInput {
+            Layout.fillWidth: true
+            Layout.preferredWidth: 6
+            Layout.fillHeight: true
+            // Matches the Mapping card it replaces, so entering test mode moves nothing.
+            Layout.minimumHeight: mappingCard.implicitHeight
+            visible: tab.testing
+            exitProgress: tab.stopProgress
         }
 
         SettingsCard {
             Layout.fillWidth: true
-            Layout.preferredWidth: 3
+            Layout.preferredWidth: 7
             Layout.fillHeight: true
             title: "Virtual GamePad"
+            highlighted: tab.testing
             ScaledPreview {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
+                nudge: 11
                 GamepadPreview {}
             }
         }

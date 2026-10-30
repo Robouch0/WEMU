@@ -4,12 +4,14 @@ import gui 1.0
 
 Rectangle {
     property string title: ""
+    property bool highlighted: false
     default property alias content: body.data
 
     implicitHeight: layout.implicitHeight + 2 * Theme.space4
     radius: Theme.radiusMedium
     color: Theme.surface
-    border.color: Theme.separator
+    border.color: highlighted ? Theme.accent : Theme.separator
+    border.width: highlighted ? 2 : 1
 
     ColumnLayout {
         id: layout

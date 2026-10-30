@@ -12,5 +12,7 @@ Rectangle {
     color: "transparent"
     border.color: Theme.accent
     border.width: Theme.focusRingWidth
-    visible: shown
+    opacity: shown ? 1 : 0
+    visible: opacity > 0
+    Behavior on opacity { NumberAnimation { duration: Theme.durationFast } }
 }

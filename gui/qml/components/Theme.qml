@@ -15,6 +15,7 @@ QtObject {
     property color accent: "#0B63CE"
     property color accentHover: "#0A56B3"
     property color accentSoft: "#E4EEFB"
+    property color accentSoftHover: "#D3E3F8"
     property color textOnAccent: "#FFFFFF"
     property color success: "#157A46"
     property color warning: "#8A5A00"
@@ -47,6 +48,13 @@ QtObject {
     // Motion
     readonly property int durationFast: 120
     readonly property int durationNormal: 200
+
+    // Icons, as SVG paths on a 24 by 24 grid
+    readonly property string iconFolder: "M3 7 a2 2 0 0 1 2 -2 h4 l2 3 h8 a2 2 0 0 1 2 2 v8 a2 2 0 0 1 -2 2 H5 a2 2 0 0 1 -2 -2 Z"
+    readonly property string iconSettings: "M4 7 h9 M19 7 h1 M4 17 h1 M11 17 h9 M16 4.5 a2.5 2.5 0 1 0 0.01 0 Z M8 14.5 a2.5 2.5 0 1 0 0.01 0 Z"
+    readonly property string iconCheck: "M5 12.5 l4.5 4.5 L19 7"
+    readonly property string iconPhone: "M9 3 h6 a2 2 0 0 1 2 2 v14 a2 2 0 0 1 -2 2 h-6 a2 2 0 0 1 -2 -2 V5 a2 2 0 0 1 2 -2 Z M11 18 h2"
+    readonly property string iconTest: "M7 8 h10 a4 4 0 0 1 4 4 v3 a2.5 2.5 0 0 1 -4.6 1.3 L15 14 H9 l-1.4 2.3 A2.5 2.5 0 0 1 3 15 v-3 a4 4 0 0 1 4 -4 Z M8 10.5 v3 M6.5 12 h3 M16 12 h0.01"
 
     // In-game session overlay, which stays dark over the game image.
     readonly property color sessionPanel: "#202632"

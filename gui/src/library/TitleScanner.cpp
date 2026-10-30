@@ -16,6 +16,8 @@
 #include <SDL2/SDL_image.h>
 
 namespace {
+constexpr int rescanDelayMs = 500;
+
 QString displayIcon(const QString &path)
 {
     if (!path.endsWith(".tga", Qt::CaseInsensitive)) return QUrl::fromLocalFile(path).toString();
@@ -88,7 +90,11 @@ QString TitleScanner::defaultLibraryPath(const QString &applicationDirectory, co
 TitleScanner::TitleScanner(QObject *parent)
     : QAbstractListModel(parent), m_watcher(new QFileSystemWatcher(this))
 {
-    connect(m_watcher, &QFileSystemWatcher::directoryChanged, this, [this]() { refresh(); });
+    connect(m_watcher, &QFileSystemWatcher::directoryChanged, this, &TitleScanner::directoryChanged);
+    // Copying a game touches its folders many times; rescan once it settles.
+    m_rescan.setSingleShot(true);
+    m_rescan.setInterval(rescanDelayMs);
+    connect(&m_rescan, &QTimer::timeout, this, &TitleScanner::refresh);
     m_sizePool.setMaxThreadCount(1);
 }
 
@@ -205,8 +211,24 @@ void TitleScanner::scanDirectory(const QString &path, bool rememberLibrary)
     if (changed) emit searchPathChanged();
     if (rememberLibrary) QSettings().setValue("library/directory", rootPath);
     if (!m_watcher->directories().isEmpty()) m_watcher->removePaths(m_watcher->directories());
-    m_watcher->addPaths(roots);
+    // A game only becomes valid once code/ and meta/ are complete, so those need watching too.
+    QStringList watched = roots;
+    for (const auto &dir : roots) {
+        for (const auto &part : {"/code", "/meta"})
+            if (QDir(dir + part).exists()) watched.append(dir + part);
+    }
+    m_watcher->addPaths(watched);
     measureSizes();
+}
+
+void TitleScanner::directoryChanged(const QString &path)
+{
+    for (auto size = m_sizes.begin(); size != m_sizes.end();) {
+        const auto paths = size.key().split('\n');
+        const bool stale = std::any_of(paths.begin(), paths.end(), [&](const QString &root) { return path.startsWith(root); });
+        size = stale ? m_sizes.erase(size) : std::next(size);
+    }
+    m_rescan.start();
 }
 
 void TitleScanner::measureSizes()

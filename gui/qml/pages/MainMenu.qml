@@ -42,11 +42,17 @@ Rectangle {
         return (value >= 100 ? value.toFixed(0) : value.toFixed(1)) + " " + units[unit]
     }
 
+    onSelectedChanged: panelEnter.restart()
+
+    OpacityAnimator on opacity { from: 0; to: 1; duration: Theme.durationNormal }
+
     Component.onCompleted: {
         selectIndex(rootWindow.libraryIndex)
-        // Contain ignores the top margin, which would leave the first row under the header.
-        if (grid.currentIndex < grid.columns) grid.positionViewAtBeginning()
-        else grid.positionViewAtIndex(grid.currentIndex, GridView.Contain)
+        // Wait for the view's size. Positioning helpers ignore the top margin, so the first row is set directly.
+        Qt.callLater(() => {
+            if (grid.currentIndex < grid.columns) grid.contentY = -grid.topMargin
+            else grid.positionViewAtIndex(grid.currentIndex, GridView.Contain)
+        })
         focusContent()
     }
 
@@ -105,25 +111,20 @@ Rectangle {
 
             MenuButton {
                 id: folderButton
+                soft: true
+                iconPath: Theme.iconFolder
                 text: "Games folder"
                 KeyNavigation.left: phoneButton
-                KeyNavigation.right: refreshButton
+                KeyNavigation.right: settingsButton
                 onClicked: libraryDialog.open()
             }
 
             MenuButton {
-                id: refreshButton
-                text: "Refresh"
-                enabled: TitleScanner.searchPath !== ""
-                KeyNavigation.left: folderButton
-                KeyNavigation.right: settingsButton
-                onClicked: TitleScanner.refresh()
-            }
-
-            MenuButton {
                 id: settingsButton
+                soft: true
+                iconPath: Theme.iconSettings
                 text: "Settings"
-                KeyNavigation.left: refreshButton
+                KeyNavigation.left: folderButton
                 onClicked: page.openSettings(0)
             }
         }
@@ -206,10 +207,18 @@ Rectangle {
             color: Theme.separator
         }
 
+        ParallelAnimation {
+            id: panelEnter
+            NumberAnimation { target: panelContent; property: "opacity"; from: 0.5; to: 1; duration: Theme.durationNormal }
+            NumberAnimation { target: panelShift; property: "x"; from: -Theme.space2; to: 0; duration: Theme.durationNormal; easing.type: Easing.OutCubic }
+        }
+
         ColumnLayout {
+            id: panelContent
             anchors.fill: parent
             anchors.margins: Theme.space5
             spacing: Theme.space2
+            transform: Translate { id: panelShift }
 
             Rectangle {
                 Layout.alignment: Qt.AlignHCenter
@@ -274,6 +283,14 @@ Rectangle {
                 elide: Text.ElideRight
             }
 
+            Text {
+                Layout.fillWidth: true
+                text: "Controls: Profile " + (InputProfileManager.currentProfileIndex + 1)
+                font.pixelSize: Theme.fontCaption
+                color: Theme.textMuted
+                elide: Text.ElideRight
+            }
+
             MenuButton {
                 Layout.fillWidth: true
                 Layout.topMargin: Theme.space3
@@ -307,6 +324,15 @@ Rectangle {
             }
 
             Item { Layout.fillHeight: true }
+
+            Text {
+                Layout.fillWidth: true
+                text: grid.activeFocus ? "A play · Up from the top row for the menu"
+                                       : "A select · B back to games"
+                font.pixelSize: Theme.fontCaption
+                color: Theme.textMuted
+                wrapMode: Text.WordWrap
+            }
         }
     }
 
@@ -342,7 +368,7 @@ Rectangle {
         preferredHighlightEnd: height - Theme.space5
         cacheBuffer: 2 * cellHeight
 
-        // A refresh resets the model; keep the selection on the same row when it can.
+        // A rescan resets the model; keep the selection on the same row when it can.
         property int indexBeforeReset: 0
         onCurrentIndexChanged: if (count > 0) indexBeforeReset = currentIndex
         onCountChanged: Qt.callLater(() => {
@@ -399,7 +425,8 @@ Rectangle {
                 border.color: tile.isCurrent ? Theme.borderControl : Theme.separator
                 scale: tile.focused ? 1.05 : tileMouse.pressed ? 0.98 : 1
                 z: tile.focused ? 1 : 0
-                Behavior on scale { NumberAnimation { duration: Theme.durationFast; easing.type: Easing.OutCubic } }
+                Behavior on scale { NumberAnimation { duration: Theme.durationNormal; easing.type: Easing.OutBack } }
+                Behavior on color { ColorAnimation { duration: Theme.durationFast } }
 
                 FocusRing {
                     shown: tile.focused
@@ -454,11 +481,13 @@ Rectangle {
                 anchors.fill: card
                 hoverEnabled: true
                 cursorShape: Qt.PointingHandCursor
-                // Items scrolling under a resting pointer must not steal the selection.
+                // Only a pointer that really moved selects: not one resting where the window opened,
+                // and not one with tiles scrolling under it.
                 onPositionChanged: mouse => {
                     const scene = mapToItem(null, mouse.x, mouse.y)
-                    if (scene.x !== grid.lastPointer.x || scene.y !== grid.lastPointer.y) grid.currentIndex = index
+                    const moved = grid.lastPointer.x >= 0 && (scene.x !== grid.lastPointer.x || scene.y !== grid.lastPointer.y)
                     grid.lastPointer = scene
+                    if (moved) grid.currentIndex = index
                 }
                 onClicked: {
                     grid.currentIndex = index

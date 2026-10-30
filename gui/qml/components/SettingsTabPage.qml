@@ -4,10 +4,12 @@ import QtQuick.Layouts
 import gui 1.0
 
 // A scrolling settings tab. Up and Down walk its controls in order and the view follows focus.
+// Only Escape leaves it, so a stray Left cannot drop the user onto the tab rail.
 FocusScope {
     id: root
 
     default property alias content: holder.data
+    property int contentMargin: Theme.space5
     signal leaveRequested()
 
     function owns(item) {
@@ -39,7 +41,6 @@ FocusScope {
 
     Keys.onUpPressed: moveFocus(false)
     Keys.onDownPressed: moveFocus(true)
-    Keys.onLeftPressed: leaveRequested()
     Keys.onEscapePressed: leaveRequested()
 
     Connections {
@@ -51,7 +52,7 @@ FocusScope {
         id: flickable
         anchors.fill: parent
         contentWidth: width
-        contentHeight: holder.implicitHeight + 2 * Theme.space5
+        contentHeight: holder.implicitHeight + 2 * root.contentMargin
         boundsBehavior: Flickable.StopAtBounds
         clip: true
 
@@ -59,9 +60,9 @@ FocusScope {
 
         ColumnLayout {
             id: holder
-            x: Theme.space5
-            y: Theme.space5
-            width: flickable.width - 2 * Theme.space5
+            x: root.contentMargin
+            y: root.contentMargin
+            width: flickable.width - 2 * root.contentMargin
             spacing: Theme.space4
         }
     }

@@ -24,6 +24,13 @@ Basic.ComboBox {
     palette.highlight: Theme.accent
     palette.highlightedText: Theme.textOnAccent
 
+    popup.enter: Transition {
+        ParallelAnimation {
+            NumberAnimation { property: "opacity"; from: 0; to: 1; duration: Theme.durationFast }
+            NumberAnimation { property: "scale"; from: 0.97; to: 1; duration: Theme.durationFast; easing.type: Easing.OutCubic }
+        }
+    }
+
     Keys.onUpPressed: event => {
         if (popup.visible) event.accepted = false
         else if (navigateUp) navigateUp.forceActiveFocus()

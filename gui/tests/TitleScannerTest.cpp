@@ -129,6 +129,18 @@ int main(int argc, char **argv)
         require(QDir().mkpath(binaryDirectory) && QDir().mkpath(gamesDirectory) && QDir().mkpath(elsewhere), "discovery fixture failed");
         require(TitleScanner::defaultLibraryPath(binaryDirectory, elsewhere) == gamesDirectory, "nested build cannot find repository games");
         require(TitleScanner::defaultLibraryPath(elsewhere, checkout) == gamesDirectory, "working-directory discovery failed");
+        // A game copied in stages must appear on its own, without a manual refresh.
+        const auto watchedRoot = temporaryRoot + "/watched library";
+        require(QDir().mkpath(watchedRoot + "/copied game/code"), "watch fixture failed");
+        TitleScanner watcher;
+        watcher.scanDirectory(watchedRoot);
+        require(watcher.rowCount({}) == 0, "an empty game folder was listed");
+        write(watchedRoot + "/copied game/code/program.rpx", "fixture");
+        for (int attempt = 0; attempt < 3000 && watcher.rowCount({}) == 0; ++attempt) {
+            QCoreApplication::processEvents();
+            QThread::msleep(1);
+        }
+        require(watcher.rowCount({}) == 1, "a file arriving in code/ did not update the library");
         qInfo() << "Library discovery, commercial update pairing, RPX demos, metadata, persistence and refresh passed";
         return 0;
     } catch (const std::exception &e) { qCritical() << e.what(); return 1; }
