@@ -2,15 +2,16 @@
 # ==============================================================================
 # WEMU — setup.sh
 # ------------------------------------------------------------------------------
-# One-shot installer & builder for WEMU on Linux.
+# One-shot installer & builder for WEMU on Linux and macOS.
 #
 # What this script does:
-#   1. Detects your distribution (Ubuntu, Debian, Fedora, Arch).
+#   1. Detects your distribution (Ubuntu, Debian, Fedora, Arch) or macOS (Homebrew,
+#      Vulkan through MoltenVK).
 #   2. Installs every system dependency the project needs to build AND run:
 #        - Compilers + CMake + Ninja + ccache
 #        - Qt6 (base + declarative + multimedia) + QML runtime modules
 #        - Vulkan loader + headers + glslang
-#        - GLFW3, SDL2, zlib
+#        - GLFW3, SDL2, SDL2_image, zlib, FFmpeg >= 6.0
 #        - GoogleTest (build-time, fetched by CMake)
 #   3. Configures and builds:
 #        - core/   (PowerPC interpreter, ELF loader, tests)
@@ -34,7 +35,7 @@ set -euo pipefail
 
 # ----- defaults ---------------------------------------------------------------
 BUILD_TYPE="Release"
-JOBS="$(nproc 2>/dev/null || echo 4)"
+JOBS="$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)"
 DO_BUILD=1
 DO_TEST=0
 DO_CLEAN=0
@@ -73,12 +74,19 @@ if [[ ! -f CMakeLists.txt ]] || [[ ! -d core ]] || [[ ! -d gui ]]; then
 fi
 
 # ----- distro detection -------------------------------------------------------
-if [[ ! -f /etc/os-release ]]; then
-  die "Cannot detect distribution: /etc/os-release missing."
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  command -v brew >/dev/null || die "Homebrew is required on macOS: install it from https://brew.sh"
+  DISTRO_ID="macos"
+  DISTRO_LIKE=""
+  PRETTY_NAME="macOS $(sw_vers -productVersion) ($(uname -m))"
+else
+  if [[ ! -f /etc/os-release ]]; then
+    die "Cannot detect distribution: /etc/os-release missing."
+  fi
+  . /etc/os-release
+  DISTRO_ID="${ID:-unknown}"
+  DISTRO_LIKE="${ID_LIKE:-}"
 fi
-. /etc/os-release
-DISTRO_ID="${ID:-unknown}"
-DISTRO_LIKE="${ID_LIKE:-}"
 
 log "Detected: ${PRETTY_NAME:-$DISTRO_ID}"
 
@@ -88,7 +96,7 @@ log "Detected: ${PRETTY_NAME:-$DISTRO_ID}"
 #   - Qt6 dev (base + declarative + multimedia + tools + 5compat shim)
 #   - QML *runtime* modules (the ones you discovered were missing!)
 #   - Vulkan SDK pieces (headers, loader, validation, glslang)
-#   - GLFW3, SDL2, zlib
+#   - GLFW3, SDL2, SDL2_image, zlib, FFmpeg >= 6.0
 #   - GoogleTest (CMake will FetchContent if needed; package speeds it up)
 
 # Debian / Ubuntu shared list
@@ -103,6 +111,11 @@ declare -a APT_PKGS=(
 
   # Core deps
   zlib1g-dev
+  libavcodec-dev
+  libavformat-dev
+  libavutil-dev
+  libswscale-dev
+  libswresample-dev
 
   # Vulkan stack
   libvulkan-dev
@@ -116,6 +129,7 @@ declare -a APT_PKGS=(
   # Window/input/graphics deps
   libglfw3-dev
   libsdl2-dev
+  libsdl2-image-dev
   libglm-dev
 
   # Qt6 dev
@@ -148,8 +162,11 @@ declare -a APT_PKGS=(
 declare -a DNF_PKGS=(
   gcc-c++ make cmake ninja-build ccache git pkgconf-pkg-config
   zlib-devel
+  # Resolved by provide so dnf picks ffmpeg-devel (RPM Fusion) or
+  # libavcodec-free-devel (Fedora) depending on which FFmpeg is installed.
+  'pkgconfig(libavcodec)' 'pkgconfig(libavformat)' 'pkgconfig(libavutil)' 'pkgconfig(libswscale)' 'pkgconfig(libswresample)'
   vulkan-loader-devel vulkan-tools vulkan-validation-layers glslang glslc
-  glfw-devel SDL2-devel glm-devel
+  glfw-devel SDL2-devel SDL2_image-devel glm-devel
   qt6-qtbase-devel qt6-qtdeclarative-devel qt6-qtmultimedia-devel
   qt6-qttools-devel qt6-qt5compat-devel
   qt6-qtdeclarative qt6-qtquickcontrols2 qt6-qtmultimedia
@@ -159,11 +176,20 @@ declare -a DNF_PKGS=(
 # Arch list
 declare -a PACMAN_PKGS=(
   base-devel cmake ninja ccache git pkgconf
-  zlib
+  zlib ffmpeg
   vulkan-headers vulkan-icd-loader vulkan-tools vulkan-validation-layers glslang shaderc
-  glfw sdl2 glm
+  glfw sdl2 sdl2_image glm
   qt6-base qt6-declarative qt6-multimedia qt6-tools qt6-5compat
   gtest
+)
+
+# macOS (Homebrew) list: Vulkan is the loader + MoltenVK, Apple clang is the compiler.
+declare -a BREW_PKGS=(
+  cmake ninja ccache pkgconf
+  ffmpeg
+  vulkan-loader vulkan-headers vulkan-tools molten-vk glslang spirv-tools
+  sdl2 sdl2_image glm
+  qt
 )
 
 # ----- install dependencies ---------------------------------------------------
@@ -185,7 +211,14 @@ install_deps_pacman() {
   sudo pacman -Sy --noconfirm --needed "${PACMAN_PKGS[@]}"
 }
 
+install_deps_brew() {
+  log "Installing ${#BREW_PKGS[@]} dependencies via Homebrew..."
+  brew install "${BREW_PKGS[@]}"
+}
+
 case "$DISTRO_ID" in
+  macos)
+    install_deps_brew ;;
   ubuntu|debian|linuxmint|pop|elementary|zorin)
     install_deps_apt ;;
   fedora|rhel|centos|rocky|almalinux)
@@ -263,6 +296,7 @@ fi
 log "Build complete."
 echo
 echo "Artifacts:"
+echo "  Core binary:   $(pwd)/build/core/wemu"
 echo "  GUI binary:    $(pwd)/build/gui/appgui"
 [[ -d vulkan/build ]] && echo "  Vulkan binary: $(pwd)/vulkan/build/  (look for the executable)"
 echo

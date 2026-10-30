@@ -4,50 +4,42 @@
 ![Last Commit](https://img.shields.io/github/last-commit/Robouch0/WEMU/dev)
 ![Language](https://img.shields.io/github/languages/top/Robouch0/WEMU)
 ![C++23](https://img.shields.io/badge/C%2B%2B-23-blue?logo=cplusplus)
-![Platform](https://img.shields.io/badge/platform-Linux-lightgrey?logo=linux)
+![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS-lightgrey?logo=linux)
 ![GitHub Actions Status](https://img.shields.io/github/actions/workflow/status/Robouch0/WEMU/wemu-checks.yml?branch=dev&label=Build)
 
 # WEMU — Wii U Emulator
 
-WEMU is an open-source Wii U emulator for Linux, written in C++23. The project is currently in early development, targeting a public beta in July 2026.
+WEMU is an open-source Wii U emulator for Linux and macOS, written in C++23. The project is in early development: homebrew demos run, while commercial-title booting and rendering remain experimental.
 
-Our goal is to accurately emulate the Wii U's PowerPC CPU and GPU in order to run Wii U software. What sets WEMU apart from existing solutions like Cemu is a companion feature: **use your phone as the Wii U GamePad**. A web application streams the GamePad screen from the emulator to your phone and sends touch inputs back, replacing the physical GamePad entirely.
+Our goal is to accurately emulate the Wii U's PowerPC CPU and GPU in order to run Wii U software. What sets WEMU apart from existing solutions like Cemu is a companion feature: **use your phone as the Wii U GamePad**. The WEMU GamePad app (Android and iOS, in [`mobile/`](mobile/)) streams the GamePad screen from the emulator to your phone over Wi-Fi and sends buttons, sticks, touch and motion back, replacing the physical GamePad entirely. See [docs/features/mobile-gamepad.md](docs/features/mobile-gamepad.md).
 
 ---
 
 ## Current State
 
-WEMU is not yet playable. The following components are in active development:
+Commercial games are not yet fully playable. Current components include:
 
 | Component | Status      |
 |---|-------------|
 | Big-endian ELF/RPX loader (ZLIB section decompression via zlib) | Done        |
-| PowerPC interpreter (arithmetic, logic, branches, compare, float, load/store, shift, SPR) | Done        |
-| Vulkan rendering pipeline (GLFW) | In progress |
-| Qt6/QML launcher UI | In progress |
+| PowerPC interpreter, paired-single operations, and cached instruction blocks | Partial instruction coverage |
+| Optional LLVM 19.1 CPU compiler and object cache | Experimental |
+| Cooperative scheduling, heaps, layered filesystem, AX callbacks, and H.264 decoding | Implemented; compatibility is incomplete |
+| AX PCM/ADPCM mixing, adaptive desktop audio, music/SFX and HLE movie soundtracks | Implemented; [audio compatibility limits](docs/features/audio.md) |
+| GX2 replay, Latte shader lowering, and Vulkan rendering | Experimental |
+| Qt6/QML library with isolated emulator processes | Implemented |
 | USB/gamepad input (SDL2) | Done        |
 | RPX file format support (SHF_DEFLATED parsing) | Done        |
-| Wii U title library browser | In progress |
-| Phone-as-GamePad web app | Planned     |
-
----
-
-## Beta Goals (July 2026)
-
-| Feature | Description |
-|---|---|
-| **Build & Launch** | Build and launch on a standard Linux system in under 7 minutes on a blank VM |
-| **Title Library** | Scan a directory of dumped Wii U titles and display name, publisher, version, and icon from `meta.xml` |
-| **RPX Loader** | Load a `main.rpx`, parse its structure, and detect its entry point |
-| **PowerPC Execution** | Execute a minimal RPX that produces a graphical output for at least 5 seconds |
-| **Controller Binding** | Map a USB controller (e.g. Xbox One) to Wii U GamePad buttons with visual feedback |
-| **Contributor Docs** | A new contributor can read the documentation and add a new PowerPC instruction that correctly updates registers |
+| Wii U title library browser | Done |
+| Phone-as-GamePad app (Android/iOS): GamePad screen, buttons, sticks, touch, motion | Implemented; GamePad audio planned |
 
 ---
 
 ## Building from Source
 
-**Platform:** Linux only (Ubuntu/Debian, Fedora, Arch).
+**Platforms:** Linux (Ubuntu/Debian, Fedora, Arch) and macOS on Apple Silicon (Homebrew,
+Vulkan through MoltenVK). The x86-64 JIT is Linux x86-64 only; on macOS the CPU runs on the
+interpreter or the optional LLVM compiler.
 
 ### Quick start (recommended)
 
@@ -57,7 +49,9 @@ cd WEMU
 ./setup.sh
 ```
 
-`setup.sh` detects your distribution, installs all system dependencies, then builds `core`, `gui`, and the Vulkan renderer. It targets < 7 minutes on a 4-core VM.
+`setup.sh` detects your distribution (or macOS, where it needs [Homebrew](https://brew.sh)),
+installs system dependencies, then builds the core,
+GUI, and shader tool. It also builds the legacy standalone Vulkan tree if that tree is present.
 
 ```
 Usage:
@@ -65,13 +59,16 @@ Usage:
   ./setup.sh --test               # build + run unit tests
   ./setup.sh --no-build           # install deps only
   ./setup.sh --clean              # wipe build dirs before configuring
-  ./setup.sh --build-type Release # default is Debug
+  ./setup.sh --build-type Release # default is Release
   ./setup.sh --jobs 8             # override parallel job count
 ```
 
 After a successful build:
-- GUI binary: `./cmake-build-debug/gui/appgui`
-- Vulkan binary: `./vulkan/build/`
+
+- GUI binary: `./build/gui/appgui`
+- Core binary: `./build/core/wemu`
+- Shader diagnostic tool: `./build/core/wemu_shader_lower`
+- Optional legacy Vulkan build: `./vulkan/build/`
 
 ### Manual build
 
@@ -80,22 +77,66 @@ After a successful build:
 
 ```bash
 # Debian/Ubuntu dependencies
-sudo apt install cmake g++ zlib1g-dev libvulkan-dev libglfw3-dev libsdl2-dev \
-     qt6-base-dev qt6-declarative-dev glslang-tools ninja-build ccache
+sudo apt install cmake g++ zlib1g-dev libvulkan-dev libglfw3-dev libsdl2-dev libsdl2-image-dev \
+     libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev qt6-base-dev qt6-declarative-dev \
+     glslang-tools spirv-tools mesa-vulkan-drivers ninja-build ccache
+
+# macOS dependencies (Homebrew)
+brew install cmake ninja pkgconf ffmpeg sdl2 sdl2_image glm qt \
+     vulkan-loader vulkan-headers molten-vk glslang spirv-tools
 
 # Core emulator + Qt GUI
 git clone https://github.com/Robouch0/WEMU.git && cd WEMU
-mkdir cmake-build-debug && cd cmake-build-debug
-cmake .. -DCMAKE_BUILD_TYPE=Debug
-cmake --build . -j$(nproc)
-
-# Vulkan renderer (standalone)
-cd ../vulkan && mkdir build && cd build
-cmake ..
-cmake --build . -j$(nproc)
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --parallel 2
 ```
 
+On macOS, add `-DLLVM_DIR=/opt/homebrew/opt/llvm@19/lib/cmake/llvm` (after
+`brew install llvm@19`) to the LLVM configuration below.
+
 </details>
+
+### Launching games
+
+Run `./build/gui/appgui`. The GUI finds the repository's `games/` folder automatically;
+a previously selected library folder is remembered. The folder can also be selected in
+the GUI or overridden with `--library /path/to/games`.
+
+On Linux, the GUI automatically enables NVIDIA PRIME offloading when it detects an
+NVIDIA render device using the `nvidia` driver. This applies to direct binary launches
+as well as the desktop shortcut, and is inherited by the emulator process. Explicit
+GPU environment settings take precedence; `__NV_PRIME_RENDER_OFFLOAD=0` disables
+this automatic preference.
+
+Commercial dumps use `code/*.rpx`, `content/`, and Wii U title metadata. Installed updates
+are paired with their base games. RPX demos can use `code/*.rpx` without a title ID, or
+be loose `.rpx` files inside the library or its immediate subfolders. Demo metadata and
+artwork are optional. Local game data is not included in this integration.
+
+The launcher sets the native Vulkan rasterizer, resident texture/target, deferred/lazy
+readback, and frame-clock options automatically. Each game runs in its own process;
+Stop ends that process, and Open Log displays its session output. These experimental
+paths do not guarantee complete graphical accuracy or real-time playback.
+
+Build requirements include CMake >= 3.28.1, a C++23 compiler, Qt >= 6.6.2, SDL2,
+SDL2_image, Vulkan, zlib, and FFmpeg >= 6.0. Native CPU compilation is optional:
+
+```bash
+cmake -S . -B build-llvm -DCMAKE_BUILD_TYPE=Release -DWEMU_ENABLE_LLVM=ON
+cmake --build build-llvm --parallel 2
+```
+
+This requires LLVM 19.1 development files. `WEMU_NATIVE_CPU=1` opts into LLVM CPU
+execution for direct core launches. Desktop launches prefer the existing x86-64
+recompiler when the core includes it, then LLVM when available. Disabling the
+`emulation/nativeCpu` setting selects the cached interpreter. The x86-64 backend
+checks host instruction support and falls back to interpretation when unavailable.
+Direct core launches can select it with `WEMU_X64_JIT=1`.
+
+GX2 strip assembly, resource-backed shaders and tiled depth allocations now let
+Smash's intro render its complete movie quad with colour and keep the supported
+depth passes on Vulkan. Measurements and the reusable capture tool are described
+in [GX2 movie rendering](docs/features/gx2-movie-rendering.md).
 
 ### Running Tests
 
@@ -103,12 +144,40 @@ cmake --build . -j$(nproc)
 # Via setup.sh
 ./setup.sh --test
 
-# Or manually
-cd cmake-build-debug && ctest --output-on-failure
+# Or manually (from the repository root)
+ctest --test-dir build --output-on-failure
+
+# Include headless Vulkan shader/readback comparisons when a driver is available
+WEMU_TEST_VULKAN=1 ctest --test-dir build --output-on-failure
 
 # Run a specific test
-./cmake-build-debug/wemu_tests --gtest_filter=InstructionTest.ADD_NoOE_NoRc
+./build/core/tests/wemu_tests --gtest_filter=InstructionTest.ADD_NoOE_NoRc
 ```
+
+### Diagnostic tools
+
+`python3 scratchpad/rpxtool.py --rpx /path/to/game.rpx secs` lists RPX sections; its
+`word`, `callers`, and `xref` commands inspect guest code. `disasm` and `store`
+also require the optional Python `capstone` package. The RPX path is always
+explicit; no personal game path is embedded in the tool.
+
+`python3 scratchpad/raster_profile.py session.log` summarizes completed draw timings.
+`python3 scratchpad/compare_raster_profiles.py before.log after.log` compares matching
+draws. Add `--ignore-pixel-count` when comparing software and native paths: native
+draws currently omit pixel counts. Their totals describe draw work, not whole-session FPS.
+
+Native shader support includes isolated whole-quad
+ALU whose helper results cannot escape a masked region; general quad execution,
+implicit derivatives remain incomplete. Shared depth rendering supports depth
+exports, compare/write state, clears, perspective varyings and versioned GPU
+depth images. Float32 and UNORM16/24 depth views use canonical float storage;
+fixed-point writes are rounded in a GPU compute pass after depth comparison.
+Stencil, floating 24-bit depth, multisampling and complete clipping remain
+outside the validated native subset. `WEMU_NATIVE_DEPTH=0` selects software
+depth rendering for comparison while retaining the other native draw paths.
+Linear R32 float textures can upload their guest GPU bytes directly, including
+padded rows, without a temporary float expansion. Tiled sources retain layout
+conversion; component mapping, filtering and content-based reuse are preserved.
 
 ---
 
@@ -116,17 +185,24 @@ cd cmake-build-debug && ctest --output-on-failure
 
 ```
 WEMU/
-├── core/               # PowerPC interpreter, ELF/RPX loader, CPU state
+├── core/               # Emulator executable, CPU, HLE, and GPU pipeline
 │   ├── src/binary/     # ELF/RPX loader + big-endian decoder
 │   ├── src/cpu/        # Interpreter, registers, instruction implementations
 │   │   └── tables/     # X-macro tables: cpu_instructions.anh, cpu_fields.anh
+│   ├── src/gfx/        # GX2 replay, Latte shaders, and Vulkan rendering
+│   ├── src/hle/        # OS services, scheduler, heaps, filesystem, and audio callbacks
+│   ├── src/video/      # H.264 decoding
 │   └── tests/          # GoogleTest unit tests
 ├── gui/                # Qt6/QML launcher and input management
 │   └── src/input/      # IInputDevice, KeyboardInput, SDLGamepadInput
-├── vulkan/             # Vulkan/GLFW rendering engine
-├── BE-elfanalyzer/     # Utility for inspecting ELF/RPX binaries
+└── scratchpad/         # RPX inspection and raster profiling tools
 
 ```
+
+The loaded binary owns guest RAM. The loader transfers it to the interpreter without
+copying the buffer; instruction fetch, data accesses, HLE, and diagnostics share that
+same memory. Memory is move-only, and typed reads/writes validate the complete access
+range while preserving big-endian values and unaligned guest accesses.
 
 ### Adding a PowerPC Instruction
 
@@ -160,10 +236,24 @@ Feature branches are developed off `dev`. Only `dev` can be merged into `main`.
 
 ## Legal Notice
 
-WEMU does not include or distribute any Nintendo copyrighted material. To use this emulator, you must own a physical Wii U console and legally dump your own games and system files.
+WEMU is an independent and unofficial open-source Wii U emulator. It is not affiliated with, authorized, sponsored, or endorsed by Nintendo.
+
+WEMU does not include or distribute Nintendo games, firmware, cryptographic keys, SDK files, copyrighted assets, or other proprietary Nintendo material.
+
+Users are responsible for obtaining any games, system files, keys, or other required data lawfully and for complying with the laws applicable in their jurisdiction.
+
+Nintendo, Wii U, and other Nintendo names and trademarks remain the property of their respective owners.
 
 ---
 
 ## License
 
-MIT License — Copyright (c) 2025 Hugo Duchemin. See [LICENSE](LICENSE) for details.
+WEMU's original source code is licensed under the [MIT License](LICENSE).
+
+The MIT License permits use, copying, modification, redistribution, sublicensing use of WEMU.
+
+The MIT License applies only to code and other material for which the WEMU contributors have the necessary rights. It does not grant any rights to Nintendo software, games, firmware, trademarks, cryptographic material, or other third-party intellectual property.
+
+WEMU also uses third-party open-source libraries that remain subject to their respective licenses. See [Third-Party Licenses](THIRD_PARTY_LICENSES.md) for details.
+
+Copyright © 2025-2026 WEMU contributors.

@@ -22,6 +22,68 @@ static void writeFloat(Core::Interpreter *cpu, uint32_t addr, float val)
     cpu->m_memory.write<uint32_t>(addr, bits);
 }
 
+TEST_F(InstructionTest, SingleLoadsPopulateBothPairedLanes)
+{
+    using Op = void (*)(Core::Interpreter &, const EncodedInstruction &);
+    const Op loads[] = {Core::Instruction::LFS, Core::Instruction::LFSU, Core::Instruction::LFSX, Core::Instruction::LFSUX};
+    for (const Op load: loads) {
+        writeFloat(cpu, TEST_ADDR, -2.5f);
+        cpu->m_gpr[1] = TEST_ADDR;
+        cpu->m_gpr[2] = 0;
+        cpu->m_ps1[4] = 99.0;
+        EncodedInstruction inst(0);
+        inst.frt = 4;
+        inst.ra = 1;
+        if (load == Core::Instruction::LFSX || load == Core::Instruction::LFSUX)
+            inst.rb = 2;
+        load(*cpu, inst);
+        EXPECT_DOUBLE_EQ(cpu->m_fpr[4], -2.5);
+        EXPECT_DOUBLE_EQ(cpu->m_ps1[4], -2.5);
+    }
+}
+
+TEST_F(InstructionTest, SingleArithmeticPopulatesBothPairedLanes)
+{
+    using Op = void (*)(Core::Interpreter &, const EncodedInstruction &);
+    const struct {
+            Op op;
+            double expected;
+    } cases[] = {
+            {Core::Instruction::FADDS, 8.0},   {Core::Instruction::FSUBS, 4.0},     {Core::Instruction::FMULS, 18.0},
+            {Core::Instruction::FDIVS, 3.0},   {Core::Instruction::FRES, 0.5},      {Core::Instruction::FMADDS, 20.0},
+            {Core::Instruction::FMSUBS, 16.0}, {Core::Instruction::FNMADDS, -20.0}, {Core::Instruction::FNMSUBS, -16.0},
+            {Core::Instruction::FRSP, 2.0},
+    };
+    for (const auto &test: cases) {
+        cpu->m_fpr[1] = 6.0;
+        cpu->m_fpr[2] = 2.0;
+        cpu->m_fpr[3] = 3.0;
+        cpu->m_ps1[1] = 99.0;
+        EncodedInstruction inst(0);
+        inst.frt = 1; // also exercise destination/source overlap
+        inst.fra = 1;
+        inst.frb = 2;
+        inst.frc = 3;
+        test.op(*cpu, inst);
+        EXPECT_DOUBLE_EQ(cpu->m_fpr[1], test.expected);
+        EXPECT_DOUBLE_EQ(cpu->m_ps1[1], test.expected);
+    }
+}
+
+TEST_F(InstructionTest, DoubleArithmeticPreservesSecondPairedLane)
+{
+    cpu->m_fpr[1] = 6.0;
+    cpu->m_fpr[2] = 2.0;
+    cpu->m_ps1[1] = 99.0;
+    EncodedInstruction inst(0);
+    inst.frt = 1;
+    inst.fra = 1;
+    inst.frb = 2;
+    Core::Instruction::FADD(*cpu, inst);
+    EXPECT_DOUBLE_EQ(cpu->m_fpr[1], 8.0);
+    EXPECT_DOUBLE_EQ(cpu->m_ps1[1], 99.0);
+}
+
 //
 // ─────────────────────────────────────────────────────────────────────────────
 //  LFS — basic load of 1.0f

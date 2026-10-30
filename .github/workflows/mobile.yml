@@ -1,0 +1,92 @@
+name: Mobile GamePad app
+
+# Builds the phone GamePad app: an APK on Linux and an unsigned IPA on macOS (re-signed at install
+# time with Sideloadly/AltStore). Artifacts are attached to each run.
+on:
+  push:
+    paths: ['mobile/**', '.github/workflows/mobile.yml']
+  pull_request:
+    paths: ['mobile/**', '.github/workflows/mobile.yml']
+  workflow_dispatch:
+
+env:
+  FLUTTER_VERSION: '3.47.7'
+
+jobs:
+  test:
+    name: Analyze and test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter test
+
+  android:
+    name: Android APK
+    needs: test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: flutter build apk --release
+      - run: mv build/app/outputs/flutter-apk/app-release.apk build/wemu-gamepad.apk
+      # Unzipped, so a phone downloads the .apk itself rather than a zip around it.
+      - uses: actions/upload-artifact@v7
+        with:
+          path: mobile/build/wemu-gamepad.apk
+          archive: false
+          if-no-files-found: error
+
+  ios:
+    name: iOS IPA (unsigned)
+    needs: test
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: flutter build ios --release --no-codesign
+      # --no-codesign leaves the Runner executable with no signature at all, which
+      # re-signing tools (Feather/zsign, ESign) refuse. An ad-hoc signature gives
+      # them one to replace; Sideloadly and AltStore accept either.
+      - name: Ad-hoc sign
+        run: codesign --force --deep --sign - build/ios/iphoneos/Runner.app
+      # An .ipa is a zip with the app bundle under Payload/.
+      - name: Package IPA
+        run: |
+          mkdir -p build/ipa/Payload
+          cp -R build/ios/iphoneos/Runner.app build/ipa/Payload/
+          cd build/ipa && zip -qry ../wemu-gamepad.ipa Payload
+      - uses: actions/upload-artifact@v7
+        with:
+          path: mobile/build/wemu-gamepad.ipa
+          archive: false
+          if-no-files-found: error

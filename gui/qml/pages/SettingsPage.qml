@@ -76,12 +76,78 @@ Rectangle {
 
                 Text {
                     anchors.verticalCenter: parent.verticalCenter
-                    text: "Input Settings"
+                    text: "Settings"
                     color: "#1a1a1a"
                     font.pixelSize: 18
                     font.bold: true
                 }
             }
+        }
+
+        Rectangle {
+            Layout.fillWidth: true
+            implicitHeight: consoleSettings.implicitHeight + 24
+            color: "#f5f5f8"
+            radius: 10
+            border.color: "#d0d0d5"
+
+            ColumnLayout {
+                id: consoleSettings
+                anchors.fill: parent
+                anchors.margins: 12
+                spacing: 8
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 12
+                    Label { text: "Game language"; color: "#1a1a1a" }
+                    ComboBox {
+                        id: languageChoice
+                        objectName: "systemLanguageChoice"
+                        Layout.preferredWidth: 190
+                        model: ["Japanese", "English", "French", "German", "Italian", "Spanish",
+                                "Chinese (simplified)", "Korean", "Dutch", "Portuguese", "Russian", "Chinese (traditional)"]
+                        currentIndex: EmulatorLauncher.systemLanguage
+                        onActivated: EmulatorLauncher.systemLanguage = currentIndex
+                    }
+                    Label { text: "Console region"; color: "#1a1a1a" }
+                    ComboBox {
+                        objectName: "systemRegionChoice"
+                        Layout.fillWidth: true
+                        property var regionIds: [0, 1, 2, 4, 16, 32, 64]
+                        model: ["Automatic (game region)", "Japan", "North America", "Europe", "China", "Korea", "Taiwan"]
+                        currentIndex: regionIds.indexOf(EmulatorLauncher.systemRegion)
+                        onActivated: EmulatorLauncher.systemRegion = regionIds[currentIndex]
+                    }
+                }
+                Label {
+                    Layout.fillWidth: true
+                    text: "Applies when you next launch a game. Text and subtitles use languages included in the game."
+                    color: "#555555"
+                    wrapMode: Text.WordWrap
+                }
+            }
+        }
+
+        RowLayout {
+            Layout.fillWidth: true
+            Label { text: "Volume"; color: "#1a1a1a" }
+            Slider {
+                objectName: "audioVolumeSlider"
+                Layout.fillWidth: true
+                from: 0; to: 100; stepSize: 1
+                value: EmulatorLauncher.audioVolume
+                onMoved: EmulatorLauncher.audioVolume = Math.round(value)
+            }
+            Label {
+                text: EmulatorLauncher.audioVolume === 0 ? "Muted" : EmulatorLauncher.audioVolume + "%"
+                color: "#1a1a1a"
+                Layout.preferredWidth: 60
+            }
+        }
+
+        RemoteGamepadPanel {
+            Layout.fillWidth: true
         }
 
         RowLayout {

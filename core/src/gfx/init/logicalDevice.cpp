@@ -6,6 +6,7 @@
 #include <stdexcept>
 
 #include "../Renderer.hpp"
+#include "../VulkanPortability.hpp"
 
 void Renderer::createLogicalDevice()
 {
@@ -34,8 +35,10 @@ void Renderer::createLogicalDevice()
     createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     createInfo.queueCreateInfoCount = static_cast<uint32_t>(queueCreateInfos.size());
     createInfo.pQueueCreateInfos = queueCreateInfos.data();
-    createInfo.enabledExtensionCount = static_cast<uint32_t>(deviceExtensions.size());
-    createInfo.ppEnabledExtensionNames = deviceExtensions.data();
+    std::vector<const char *> extensions = deviceExtensions;
+    Core::Gfx::Portability::enableSubset(m_physicalDevice, extensions);
+    createInfo.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
+    createInfo.ppEnabledExtensionNames = extensions.data();
 
     createInfo.pEnabledFeatures = &deviceFeatures;
 

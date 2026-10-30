@@ -1,109 +1,98 @@
+#include <QCommandLineParser>
+#include <QDir>
+#include <QFileInfo>
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
-#include <QDebug>
-#include <QDir>
+#include <QQuickStyle>
+#include <QSettings>
 #include <SDL2/SDL.h>
-#include "input/IInputDevice.hpp"
+
+#include "emulator/EmulatorLauncher.hpp"
+#include "emulator/GameView.hpp"
+#include "emulator/SessionProbe.hpp"
 #include "input/InputManager.hpp"
 #include "input/InputProfileManager.hpp"
 #include "input/KeyboardInput.hpp"
 #include "library/TitleScanner.hpp"
-#include "emulator/EmulatorLauncher.hpp"
-#include "gfx/VulkanOutputWindow.hpp"
+#include "remote/RemoteGamepadServer.hpp"
+
+namespace {
+    void configureGpuPreference()
+    {
+#ifdef Q_OS_LINUX
+        // PRIME must be configured before SDL/Qt initialize graphics. Respect explicit device choices.
+        for (const auto *key : {"__NV_PRIME_RENDER_OFFLOAD", "__NV_PRIME_RENDER_OFFLOAD_PROVIDER",
+                                "__GLX_VENDOR_LIBRARY_NAME", "__VK_LAYER_NV_optimus", "DRI_PRIME",
+                                "VK_DRIVER_FILES", "VK_ICD_FILENAMES"}) {
+            if (qEnvironmentVariableIsSet(key)) return;
+        }
+        // A render node bound to nvidia identifies an available NVIDIA driver, including its open kernel module.
+        const QDir drm(QStringLiteral("/sys/class/drm"));
+        for (const auto &node : drm.entryList({QStringLiteral("renderD*")}, QDir::Dirs)) {
+            const auto driver = QFileInfo(drm.filePath(node + "/device/driver")).canonicalFilePath();
+            if (QFileInfo(driver).fileName() != "nvidia") continue;
+            qputenv("__NV_PRIME_RENDER_OFFLOAD", "1");
+            qputenv("__GLX_VENDOR_LIBRARY_NAME", "nvidia");
+            qputenv("__VK_LAYER_NV_optimus", "NVIDIA_only");
+            qInfo("[GPU] NVIDIA PRIME offloading enabled");
+            break;
+        }
+#endif
+    }
+}
 
 int main(int argc, char *argv[])
 {
+    configureGpuPreference();
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
-    if (SDL_Init(SDL_INIT_GAMECONTROLLER) != 0) {
-        qFatal("SDL_Init failed: %s", SDL_GetError());
-    }
-
+    if (SDL_Init(SDL_INIT_GAMECONTROLLER) != 0) qFatal("SDL_Init failed: %s", SDL_GetError());
     QGuiApplication app(argc, argv);
-    QGuiApplication::setApplicationName("wemu");
-
-    app.setQuitOnLastWindowClosed(false);
+    app.setOrganizationName("WEMU");
+    app.setApplicationName("WEMU");
+#ifdef Q_OS_MACOS
+    // The native macOS style ignores the custom backgrounds the QML controls draw; use the Linux default.
+    if (qEnvironmentVariableIsEmpty("QT_QUICK_CONTROLS_STYLE")) QQuickStyle::setStyle("Fusion");
+#endif
+    QCommandLineParser parser;
+    parser.addHelpOption();
+    parser.addOption({"library", "Select a game library folder.", "directory"});
+    parser.process(app);
+    InputManager input;
+    auto *keyboard = new KeyboardInput();
+    input.addDevice(keyboard);
+    InputProfileManager profiles;
+    TitleScanner scanner;
+    EmulatorLauncher launcher;
+    auto library = parser.isSet("library") ? parser.value("library") : QSettings().value("library/directory").toString();
+    if (!parser.isSet("library") && (library.isEmpty() || !QDir(library).exists()))
+        library = TitleScanner::defaultLibraryPath(QCoreApplication::applicationDirPath(), QDir::currentPath());
+    if (!library.isEmpty()) scanner.scanDirectory(library, !parser.isSet("library"));
+    RemoteGamepadServer remoteGamepad(launcher, scanner);
     QQmlApplicationEngine engine;
-
-    auto inputManager = new InputManager();
-    auto keyboard = new KeyboardInput();
-    auto titleScanner = new TitleScanner(&app);
-    inputManager->addDevice(keyboard);
-
-    auto inputProfileManager = new InputProfileManager();
-
-    engine.rootContext()->setContextProperty("InputManager", inputManager);
-    engine.rootContext()->setContextProperty("InputProfileManager", inputProfileManager);
-    engine.rootContext()->setContextProperty("TitleScanner", titleScanner);
-
-    auto emulatorLauncher = new EmulatorLauncher(&app);
-    emulatorLauncher->connectInput(inputManager, inputProfileManager);
-    engine.rootContext()->setContextProperty("EmulatorLauncher", emulatorLauncher);
-
-    const QString gamesPath = QDir::cleanPath(QCoreApplication::applicationDirPath() + "/../../games");
-    titleScanner->scanDirectory(gamesPath);
-
-    QObject::connect(&engine, &QQmlApplicationEngine::objectCreationFailed,
-                     &app, []() { QCoreApplication::exit(-1); }, Qt::QueuedConnection);
-
+    qmlRegisterType<GameView>("Wemu", 1, 0, "GameView");
+    engine.rootContext()->setContextProperty("InputManager", &input);
+    engine.rootContext()->setContextProperty("InputProfileManager", &profiles);
+    engine.rootContext()->setContextProperty("TitleScanner", &scanner);
+    engine.rootContext()->setContextProperty("EmulatorLauncher", &launcher);
+    engine.rootContext()->setContextProperty("RemoteGamepad", &remoteGamepad);
+    QObject::connect(&input, &InputManager::inputUpdated, &launcher, [&input, &profiles, &launcher] {
+        const auto pad = input.controllerState(profiles.bindings());
+        launcher.setControllerInput(pad.buttons, pad.leftStick, pad.rightStick);
+    });
+    QObject::connect(&engine, &QQmlApplicationEngine::objectCreationFailed, &app,
+                     []() { QCoreApplication::exit(-1); }, Qt::QueuedConnection);
+    QObject::connect(&app, &QGuiApplication::aboutToQuit, &input, &InputManager::stopPolling);
+    QObject::connect(&app, &QGuiApplication::aboutToQuit, &launcher, &EmulatorLauncher::stop);
     engine.load(QUrl("qrc:/assets/qml/Main.qml"));
-
-    auto *rootWindow = qobject_cast<QWindow *>(engine.rootObjects().first());
-    auto *vulkanWindow = new VulkanOutputWindow();
-    vulkanWindow->setTitle("WEMU");
-
-    emulatorLauncher->setVulkanOutput(vulkanWindow);
-
-    QObject::connect(emulatorLauncher, &EmulatorLauncher::stateChanged,
-                     rootWindow, [rootWindow, vulkanWindow](bool running) {
-        if (running) {
-            vulkanWindow->resize(rootWindow->size());
-            vulkanWindow->setPosition(rootWindow->position());
-        } else {
-            vulkanWindow->hide();
-        }
-    });
-
-    QObject::connect(emulatorLauncher, &EmulatorLauncher::rendererReady,
-                     rootWindow, [vulkanWindow]() {
-        vulkanWindow->show();
-        vulkanWindow->raise();
-        vulkanWindow->requestActivate();
-    });
-
-    QObject::connect(vulkanWindow, &VulkanOutputWindow::escapePressed,
-                     emulatorLauncher, &EmulatorLauncher::stop);
-
-    QObject::connect(keyboard, &KeyboardInput::keyStateChanged,
-                     emulatorLauncher, [emulatorLauncher](const QString &key, bool pressed) {
-        if (pressed && key == "Escape")
-            emulatorLauncher->stop();
-    });
-
-
-    struct CloseWatcher : QObject {
-        using QObject::QObject;
-        bool eventFilter(QObject *, QEvent *e) override {
-            if (e->type() == QEvent::Close)
-                QCoreApplication::exit(0);
-            return false;
-        }
-    };
-    rootWindow->installEventFilter(new CloseWatcher(&app));
-
-    QObject::connect(&app, &QGuiApplication::aboutToQuit,
-                     inputManager, &InputManager::stopPolling);
-
-    QObject::connect(&app, &QGuiApplication::aboutToQuit,
-                     emulatorLauncher, &EmulatorLauncher::stop);
-
-    qDebug() << "Emulator GUI started with persistent InputManager";
-
-    const int ret = app.exec();
-
-    delete emulatorLauncher;   // destroys the Renderer
-    delete vulkanWindow;       // destroys the Vulkan surface + instance
-    delete inputManager;       // closes SDL game controllers
-    SDL_Quit();
-    return ret;
+    if (engine.rootObjects().isEmpty()) return 1;
+    auto *gameView = engine.rootObjects().first()->findChild<GameView *>("gameView");
+    if (!gameView)
+        qFatal("The game presentation item was not created");
+    QObject::connect(&launcher, &EmulatorLauncher::frameReady, gameView, &GameView::setFrame);
+    QObject::connect(gameView, &GameView::framePresented, &launcher, &EmulatorLauncher::acknowledgeFrame);
+    installSessionProbe(app, launcher, *gameView);
+    const int result = app.exec();
+    input.stopPolling();
+    return result;
 }

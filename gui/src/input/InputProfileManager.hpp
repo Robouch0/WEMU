@@ -15,6 +15,8 @@ class InputProfileManager : public QObject {
 
         [[nodiscard]] QVariantList bindingModel() const;
         [[nodiscard]] int currentProfileIndex() const;
+        // The active profile: Wii U button -> controller button.
+        [[nodiscard]] const QMap<QString, QString> &bindings() const { return m_profiles[m_currentIndex].bindings; }
 
         Q_INVOKABLE void setBinding(const QString &wiiuButton, const QString &xboxButton);
         Q_INVOKABLE [[nodiscard]] QString getBinding(const QString &wiiuButton) const;

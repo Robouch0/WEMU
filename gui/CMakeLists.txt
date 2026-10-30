@@ -9,11 +9,11 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Quick QuickControls2)
-find_package(Vulkan REQUIRED)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Quick QuickControls2 Network)
 
 qt_standard_project_setup(REQUIRES 6.6.2)
 find_package(SDL2 REQUIRED)
+find_package(SDL2_image REQUIRED)
 
 qt_add_executable(appgui
     src/main.cpp
@@ -23,7 +23,9 @@ qt_add_executable(appgui
     src/input/InputProfileManager.cpp
     src/library/TitleScanner.cpp
     src/emulator/EmulatorLauncher.cpp
-    src/gfx/VulkanOutputWindow.cpp
+    src/emulator/GameView.cpp
+    src/emulator/SessionProbe.cpp
+    src/remote/RemoteGamepadServer.cpp
 )
 
 
@@ -33,8 +35,11 @@ target_sources(appgui PRIVATE
         src/input/InputManager.hpp
         src/input/SDLGamepadInput.hpp
         src/input/InputProfile.hpp
+        src/input/ControllerMapping.hpp
         src/input/InputProfileManager.hpp
         src/library/TitleScanner.hpp
+        src/remote/RemoteProtocol.hpp
+        src/remote/RemoteGamepadServer.hpp
 )
 
 qt_add_qml_module(appgui
@@ -45,12 +50,16 @@ qt_add_qml_module(appgui
         qml/pages/IntroSequence.qml
         qml/pages/MainMenu.qml
         qml/pages/SettingsPage.qml
+        qml/pages/GameSessionView.qml
+        qml/components/SessionMenuButton.qml
         qml/components/ControllerPreview.qml
         qml/components/ControllerButton.qml
         qml/components/DpadButton.qml
         qml/components/ControllerStick.qml
         qml/components/GamepadPreview.qml
         qml/components/BindingRow.qml
+        qml/components/RemoteGamepadBadge.qml
+        qml/components/RemoteGamepadPanel.qml
 )
 
 qt_add_resources(APPGUI_QRC resources.qrc)
@@ -62,13 +71,13 @@ set_target_properties(appgui PROPERTIES
 
 target_include_directories(appgui
         PRIVATE
-        ${CMAKE_SOURCE_DIR}/core/src/
-        ${CMAKE_SOURCE_DIR}/gui/src/input
-        ${CMAKE_SOURCE_DIR}/gui/src/library
-        ${CMAKE_SOURCE_DIR}/gui/src/emulator
-        ${CMAKE_SOURCE_DIR}/gui/src/gfx
+        ${CMAKE_CURRENT_SOURCE_DIR}/../core/src/
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/input
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/library
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/emulator
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/gfx
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/remote
         ${Qt6Core_INCLUDE_DIRS}
-        ${Vulkan_INCLUDE_DIRS}
 )
 
 target_link_libraries(appgui
@@ -77,10 +86,60 @@ target_link_libraries(appgui
         Qt6::Quick
         Qt6::Gui
         Qt6::QuickControls2
-        Vulkan::Vulkan
+        Qt6::Network
         SDL2::SDL2
-        core
+        SDL2_image::SDL2_image
 )
+target_compile_definitions(appgui PRIVATE WEMU_CORE_BINARY="$<TARGET_FILE:wemu>")
+if(WEMU_ENABLE_LLVM)
+    target_compile_definitions(appgui PRIVATE WEMU_GUI_HAS_LLVM=1)
+endif()
+get_target_property(wemu_core_features core INTERFACE_COMPILE_DEFINITIONS)
+if("WEMU_HAS_X64_JIT=1" IN_LIST wemu_core_features)
+    target_compile_definitions(appgui PRIVATE WEMU_GUI_HAS_X64_JIT=1)
+endif()
+add_dependencies(appgui wemu)
+file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/WEMU.desktop" CONTENT
+"[Desktop Entry]\nType=Application\nName=WEMU\nComment=Game library and emulator\nExec=\"$<TARGET_FILE:appgui>\"\nIcon=applications-games\nTerminal=false\nCategories=Game;Emulator;\nPrefersNonDefaultGPU=true\n")
+
+add_executable(wemu_library_tests tests/TitleScannerTest.cpp src/library/TitleScanner.cpp src/library/TitleScanner.hpp)
+target_include_directories(wemu_library_tests PRIVATE src/library)
+target_link_libraries(wemu_library_tests PRIVATE Qt6::Core Qt6::Gui SDL2::SDL2 SDL2_image::SDL2_image)
+enable_testing()
+add_test(NAME wemu_library_tests COMMAND wemu_library_tests)
+add_executable(wemu_launch_environment_tests tests/LaunchEnvironmentTest.cpp)
+target_include_directories(wemu_launch_environment_tests PRIVATE src/emulator)
+target_link_libraries(wemu_launch_environment_tests PRIVATE Qt6::Core)
+add_test(NAME wemu_launch_environment_tests COMMAND wemu_launch_environment_tests)
+
+add_executable(wemu_session_protocol_tests tests/SessionProtocolTest.cpp)
+target_include_directories(wemu_session_protocol_tests PRIVATE ../core/src src/emulator)
+target_link_libraries(wemu_session_protocol_tests PRIVATE Qt6::Core Qt6::Gui gtest_main)
+add_test(NAME wemu_session_protocol_tests COMMAND wemu_session_protocol_tests)
+
+add_executable(wemu_remote_protocol_tests tests/RemoteProtocolTest.cpp)
+target_include_directories(wemu_remote_protocol_tests PRIVATE ../core/src src/remote)
+target_link_libraries(wemu_remote_protocol_tests PRIVATE Qt6::Core gtest_main)
+add_test(NAME wemu_remote_protocol_tests COMMAND wemu_remote_protocol_tests)
+
+add_executable(wemu_controller_mapping_tests tests/ControllerMappingTest.cpp)
+target_include_directories(wemu_controller_mapping_tests PRIVATE src/input)
+target_link_libraries(wemu_controller_mapping_tests PRIVATE Qt6::Core gtest_main)
+add_test(NAME wemu_controller_mapping_tests COMMAND wemu_controller_mapping_tests)
+
+add_executable(wemu_session_lifecycle_tests tests/SessionLifecycleTest.cpp src/emulator/EmulatorLauncher.cpp)
+target_include_directories(wemu_session_lifecycle_tests PRIVATE src/emulator src/input ../core/src)
+target_compile_definitions(wemu_session_lifecycle_tests PRIVATE WEMU_CORE_BINARY="$<TARGET_FILE:wemu>")
+if(WEMU_ENABLE_LLVM)
+    target_compile_definitions(wemu_session_lifecycle_tests PRIVATE WEMU_GUI_HAS_LLVM=1)
+endif()
+if("WEMU_HAS_X64_JIT=1" IN_LIST wemu_core_features)
+    target_compile_definitions(wemu_session_lifecycle_tests PRIVATE WEMU_GUI_HAS_X64_JIT=1)
+endif()
+target_link_libraries(wemu_session_lifecycle_tests PRIVATE Qt6::Core Qt6::Gui Qt6::Network gtest)
+add_dependencies(wemu_session_lifecycle_tests wemu)
+add_test(NAME wemu_session_lifecycle_tests COMMAND wemu_session_lifecycle_tests)
+set_tests_properties(wemu_session_lifecycle_tests PROPERTIES ENVIRONMENT "XDG_DATA_HOME=${CMAKE_CURRENT_BINARY_DIR}/session-test-data")
 
 include(GNUInstallDirs)
 install(TARGETS appgui
