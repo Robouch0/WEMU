@@ -9,6 +9,7 @@ Basic.Button {
     property bool soft: false
     property bool destructive: false
     property string iconPath: ""
+    property string clickSound: "confirm"
     readonly property color contentColor: primary ? Theme.textOnAccent
                                         : soft ? (hovered ? Theme.accentHover : Theme.accent)
                                         : destructive ? Theme.danger : Theme.text
@@ -24,6 +25,8 @@ Basic.Button {
     opacity: enabled ? 1 : 0.5
     scale: down ? 0.97 : 1
     Behavior on scale { NumberAnimation { duration: Theme.durationFast; easing.type: Easing.OutCubic } }
+
+    onClicked: if (clickSound !== "") MenuAudio.play(clickSound)
 
     Keys.onReturnPressed: clicked()
     Keys.onEnterPressed: clicked()

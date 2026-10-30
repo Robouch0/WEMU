@@ -19,6 +19,7 @@ Rectangle {
     function launchCurrent() {
         if (EmulatorLauncher.running || !selected) return
         AppPreferences.lastGame = selected.gameRpxPath
+        MenuAudio.play("launch")
         EmulatorLauncher.launch(selected.gameRpxPath, selected.gameName, selected.gameContentPath)
     }
 
@@ -137,7 +138,10 @@ Rectangle {
 
         // Keys left unhandled by a header button return to the games.
         Keys.onDownPressed: page.focusContent()
-        Keys.onEscapePressed: page.focusContent()
+        Keys.onEscapePressed: {
+            MenuAudio.play("back")
+            page.focusContent()
+        }
     }
 
     // ─────────────────────────────────────────────────────────── empty state
@@ -302,6 +306,7 @@ Rectangle {
                 Layout.topMargin: Theme.space3
                 Layout.preferredHeight: 52
                 primary: true
+                clickSound: ""
                 focusPolicy: Qt.NoFocus
                 font.pixelSize: Theme.fontSubtitle
                 text: qsTr("▶  Play")
@@ -376,7 +381,11 @@ Rectangle {
 
         // A rescan resets the model; keep the selection on the same row when it can.
         property int indexBeforeReset: 0
-        onCurrentIndexChanged: if (count > 0) indexBeforeReset = currentIndex
+        onCurrentIndexChanged: {
+            if (count === 0) return
+            indexBeforeReset = currentIndex
+            if (activeFocus) MenuAudio.play("move")
+        }
         onCountChanged: Qt.callLater(() => {
             if (grid.count > 0) {
                 page.selectIndex(grid.indexBeforeReset)

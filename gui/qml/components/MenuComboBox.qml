@@ -31,6 +31,9 @@ Basic.ComboBox {
         }
     }
 
+    onActivated: MenuAudio.play("confirm")
+    onHighlightedIndexChanged: if (popup.visible) MenuAudio.play("move")
+
     Keys.onUpPressed: event => {
         if (popup.visible) event.accepted = false
         else if (navigateUp) navigateUp.forceActiveFocus()

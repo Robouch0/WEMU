@@ -144,107 +144,107 @@
 <context>
     <name>MainMenu</name>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="36" />
+        <location filename="../qml/pages/MainMenu.qml" line="37" />
         <source>KB</source>
         <translation>KB</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="36" />
+        <location filename="../qml/pages/MainMenu.qml" line="37" />
         <source>MB</source>
         <translation>MB</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="36" />
+        <location filename="../qml/pages/MainMenu.qml" line="37" />
         <source>GB</source>
         <translation>GB</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="36" />
+        <location filename="../qml/pages/MainMenu.qml" line="37" />
         <source>TB</source>
         <translation>TB</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="67" />
+        <location filename="../qml/pages/MainMenu.qml" line="68" />
         <source>Game library folder</source>
         <translation>Carpeta de la biblioteca de juegos</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="105" />
+        <location filename="../qml/pages/MainMenu.qml" line="106" />
         <source>1 game</source>
         <translation>1 juego</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="105" />
+        <location filename="../qml/pages/MainMenu.qml" line="106" />
         <source>%1 games</source>
         <translation>%1 juegos</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="122" />
+        <location filename="../qml/pages/MainMenu.qml" line="123" />
         <source>Games folder</source>
         <translation>Carpeta de juegos</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="132" />
+        <location filename="../qml/pages/MainMenu.qml" line="133" />
         <source>Settings</source>
         <translation>Ajustes</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="159" />
+        <location filename="../qml/pages/MainMenu.qml" line="163" />
         <source>No games found</source>
         <translation>No se encontraron juegos</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="167" />
+        <location filename="../qml/pages/MainMenu.qml" line="171" />
         <source>Choose the folder that holds your Wii U games.</source>
         <translation>Elige la carpeta que contiene tus juegos de Wii U.</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="168" />
+        <location filename="../qml/pages/MainMenu.qml" line="172" />
         <source>This folder has no games or RPX demos. Choose another one.</source>
         <translation>Esta carpeta no tiene juegos ni demos RPX. Elige otra.</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="191" />
+        <location filename="../qml/pages/MainMenu.qml" line="195" />
         <source>Choose folder</source>
         <translation>Elegir carpeta</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="283" />
+        <location filename="../qml/pages/MainMenu.qml" line="287" />
         <source>Version %1</source>
         <translation>Versión %1</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="284" />
+        <location filename="../qml/pages/MainMenu.qml" line="288" />
         <source>Measuring size…</source>
         <translation>Calculando el tamaño…</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="294" />
+        <location filename="../qml/pages/MainMenu.qml" line="298" />
         <source>Controls: Profile %1</source>
         <translation>Controles: perfil %1</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="307" />
+        <location filename="../qml/pages/MainMenu.qml" line="312" />
         <source>▶  Play</source>
         <translation>▶  Jugar</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="327" />
+        <location filename="../qml/pages/MainMenu.qml" line="332" />
         <source>Session log</source>
         <translation>Registro de sesión</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="336" />
+        <location filename="../qml/pages/MainMenu.qml" line="341" />
         <source>A play · Up from the top row for the menu</source>
         <translation>A jugar · Arriba desde la primera fila para el menú</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="337" />
+        <location filename="../qml/pages/MainMenu.qml" line="342" />
         <source>A select · B back to games</source>
         <translation>A elegir · B volver a los juegos</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="416" />
+        <location filename="../qml/pages/MainMenu.qml" line="425" />
         <source>Unknown</source>
         <translation>Desconocido</translation>
     </message>
@@ -354,82 +354,153 @@
 <context>
     <name>SettingsAudioTab</name>
     <message>
-        <location filename="../qml/components/SettingsAudioTab.qml" line="13" />
         <source>Volume</source>
         <translation>Volumen</translation>
     </message>
     <message>
-        <location filename="../qml/components/SettingsAudioTab.qml" line="14" />
+        <location filename="../qml/components/SettingsAudioTab.qml" line="79" />
+        <source>Game volume</source>
+        <translation>Volumen de los juegos</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SettingsAudioTab.qml" line="80" />
         <source>Applies straight away, including to a game that is already running.</source>
         <translation>Se aplica al instante, incluso a un juego en marcha.</translation>
     </message>
     <message>
-        <location filename="../qml/components/SettingsAudioTab.qml" line="30" />
+        <location filename="../qml/components/SettingsAudioTab.qml" line="83" />
+        <location filename="../qml/components/SettingsAudioTab.qml" line="94" />
         <source>Muted</source>
         <translation>Silencio</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SettingsAudioTab.qml" line="90" />
+        <source>Menu volume</source>
+        <translation>Volumen de los menús</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SettingsAudioTab.qml" line="91" />
+        <source>Sounds and music in WEMU's menus. Games are not affected.</source>
+        <translation>Sonidos y música de los menús de WEMU. No afecta a los juegos.</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SettingsAudioTab.qml" line="105" />
+        <source>Menu music</source>
+        <translation>Música de los menús</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SettingsAudioTab.qml" line="108" />
+        <source>A quiet looping track behind the menus. It stops while a game runs.</source>
+        <translation>Una pista suave en bucle en los menús. Se detiene durante los juegos.</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SettingsAudioTab.qml" line="120" />
+        <source>Sound test</source>
+        <translation>Prueba de sonido</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SettingsAudioTab.qml" line="124" />
+        <source>No audio output is available.</source>
+        <translation>No hay ninguna salida de audio disponible.</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SettingsAudioTab.qml" line="125" />
+        <source>Menu volume is muted, so the test will be silent.</source>
+        <translation>El volumen de los menús está silenciado: la prueba no sonará.</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SettingsAudioTab.qml" line="126" />
+        <source>Plays a 5 second sound at the menu volume. The graph shows what WEMU sends to your speakers.</source>
+        <translation>Reproduce un sonido de 5 segundos al volumen de los menús. El gráfico muestra lo que WEMU envía a tus altavoces.</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SettingsAudioTab.qml" line="147" />
+        <location filename="../qml/components/SettingsAudioTab.qml" line="161" />
+        <source>Stop</source>
+        <translation>Detener</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SettingsAudioTab.qml" line="147" />
+        <source>Low sound</source>
+        <translation>Sonido grave</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SettingsAudioTab.qml" line="161" />
+        <source>High sound</source>
+        <translation>Sonido agudo</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SettingsAudioTab.qml" line="192" />
+        <source>Low</source>
+        <translation>Graves</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SettingsAudioTab.qml" line="198" />
+        <source>High</source>
+        <translation>Agudos</translation>
     </message>
 </context>
 <context>
     <name>SettingsControllersTab</name>
     <message>
-        <location filename="../qml/components/SettingsControllersTab.qml" line="121" />
+        <location filename="../qml/components/SettingsControllersTab.qml" line="122" />
         <source>No controller connected</source>
         <translation>Ningún mando conectado</translation>
     </message>
     <message>
-        <location filename="../qml/components/SettingsControllersTab.qml" line="133" />
+        <location filename="../qml/components/SettingsControllersTab.qml" line="134" />
         <source>Exit test</source>
         <translation>Salir de la prueba</translation>
     </message>
     <message>
-        <location filename="../qml/components/SettingsControllersTab.qml" line="133" />
+        <location filename="../qml/components/SettingsControllersTab.qml" line="134" />
         <source>Test</source>
         <translation>Probar</translation>
     </message>
     <message>
-        <location filename="../qml/components/SettingsControllersTab.qml" line="156" />
+        <location filename="../qml/components/SettingsControllersTab.qml" line="157" />
         <source>Button mapping</source>
         <translation>Asignación de botones</translation>
     </message>
     <message>
-        <location filename="../qml/components/SettingsControllersTab.qml" line="167" />
-        <location filename="../qml/components/SettingsControllersTab.qml" line="182" />
-        <location filename="../qml/components/SettingsControllersTab.qml" line="198" />
+        <location filename="../qml/components/SettingsControllersTab.qml" line="168" />
+        <location filename="../qml/components/SettingsControllersTab.qml" line="183" />
+        <location filename="../qml/components/SettingsControllersTab.qml" line="199" />
         <source>Profile %1</source>
         <translation>Perfil %1</translation>
     </message>
     <message>
-        <location filename="../qml/components/SettingsControllersTab.qml" line="217" />
+        <location filename="../qml/components/SettingsControllersTab.qml" line="218" />
         <source>Games use Profile %1</source>
         <translation>En juego: perfil %1</translation>
     </message>
     <message>
-        <location filename="../qml/components/SettingsControllersTab.qml" line="217" />
+        <location filename="../qml/components/SettingsControllersTab.qml" line="218" />
         <source>Games use this profile</source>
         <translation>Perfil usado en juegos</translation>
     </message>
     <message>
-        <location filename="../qml/components/SettingsControllersTab.qml" line="228" />
+        <location filename="../qml/components/SettingsControllersTab.qml" line="229" />
         <source>Use for games</source>
         <translation>Usar en juegos</translation>
     </message>
     <message>
-        <location filename="../qml/components/SettingsControllersTab.qml" line="247" />
+        <location filename="../qml/components/SettingsControllersTab.qml" line="248" />
         <source>Controller</source>
         <translation>Mando</translation>
     </message>
     <message>
-        <location filename="../qml/components/SettingsControllersTab.qml" line="322" />
+        <location filename="../qml/components/SettingsControllersTab.qml" line="326" />
         <source>Esc cancels</source>
         <translation>Esc para cancelar</translation>
     </message>
     <message>
-        <location filename="../qml/components/SettingsControllersTab.qml" line="336" />
+        <location filename="../qml/components/SettingsControllersTab.qml" line="340" />
         <source>Reset to default</source>
         <translation>Restablecer</translation>
     </message>
     <message>
-        <location filename="../qml/components/SettingsControllersTab.qml" line="362" />
+        <location filename="../qml/components/SettingsControllersTab.qml" line="366" />
         <source>Virtual GamePad</source>
         <translation>GamePad virtual</translation>
     </message>
@@ -694,27 +765,27 @@
         <translation>GamePad móvil</translation>
     </message>
     <message>
-        <location filename="../qml/pages/SettingsPage.qml" line="86" />
+        <location filename="../qml/pages/SettingsPage.qml" line="92" />
         <source>← Library</source>
         <translation>← Biblioteca</translation>
     </message>
     <message>
-        <location filename="../qml/pages/SettingsPage.qml" line="168" />
+        <location filename="../qml/pages/SettingsPage.qml" line="178" />
         <source>Hold B to exit test mode</source>
         <translation>Mantén B para salir de la prueba</translation>
     </message>
     <message>
-        <location filename="../qml/pages/SettingsPage.qml" line="169" />
+        <location filename="../qml/pages/SettingsPage.qml" line="179" />
         <source>Waiting for a button</source>
         <translation>Esperando un botón</translation>
     </message>
     <message>
-        <location filename="../qml/pages/SettingsPage.qml" line="170" />
+        <location filename="../qml/pages/SettingsPage.qml" line="180" />
         <source>Down open · LB / RB tabs · B library</source>
         <translation>Abajo abrir · LB / RB pestañas · B biblioteca</translation>
     </message>
     <message>
-        <location filename="../qml/pages/SettingsPage.qml" line="171" />
+        <location filename="../qml/pages/SettingsPage.qml" line="181" />
         <source>A select · LB / RB tabs · B back</source>
         <translation>A elegir · LB / RB pestañas · B volver</translation>
     </message>

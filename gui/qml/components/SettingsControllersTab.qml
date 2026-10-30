@@ -56,6 +56,7 @@ SettingsTabPage {
     function finishCapture(button) {
         const row = bindingList.currentIndex
         InputProfileManager.setBinding(listeningFor, button)
+        MenuAudio.play("confirm")
         listeningFor = ""
         bindingList.currentIndex = row
     }
@@ -269,7 +270,10 @@ SettingsTabPage {
                 model: InputProfileManager.bindingModel
                 property bool confirmPressed: false
 
-                onCurrentIndexChanged: tab.ensureVisible(currentItem)
+                onCurrentIndexChanged: {
+                    tab.ensureVisible(currentItem)
+                    MenuAudio.play("move")
+                }
 
                 Keys.onUpPressed: {
                     if (tab.listeningFor !== "") return

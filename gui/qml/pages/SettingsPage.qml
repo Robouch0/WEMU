@@ -11,7 +11,13 @@ Rectangle {
     readonly property var tabs: [qsTr("General"), qsTr("Audio"), qsTr("Controllers"), qsTr("Mobile GamePad")]
     readonly property string listeningFor: controllersTab.listeningFor
 
+    function leaveTab() {
+        MenuAudio.play("back")
+        rail.forceActiveFocus()
+    }
+
     function goHome() {
+        MenuAudio.play("back")
         rootWindow.settingsTab = 0
         mainLoader.source = "pages/MainMenu.qml"
     }
@@ -84,6 +90,7 @@ Rectangle {
 
                 MenuButton {
                     text: qsTr("← Library")
+                    clickSound: ""
                     focusPolicy: Qt.NoFocus
                     onClicked: page.goHome()
                 }
@@ -102,7 +109,10 @@ Rectangle {
                     highlightMoveVelocity: -1
                     highlightResizeDuration: Theme.durationNormal
                     highlightResizeVelocity: -1
-                    onCurrentIndexChanged: tabEnter.restart()
+                    onCurrentIndexChanged: {
+                        tabEnter.restart()
+                        MenuAudio.play("move")
+                    }
 
                     highlight: Rectangle {
                         radius: Theme.radiusSmall
@@ -190,13 +200,13 @@ Rectangle {
                 NumberAnimation { target: tabShift; property: "y"; from: Theme.space3; to: 0; duration: Theme.durationNormal; easing.type: Easing.OutCubic }
             }
 
-            SettingsGeneralTab { onLeaveRequested: rail.forceActiveFocus() }
-            SettingsAudioTab { onLeaveRequested: rail.forceActiveFocus() }
+            SettingsGeneralTab { onLeaveRequested: page.leaveTab() }
+            SettingsAudioTab { onLeaveRequested: page.leaveTab() }
             SettingsControllersTab {
                 id: controllersTab
-                onLeaveRequested: rail.forceActiveFocus()
+                onLeaveRequested: page.leaveTab()
             }
-            RemoteGamepadPanel { onLeaveRequested: rail.forceActiveFocus() }
+            RemoteGamepadPanel { onLeaveRequested: page.leaveTab() }
         }
     }
 }

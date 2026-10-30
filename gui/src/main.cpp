@@ -8,6 +8,7 @@
 #include <QSettings>
 #include <SDL2/SDL.h>
 
+#include "audio/MenuAudio.hpp"
 #include "emulator/EmulatorLauncher.hpp"
 #include "emulator/GameView.hpp"
 #include "emulator/SessionProbe.hpp"
@@ -75,6 +76,8 @@ int main(int argc, char *argv[])
         library = TitleScanner::defaultLibraryPath(QCoreApplication::applicationDirPath(), QDir::currentPath());
     if (!library.isEmpty()) scanner.scanDirectory(library, !parser.isSet("library"));
     RemoteGamepadServer remoteGamepad(launcher, scanner);
+    MenuAudio menuAudio;
+    QObject::connect(&launcher, &EmulatorLauncher::stateChanged, &menuAudio, &MenuAudio::setGameRunning);
     MenuKeyBridge menuKeys([&launcher] { return !launcher.running(); });
     QObject::connect(&input, &InputManager::buttonChanged, &menuKeys, &MenuKeyBridge::onButtonChanged);
     QObject::connect(&input, &InputManager::axisChanged, &menuKeys, &MenuKeyBridge::onAxisChanged);
@@ -89,6 +92,7 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty("MenuKeys", &menuKeys);
     engine.rootContext()->setContextProperty("AppLanguage", &language);
     engine.rootContext()->setContextProperty("AppPreferences", &preferences);
+    engine.rootContext()->setContextProperty("MenuAudio", &menuAudio);
     QObject::connect(&input, &InputManager::inputUpdated, &launcher, [&input, &profiles, &launcher] {
         const auto pad = input.controllerState(profiles.bindings());
         launcher.setControllerInput(pad.buttons, pad.leftStick, pad.rightStick);

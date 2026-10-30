@@ -19,6 +19,9 @@ qt_add_executable(appgui
     src/main.cpp
     src/i18n/AppLanguage.cpp
     src/settings/AppPreferences.cpp
+    src/audio/MenuAudio.cpp
+    src/audio/MenuMixer.cpp
+    src/audio/SpectrumAnalyzer.cpp
     src/gfx/GlobeDots.cpp
     src/input/KeyboardInput.cpp
     src/input/SDLGamepadInput.cpp
@@ -36,6 +39,9 @@ qt_add_executable(appgui
 target_sources(appgui PRIVATE
         src/i18n/AppLanguage.hpp
         src/settings/AppPreferences.hpp
+        src/audio/MenuAudio.hpp
+        src/audio/MenuMixer.hpp
+        src/audio/SpectrumAnalyzer.hpp
         src/gfx/GlobeDots.hpp
         src/gfx/GlobeLand.hpp
         src/input/IInputDevice.hpp
@@ -75,6 +81,7 @@ qt_add_qml_module(appgui
         qml/components/SettingsTabPage.qml
         qml/components/DottedGlobe.qml
         qml/components/SettingsAudioTab.qml
+        qml/components/SpectrumBars.qml
         qml/components/SettingsGeneralTab.qml
         qml/components/SettingsLiveInput.qml
         qml/components/SettingsControllersTab.qml
@@ -158,6 +165,11 @@ add_executable(wemu_controller_mapping_tests tests/ControllerMappingTest.cpp)
 target_include_directories(wemu_controller_mapping_tests PRIVATE src/input)
 target_link_libraries(wemu_controller_mapping_tests PRIVATE Qt6::Core gtest_main)
 add_test(NAME wemu_controller_mapping_tests COMMAND wemu_controller_mapping_tests)
+
+add_executable(wemu_menu_mixer_tests tests/MenuMixerTest.cpp src/audio/MenuMixer.cpp src/audio/SpectrumAnalyzer.cpp)
+target_include_directories(wemu_menu_mixer_tests PRIVATE src/audio)
+target_link_libraries(wemu_menu_mixer_tests PRIVATE gtest_main)
+add_test(NAME wemu_menu_mixer_tests COMMAND wemu_menu_mixer_tests)
 
 add_executable(wemu_app_preferences_tests tests/AppPreferencesTest.cpp src/settings/AppPreferences.cpp src/settings/AppPreferences.hpp)
 target_include_directories(wemu_app_preferences_tests PRIVATE src/settings)

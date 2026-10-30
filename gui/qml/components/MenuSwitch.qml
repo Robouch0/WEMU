@@ -10,6 +10,8 @@ Basic.Switch {
     text: checked ? qsTr("On") : qsTr("Off")
     spacing: Theme.space2
 
+    onToggled: MenuAudio.play("confirm")
+
     Keys.onReturnPressed: toggle()
     Keys.onEnterPressed: toggle()
 

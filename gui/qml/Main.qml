@@ -13,6 +13,8 @@ ApplicationWindow {
     color: Theme.bg
     title: EmulatorLauncher.running ? "WEMU — " + EmulatorLauncher.gameTitle : "WEMU Library"
 
+    onActiveFocusItemChanged: MenuAudio.play("move")
+
     // Survive the page swap between the library and Settings.
     property int libraryIndex: 0
     property int settingsTab: 0

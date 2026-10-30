@@ -7,6 +7,14 @@
         <file>qml/assets/xboxControllerBackview.png</file>
         <file>qml/assets/wiiuGamepadBackview.png</file>
 
+        <file>qml/assets/sounds/move.wav</file>
+        <file>qml/assets/sounds/confirm.wav</file>
+        <file>qml/assets/sounds/back.wav</file>
+        <file>qml/assets/sounds/launch.wav</file>
+        <file>qml/assets/sounds/music.wav</file>
+        <file>qml/assets/sounds/test_low.wav</file>
+        <file>qml/assets/sounds/test_high.wav</file>
+
         <file>qml/Main.qml</file>
         <file>qml/pages/MainMenu.qml</file>
         <file>qml/pages/IntroSequence.qml</file>

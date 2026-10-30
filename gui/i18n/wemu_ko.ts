@@ -144,107 +144,107 @@
 <context>
     <name>MainMenu</name>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="36" />
+        <location filename="../qml/pages/MainMenu.qml" line="37" />
         <source>KB</source>
         <translation>KB</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="36" />
+        <location filename="../qml/pages/MainMenu.qml" line="37" />
         <source>MB</source>
         <translation>MB</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="36" />
+        <location filename="../qml/pages/MainMenu.qml" line="37" />
         <source>GB</source>
         <translation>GB</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="36" />
+        <location filename="../qml/pages/MainMenu.qml" line="37" />
         <source>TB</source>
         <translation>TB</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="67" />
+        <location filename="../qml/pages/MainMenu.qml" line="68" />
         <source>Game library folder</source>
         <translation>게임 라이브러리 폴더</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="105" />
+        <location filename="../qml/pages/MainMenu.qml" line="106" />
         <source>1 game</source>
         <translation>게임 1개</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="105" />
+        <location filename="../qml/pages/MainMenu.qml" line="106" />
         <source>%1 games</source>
         <translation>게임 %1개</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="122" />
+        <location filename="../qml/pages/MainMenu.qml" line="123" />
         <source>Games folder</source>
         <translation>게임 폴더</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="132" />
+        <location filename="../qml/pages/MainMenu.qml" line="133" />
         <source>Settings</source>
         <translation>설정</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="159" />
+        <location filename="../qml/pages/MainMenu.qml" line="163" />
         <source>No games found</source>
         <translation>게임을 찾을 수 없습니다</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="167" />
+        <location filename="../qml/pages/MainMenu.qml" line="171" />
         <source>Choose the folder that holds your Wii U games.</source>
         <translation>Wii U 게임이 들어 있는 폴더를 선택하세요.</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="168" />
+        <location filename="../qml/pages/MainMenu.qml" line="172" />
         <source>This folder has no games or RPX demos. Choose another one.</source>
         <translation>이 폴더에는 게임이나 RPX 데모가 없습니다. 다른 폴더를 선택하세요.</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="191" />
+        <location filename="../qml/pages/MainMenu.qml" line="195" />
         <source>Choose folder</source>
         <translation>폴더 선택</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="283" />
+        <location filename="../qml/pages/MainMenu.qml" line="287" />
         <source>Version %1</source>
         <translation>버전 %1</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="284" />
+        <location filename="../qml/pages/MainMenu.qml" line="288" />
         <source>Measuring size…</source>
         <translation>크기 계산 중…</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="294" />
+        <location filename="../qml/pages/MainMenu.qml" line="298" />
         <source>Controls: Profile %1</source>
         <translation>조작: 프로필 %1</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="307" />
+        <location filename="../qml/pages/MainMenu.qml" line="312" />
         <source>▶  Play</source>
         <translation>▶  플레이</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="327" />
+        <location filename="../qml/pages/MainMenu.qml" line="332" />
         <source>Session log</source>
         <translation>세션 로그</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="336" />
+        <location filename="../qml/pages/MainMenu.qml" line="341" />
         <source>A play · Up from the top row for the menu</source>
         <translation>A 플레이 · 맨 윗줄에서 위로 이동하면 메뉴</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="337" />
+        <location filename="../qml/pages/MainMenu.qml" line="342" />
         <source>A select · B back to games</source>
         <translation>A 선택 · B 게임으로 돌아가기</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="416" />
+        <location filename="../qml/pages/MainMenu.qml" line="425" />
         <source>Unknown</source>
         <translation>알 수 없음</translation>
     </message>
@@ -354,82 +354,153 @@
 <context>
     <name>SettingsAudioTab</name>
     <message>
-        <location filename="../qml/components/SettingsAudioTab.qml" line="13" />
         <source>Volume</source>
         <translation>음량</translation>
     </message>
     <message>
-        <location filename="../qml/components/SettingsAudioTab.qml" line="14" />
+        <location filename="../qml/components/SettingsAudioTab.qml" line="79" />
+        <source>Game volume</source>
+        <translation>게임 음량</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SettingsAudioTab.qml" line="80" />
         <source>Applies straight away, including to a game that is already running.</source>
         <translation>실행 중인 게임을 포함해 바로 적용됩니다.</translation>
     </message>
     <message>
-        <location filename="../qml/components/SettingsAudioTab.qml" line="30" />
+        <location filename="../qml/components/SettingsAudioTab.qml" line="83" />
+        <location filename="../qml/components/SettingsAudioTab.qml" line="94" />
         <source>Muted</source>
         <translation>음소거</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SettingsAudioTab.qml" line="90" />
+        <source>Menu volume</source>
+        <translation>메뉴 음량</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SettingsAudioTab.qml" line="91" />
+        <source>Sounds and music in WEMU's menus. Games are not affected.</source>
+        <translation>WEMU 메뉴의 효과음과 음악입니다. 게임에는 영향을 주지 않습니다.</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SettingsAudioTab.qml" line="105" />
+        <source>Menu music</source>
+        <translation>메뉴 음악</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SettingsAudioTab.qml" line="108" />
+        <source>A quiet looping track behind the menus. It stops while a game runs.</source>
+        <translation>메뉴에서 조용히 반복되는 음악입니다. 게임 중에는 멈춥니다.</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SettingsAudioTab.qml" line="120" />
+        <source>Sound test</source>
+        <translation>사운드 테스트</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SettingsAudioTab.qml" line="124" />
+        <source>No audio output is available.</source>
+        <translation>사용할 수 있는 오디오 출력이 없습니다.</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SettingsAudioTab.qml" line="125" />
+        <source>Menu volume is muted, so the test will be silent.</source>
+        <translation>메뉴 음량이 음소거되어 테스트 소리가 들리지 않습니다.</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SettingsAudioTab.qml" line="126" />
+        <source>Plays a 5 second sound at the menu volume. The graph shows what WEMU sends to your speakers.</source>
+        <translation>메뉴 음량으로 5초 동안 소리를 재생합니다. 그래프는 WEMU가 스피커로 보내는 소리를 보여 줍니다.</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SettingsAudioTab.qml" line="147" />
+        <location filename="../qml/components/SettingsAudioTab.qml" line="161" />
+        <source>Stop</source>
+        <translation>중지</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SettingsAudioTab.qml" line="147" />
+        <source>Low sound</source>
+        <translation>낮은 소리</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SettingsAudioTab.qml" line="161" />
+        <source>High sound</source>
+        <translation>높은 소리</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SettingsAudioTab.qml" line="192" />
+        <source>Low</source>
+        <translation>낮음</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SettingsAudioTab.qml" line="198" />
+        <source>High</source>
+        <translation>높음</translation>
     </message>
 </context>
 <context>
     <name>SettingsControllersTab</name>
     <message>
-        <location filename="../qml/components/SettingsControllersTab.qml" line="121" />
+        <location filename="../qml/components/SettingsControllersTab.qml" line="122" />
         <source>No controller connected</source>
         <translation>연결된 컨트롤러 없음</translation>
     </message>
     <message>
-        <location filename="../qml/components/SettingsControllersTab.qml" line="133" />
+        <location filename="../qml/components/SettingsControllersTab.qml" line="134" />
         <source>Exit test</source>
         <translation>테스트 종료</translation>
     </message>
     <message>
-        <location filename="../qml/components/SettingsControllersTab.qml" line="133" />
+        <location filename="../qml/components/SettingsControllersTab.qml" line="134" />
         <source>Test</source>
         <translation>테스트</translation>
     </message>
     <message>
-        <location filename="../qml/components/SettingsControllersTab.qml" line="156" />
+        <location filename="../qml/components/SettingsControllersTab.qml" line="157" />
         <source>Button mapping</source>
         <translation>버튼 설정</translation>
     </message>
     <message>
-        <location filename="../qml/components/SettingsControllersTab.qml" line="167" />
-        <location filename="../qml/components/SettingsControllersTab.qml" line="182" />
-        <location filename="../qml/components/SettingsControllersTab.qml" line="198" />
+        <location filename="../qml/components/SettingsControllersTab.qml" line="168" />
+        <location filename="../qml/components/SettingsControllersTab.qml" line="183" />
+        <location filename="../qml/components/SettingsControllersTab.qml" line="199" />
         <source>Profile %1</source>
         <translation>프로필 %1</translation>
     </message>
     <message>
-        <location filename="../qml/components/SettingsControllersTab.qml" line="217" />
+        <location filename="../qml/components/SettingsControllersTab.qml" line="218" />
         <source>Games use Profile %1</source>
         <translation>게임: 프로필 %1</translation>
     </message>
     <message>
-        <location filename="../qml/components/SettingsControllersTab.qml" line="217" />
+        <location filename="../qml/components/SettingsControllersTab.qml" line="218" />
         <source>Games use this profile</source>
         <translation>게임에서 사용 중인 프로필</translation>
     </message>
     <message>
-        <location filename="../qml/components/SettingsControllersTab.qml" line="228" />
+        <location filename="../qml/components/SettingsControllersTab.qml" line="229" />
         <source>Use for games</source>
         <translation>게임에 사용</translation>
     </message>
     <message>
-        <location filename="../qml/components/SettingsControllersTab.qml" line="247" />
+        <location filename="../qml/components/SettingsControllersTab.qml" line="248" />
         <source>Controller</source>
         <translation>컨트롤러</translation>
     </message>
     <message>
-        <location filename="../qml/components/SettingsControllersTab.qml" line="322" />
+        <location filename="../qml/components/SettingsControllersTab.qml" line="326" />
         <source>Esc cancels</source>
         <translation>Esc로 취소</translation>
     </message>
     <message>
-        <location filename="../qml/components/SettingsControllersTab.qml" line="336" />
+        <location filename="../qml/components/SettingsControllersTab.qml" line="340" />
         <source>Reset to default</source>
         <translation>기본값으로 복원</translation>
     </message>
     <message>
-        <location filename="../qml/components/SettingsControllersTab.qml" line="362" />
+        <location filename="../qml/components/SettingsControllersTab.qml" line="366" />
         <source>Virtual GamePad</source>
         <translation>가상 GamePad</translation>
     </message>
@@ -694,27 +765,27 @@
         <translation>모바일 GamePad</translation>
     </message>
     <message>
-        <location filename="../qml/pages/SettingsPage.qml" line="86" />
+        <location filename="../qml/pages/SettingsPage.qml" line="92" />
         <source>← Library</source>
         <translation>← 라이브러리</translation>
     </message>
     <message>
-        <location filename="../qml/pages/SettingsPage.qml" line="168" />
+        <location filename="../qml/pages/SettingsPage.qml" line="178" />
         <source>Hold B to exit test mode</source>
         <translation>테스트를 끝내려면 B를 길게 누르세요</translation>
     </message>
     <message>
-        <location filename="../qml/pages/SettingsPage.qml" line="169" />
+        <location filename="../qml/pages/SettingsPage.qml" line="179" />
         <source>Waiting for a button</source>
         <translation>버튼 입력 대기 중</translation>
     </message>
     <message>
-        <location filename="../qml/pages/SettingsPage.qml" line="170" />
+        <location filename="../qml/pages/SettingsPage.qml" line="180" />
         <source>Down open · LB / RB tabs · B library</source>
         <translation>아래 열기 · LB / RB 탭 · B 라이브러리</translation>
     </message>
     <message>
-        <location filename="../qml/pages/SettingsPage.qml" line="171" />
+        <location filename="../qml/pages/SettingsPage.qml" line="181" />
         <source>A select · LB / RB tabs · B back</source>
         <translation>A 선택 · LB / RB 탭 · B 뒤로</translation>
     </message>

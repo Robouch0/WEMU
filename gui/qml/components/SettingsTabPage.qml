@@ -24,7 +24,11 @@ FocusScope {
     }
 
     function moveFocus(forward) {
-        const next = Window.activeFocusItem ? Window.activeFocusItem.nextItemInFocusChain(forward) : null
+        const current = Window.activeFocusItem
+        if (!current) return
+        // The chain wraps around, but a tab should stop at its first and last controls.
+        if (current === holder.nextItemInFocusChain(!forward)) return
+        const next = current.nextItemInFocusChain(forward)
         if (owns(next)) next.forceActiveFocus()
     }
 
