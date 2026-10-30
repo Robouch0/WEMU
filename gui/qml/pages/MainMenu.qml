@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Controls.Basic
 import QtQuick.Dialogs
 import QtQuick.Layouts
 import gui 1.0
@@ -113,7 +114,7 @@ Rectangle {
             RemoteGamepadBadge {
                 id: phoneButton
                 KeyNavigation.right: folderButton
-                onClicked: page.openSettings(3)
+                onClicked: page.openSettings(4)
             }
 
             MenuButton {
@@ -132,7 +133,19 @@ Rectangle {
                 iconPath: Theme.iconSettings
                 text: qsTr("Settings")
                 KeyNavigation.left: folderButton
+                KeyNavigation.right: exitButton
                 onClicked: page.openSettings(0)
+            }
+
+            MenuButton {
+                id: exitButton
+                Layout.preferredWidth: text === "" ? Theme.controlHeight : -1
+                leftPadding: text === "" ? 0 : Theme.space4
+                rightPadding: text === "" ? 0 : Theme.space4
+                iconPath: Theme.iconPower
+                text: page.width >= 1000 ? qsTr("Exit") : ""
+                KeyNavigation.left: settingsButton
+                onClicked: exitDialog.open()
             }
         }
 
@@ -141,6 +154,72 @@ Rectangle {
         Keys.onEscapePressed: {
             MenuAudio.play("back")
             page.focusContent()
+        }
+    }
+
+    Popup {
+        id: exitDialog
+        anchors.centerIn: Overlay.overlay
+        width: Math.min(page.width - 2 * Theme.space7, 440)
+        padding: Theme.space5
+        modal: true
+        focus: true
+        onOpened: cancelExit.forceActiveFocus()
+        onClosed: exitButton.forceActiveFocus()
+
+        Overlay.modal: Rectangle { color: "#88000000" }
+
+        background: Rectangle {
+            radius: Theme.radiusLarge
+            color: Theme.surface
+            border.color: Theme.separator
+        }
+
+        contentItem: ColumnLayout {
+            spacing: Theme.space3
+
+            Text {
+                Layout.fillWidth: true
+                text: qsTr("Exit WEMU?")
+                font.pixelSize: Theme.fontTitle
+                font.bold: true
+                color: Theme.text
+            }
+
+            Text {
+                Layout.fillWidth: true
+                text: qsTr("WEMU will close.")
+                font.pixelSize: Theme.fontBody
+                color: Theme.textMuted
+                wrapMode: Text.WordWrap
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                Layout.topMargin: Theme.space3
+                spacing: Theme.space3
+
+                MenuButton {
+                    id: cancelExit
+                    Layout.fillWidth: true
+                    clickSound: "back"
+                    soft: true
+                    text: qsTr("Cancel")
+                    KeyNavigation.right: confirmExit
+                    onClicked: exitDialog.close()
+                }
+
+                MenuButton {
+                    id: confirmExit
+                    Layout.fillWidth: true
+                    primary: true
+                    clickSound: ""
+                    iconPath: Theme.iconPower
+                    text: qsTr("Exit")
+                    KeyNavigation.left: cancelExit
+                    onClicked: Qt.exit(0)
+                }
+            }
         }
     }
 

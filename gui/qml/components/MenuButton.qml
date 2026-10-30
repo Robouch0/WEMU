@@ -33,7 +33,7 @@ Basic.Button {
 
     contentItem: Item {
         id: content
-        readonly property real iconSpace: control.iconPath !== "" ? 28 : 0
+        readonly property real iconSpace: control.iconPath === "" ? 0 : control.text === "" ? 20 : 28
         implicitWidth: label.implicitWidth + iconSpace
         implicitHeight: label.implicitHeight
 
@@ -52,6 +52,7 @@ Basic.Button {
             Text {
                 id: label
                 anchors.verticalCenter: parent.verticalCenter
+                visible: text !== ""
                 width: Math.min(implicitWidth, content.width - content.iconSpace)
                 text: control.text
                 font: control.font

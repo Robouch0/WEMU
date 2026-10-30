@@ -262,6 +262,8 @@ Item {
                     Label { text: qsTr("Volume"); color: Theme.sessionPanelText }
                     Slider {
                         objectName: "sessionVolumeSlider"
+                        palette.highlight: Theme.sessionAccent
+                        palette.accent: Theme.sessionAccent
                         Layout.fillWidth: true
                         from: 0; to: 100; stepSize: 1
                         value: EmulatorLauncher.audioVolume

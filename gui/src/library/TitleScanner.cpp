@@ -262,6 +262,16 @@ int TitleScanner::indexOfGame(const QString &rpxPath) const
     return -1;
 }
 
+QStringList TitleScanner::artworkPaths(int limit) const
+{
+    QStringList paths;
+    for (const auto &title : m_titles) {
+        if (paths.size() == limit) break;
+        if (!title.iconPath.isEmpty()) paths.append(title.iconPath);
+    }
+    return paths;
+}
+
 int TitleScanner::rowCount(const QModelIndex &parent) const { return parent.isValid() ? 0 : m_titles.size(); }
 QHash<int, QByteArray> TitleScanner::roleNames() const
 {

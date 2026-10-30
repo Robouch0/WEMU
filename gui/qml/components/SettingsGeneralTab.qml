@@ -139,14 +139,6 @@ SettingsTabPage {
             SettingsToggleRow {
                 Layout.fillWidth: true
                 Layout.topMargin: Theme.space1
-                label: qsTr("Fullscreen")
-                description: qsTr("Fills the screen and keeps each game's proportions. F11 also switches it.")
-                checked: AppPreferences.fullscreen
-                onToggled: AppPreferences.fullscreen = checked
-            }
-
-            SettingsToggleRow {
-                Layout.fillWidth: true
                 label: qsTr("Start on last played game")
                 description: qsTr("Selects the game you played last when WEMU opens.")
                 checked: AppPreferences.rememberLastGame

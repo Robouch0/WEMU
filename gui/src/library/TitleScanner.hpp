@@ -50,6 +50,8 @@ public:
     Q_INVOKABLE void scanDirectory(const QString &path, bool rememberLibrary = true);
     // The row of the game with this program, or -1.
     Q_INVOKABLE [[nodiscard]] int indexOfGame(const QString &rpxPath) const;
+    // Up to limit icons from the library, for showing it in miniature.
+    Q_INVOKABLE [[nodiscard]] QStringList artworkPaths(int limit) const;
     Q_INVOKABLE void refresh() { scanDirectory(m_searchPath, m_rememberLibrary); }
 
     [[nodiscard]] QString searchPath() const { return m_searchPath; }

@@ -131,12 +131,12 @@
         <translation>Volume</translation>
     </message>
     <message>
-        <location filename="../qml/pages/GameSessionView.qml" line="271" />
+        <location filename="../qml/pages/GameSessionView.qml" line="273" />
         <source>Muted</source>
         <translation>Muet</translation>
     </message>
     <message>
-        <location filename="../qml/pages/GameSessionView.qml" line="280" />
+        <location filename="../qml/pages/GameSessionView.qml" line="282" />
         <source>↑ / ↓ select     Enter or A accept     ← / → volume</source>
         <translation>↑ / ↓ choisir     Entrée ou A valider     ← / → volume</translation>
     </message>
@@ -144,107 +144,128 @@
 <context>
     <name>MainMenu</name>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="37" />
+        <location filename="../qml/pages/MainMenu.qml" line="38" />
         <source>KB</source>
         <translation>Ko</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="37" />
+        <location filename="../qml/pages/MainMenu.qml" line="38" />
         <source>MB</source>
         <translation>Mo</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="37" />
+        <location filename="../qml/pages/MainMenu.qml" line="38" />
         <source>GB</source>
         <translation>Go</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="37" />
+        <location filename="../qml/pages/MainMenu.qml" line="38" />
         <source>TB</source>
         <translation>To</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="68" />
+        <location filename="../qml/pages/MainMenu.qml" line="69" />
         <source>Game library folder</source>
         <translation>Dossier de la bibliothèque de jeux</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="106" />
+        <location filename="../qml/pages/MainMenu.qml" line="107" />
         <source>1 game</source>
         <translation>1 jeu</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="106" />
+        <location filename="../qml/pages/MainMenu.qml" line="107" />
         <source>%1 games</source>
         <translation>%1 jeux</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="123" />
+        <location filename="../qml/pages/MainMenu.qml" line="124" />
         <source>Games folder</source>
         <translation>Dossier des jeux</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="133" />
+        <location filename="../qml/pages/MainMenu.qml" line="134" />
         <source>Settings</source>
         <translation>Paramètres</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="163" />
+        <location filename="../qml/pages/MainMenu.qml" line="146" />
+        <location filename="../qml/pages/MainMenu.qml" line="218" />
+        <source>Exit</source>
+        <translation>Quitter</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/MainMenu.qml" line="183" />
+        <source>Exit WEMU?</source>
+        <translation>Quitter WEMU ?</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/MainMenu.qml" line="191" />
+        <source>WEMU will close.</source>
+        <translation>WEMU va se fermer.</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/MainMenu.qml" line="207" />
+        <source>Cancel</source>
+        <translation>Annuler</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/MainMenu.qml" line="242" />
         <source>No games found</source>
         <translation>Aucun jeu trouvé</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="171" />
+        <location filename="../qml/pages/MainMenu.qml" line="250" />
         <source>Choose the folder that holds your Wii U games.</source>
         <translation>Choisissez le dossier qui contient vos jeux Wii U.</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="172" />
+        <location filename="../qml/pages/MainMenu.qml" line="251" />
         <source>This folder has no games or RPX demos. Choose another one.</source>
         <translation>Ce dossier ne contient aucun jeu ni démo RPX. Choisissez-en un autre.</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="195" />
+        <location filename="../qml/pages/MainMenu.qml" line="274" />
         <source>Choose folder</source>
         <translation>Choisir un dossier</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="287" />
+        <location filename="../qml/pages/MainMenu.qml" line="366" />
         <source>Version %1</source>
         <translation>Version %1</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="288" />
+        <location filename="../qml/pages/MainMenu.qml" line="367" />
         <source>Measuring size…</source>
         <translation>Calcul de la taille…</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="298" />
+        <location filename="../qml/pages/MainMenu.qml" line="377" />
         <source>Controls: Profile %1</source>
         <translation>Commandes : profil %1</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="312" />
+        <location filename="../qml/pages/MainMenu.qml" line="391" />
         <source>▶  Play</source>
         <translation>▶  Jouer</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="332" />
+        <location filename="../qml/pages/MainMenu.qml" line="411" />
         <source>Session log</source>
         <translation>Journal de session</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="341" />
+        <location filename="../qml/pages/MainMenu.qml" line="420" />
         <source>A play · Up from the top row for the menu</source>
         <translation>A jouer · Haut depuis la première ligne pour le menu</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="342" />
+        <location filename="../qml/pages/MainMenu.qml" line="421" />
         <source>A select · B back to games</source>
         <translation>A choisir · B retour aux jeux</translation>
     </message>
     <message>
-        <location filename="../qml/pages/MainMenu.qml" line="425" />
+        <location filename="../qml/pages/MainMenu.qml" line="504" />
         <source>Unknown</source>
         <translation>Inconnu</translation>
     </message>
@@ -352,11 +373,80 @@
     </message>
 </context>
 <context>
-    <name>SettingsAudioTab</name>
+    <name>SettingsAppearanceTab</name>
     <message>
-        <source>Volume</source>
-        <translation>Volume</translation>
+        <location filename="../qml/components/SettingsAppearanceTab.qml" line="32" />
+        <source>Theme</source>
+        <translation>Thème</translation>
     </message>
+    <message>
+        <location filename="../qml/components/SettingsAppearanceTab.qml" line="47" />
+        <source>Light</source>
+        <translation>Clair</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SettingsAppearanceTab.qml" line="58" />
+        <source>Dark</source>
+        <translation>Sombre</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SettingsAppearanceTab.qml" line="77" />
+        <source>Accent color</source>
+        <translation>Couleur d'accent</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SettingsAppearanceTab.qml" line="9" />
+        <source>Blue</source>
+        <translation>Bleu</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SettingsAppearanceTab.qml" line="9" />
+        <source>Green</source>
+        <translation>Vert</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SettingsAppearanceTab.qml" line="9" />
+        <source>Teal</source>
+        <translation>Sarcelle</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SettingsAppearanceTab.qml" line="9" />
+        <source>Amber</source>
+        <translation>Ambre</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SettingsAppearanceTab.qml" line="10" />
+        <source>Red</source>
+        <translation>Rouge</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SettingsAppearanceTab.qml" line="10" />
+        <source>Orange</source>
+        <translation>Orange</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SettingsAppearanceTab.qml" line="10" />
+        <source>Pink</source>
+        <translation>Rose</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SettingsAppearanceTab.qml" line="10" />
+        <source>Purple</source>
+        <translation>Violet</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SettingsAppearanceTab.qml" line="121" />
+        <source>Fullscreen</source>
+        <translation>Plein écran</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/SettingsAppearanceTab.qml" line="122" />
+        <source>Fills the screen and keeps each game's proportions. F11 also switches it.</source>
+        <translation>Remplit l'écran en gardant les proportions de chaque jeu. F11 l'active aussi.</translation>
+    </message>
+</context>
+<context>
+    <name>SettingsAudioTab</name>
     <message>
         <location filename="../qml/components/SettingsAudioTab.qml" line="79" />
         <source>Game volume</source>
@@ -443,64 +533,64 @@
 <context>
     <name>SettingsControllersTab</name>
     <message>
-        <location filename="../qml/components/SettingsControllersTab.qml" line="122" />
+        <location filename="../qml/components/SettingsControllersTab.qml" line="127" />
         <source>No controller connected</source>
         <translation>Aucune manette connectée</translation>
     </message>
     <message>
-        <location filename="../qml/components/SettingsControllersTab.qml" line="134" />
+        <location filename="../qml/components/SettingsControllersTab.qml" line="139" />
         <source>Exit test</source>
         <translation>Quitter le test</translation>
     </message>
     <message>
-        <location filename="../qml/components/SettingsControllersTab.qml" line="134" />
+        <location filename="../qml/components/SettingsControllersTab.qml" line="139" />
         <source>Test</source>
         <translation>Tester</translation>
     </message>
     <message>
-        <location filename="../qml/components/SettingsControllersTab.qml" line="157" />
+        <location filename="../qml/components/SettingsControllersTab.qml" line="162" />
         <source>Button mapping</source>
         <translation>Attribution des boutons</translation>
     </message>
     <message>
-        <location filename="../qml/components/SettingsControllersTab.qml" line="168" />
-        <location filename="../qml/components/SettingsControllersTab.qml" line="183" />
-        <location filename="../qml/components/SettingsControllersTab.qml" line="199" />
+        <location filename="../qml/components/SettingsControllersTab.qml" line="173" />
+        <location filename="../qml/components/SettingsControllersTab.qml" line="188" />
+        <location filename="../qml/components/SettingsControllersTab.qml" line="204" />
         <source>Profile %1</source>
         <translation>Profil %1</translation>
     </message>
     <message>
-        <location filename="../qml/components/SettingsControllersTab.qml" line="218" />
+        <location filename="../qml/components/SettingsControllersTab.qml" line="223" />
         <source>Games use Profile %1</source>
         <translation>En jeu : profil %1</translation>
     </message>
     <message>
-        <location filename="../qml/components/SettingsControllersTab.qml" line="218" />
+        <location filename="../qml/components/SettingsControllersTab.qml" line="223" />
         <source>Games use this profile</source>
         <translation>Profil utilisé en jeu</translation>
     </message>
     <message>
-        <location filename="../qml/components/SettingsControllersTab.qml" line="229" />
+        <location filename="../qml/components/SettingsControllersTab.qml" line="234" />
         <source>Use for games</source>
         <translation>Utiliser en jeu</translation>
     </message>
     <message>
-        <location filename="../qml/components/SettingsControllersTab.qml" line="248" />
+        <location filename="../qml/components/SettingsControllersTab.qml" line="253" />
         <source>Controller</source>
         <translation>Manette</translation>
     </message>
     <message>
-        <location filename="../qml/components/SettingsControllersTab.qml" line="326" />
+        <location filename="../qml/components/SettingsControllersTab.qml" line="331" />
         <source>Esc cancels</source>
         <translation>Échap pour annuler</translation>
     </message>
     <message>
-        <location filename="../qml/components/SettingsControllersTab.qml" line="340" />
+        <location filename="../qml/components/SettingsControllersTab.qml" line="345" />
         <source>Reset to default</source>
         <translation>Réinitialiser</translation>
     </message>
     <message>
-        <location filename="../qml/components/SettingsControllersTab.qml" line="366" />
+        <location filename="../qml/components/SettingsControllersTab.qml" line="371" />
         <source>Virtual GamePad</source>
         <translation>GamePad virtuel</translation>
     </message>
@@ -659,36 +749,26 @@
     </message>
     <message>
         <location filename="../qml/components/SettingsGeneralTab.qml" line="142" />
-        <source>Fullscreen</source>
-        <translation>Plein écran</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SettingsGeneralTab.qml" line="143" />
-        <source>Fills the screen and keeps each game's proportions. F11 also switches it.</source>
-        <translation>Remplit l'écran en gardant les proportions de chaque jeu. F11 l'active aussi.</translation>
-    </message>
-    <message>
-        <location filename="../qml/components/SettingsGeneralTab.qml" line="150" />
         <source>Start on last played game</source>
         <translation>Commencer sur le dernier jeu</translation>
     </message>
     <message>
-        <location filename="../qml/components/SettingsGeneralTab.qml" line="151" />
+        <location filename="../qml/components/SettingsGeneralTab.qml" line="143" />
         <source>Selects the game you played last when WEMU opens.</source>
         <translation>Sélectionne votre dernier jeu à l'ouverture de WEMU.</translation>
     </message>
     <message>
-        <location filename="../qml/components/SettingsGeneralTab.qml" line="161" />
+        <location filename="../qml/components/SettingsGeneralTab.qml" line="153" />
         <source>Your console</source>
         <translation>Votre console</translation>
     </message>
     <message>
-        <location filename="../qml/components/SettingsGeneralTab.qml" line="172" />
+        <location filename="../qml/components/SettingsGeneralTab.qml" line="164" />
         <source>Region</source>
         <translation>Région</translation>
     </message>
     <message>
-        <location filename="../qml/components/SettingsGeneralTab.qml" line="192" />
+        <location filename="../qml/components/SettingsGeneralTab.qml" line="184" />
         <source>Game language: %1</source>
         <translation>Langue des jeux : %1</translation>
     </message>
@@ -763,6 +843,11 @@
         <location filename="../qml/pages/SettingsPage.qml" line="11" />
         <source>Mobile GamePad</source>
         <translation>GamePad mobile</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/SettingsPage.qml" line="11" />
+        <source>Appearance</source>
+        <translation>Apparence</translation>
     </message>
     <message>
         <location filename="../qml/pages/SettingsPage.qml" line="92" />

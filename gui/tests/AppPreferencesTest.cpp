@@ -29,6 +29,49 @@ TEST(AppPreferencesTest, KeepsChangesAcrossInstances)
     EXPECT_EQ(reloaded.lastGame(), "/games/pong/code/pong.rpx");
 }
 
+TEST(AppPreferencesTest, ThemeDefaultsToLightBlue)
+{
+    QSettings().clear();
+    const AppPreferences preferences;
+    EXPECT_EQ(preferences.themeMode(), "light");
+    EXPECT_EQ(preferences.accentColor(), "blue");
+}
+
+TEST(AppPreferencesTest, KeepsTheChosenTheme)
+{
+    QSettings().clear();
+    {
+        AppPreferences preferences;
+        preferences.setThemeMode("dark");
+        preferences.setAccentColor("green");
+    }
+    const AppPreferences reloaded;
+    EXPECT_EQ(reloaded.themeMode(), "dark");
+    EXPECT_EQ(reloaded.accentColor(), "green");
+}
+
+TEST(AppPreferencesTest, AcceptsEveryAccent)
+{
+    AppPreferences preferences;
+    for (const auto *color : {"blue", "teal", "green", "amber", "orange", "red", "pink", "purple"}) {
+        preferences.setAccentColor(color);
+        EXPECT_EQ(preferences.accentColor(), color);
+    }
+}
+
+TEST(AppPreferencesTest, IgnoresUnknownThemes)
+{
+    QSettings().clear();
+    AppPreferences preferences;
+    preferences.setThemeMode("sepia");
+    preferences.setAccentColor("chartreuse");
+    EXPECT_EQ(preferences.themeMode(), "light");
+    EXPECT_EQ(preferences.accentColor(), "blue");
+
+    QSettings().setValue("appearance/accent", "chartreuse");
+    EXPECT_EQ(preferences.accentColor(), "blue");
+}
+
 int main(int argc, char **argv)
 {
     QCoreApplication app(argc, argv);

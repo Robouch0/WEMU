@@ -79,6 +79,11 @@ SettingsTabPage {
         readonly property real fit: Math.min(1, width / artWidth, stacked.columns > 1 ? tallestFit : 1)
         // The drawings run past the size they declare, so measure what they actually cover.
         implicitHeight: naturalHeight * fit
+        Rectangle {
+            anchors.fill: parent
+            radius: Theme.radiusMedium
+            color: Theme.previewStage
+        }
         onPreviewChanged: {
             preview.parent = frame
             preview.transformOrigin = Item.TopLeft

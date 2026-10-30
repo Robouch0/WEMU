@@ -69,6 +69,7 @@ qt_add_qml_module(appgui
         qml/pages/SettingsPage.qml
         qml/pages/GameSessionView.qml
         qml/components/Theme.qml
+        qml/components/AccentSwatch.qml
         qml/components/FocusRing.qml
         qml/components/MenuIcon.qml
         qml/components/MenuButton.qml
@@ -80,8 +81,10 @@ qt_add_qml_module(appgui
         qml/components/SettingsToggleRow.qml
         qml/components/SettingsTabPage.qml
         qml/components/DottedGlobe.qml
+        qml/components/SettingsAppearanceTab.qml
         qml/components/SettingsAudioTab.qml
         qml/components/SpectrumBars.qml
+        qml/components/ThemeCard.qml
         qml/components/SettingsGeneralTab.qml
         qml/components/SettingsLiveInput.qml
         qml/components/SettingsControllersTab.qml

@@ -8,7 +8,7 @@ Rectangle {
     color: Theme.bg
     anchors.fill: parent
 
-    readonly property var tabs: [qsTr("General"), qsTr("Audio"), qsTr("Controllers"), qsTr("Mobile GamePad")]
+    readonly property var tabs: [qsTr("General"), qsTr("Appearance"), qsTr("Audio"), qsTr("Controllers"), qsTr("Mobile GamePad")]
     readonly property string listeningFor: controllersTab.listeningFor
 
     function leaveTab() {
@@ -201,6 +201,7 @@ Rectangle {
             }
 
             SettingsGeneralTab { onLeaveRequested: page.leaveTab() }
+            SettingsAppearanceTab { onLeaveRequested: page.leaveTab() }
             SettingsAudioTab { onLeaveRequested: page.leaveTab() }
             SettingsControllersTab {
                 id: controllersTab
