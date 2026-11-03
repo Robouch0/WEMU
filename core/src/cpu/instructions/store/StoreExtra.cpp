@@ -33,9 +33,7 @@ namespace Core::Instruction {
         }
     }
 
-    /** @brief Store Byte with Update. 
-     *      EA = RA + EXTS(D); MEM(EA,1) = RS[24:31]; RA = EA.
-     *      RA must not be 0 */
+    /** @brief Store Byte with Update. EA = RA + EXTS(D); MEM(EA,1) = RS[24:31]; RA = EA. */
     void STBU(Interpreter &cpu, const EncodedInstruction &instr)
     {
         const std::uint32_t ea = cpu.m_gpr[instr.ra] + static_cast<std::uint32_t>(static_cast<std::int16_t>(instr.d));
@@ -86,6 +84,12 @@ namespace Core::Instruction {
         const std::uint32_t ea = (instr.ra == 0 ? 0 : cpu.m_gpr[instr.ra]) + cpu.m_gpr[instr.rb];
 
         cpu.m_memory.write<std::uint32_t>(ea, std::byteswap(cpu.m_gpr[instr.rs]));
+    }
+
+    void STHBRX(Interpreter &cpu, const EncodedInstruction &instr)
+    {
+        const auto ea = (instr.ra == 0 ? 0 : cpu.m_gpr[instr.ra]) + cpu.m_gpr[instr.rb];
+        cpu.m_memory.write<std::uint16_t>(ea, std::byteswap(static_cast<std::uint16_t>(cpu.m_gpr[instr.rs])));
     }
 
     /**
