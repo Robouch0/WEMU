@@ -28,6 +28,8 @@ namespace Core::Gfx {
             struct Statistics {
                     double presentFps{-1}, movieFps{-1};
                     std::uint64_t presents{}, movies{};
+                    // Vertical blanks the guest shows this frame for (60 Hz units).
+                    std::uint32_t swapInterval{1};
             };
             virtual ~HostPresenter() = default;
             virtual bool connected() const = 0;

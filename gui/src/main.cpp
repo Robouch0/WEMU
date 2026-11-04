@@ -19,6 +19,7 @@
 #include "input/KeyboardInput.hpp"
 #include "input/MenuKeyBridge.hpp"
 #include "library/TitleScanner.hpp"
+#include "preview/GamePreviews.hpp"
 #include "remote/RemoteGamepadServer.hpp"
 #include "settings/AppPreferences.hpp"
 
@@ -76,6 +77,7 @@ int main(int argc, char *argv[])
         library = TitleScanner::defaultLibraryPath(QCoreApplication::applicationDirPath(), QDir::currentPath());
     if (!library.isEmpty()) scanner.scanDirectory(library, !parser.isSet("library"));
     RemoteGamepadServer remoteGamepad(launcher, scanner);
+    GamePreviews previews(scanner, launcher, preferences);
     MenuAudio menuAudio;
     QObject::connect(&launcher, &EmulatorLauncher::stateChanged, &menuAudio, &MenuAudio::setGameRunning);
     MenuKeyBridge menuKeys([&launcher] { return !launcher.running(); });
@@ -92,6 +94,7 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty("MenuKeys", &menuKeys);
     engine.rootContext()->setContextProperty("AppLanguage", &language);
     engine.rootContext()->setContextProperty("AppPreferences", &preferences);
+    engine.rootContext()->setContextProperty("GamePreviews", &previews);
     engine.rootContext()->setContextProperty("MenuAudio", &menuAudio);
     QObject::connect(&input, &InputManager::inputUpdated, &launcher, [&input, &profiles, &launcher] {
         const auto pad = input.controllerState(profiles.bindings());

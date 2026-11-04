@@ -144,6 +144,17 @@ SettingsTabPage {
                 checked: AppPreferences.rememberLastGame
                 onToggled: AppPreferences.rememberLastGame = checked
             }
+
+            SettingsToggleRow {
+                Layout.fillWidth: true
+                Layout.topMargin: Theme.space1
+                label: qsTr("Game previews")
+                description: GamePreviews.available
+                             ? qsTr("Plays a few seconds of the selected game in the library. WEMU records them in the background the first time, never while you play.")
+                             : qsTr("Plays a few seconds of the selected game in the library. Recording them needs FFmpeg; only previews already next to your games play.")
+                checked: AppPreferences.gamePreviews
+                onToggled: AppPreferences.gamePreviews = checked
+            }
         }
 
         SettingsCard {

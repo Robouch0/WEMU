@@ -19,34 +19,30 @@ ApplicationWindow {
     property int libraryIndex: 0
     property int settingsTab: 0
     property bool startupSelectionDone: false
+    // The library loads under the intro, which hands over to it as it ends.
+    // introPlaying: the intro has the keys and the logo. introVisible: it still covers the window.
+    property bool introPlaying: true
+    property bool introVisible: true
 
     Shortcut {
         sequence: "F11"
         onActivated: AppPreferences.fullscreen = !AppPreferences.fullscreen
     }
 
+    // Pages swap by setting this loader's source.
     Loader {
         id: mainLoader
         anchors.fill: parent
         visible: !EmulatorLauncher.running
         enabled: visible
-        sourceComponent: introComponent
+        source: "pages/MainMenu.qml"
+    }
+
+    Loader {
+        anchors.fill: parent
+        active: rootWindow.introVisible
+        source: "pages/IntroSequence.qml"
     }
 
     GameSessionView { anchors.fill: parent }
-
-    Component {
-        id: introComponent
-        Loader {
-            anchors.fill: parent
-            source: "pages/MainMenu.qml"
-            // source: "pages/IntroSequence.qml"
-            // onLoaded: {
-            //     item.introFinished.connect(() => {
-            //         console.log("Intro finished → loading main menu")
-            //         mainLoader.source = "pages/MainMenu.qml"
-            //     })
-            // }
-        }
-    }
 }

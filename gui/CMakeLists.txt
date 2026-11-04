@@ -32,6 +32,8 @@ qt_add_executable(appgui
     src/emulator/EmulatorLauncher.cpp
     src/emulator/GameView.cpp
     src/emulator/SessionProbe.cpp
+    src/preview/GamePreviews.cpp
+    src/preview/PreviewRecorder.cpp
     src/remote/RemoteGamepadServer.cpp
 )
 
@@ -53,6 +55,9 @@ target_sources(appgui PRIVATE
         src/input/ControllerMapping.hpp
         src/input/InputProfileManager.hpp
         src/library/TitleScanner.hpp
+        src/preview/GamePreviews.hpp
+        src/preview/PreviewFrames.hpp
+        src/preview/PreviewRecorder.hpp
         src/remote/RemoteProtocol.hpp
         src/remote/RemoteGamepadServer.hpp
 )
@@ -69,6 +74,7 @@ qt_add_qml_module(appgui
         qml/pages/SettingsPage.qml
         qml/pages/GameSessionView.qml
         qml/components/Theme.qml
+        qml/components/WemuLogo.qml
         qml/components/AccentSwatch.qml
         qml/components/FocusRing.qml
         qml/components/MenuIcon.qml
@@ -119,6 +125,8 @@ target_include_directories(appgui
         ${CMAKE_CURRENT_SOURCE_DIR}/src/emulator
         ${CMAKE_CURRENT_SOURCE_DIR}/src/gfx
         ${CMAKE_CURRENT_SOURCE_DIR}/src/remote
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/settings
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/preview
         ${Qt6Core_INCLUDE_DIRS}
 )
 
@@ -183,6 +191,11 @@ add_executable(wemu_app_language_tests tests/AppLanguageTest.cpp src/i18n/AppLan
 target_include_directories(wemu_app_language_tests PRIVATE src/i18n)
 target_link_libraries(wemu_app_language_tests PRIVATE Qt6::Core gtest)
 add_test(NAME wemu_app_language_tests COMMAND wemu_app_language_tests)
+
+add_executable(wemu_preview_frames_tests tests/PreviewFramesTest.cpp src/preview/PreviewFrames.hpp)
+target_include_directories(wemu_preview_frames_tests PRIVATE src/preview)
+target_link_libraries(wemu_preview_frames_tests PRIVATE Qt6::Gui gtest_main)
+add_test(NAME wemu_preview_frames_tests COMMAND wemu_preview_frames_tests)
 
 add_executable(wemu_input_profile_tests tests/InputProfileManagerTest.cpp src/input/InputProfileManager.cpp src/input/InputProfileManager.hpp)
 target_include_directories(wemu_input_profile_tests PRIVATE src/input)

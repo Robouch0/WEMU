@@ -55,3 +55,11 @@ void AppPreferences::setLastGame(const QString &rpxPath)
     QSettings().setValue("library/lastGame", rpxPath);
     emit changed();
 }
+
+bool AppPreferences::gamePreviews() const { return QSettings().value("library/gamePreviews", true).toBool(); }
+
+void AppPreferences::setGamePreviews(bool enabled)
+{
+    QSettings().setValue("library/gamePreviews", enabled);
+    emit changed();
+}

@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Dialogs
 import QtQuick.Layouts
+import QtMultimedia
 import gui 1.0
 
 Rectangle {
@@ -11,6 +12,10 @@ Rectangle {
 
     readonly property Item selected: grid.currentItem
     readonly property int panelWidth: Math.max(280, Math.min(420, width * 0.3))
+    // Narrow windows keep the header buttons' icons only, leaving the middle to the logo.
+    readonly property bool compactHeader: width < 1100
+    // Where the intro's closing logo lands.
+    property alias headerLogo: headerLogo
 
     function focusContent() {
         if (grid.count > 0) grid.forceActiveFocus()
@@ -61,7 +66,15 @@ Rectangle {
             if (grid.currentIndex < grid.columns) grid.contentY = -grid.topMargin
             else grid.positionViewAtIndex(grid.currentIndex, GridView.Contain)
         })
-        focusContent()
+        // The intro plays over the library and keeps the keys until it is done.
+        if (!rootWindow.introPlaying) focusContent()
+    }
+
+    Connections {
+        target: rootWindow
+        function onIntroPlayingChanged() {
+            if (!rootWindow.introPlaying) page.focusContent()
+        }
     }
 
     FolderDialog {
@@ -88,6 +101,14 @@ Rectangle {
             color: Theme.separator
         }
 
+        WemuLogo {
+            id: headerLogo
+            anchors.centerIn: parent
+            height: 28
+            // Hidden while the intro's own logo flies here.
+            opacity: rootWindow.introPlaying ? 0 : 1
+        }
+
         RowLayout {
             anchors.fill: parent
             anchors.leftMargin: Theme.space5
@@ -95,33 +116,29 @@ Rectangle {
             spacing: Theme.space3
 
             Text {
-                text: "WEMU"
-                font.pixelSize: Theme.fontTitle
-                font.bold: true
-                color: Theme.text
-            }
-
-            Text {
-                Layout.leftMargin: Theme.space2
                 visible: grid.count > 0
                 text: grid.count === 1 ? qsTr("1 game") : qsTr("%1 games").arg(grid.count)
                 font.pixelSize: Theme.fontBody
                 color: Theme.textMuted
             }
 
-            Item { Layout.fillWidth: true }
-
             RemoteGamepadBadge {
                 id: phoneButton
+                Layout.leftMargin: Theme.space2
                 KeyNavigation.right: folderButton
                 onClicked: page.openSettings(4)
             }
 
+            Item { Layout.fillWidth: true }
+
             MenuButton {
                 id: folderButton
+                Layout.preferredWidth: text === "" ? Theme.controlHeight : -1
+                leftPadding: text === "" ? 0 : Theme.space4
+                rightPadding: text === "" ? 0 : Theme.space4
                 soft: true
                 iconPath: Theme.iconFolder
-                text: qsTr("Games folder")
+                text: page.compactHeader ? "" : qsTr("Games folder")
                 KeyNavigation.left: phoneButton
                 KeyNavigation.right: settingsButton
                 onClicked: libraryDialog.open()
@@ -129,9 +146,12 @@ Rectangle {
 
             MenuButton {
                 id: settingsButton
+                Layout.preferredWidth: text === "" ? Theme.controlHeight : -1
+                leftPadding: text === "" ? 0 : Theme.space4
+                rightPadding: text === "" ? 0 : Theme.space4
                 soft: true
                 iconPath: Theme.iconSettings
-                text: qsTr("Settings")
+                text: page.compactHeader ? "" : qsTr("Settings")
                 KeyNavigation.left: folderButton
                 KeyNavigation.right: exitButton
                 onClicked: page.openSettings(0)
@@ -143,7 +163,7 @@ Rectangle {
                 leftPadding: text === "" ? 0 : Theme.space4
                 rightPadding: text === "" ? 0 : Theme.space4
                 iconPath: Theme.iconPower
-                text: page.width >= 1000 ? qsTr("Exit") : ""
+                text: page.compactHeader ? "" : qsTr("Exit")
                 KeyNavigation.left: settingsButton
                 onClicked: exitDialog.open()
             }
@@ -309,32 +329,112 @@ Rectangle {
             spacing: Theme.space2
             transform: Translate { id: panelShift }
 
+            // The game's preview clip when it has one, its cover art otherwise.
             Rectangle {
-                Layout.alignment: Qt.AlignHCenter
+                id: media
+                Layout.fillWidth: true
+                Layout.preferredHeight: Math.round(width * 9 / 16)
                 Layout.bottomMargin: Theme.space2
-                readonly property int side: Math.min(256, panel.width - 2 * Theme.space5)
-                Layout.preferredWidth: side
-                Layout.preferredHeight: side
                 radius: Theme.radiusMedium
                 color: Theme.surfaceMuted
                 clip: true
 
+                readonly property string rpxPath: page.selected ? page.selected.gameRpxPath : ""
+                readonly property url clipUrl: GamePreviews.revision, GamePreviews.previewUrl(rpxPath)
+                readonly property bool waiting: GamePreviews.revision, clipUrl.toString() === "" && GamePreviews.pending(rpxPath)
+                // The game whose clip the player holds. Opening a clip is costly, so sweeping across the
+                // grid only pauses the current one; the next opens once the selection rests.
+                property string loadedFor: ""
+                readonly property bool playing: loadedFor === rpxPath && player.playbackState === MediaPlayer.PlayingState && player.hasVideo
+
+                onClipUrlChanged: {
+                    player.pause()
+                    settle.restart()
+                }
+                Component.onCompleted: settle.restart()
+                Connections {
+                    target: rootWindow
+                    function onIntroPlayingChanged() { settle.restart() }
+                }
+
+                Timer {
+                    id: settle
+                    interval: 250
+                    onTriggered: {
+                        player.source = media.clipUrl
+                        media.loadedFor = media.rpxPath
+                        // Never under a running game or the intro.
+                        if (player.source.toString() !== "" && !EmulatorLauncher.running && !rootWindow.introPlaying) player.play()
+                    }
+                }
+
                 Image {
                     id: panelArt
                     anchors.fill: parent
+                    anchors.margins: Theme.space2
                     source: page.selected ? page.selected.gameIconPath : ""
                     fillMode: Image.PreserveAspectFit
                     asynchronous: true
                     smooth: true
+                    opacity: media.playing ? 0 : 1
+                    Behavior on opacity { NumberAnimation { duration: Theme.durationNormal } }
                 }
 
                 Text {
                     anchors.centerIn: parent
-                    visible: panelArt.status !== Image.Ready
+                    visible: panelArt.status !== Image.Ready && !media.playing
                     text: page.selected ? page.selected.gameName.charAt(0).toUpperCase() : ""
                     font.pixelSize: 96
                     font.bold: true
                     color: Theme.textMuted
+                }
+
+                MediaPlayer {
+                    id: player
+                    videoOutput: preview
+                    loops: MediaPlayer.Infinite
+                }
+
+                VideoOutput {
+                    id: preview
+                    anchors.fill: parent
+                    fillMode: VideoOutput.PreserveAspectCrop
+                    opacity: media.playing ? 1 : 0
+                    Behavior on opacity { NumberAnimation { duration: Theme.durationNormal } }
+                }
+
+                Connections {
+                    target: EmulatorLauncher
+                    function onStateChanged(running) {
+                        if (running) player.stop()
+                        else if (media.loadedFor === media.rpxPath && player.source.toString() !== "") player.play()
+                    }
+                }
+
+                Rectangle {
+                    anchors.left: parent.left
+                    anchors.bottom: parent.bottom
+                    anchors.margins: Theme.space2
+                    visible: media.waiting
+                    width: waitingLabel.implicitWidth + 2 * Theme.space2
+                    height: waitingLabel.implicitHeight + Theme.space1
+                    radius: height / 2
+                    color: Theme.surface
+                    border.color: Theme.separator
+
+                    Text {
+                        id: waitingLabel
+                        anchors.centerIn: parent
+                        text: qsTr("Preparing preview…")
+                        font.pixelSize: Theme.fontCaption
+                        color: Theme.textMuted
+                        SequentialAnimation on opacity {
+                            running: media.waiting
+                            loops: Animation.Infinite
+                            NumberAnimation { to: 0.45; duration: 700; easing.type: Easing.InOutSine }
+                            NumberAnimation { to: 1; duration: 700; easing.type: Easing.InOutSine }
+                        }
+                    }
                 }
             }
 

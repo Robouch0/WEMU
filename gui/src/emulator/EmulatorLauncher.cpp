@@ -2,6 +2,10 @@
 
 #include <algorithm>
 
+#ifdef Q_OS_UNIX
+#include <unistd.h>
+#endif
+
 #include <QCoreApplication>
 #include <QDataStream>
 #include <QDateTime>
@@ -22,9 +26,10 @@
 #include "SessionFrame.hpp"
 #include "frontend/QtSessionProtocol.hpp"
 
-EmulatorLauncher::EmulatorLauncher(QObject *parent) : QObject(parent)
+EmulatorLauncher::EmulatorLauncher(QObject *parent, Mode mode) : QObject(parent), m_mode(mode)
 {
-    QCoreApplication::instance()->installEventFilter(this);
+    if (m_mode == Mode::Interactive)
+        QCoreApplication::instance()->installEventFilter(this);
     m_server.setSocketOptions(QLocalServer::UserAccessOption);
     connect(&m_server, &QLocalServer::newConnection, this, [this] {
         while (auto *socket = m_server.nextPendingConnection()) {
@@ -83,6 +88,15 @@ EmulatorLauncher::~EmulatorLauncher()
     }
 }
 
+void EmulatorLauncher::lowerPriority(QProcess &process)
+{
+#ifdef Q_OS_UNIX
+    process.setChildProcessModifier([] { [[maybe_unused]] const int ignored = ::nice(10); });
+#else
+    Q_UNUSED(process);
+#endif
+}
+
 void EmulatorLauncher::setError(const QString &error)
 {
     m_error = error;
@@ -101,7 +115,7 @@ void EmulatorLauncher::setAudioVolume(int value)
     value = std::clamp(value, 0, 100);
     if (value == audioVolume()) return;
     QSettings().setValue("audio/volume", value);
-    if (m_connected) sendCommand(quint32(Core::Gfx::HostPresenter::Action::AudioVolume), value);
+    if (m_connected) sendCommand(quint32(Core::Gfx::HostPresenter::Action::AudioVolume), sessionVolume());
     emit settingsChanged();
 }
 
@@ -190,7 +204,9 @@ void EmulatorLauncher::launch(const QString &rpxPath, const QString &title, cons
     const auto region = systemRegion() ? unsigned(systemRegion()) : titleRegion;
     auto environment = desktopLaunchEnvironment(QProcessEnvironment::systemEnvironment(), contentPath, font,
                                                      nativeCpu, nativeCache, unsigned(systemLanguage()), region, titleRegion, x64Cpu);
-    environment.insert("WEMU_AUDIO_VOLUME", QString::number(audioVolume()));
+    environment.insert("WEMU_AUDIO_VOLUME", QString::number(sessionVolume()));
+    if (m_mode == Mode::Background)
+        environment.insert("SDL_AUDIODRIVER", "dummy");
     qInfo() << "[SESSION_CORE]" << QFileInfo(binary).canonicalFilePath();
     qInfo() << "[SESSION_CPU]" << (x64Cpu ? "x86-64 JIT with interpreter fallback" : nativeCpu ? "LLVM with interpreter fallback" : "interpreter")
             << "cache=" << nativeCache;
@@ -199,12 +215,14 @@ void EmulatorLauncher::launch(const QString &rpxPath, const QString &title, cons
         setError(tr("Cannot create the session log directory."));
         return;
     }
-    m_logPath = logs + "/session-" + QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss-zzz") + ".log";
+    m_logPath = logs + (m_mode == Mode::Background ? "/preview-" : "/session-") + QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss-zzz") + ".log";
     emit logPathChanged();
     m_process.setProcessEnvironment(environment);
     m_process.setWorkingDirectory(QFileInfo(rpxPath).absolutePath());
     m_process.setProcessChannelMode(QProcess::MergedChannels);
     m_process.setStandardOutputFile(m_logPath);
+    if (m_mode == Mode::Background)
+        lowerPriority(m_process);
     const auto channel = QStringLiteral("wemu-%1").arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
     if (!m_server.listen(channel)) {
         setError(tr("Cannot open the game display channel: %1").arg(m_server.errorString()));
@@ -245,6 +263,7 @@ void EmulatorLauncher::clearChannel()
     m_connected = m_hasFrame = m_paused = m_pausePending = false;
     m_presentFps = m_movieFps = -1;
     m_awaitingFrame = m_lastFrame = 0;
+    m_swapInterval = 1;
     m_frames.clear();
     m_buttons = 0;
     m_remoteButtons = 0;
@@ -297,6 +316,7 @@ void EmulatorLauncher::dispatchFrame()
     m_awaitingFrame = frame.sequence;
     m_presentFps = frame.presentFps;
     m_movieFps = frame.movieFps;
+    m_swapInterval = frame.swapInterval;
     m_hasFrame = true;
     emit statisticsChanged();
     emit sessionChanged();
@@ -323,7 +343,7 @@ void EmulatorLauncher::readChannel()
                 if (m_connected || version != WemuSession::version || !stream.atEnd())
                     throw std::runtime_error("Incompatible game display protocol");
                 m_connected = true;
-                sendCommand(quint32(Core::Gfx::HostPresenter::Action::AudioVolume), audioVolume());
+                sendCommand(quint32(Core::Gfx::HostPresenter::Action::AudioVolume), sessionVolume());
                 if (m_drcStreaming)
                     sendCommand(5, 1);
                 m_gamepadDirty = true;
@@ -331,9 +351,9 @@ void EmulatorLauncher::readChannel()
                 emit sessionChanged();
             } else if (type == quint32(WemuSession::Type::Frame) && m_connected) {
                 quint64 sequence{}, presents{}, movies{};
-                quint32 width{}, height{};
+                quint32 width{}, height{}, swapInterval{};
                 double presentFps{}, movieFps{};
-                stream >> sequence >> width >> height >> presentFps >> movieFps >> presents >> movies;
+                stream >> sequence >> width >> height >> presentFps >> movieFps >> presents >> movies >> swapInterval;
                 const auto offset = stream.device()->pos();
                 if (stream.status() != QDataStream::Ok || m_frames.size() + unsigned(m_awaitingFrame != 0) >= 2 || sequence != m_lastFrame + 1 ||
                     !width || !height || width > 4096 || height > 4096 || std::uint64_t(width) * height * 4 != std::uint64_t(body.size() - offset))
@@ -345,7 +365,7 @@ void EmulatorLauncher::readChannel()
                           static_cast<unsigned long long>(presents), static_cast<unsigned long long>(movies), presentFps, movieFps);
                 body = {};
                 m_lastFrame = sequence;
-                m_frames.push_back({image, sequence, presentFps, movieFps});
+                m_frames.push_back({image, sequence, presentFps, movieFps, std::max(swapInterval, 1u)});
                 dispatchFrame();
                 continue; // Pixel bytes are intentionally outside the metadata stream.
             } else if (type == quint32(WemuSession::Type::DrcFrame) && m_connected) {

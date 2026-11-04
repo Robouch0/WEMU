@@ -12,6 +12,7 @@ TEST(AppPreferencesTest, HasSafeDefaults)
     EXPECT_FALSE(preferences.fullscreen());
     EXPECT_TRUE(preferences.rememberLastGame());
     EXPECT_TRUE(preferences.lastGame().isEmpty());
+    EXPECT_TRUE(preferences.gamePreviews());
 }
 
 TEST(AppPreferencesTest, KeepsChangesAcrossInstances)
@@ -22,11 +23,13 @@ TEST(AppPreferencesTest, KeepsChangesAcrossInstances)
         preferences.setFullscreen(true);
         preferences.setRememberLastGame(false);
         preferences.setLastGame("/games/pong/code/pong.rpx");
+        preferences.setGamePreviews(false);
     }
     const AppPreferences reloaded;
     EXPECT_TRUE(reloaded.fullscreen());
     EXPECT_FALSE(reloaded.rememberLastGame());
     EXPECT_EQ(reloaded.lastGame(), "/games/pong/code/pong.rpx");
+    EXPECT_FALSE(reloaded.gamePreviews());
 }
 
 TEST(AppPreferencesTest, ThemeDefaultsToLightBlue)

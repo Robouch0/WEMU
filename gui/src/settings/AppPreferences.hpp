@@ -10,6 +10,7 @@ class AppPreferences : public QObject {
     Q_PROPERTY(QString accentColor READ accentColor WRITE setAccentColor NOTIFY changed)
     Q_PROPERTY(bool rememberLastGame READ rememberLastGame WRITE setRememberLastGame NOTIFY changed)
     Q_PROPERTY(QString lastGame READ lastGame WRITE setLastGame NOTIFY changed)
+    Q_PROPERTY(bool gamePreviews READ gamePreviews WRITE setGamePreviews NOTIFY changed)
 
 public:
     using QObject::QObject;
@@ -24,6 +25,8 @@ public:
     void setRememberLastGame(bool remember);
     [[nodiscard]] QString lastGame() const;
     void setLastGame(const QString &rpxPath);
+    [[nodiscard]] bool gamePreviews() const;
+    void setGamePreviews(bool enabled);
 
 signals:
     void changed();
