@@ -75,7 +75,7 @@ namespace Core::Gfx {
             for (; offset + 32 <= size; offset += 32)
                 for (unsigned lane = 0; lane < lanes.size(); ++lane) {
                     std::uint64_t word;
-                    std::memcpy(&word, bytes + offset + lane * 8, sizeof(word));
+                    std::memcpy(&word, bytes + offset + std::size_t{lane} * 8, sizeof(word));
                     lanes[lane] = std::rotl(lanes[lane] + word * 0xC2B2AE3D27D4EB4Full, 31) * 0x9E3779B185EBCA87ull;
                 }
             auto hash = std::rotl(lanes[0], 1) ^ std::rotl(lanes[1], 17) ^ std::rotl(lanes[2], 33) ^ std::rotl(lanes[3], 49) ^ size;
@@ -86,7 +86,7 @@ namespace Core::Gfx {
             return hash ^ (hash >> 33);
         }
 
-        template <AttributeKind Kind, class Element>
+        template<AttributeKind Kind, class Element>
         void decodeElement(const Element &e, const std::uint8_t *p, std::array<float, 4> &a)
         {
             std::array<float, 4> value{0, 0, 0, 1};
@@ -176,23 +176,30 @@ namespace Core::Gfx {
         }
 
         // Calls body.template operator()<Kind>() for the element's decoder.
-        template <class Element, class Body>
+        template<class Element, class Body>
         void withDecoder(const Element &e, Body &&body)
         {
             switch (e.kind) {
-                case Float32: return body.template operator()<Float32>();
-                case Half16: return body.template operator()<Half16>();
-                case Unorm8: return body.template operator()<Unorm8>();
-                case Snorm8: return body.template operator()<Snorm8>();
-                case Unorm16: return body.template operator()<Unorm16>();
-                case Snorm16: return body.template operator()<Snorm16>();
-                default: return body.template operator()<Generic>();
+                case Float32:
+                    return body.template operator()<Float32>();
+                case Half16:
+                    return body.template operator()<Half16>();
+                case Unorm8:
+                    return body.template operator()<Unorm8>();
+                case Snorm8:
+                    return body.template operator()<Snorm8>();
+                case Unorm16:
+                    return body.template operator()<Unorm16>();
+                case Snorm16:
+                    return body.template operator()<Snorm16>();
+                default:
+                    return body.template operator()<Generic>();
             }
         }
 
         // Whether every element a draw reads (outputs below `outputs`) is resident, so a batch of
         // vertices converts element by element instead of through fetchAttributes.
-        template <class Fetch>
+        template<class Fetch>
         bool batchable(const Fetch &fetch, unsigned outputs)
         {
             return outputs && fetch.valid &&
@@ -201,7 +208,7 @@ namespace Core::Gfx {
 
         // Converts rows[v] (`stride` attributes each, preset to {0, 0, 0, 1}) from vertex
         // vertexOf(v), as fetchAttributes would; failed(v) marks a vertex it would reject.
-        template <class Fetch, class VertexOf, class Failed>
+        template<class Fetch, class VertexOf, class Failed>
         void decodeBatch(const Fetch &fetch, unsigned outputs, std::size_t count, unsigned stride, VertexOf vertexOf, std::array<float, 4> *rows,
                          Failed failed)
         {
@@ -2735,8 +2742,9 @@ namespace Core::Gfx {
         if (batchable(fetch, m_vertexInputCount)) {
             bool failed = false;
             vertices->attributes.assign(std::size_t(count) * m_vertexInputCount, std::array<float, 4>{0, 0, 0, 1});
-            decodeBatch(fetch, m_vertexInputCount, count, m_vertexInputCount, [&](std::size_t v) { return first + std::uint32_t(v); },
-                        vertices->attributes.data(), [&](std::size_t) { failed = true; });
+            decodeBatch(
+                    fetch, m_vertexInputCount, count, m_vertexInputCount, [&](std::size_t v) { return first + std::uint32_t(v); },
+                    vertices->attributes.data(), [&](std::size_t) { failed = true; });
             if (failed)
                 return {};
         } else {
@@ -4951,9 +4959,8 @@ namespace Core::Gfx {
                                              std::ranges::equal(entry.sourceIndices, idx) && entry.sources.size() == directSources.size();
                     // Bytes compared at these addresses earlier this frame have not changed since.
                     bool bytesMatch = inputsMatch && entry.validatedFrame == m_presentCount && entry.streamOutEpoch == m_streamOutWriteEpoch &&
-                                      std::ranges::equal(entry.sources, directSources, [](const auto &cached, const auto &range) {
-                                          return cached.first == range.first;
-                                      });
+                                      std::ranges::equal(entry.sources, directSources,
+                                                         [](const auto &cached, const auto &range) { return cached.first == range.first; });
                     for (std::size_t i = 0; inputsMatch && !bytesMatch && i < directSources.size(); ++i) {
                         const auto &bytes = entry.sources[i].second;
                         const auto *current = bufferBytes(directSources[i].first, bytes.size());
@@ -5025,8 +5032,9 @@ namespace Core::Gfx {
                     }
                 directAttributes.assign(used.size() * stride, std::array<float, 4>{0, 0, 0, 1});
                 std::vector<std::uint8_t> failed(used.size());
-                decodeBatch(attributeFetch, attributeStride, used.size(), stride, [&](std::size_t v) { return used[v]; }, directAttributes.data(),
-                            [&](std::size_t v) { failed[v] = 1; });
+                decodeBatch(
+                        attributeFetch, attributeStride, used.size(), stride, [&](std::size_t v) { return used[v]; }, directAttributes.data(),
+                        [&](std::size_t v) { failed[v] = 1; });
                 for (std::size_t v = 0; v < used.size(); ++v)
                     if (failed[v])
                         denseSlots[used[v] - low] = ~1u;

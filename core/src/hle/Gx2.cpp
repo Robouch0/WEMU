@@ -1608,7 +1608,8 @@ void RegisterGx2Functions()
         gx2_CalcSurfaceSizeAndAlignment(cpu);
         const auto imageSize = cpu.m_memory.read<std::uint32_t>(surface + 0x20);
         const auto mipSize = cpu.m_memory.read<std::uint32_t>(surface + 0x28);
-        if (!image || !imageSize || !std::as_const(cpu.m_memory).hostPtr(image, imageSize) || (mipSize && !std::as_const(cpu.m_memory).hostPtr(mipmap, mipSize))) {
+        if (!image || !imageSize || !std::as_const(cpu.m_memory).hostPtr(image, imageSize) ||
+            (mipSize && !std::as_const(cpu.m_memory).hostPtr(mipmap, mipSize))) {
             cpu.m_gpr[3] = 0;
             return;
         }
