@@ -9,7 +9,7 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Quick QuickControls2 Network)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Quick QuickControls2 Network LinguistTools)
 
 qt_standard_project_setup(REQUIRES 6.6.2)
 find_package(SDL2 REQUIRED)
@@ -17,30 +17,52 @@ find_package(SDL2_image REQUIRED)
 
 qt_add_executable(appgui
     src/main.cpp
+    src/i18n/AppLanguage.cpp
+    src/settings/AppPreferences.cpp
+    src/audio/MenuAudio.cpp
+    src/audio/MenuMixer.cpp
+    src/audio/SpectrumAnalyzer.cpp
+    src/gfx/GlobeDots.cpp
     src/input/KeyboardInput.cpp
     src/input/SDLGamepadInput.cpp
     src/input/InputManager.cpp
+    src/input/MenuKeyBridge.cpp
     src/input/InputProfileManager.cpp
     src/library/TitleScanner.cpp
     src/emulator/EmulatorLauncher.cpp
     src/emulator/GameView.cpp
     src/emulator/SessionProbe.cpp
+    src/preview/GamePreviews.cpp
+    src/preview/PreviewRecorder.cpp
     src/remote/RemoteGamepadServer.cpp
 )
 
 
 target_sources(appgui PRIVATE
+        src/i18n/AppLanguage.hpp
+        src/settings/AppPreferences.hpp
+        src/audio/MenuAudio.hpp
+        src/audio/MenuMixer.hpp
+        src/audio/SpectrumAnalyzer.hpp
+        src/gfx/GlobeDots.hpp
+        src/gfx/GlobeLand.hpp
         src/input/IInputDevice.hpp
         src/input/KeyboardInput.hpp
         src/input/InputManager.hpp
+        src/input/MenuKeyBridge.hpp
         src/input/SDLGamepadInput.hpp
         src/input/InputProfile.hpp
         src/input/ControllerMapping.hpp
         src/input/InputProfileManager.hpp
         src/library/TitleScanner.hpp
+        src/preview/GamePreviews.hpp
+        src/preview/PreviewFrames.hpp
+        src/preview/PreviewRecorder.hpp
         src/remote/RemoteProtocol.hpp
         src/remote/RemoteGamepadServer.hpp
 )
+
+set_source_files_properties(qml/components/Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 
 qt_add_qml_module(appgui
     URI gui
@@ -51,6 +73,27 @@ qt_add_qml_module(appgui
         qml/pages/MainMenu.qml
         qml/pages/SettingsPage.qml
         qml/pages/GameSessionView.qml
+        qml/components/Theme.qml
+        qml/components/WemuLogo.qml
+        qml/components/AccentSwatch.qml
+        qml/components/FocusRing.qml
+        qml/components/MenuIcon.qml
+        qml/components/MenuButton.qml
+        qml/components/MenuComboBox.qml
+        qml/components/MenuSlider.qml
+        qml/components/MenuSwitch.qml
+        qml/components/SettingsCard.qml
+        qml/components/SettingsRow.qml
+        qml/components/SettingsToggleRow.qml
+        qml/components/SettingsTabPage.qml
+        qml/components/DottedGlobe.qml
+        qml/components/SettingsAppearanceTab.qml
+        qml/components/SettingsAudioTab.qml
+        qml/components/SpectrumBars.qml
+        qml/components/ThemeCard.qml
+        qml/components/SettingsGeneralTab.qml
+        qml/components/SettingsLiveInput.qml
+        qml/components/SettingsControllersTab.qml
         qml/components/SessionMenuButton.qml
         qml/components/ControllerPreview.qml
         qml/components/ControllerButton.qml
@@ -60,6 +103,11 @@ qt_add_qml_module(appgui
         qml/components/BindingRow.qml
         qml/components/RemoteGamepadBadge.qml
         qml/components/RemoteGamepadPanel.qml
+)
+
+qt_add_translations(appgui
+    TS_FILES i18n/wemu_fr.ts i18n/wemu_es.ts i18n/wemu_ko.ts
+    RESOURCE_PREFIX "/i18n"
 )
 
 qt_add_resources(APPGUI_QRC resources.qrc)
@@ -77,6 +125,8 @@ target_include_directories(appgui
         ${CMAKE_CURRENT_SOURCE_DIR}/src/emulator
         ${CMAKE_CURRENT_SOURCE_DIR}/src/gfx
         ${CMAKE_CURRENT_SOURCE_DIR}/src/remote
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/settings
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/preview
         ${Qt6Core_INCLUDE_DIRS}
 )
 
@@ -126,6 +176,37 @@ add_executable(wemu_controller_mapping_tests tests/ControllerMappingTest.cpp)
 target_include_directories(wemu_controller_mapping_tests PRIVATE src/input)
 target_link_libraries(wemu_controller_mapping_tests PRIVATE Qt6::Core gtest_main)
 add_test(NAME wemu_controller_mapping_tests COMMAND wemu_controller_mapping_tests)
+
+add_executable(wemu_menu_mixer_tests tests/MenuMixerTest.cpp src/audio/MenuMixer.cpp src/audio/SpectrumAnalyzer.cpp)
+target_include_directories(wemu_menu_mixer_tests PRIVATE src/audio)
+target_link_libraries(wemu_menu_mixer_tests PRIVATE gtest_main)
+add_test(NAME wemu_menu_mixer_tests COMMAND wemu_menu_mixer_tests)
+
+add_executable(wemu_app_preferences_tests tests/AppPreferencesTest.cpp src/settings/AppPreferences.cpp src/settings/AppPreferences.hpp)
+target_include_directories(wemu_app_preferences_tests PRIVATE src/settings)
+target_link_libraries(wemu_app_preferences_tests PRIVATE Qt6::Core gtest)
+add_test(NAME wemu_app_preferences_tests COMMAND wemu_app_preferences_tests)
+
+add_executable(wemu_app_language_tests tests/AppLanguageTest.cpp src/i18n/AppLanguage.cpp src/i18n/AppLanguage.hpp)
+target_include_directories(wemu_app_language_tests PRIVATE src/i18n)
+target_link_libraries(wemu_app_language_tests PRIVATE Qt6::Core gtest)
+add_test(NAME wemu_app_language_tests COMMAND wemu_app_language_tests)
+
+add_executable(wemu_preview_frames_tests tests/PreviewFramesTest.cpp src/preview/PreviewFrames.hpp)
+target_include_directories(wemu_preview_frames_tests PRIVATE src/preview)
+target_link_libraries(wemu_preview_frames_tests PRIVATE Qt6::Gui gtest_main)
+add_test(NAME wemu_preview_frames_tests COMMAND wemu_preview_frames_tests)
+
+add_executable(wemu_input_profile_tests tests/InputProfileManagerTest.cpp src/input/InputProfileManager.cpp src/input/InputProfileManager.hpp)
+target_include_directories(wemu_input_profile_tests PRIVATE src/input)
+target_link_libraries(wemu_input_profile_tests PRIVATE Qt6::Core gtest_main)
+add_test(NAME wemu_input_profile_tests COMMAND wemu_input_profile_tests)
+
+add_executable(wemu_menu_key_bridge_tests tests/MenuKeyBridgeTest.cpp src/input/MenuKeyBridge.cpp src/input/MenuKeyBridge.hpp)
+target_include_directories(wemu_menu_key_bridge_tests PRIVATE src/input)
+find_package(Qt6 REQUIRED COMPONENTS Test)
+target_link_libraries(wemu_menu_key_bridge_tests PRIVATE Qt6::Core Qt6::Gui Qt6::Test gtest)
+add_test(NAME wemu_menu_key_bridge_tests COMMAND wemu_menu_key_bridge_tests)
 
 add_executable(wemu_session_lifecycle_tests tests/SessionLifecycleTest.cpp src/emulator/EmulatorLauncher.cpp)
 target_include_directories(wemu_session_lifecycle_tests PRIVATE src/emulator src/input ../core/src)

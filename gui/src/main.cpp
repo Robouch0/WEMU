@@ -8,14 +8,20 @@
 #include <QSettings>
 #include <SDL2/SDL.h>
 
+#include "audio/MenuAudio.hpp"
 #include "emulator/EmulatorLauncher.hpp"
 #include "emulator/GameView.hpp"
 #include "emulator/SessionProbe.hpp"
+#include "gfx/GlobeDots.hpp"
+#include "i18n/AppLanguage.hpp"
 #include "input/InputManager.hpp"
 #include "input/InputProfileManager.hpp"
 #include "input/KeyboardInput.hpp"
+#include "input/MenuKeyBridge.hpp"
 #include "library/TitleScanner.hpp"
+#include "preview/GamePreviews.hpp"
 #include "remote/RemoteGamepadServer.hpp"
+#include "settings/AppPreferences.hpp"
 
 namespace {
     void configureGpuPreference()
@@ -58,6 +64,8 @@ int main(int argc, char *argv[])
     parser.addHelpOption();
     parser.addOption({"library", "Select a game library folder.", "directory"});
     parser.process(app);
+    AppLanguage language;
+    AppPreferences preferences;
     InputManager input;
     auto *keyboard = new KeyboardInput();
     input.addDevice(keyboard);
@@ -69,23 +77,37 @@ int main(int argc, char *argv[])
         library = TitleScanner::defaultLibraryPath(QCoreApplication::applicationDirPath(), QDir::currentPath());
     if (!library.isEmpty()) scanner.scanDirectory(library, !parser.isSet("library"));
     RemoteGamepadServer remoteGamepad(launcher, scanner);
+    GamePreviews previews(scanner, launcher, preferences);
+    MenuAudio menuAudio;
+    QObject::connect(&launcher, &EmulatorLauncher::stateChanged, &menuAudio, &MenuAudio::setGameRunning);
+    MenuKeyBridge menuKeys([&launcher] { return !launcher.running(); });
+    QObject::connect(&input, &InputManager::buttonChanged, &menuKeys, &MenuKeyBridge::onButtonChanged);
+    QObject::connect(&input, &InputManager::axisChanged, &menuKeys, &MenuKeyBridge::onAxisChanged);
     QQmlApplicationEngine engine;
     qmlRegisterType<GameView>("Wemu", 1, 0, "GameView");
+    qmlRegisterType<GlobeDots>("Wemu", 1, 0, "GlobeDots");
     engine.rootContext()->setContextProperty("InputManager", &input);
     engine.rootContext()->setContextProperty("InputProfileManager", &profiles);
     engine.rootContext()->setContextProperty("TitleScanner", &scanner);
     engine.rootContext()->setContextProperty("EmulatorLauncher", &launcher);
     engine.rootContext()->setContextProperty("RemoteGamepad", &remoteGamepad);
+    engine.rootContext()->setContextProperty("MenuKeys", &menuKeys);
+    engine.rootContext()->setContextProperty("AppLanguage", &language);
+    engine.rootContext()->setContextProperty("AppPreferences", &preferences);
+    engine.rootContext()->setContextProperty("GamePreviews", &previews);
+    engine.rootContext()->setContextProperty("MenuAudio", &menuAudio);
     QObject::connect(&input, &InputManager::inputUpdated, &launcher, [&input, &profiles, &launcher] {
         const auto pad = input.controllerState(profiles.bindings());
         launcher.setControllerInput(pad.buttons, pad.leftStick, pad.rightStick);
     });
+    QObject::connect(&language, &AppLanguage::codeChanged, &engine, &QQmlEngine::retranslate);
     QObject::connect(&engine, &QQmlApplicationEngine::objectCreationFailed, &app,
                      []() { QCoreApplication::exit(-1); }, Qt::QueuedConnection);
     QObject::connect(&app, &QGuiApplication::aboutToQuit, &input, &InputManager::stopPolling);
     QObject::connect(&app, &QGuiApplication::aboutToQuit, &launcher, &EmulatorLauncher::stop);
     engine.load(QUrl("qrc:/assets/qml/Main.qml"));
     if (engine.rootObjects().isEmpty()) return 1;
+    menuKeys.setWindow(qobject_cast<QWindow *>(engine.rootObjects().first()));
     auto *gameView = engine.rootObjects().first()->findChild<GameView *>("gameView");
     if (!gameView)
         qFatal("The game presentation item was not created");

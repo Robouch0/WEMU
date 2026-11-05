@@ -49,6 +49,184 @@ namespace Core::Gfx {
             return f;
         }
 
+        // Vertex element decoders. The common layouts, whose components each load as one word,
+        // get their own loops; Generic handles everything else. All share Generic's formulas.
+        enum AttributeKind : std::uint8_t { Generic, Float32, Half16, Unorm8, Snorm8, Unorm16, Snorm16 };
+
+        float halfToFloat(std::uint32_t h)
+        {
+            const std::uint32_t sign = (h & 0x8000u) << 16, exponent = (h >> 10) & 0x1F, mantissa = h & 0x3FF;
+            if (exponent == 0) {
+                const float value = std::ldexp(float(mantissa), -24);
+                return sign ? -value : value;
+            }
+            if (exponent == 31)
+                return asFloat(sign | 0x7F800000u | (mantissa << 13));
+            return asFloat(sign | ((exponent + 112) << 23) | (mantissa << 13));
+        }
+
+        // A frame-local identity of guest bytes, four independent lanes per 32 bytes (as the
+        // buffer snapshots hash); equal keys are still confirmed byte for byte.
+        std::uint64_t contentHash(const void *data, std::size_t size)
+        {
+            const auto *bytes = static_cast<const std::uint8_t *>(data);
+            std::array<std::uint64_t, 4> lanes{1469598103934665603ull, 0x9E3779B97F4A7C15ull, 0xC2B2AE3D27D4EB4Full, 0x165667B19E3779F9ull};
+            std::size_t offset{};
+            for (; offset + 32 <= size; offset += 32)
+                for (unsigned lane = 0; lane < lanes.size(); ++lane) {
+                    std::uint64_t word;
+                    std::memcpy(&word, bytes + offset + std::size_t{lane} * 8, sizeof(word));
+                    lanes[lane] = std::rotl(lanes[lane] + word * 0xC2B2AE3D27D4EB4Full, 31) * 0x9E3779B185EBCA87ull;
+                }
+            auto hash = std::rotl(lanes[0], 1) ^ std::rotl(lanes[1], 17) ^ std::rotl(lanes[2], 33) ^ std::rotl(lanes[3], 49) ^ size;
+            for (; offset < size; ++offset)
+                hash = (hash ^ bytes[offset]) * 1099511628211ull;
+            hash = (hash ^ (hash >> 33)) * 0xFF51AFD7ED558CCDull;
+            hash = (hash ^ (hash >> 33)) * 0xC4CEB9FE1A85EC53ull;
+            return hash ^ (hash >> 33);
+        }
+
+        template<AttributeKind Kind, class Element>
+        void decodeElement(const Element &e, const std::uint8_t *p, std::array<float, 4> &a)
+        {
+            std::array<float, 4> value{0, 0, 0, 1};
+            const auto word32 = [&](unsigned c) {
+                std::uint32_t bits;
+                std::memcpy(&bits, p + std::size_t{c} * 4, 4);
+                return e.wordSwap ? std::byteswap(bits) : bits;
+            };
+            const auto word16 = [&](unsigned c) -> std::uint32_t {
+                std::uint16_t bits;
+                std::memcpy(&bits, p + std::size_t{c} * 2, 2);
+                return e.wordSwap ? std::byteswap(bits) : bits;
+            };
+            if constexpr (Kind == Float32) {
+                for (unsigned c = 0; c < e.components; c++)
+                    value[c] = asFloat(word32(c));
+            } else if constexpr (Kind == Half16) {
+                for (unsigned c = 0; c < e.components; c++)
+                    value[c] = halfToFloat(word16(c));
+            } else if constexpr (Kind == Unorm8) {
+                for (unsigned c = 0; c < e.components; c++)
+                    value[c] = float(p[c]) / 255.0f;
+            } else if constexpr (Kind == Snorm8) {
+                for (unsigned c = 0; c < e.components; c++)
+                    value[c] = std::max(-1.0f, float(std::int8_t(p[c])) / 127.0f);
+            } else if constexpr (Kind == Unorm16) {
+                for (unsigned c = 0; c < e.components; c++)
+                    value[c] = float(word16(c)) / 65535.0f;
+            } else if constexpr (Kind == Snorm16) {
+                for (unsigned c = 0; c < e.components; c++)
+                    value[c] = std::max(-1.0f, float(std::int16_t(word16(c))) / 32767.0f);
+            } else {
+                // Component c's bits, as the byte-order loop below assembles them.
+                const auto word = [&](unsigned c) -> std::uint32_t {
+                    if (e.bytes == 4)
+                        return word32(c);
+                    if (e.bytes == 2)
+                        return word16(c);
+                    return p[c];
+                };
+                if (e.floating && e.bytes == 4) {
+                    for (unsigned c = 0; c < e.components; c++) {
+                        const auto *order = &e.order[std::size_t{c} * 4];
+                        value[c] = asFloat(e.wordLoad ? word(c)
+                                                      : std::uint32_t(p[order[0]]) | std::uint32_t(p[order[1]]) << 8 |
+                                                                std::uint32_t(p[order[2]]) << 16 | std::uint32_t(p[order[3]]) << 24);
+                    }
+                } else {
+                    const auto convert = [&](std::uint32_t bits, unsigned width) -> float {
+                        const auto signBit = 1u << ((width - 1) & 31);
+                        const auto signedBits = std::int32_t(e.isSigned && (bits & signBit) && width < 32 ? bits | ~((signBit << 1) - 1) : bits);
+                        if (e.integer && !e.scaled)
+                            return asFloat(e.isSigned ? std::uint32_t(signedBits) : bits); // raw integer bits for integer shader inputs
+                        if (e.scaled || e.integer)
+                            return e.isSigned ? float(signedBits) : float(bits);
+                        if (e.isSigned)
+                            return std::max(-1.0f, float(signedBits) / float(signBit - 1));
+                        return width == 32 ? float(double(bits) / 4294967295.0) : float(bits) / float((signBit << 1) - 1);
+                    };
+                    for (unsigned c = 0; c < e.components; c++) {
+                        std::uint32_t bits = 0;
+                        if (e.wordLoad)
+                            bits = word(c);
+                        else
+                            for (unsigned b = 0; b < e.bytes; b++)
+                                bits |= std::uint32_t(p[e.order[c * e.bytes + b]]) << (b * 8);
+                        if (e.packed1010102) {
+                            for (unsigned k = 0; k < 3; ++k) {
+                                const auto field = (bits >> (k * 10)) & 0x3FF;
+                                value[k] = convert(field, 10);
+                            }
+                            value[3] = (e.integer || e.scaled) ? float(bits >> 30) : float(bits >> 30) / 3.0f;
+                        } else if (e.floating)
+                            value[c] = halfToFloat(bits);
+                        else
+                            value[c] = convert(bits, e.bytes * 8u);
+                    }
+                }
+            }
+            for (unsigned c = 0; c < 4; c++) {
+                const auto select = e.select[c];
+                if (select < 4)
+                    a[c] = value[select];
+                else if (select == 4 || select == 5)
+                    a[c] = select == 5 ? 1.0f : 0.0f;
+            }
+        }
+
+        // Calls body.template operator()<Kind>() for the element's decoder.
+        template<class Element, class Body>
+        void withDecoder(const Element &e, Body &&body)
+        {
+            switch (e.kind) {
+                case Float32:
+                    return body.template operator()<Float32>();
+                case Half16:
+                    return body.template operator()<Half16>();
+                case Unorm8:
+                    return body.template operator()<Unorm8>();
+                case Snorm8:
+                    return body.template operator()<Snorm8>();
+                case Unorm16:
+                    return body.template operator()<Unorm16>();
+                case Snorm16:
+                    return body.template operator()<Snorm16>();
+                default:
+                    return body.template operator()<Generic>();
+            }
+        }
+
+        // Whether every element a draw reads (outputs below `outputs`) is resident, so a batch of
+        // vertices converts element by element instead of through fetchAttributes.
+        template<class Fetch>
+        bool batchable(const Fetch &fetch, unsigned outputs)
+        {
+            return outputs && fetch.valid &&
+                   std::ranges::all_of(fetch.elements, [&](const auto &e) { return e.out >= outputs || (!e.fails && e.host); });
+        }
+
+        // Converts rows[v] (`stride` attributes each, preset to {0, 0, 0, 1}) from vertex
+        // vertexOf(v), as fetchAttributes would; failed(v) marks a vertex it would reject.
+        template<class Fetch, class VertexOf, class Failed>
+        void decodeBatch(const Fetch &fetch, unsigned outputs, std::size_t count, unsigned stride, VertexOf vertexOf, std::array<float, 4> *rows,
+                         Failed failed)
+        {
+            for (const auto &e: fetch.elements) {
+                if (e.out >= outputs)
+                    continue;
+                withDecoder(e, [&]<AttributeKind Kind>() {
+                    for (std::size_t v = 0; v < count; ++v) {
+                        const std::uint32_t vi = vertexOf(v);
+                        if (e.stride && vi >= e.count)
+                            failed(v);
+                        else
+                            decodeElement<Kind>(e, e.host + std::uint64_t(vi) * e.stride, rows[v * stride + e.out]);
+                    }
+                });
+            }
+        }
+
 
         // Decode one BC1 (DXT1) 8-byte block; out = 16 RGBA texels (4x4).
         void decodeBc1Block(const std::uint8_t *b, std::uint8_t out[16][4], bool fourColors = false)
@@ -2291,6 +2469,15 @@ namespace Core::Gfx {
             e.wordLoad = endian == 0 || e.wordSwap;
             for (unsigned c = 0; c < 4; ++c)
                 e.select[c] = std::uint8_t((e.mask >> (24 - c * 8)) & 7);
+            const bool normalized = !e.floating && !e.integer && !e.scaled && !e.packed1010102;
+            if (!e.wordLoad || e.packed1010102)
+                e.kind = Generic;
+            else if (e.floating)
+                e.kind = bytes == 4 ? Float32 : Half16;
+            else if (normalized && bytes == 1)
+                e.kind = e.isSigned ? Snorm8 : Unorm8;
+            else if (normalized && bytes == 2)
+                e.kind = e.isSigned ? Snorm16 : Unorm16;
             // Per-instance elements always read the first element.
             e.stride = m_fetchLayout[i + 4] == 1 ? 0 : binding.stride;
             e.offset = m_fetchLayout[i + 2];
@@ -2336,84 +2523,14 @@ namespace Core::Gfx {
                 if (!p)
                     return false;
             }
-            std::array<float, 4> value{0, 0, 0, 1};
-            // Component c's bits, as the byte-order loop below assembles them.
-            const auto word = [&](unsigned c) -> std::uint32_t {
-                if (e.bytes == 4) {
-                    std::uint32_t bits;
-                    std::memcpy(&bits, p + std::size_t{c} * 4, 4);
-                    return e.wordSwap ? std::byteswap(bits) : bits;
-                }
-                if (e.bytes == 2) {
-                    std::uint16_t bits;
-                    std::memcpy(&bits, p + std::size_t{c} * 2, 2);
-                    return e.wordSwap ? std::byteswap(bits) : bits;
-                }
-                return p[c];
-            };
-            if (e.floating && e.bytes == 4) {
-                for (unsigned c = 0; c < e.components; c++) {
-                    const auto *order = &e.order[std::size_t{c} * 4];
-                    value[c] = asFloat(e.wordLoad ? word(c)
-                                                  : std::uint32_t(p[order[0]]) | std::uint32_t(p[order[1]]) << 8 | std::uint32_t(p[order[2]]) << 16 |
-                                                            std::uint32_t(p[order[3]]) << 24);
-                }
-            } else {
-                const auto convert = [&](std::uint32_t bits, unsigned width) -> float {
-                    const auto signBit = 1u << ((width - 1) & 31);
-                    const auto signedBits = std::int32_t(e.isSigned && (bits & signBit) && width < 32 ? bits | ~((signBit << 1) - 1) : bits);
-                    if (e.integer && !e.scaled)
-                        return asFloat(e.isSigned ? std::uint32_t(signedBits) : bits); // raw integer bits for integer shader inputs
-                    if (e.scaled || e.integer)
-                        return e.isSigned ? float(signedBits) : float(bits);
-                    if (e.isSigned)
-                        return std::max(-1.0f, float(signedBits) / float(signBit - 1));
-                    return width == 32 ? float(double(bits) / 4294967295.0) : float(bits) / float((signBit << 1) - 1);
-                };
-                const auto halfToFloat = [](std::uint32_t h) {
-                    const std::uint32_t sign = (h & 0x8000u) << 16, exponent = (h >> 10) & 0x1F, mantissa = h & 0x3FF;
-                    if (exponent == 0) {
-                        const float value = std::ldexp(float(mantissa), -24);
-                        return sign ? -value : value;
-                    }
-                    if (exponent == 31)
-                        return asFloat(sign | 0x7F800000u | (mantissa << 13));
-                    return asFloat(sign | ((exponent + 112) << 23) | (mantissa << 13));
-                };
-                for (unsigned c = 0; c < e.components; c++) {
-                    std::uint32_t bits = 0;
-                    if (e.wordLoad)
-                        bits = word(c);
-                    else
-                        for (unsigned b = 0; b < e.bytes; b++)
-                            bits |= std::uint32_t(p[e.order[c * e.bytes + b]]) << (b * 8);
-                    if (e.packed1010102) {
-                        for (unsigned k = 0; k < 3; ++k) {
-                            const auto field = (bits >> (k * 10)) & 0x3FF;
-                            value[k] = convert(field, 10);
-                        }
-                        value[3] = (e.integer || e.scaled) ? float(bits >> 30) : float(bits >> 30) / 3.0f;
-                    } else if (e.floating)
-                        value[c] = halfToFloat(bits);
-                    else
-                        value[c] = convert(bits, e.bytes * 8u);
-                }
-            }
-            auto &a = out[e.out];
-            for (unsigned c = 0; c < 4; c++) {
-                const auto select = e.select[c];
-                if (select < 4)
-                    a[c] = value[select];
-                else if (select == 4 || select == 5)
-                    a[c] = select == 5 ? 1.0f : 0.0f;
-            }
+            withDecoder(e, [&]<AttributeKind Kind>() { decodeElement<Kind>(e, p, out[e.out]); });
         }
         return true;
     }
 
     std::size_t Gx2Replayer::DirectVertexEntry::bytes() const
     {
-        std::size_t total = (fetchLayout.size() + sourceIndices.size()) * sizeof(std::uint32_t);
+        std::size_t total = (fetchLayout.size() + sourceIndices.size() + layout.size()) * sizeof(std::uint32_t);
         for (const auto &[address, data]: sources)
             total += data.size();
         if (vertices)
@@ -2622,11 +2739,21 @@ namespace Core::Gfx {
                 m_streamOutInputs.erase(found);
             }
         auto vertices = std::make_shared<DirectVertices>();
-        vertices->attributes.resize(std::size_t(count) * m_vertexInputCount);
-        for (unsigned vertex = 0; vertex < count; ++vertex)
-            if (!fetchAttributes(fetch, first + vertex,
-                                 std::span(vertices->attributes).subspan(std::size_t(vertex) * m_vertexInputCount, m_vertexInputCount)))
+        if (batchable(fetch, m_vertexInputCount)) {
+            bool failed = false;
+            vertices->attributes.assign(std::size_t(count) * m_vertexInputCount, std::array<float, 4>{0, 0, 0, 1});
+            decodeBatch(
+                    fetch, m_vertexInputCount, count, m_vertexInputCount, [&](std::size_t v) { return first + std::uint32_t(v); },
+                    vertices->attributes.data(), [&](std::size_t) { failed = true; });
+            if (failed)
                 return {};
+        } else {
+            vertices->attributes.resize(std::size_t(count) * m_vertexInputCount);
+            for (unsigned vertex = 0; vertex < count; ++vertex)
+                if (!fetchAttributes(fetch, first + vertex,
+                                     std::span(vertices->attributes).subspan(std::size_t(vertex) * m_vertexInputCount, m_vertexInputCount)))
+                    return {};
+        }
         if (cacheable) {
             DirectVertexEntry entry;
             entry.mode = count;
@@ -4774,40 +4901,89 @@ namespace Core::Gfx {
         // bytes match a previous conversion reuses its arrays (and the backend its upload).
         std::uint64_t directKey = 0;
         std::vector<std::pair<std::uint32_t, std::uint32_t>> directSources;
+        std::vector<std::uint32_t> directLayout; // per read element: its binding's state, source and offset in it
         bool cacheDirect = false;
         if (directVertices && idx.size() >= 64) {
             const auto [low, high] = indexBounds();
             cacheDirect = directVertexSources(attributeFetch, attributeStride, low, high, directSources);
             if (cacheDirect) {
+                // Keyed by content rather than addresses: games rebuild the same geometry into
+                // rotating per-frame buffers (Smash moves every fighter's meshes each frame), and
+                // the conversion only depends on the bytes each element reads, relative to them.
+                // Only what the read elements see of their bindings: the others' state changes
+                // between frames without affecting this draw.
+                directLayout.clear();
+                for (const auto &e: attributeFetch.elements) {
+                    if (e.out >= attributeStride)
+                        continue;
+                    directLayout.push_back(e.fails);
+                    if (e.fails)
+                        continue;
+                    directLayout.push_back(e.stride);
+                    directLayout.push_back(e.size);
+                    if (e.stride && low >= e.count) {
+                        directLayout.push_back(~0u);
+                        continue;
+                    }
+                    const auto start = std::uint64_t(e.address) + e.offset + (e.stride ? std::uint64_t(low) * e.stride : 0);
+                    std::uint32_t source = 0;
+                    while (source + 1 < directSources.size() && directSources[source + 1].first <= start)
+                        ++source;
+                    directLayout.push_back(source);
+                    directLayout.push_back(std::uint32_t(start - directSources[source].first));
+                }
                 const auto mix = [&](std::uint64_t value) { directKey = (directKey ^ value) * 0x100000001B3ull + (directKey >> 29); };
                 for (unsigned i = 0; i < 6; ++i)
-                    mix(cmd.gpr[i]);
+                    if (!indexed || i != 3) // the index buffer's address; its indices are hashed below
+                        mix(cmd.gpr[i]);
                 mix(idx.size());
                 mix(low);
                 mix(high);
                 mix(mode);
                 mix(attributeStride);
-                for (const auto &binding: m_attribs)
-                    mix((std::uint64_t(binding.addr) << 32) ^ binding.stride ^ (std::uint64_t(binding.size) << 16));
                 for (const auto word: m_fetchLayout)
                     mix(word);
+                for (const auto word: directLayout)
+                    mix(word);
+                mix(contentHash(idx.data(), idx.size() * sizeof(idx[0])));
+                for (const auto &[address, size]: directSources) {
+                    const auto *bytes = bufferBytes(address, size);
+                    mix(size);
+                    mix(bytes ? contentHash(bytes, size) : 0);
+                }
+                // Admission counts sightings per draw site (its addresses), not per content:
+                // animated geometry has new content every frame but is still drawn twice by
+                // shadow/color passes, so its first sighting at a known site is cached.
+                std::uint64_t siteKey = 0;
+                const auto mixSite = [&](std::uint64_t value) { siteKey = (siteKey ^ value) * 0x100000001B3ull + (siteKey >> 29); };
+                for (unsigned i = 0; i < 6; ++i)
+                    mixSite(cmd.gpr[i]);
+                mixSite(idx.size());
+                mixSite(mode);
+                mixSite(attributeStride);
+                for (const auto &binding: m_attribs)
+                    mixSite((std::uint64_t(binding.addr) << 32) ^ binding.stride ^ (std::uint64_t(binding.size) << 16));
                 const auto found = m_directVertexCache.find(directKey);
                 if (found != m_directVertexCache.end()) {
                     auto &entry = found->second;
-                    const bool inputsMatch = entry.mode == mode && entry.attributeStride == attributeStride && entry.attribs == m_attribs &&
-                                             entry.semantics == m_vertexSemantics && entry.fetchLayout == m_fetchLayout &&
+                    const bool inputsMatch = entry.mode == mode && entry.attributeStride == attributeStride && entry.semantics == m_vertexSemantics &&
+                                             entry.fetchLayout == m_fetchLayout && entry.layout == directLayout &&
                                              std::ranges::equal(entry.sourceIndices, idx) && entry.sources.size() == directSources.size();
-                    bool bytesMatch = inputsMatch && entry.validatedFrame == m_presentCount && entry.streamOutEpoch == m_streamOutWriteEpoch;
+                    // Bytes compared at these addresses earlier this frame have not changed since.
+                    bool bytesMatch = inputsMatch && entry.validatedFrame == m_presentCount && entry.streamOutEpoch == m_streamOutWriteEpoch &&
+                                      std::ranges::equal(entry.sources, directSources,
+                                                         [](const auto &cached, const auto &range) { return cached.first == range.first; });
                     for (std::size_t i = 0; inputsMatch && !bytesMatch && i < directSources.size(); ++i) {
-                        const auto &[address, bytes] = entry.sources[i];
-                        const auto *current = bufferBytes(address, bytes.size());
-                        if (address != directSources[i].first || bytes.size() != directSources[i].second || !current ||
-                            std::memcmp(current, bytes.data(), bytes.size()) != 0)
+                        const auto &bytes = entry.sources[i].second;
+                        const auto *current = bufferBytes(directSources[i].first, bytes.size());
+                        if (bytes.size() != directSources[i].second || !current || std::memcmp(current, bytes.data(), bytes.size()) != 0)
                             break;
                         bytesMatch = i + 1 == directSources.size();
                     }
                     bytesMatch |= inputsMatch && directSources.empty();
                     if (bytesMatch) {
+                        for (std::size_t i = 0; i < directSources.size(); ++i)
+                            entry.sources[i].first = directSources[i].first;
                         entry.validatedFrame = m_presentCount;
                         entry.streamOutEpoch = m_streamOutWriteEpoch;
                         entry.used = ++m_directVertexClock;
@@ -4821,7 +4997,7 @@ namespace Core::Gfx {
                 if (!directArrays) {
                     if (m_directVertexSeen.size() >= 65536)
                         m_directVertexSeen.clear();
-                    auto &changes = m_directVertexSeen[directKey];
+                    auto &changes = m_directVertexSeen[siteKey];
                     cacheDirect = changes > 0;
                     if (found != m_directVertexCache.end() || !changes)
                         changes = std::uint8_t(std::min(changes + 1, 255));
@@ -4854,6 +5030,27 @@ namespace Core::Gfx {
                 }
                 return slot;
             };
+            // Resident dense geometry converts in one pass per element over the used vertices, so
+            // slotOf below only looks slots up.
+            if (dense && batchable(attributeFetch, attributeStride)) {
+                std::vector<std::uint32_t> used;
+                used.reserve(std::min<std::size_t>(span, idx.size()));
+                for (const auto vi: idx)
+                    denseSlots[vi - low] = ~2u;
+                for (std::uint32_t k = 0; k < span; ++k)
+                    if (denseSlots[k] == ~2u) {
+                        denseSlots[k] = std::uint32_t(used.size());
+                        used.push_back(low + k);
+                    }
+                directAttributes.assign(used.size() * stride, std::array<float, 4>{0, 0, 0, 1});
+                std::vector<std::uint8_t> failed(used.size());
+                decodeBatch(
+                        attributeFetch, attributeStride, used.size(), stride, [&](std::size_t v) { return used[v]; }, directAttributes.data(),
+                        [&](std::size_t v) { failed[v] = 1; });
+                for (std::size_t v = 0; v < used.size(); ++v)
+                    if (failed[v])
+                        denseSlots[used[v] - low] = ~1u;
+            }
             const auto triangle = [&](std::uint32_t a, std::uint32_t b, std::uint32_t c) {
                 const std::uint32_t slots[]{slotOf(idx[a]), slotOf(idx[b]), slotOf(idx[c])};
                 if (slots[0] != ~1u && slots[1] != ~1u && slots[2] != ~1u)
@@ -4869,6 +5066,7 @@ namespace Core::Gfx {
                 entry.attribs = m_attribs;
                 entry.attributeStride = attributeStride;
                 entry.mode = mode;
+                entry.layout = std::move(directLayout);
                 for (const auto &[address, size]: directSources) {
                     const auto *bytes = bufferBytes(address, size);
                     entry.sources.emplace_back(address, std::vector<std::uint8_t>(bytes, bytes + size));

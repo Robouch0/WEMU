@@ -53,6 +53,7 @@ CMakeFiles/
 greenlight-review/demo-material/
 *.webm
 *.mp4
+!gui/qml/assets/intro.mp4
 
 # Editor / OS noise
 .DS_Store

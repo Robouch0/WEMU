@@ -1608,7 +1608,8 @@ void RegisterGx2Functions()
         gx2_CalcSurfaceSizeAndAlignment(cpu);
         const auto imageSize = cpu.m_memory.read<std::uint32_t>(surface + 0x20);
         const auto mipSize = cpu.m_memory.read<std::uint32_t>(surface + 0x28);
-        if (!image || !imageSize || !cpu.m_memory.hostPtr(image, imageSize) || (mipSize && !cpu.m_memory.hostPtr(mipmap, mipSize))) {
+        if (!image || !imageSize || !std::as_const(cpu.m_memory).hostPtr(image, imageSize) ||
+            (mipSize && !std::as_const(cpu.m_memory).hostPtr(mipmap, mipSize))) {
             cpu.m_gpr[3] = 0;
             return;
         }
@@ -1724,7 +1725,7 @@ void RegisterGx2Functions()
     Core::syscallHandler.registerSyscall("GX2RCreateBufferUserMemory", [](Core::Interpreter &cpu) {
         const auto buffer = cpu.m_gpr[3], memory = cpu.m_gpr[4], size = cpu.m_gpr[5];
         const auto bytes = std::uint64_t{cpu.m_memory.read<std::uint32_t>(buffer + 4)} * cpu.m_memory.read<std::uint32_t>(buffer + 8);
-        if (!memory || !bytes || bytes > size || !cpu.m_memory.hostPtr(memory, size)) {
+        if (!memory || !bytes || bytes > size || !std::as_const(cpu.m_memory).hostPtr(memory, size)) {
             cpu.m_gpr[3] = 0;
             return;
         }
@@ -1752,7 +1753,8 @@ void RegisterGx2Functions()
         const auto buffer = cpu.m_gpr[3], index = cpu.m_gpr[4], stride = cpu.m_gpr[5], offset = cpu.m_gpr[6];
         const auto bytes = std::uint64_t{cpu.m_memory.read<unsigned>(buffer + 4)} * cpu.m_memory.read<unsigned>(buffer + 8);
         const auto address = cpu.m_memory.read<unsigned>(buffer + 12);
-        if (bytes > 0xFFFFFFFFu || offset > bytes || !cpu.m_memory.hostPtr(address, bytes)) {
+        // A read-only check: the writable view would count a write on every watched page.
+        if (bytes > 0xFFFFFFFFu || offset > bytes || !std::as_const(cpu.m_memory).hostPtr(address, bytes)) {
             cpu.m_gpr[3] = 0;
             return;
         }

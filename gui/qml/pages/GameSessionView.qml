@@ -3,7 +3,7 @@ import QtQuick.Layouts
 import QtQuick.Controls
 import Wemu 1.0
 import "../components"
-import "../components/Theme.js" as Theme
+import gui 1.0
 
 Item {
     id: page
@@ -157,7 +157,7 @@ Item {
                 if (RemoteGamepad.clientConnected === wasConnected)
                     return;
                 wasConnected = RemoteGamepad.clientConnected;
-                gamepadToast.message = wasConnected ? "GamePad connected · " + RemoteGamepad.clientName : "GamePad disconnected";
+                gamepadToast.message = wasConnected ? qsTr("GamePad connected · %1").arg(RemoteGamepad.clientName) : qsTr("GamePad disconnected");
                 toastAnimation.restart();
             }
         }
@@ -191,8 +191,8 @@ Item {
             spacing: 20
             Text {
                 anchors.horizontalCenter: parent.horizontalCenter
-                text: "Starting " + EmulatorLauncher.gameTitle
-                color: Theme.panelText
+                text: qsTr("Starting %1").arg(EmulatorLauncher.gameTitle)
+                color: Theme.sessionPanelText
                 font.pixelSize: 24
             }
             BusyIndicator {
@@ -202,7 +202,7 @@ Item {
             SessionMenuButton {
                 width: 240
                 anchors.horizontalCenter: parent.horizontalCenter
-                text: "Return to library"
+                text: qsTr("Return to library")
                 onClicked: EmulatorLauncher.stop()
             }
         }
@@ -220,7 +220,7 @@ Item {
             width: Math.min(500, parent.width - 48)
             height: menuColumn.implicitHeight + 56
             radius: 16
-            color: Theme.panel
+            color: Theme.sessionPanel
             border.color: "#485970"
             border.width: 1
             Column {
@@ -230,20 +230,20 @@ Item {
                 spacing: 14
                 Text {
                     width: parent.width
-                    color: Theme.panelText
+                    color: Theme.sessionPanelText
                     font.pixelSize: 28
                     font.bold: true
-                    text: EmulatorLauncher.stopping ? "Returning to library…" : EmulatorLauncher.pausePending ? (EmulatorLauncher.paused ? "Resuming…" : "Pausing…") : page.confirmingQuit ? "Return to library?" : "Game paused"
+                    text: EmulatorLauncher.stopping ? qsTr("Returning to library…") : EmulatorLauncher.pausePending ? (EmulatorLauncher.paused ? qsTr("Resuming…") : qsTr("Pausing…")) : page.confirmingQuit ? qsTr("Return to library?") : qsTr("Game paused")
                 }
                 Text {
                     width: parent.width
                     wrapMode: Text.WordWrap
-                    color: Theme.mutedText
+                    color: Theme.sessionMutedText
                     font.pixelSize: 14
-                    text: page.confirmingQuit ? "The game will stop. Unsaved progress will be lost." : "O, Escape or the controller's Guide button to resume."
+                    text: page.confirmingQuit ? qsTr("The game will stop. Unsaved progress will be lost.") : qsTr("O, Escape or the controller's Guide button to resume.")
                 }
                 Repeater {
-                    model: page.confirmingQuit ? ["Cancel", "Stop and return to library"] : ["Resume", "Show FPS: " + (EmulatorLauncher.showFps ? "On" : "Off"), "Return to library"]
+                    model: page.confirmingQuit ? [qsTr("Cancel"), qsTr("Stop and return to library")] : [qsTr("Resume"), qsTr("Show FPS: %1").arg(EmulatorLauncher.showFps ? qsTr("On") : qsTr("Off")), qsTr("Return to library")]
                     SessionMenuButton {
                         width: menuColumn.width
                         text: modelData
@@ -259,25 +259,27 @@ Item {
                     width: parent.width
                     visible: !page.confirmingQuit
                     enabled: EmulatorLauncher.paused && !EmulatorLauncher.pausePending && !EmulatorLauncher.stopping
-                    Label { text: "Volume"; color: Theme.panelText }
+                    Label { text: qsTr("Volume"); color: Theme.sessionPanelText }
                     Slider {
                         objectName: "sessionVolumeSlider"
+                        palette.highlight: Theme.sessionAccent
+                        palette.accent: Theme.sessionAccent
                         Layout.fillWidth: true
                         from: 0; to: 100; stepSize: 1
                         value: EmulatorLauncher.audioVolume
                         onMoved: EmulatorLauncher.audioVolume = Math.round(value)
                     }
                     Label {
-                        text: EmulatorLauncher.audioVolume === 0 ? "Muted" : EmulatorLauncher.audioVolume + "%"
-                        color: Theme.panelText
+                        text: EmulatorLauncher.audioVolume === 0 ? qsTr("Muted") : EmulatorLauncher.audioVolume + "%"
+                        color: Theme.sessionPanelText
                         Layout.preferredWidth: 50
                     }
                 }
                 Text {
                     width: parent.width
-                    color: Theme.mutedText
+                    color: Theme.sessionMutedText
                     font.pixelSize: 12
-                    text: "↑ / ↓ select     Enter or A accept     ← / → volume"
+                    text: qsTr("↑ / ↓ select     Enter or A accept     ← / → volume")
                 }
             }
         }

@@ -1,42 +1,85 @@
 import QtQuick
-import QtQuick.Controls
+import QtQuick.Controls.Basic
 import QtQuick.Dialogs
-import "../components/Theme.js" as Theme
+import QtQuick.Layouts
+import QtMultimedia
 import gui 1.0
 
 Rectangle {
     id: page
-    color: Theme.libraryBackground
+    color: Theme.bg
     anchors.fill: parent
-    focus: true
 
-    Component.onCompleted: page.forceActiveFocus()
+    readonly property Item selected: grid.currentItem
+    readonly property int panelWidth: Math.max(280, Math.min(420, width * 0.3))
+    // Narrow windows keep the header buttons' icons only, leaving the middle to the logo.
+    readonly property bool compactHeader: width < 1100
+    // Where the intro's closing logo lands.
+    property alias headerLogo: headerLogo
 
-    // Vertical focus: true = the header Settings button, false = the carousel.
-    property bool settingsFocused: false
-    // Left-stick vertical edge state: -1 = pushed up, +1 = pushed down.
-    property int vDir: 0
-    // True between launch and the game's first presented frame (RPX loading).
-    property bool launching: false
-
-    function launchCurrent() {
-        if (EmulatorLauncher.running) return
-        if (carousel.count > 0 && carousel.currentItem)
-            EmulatorLauncher.launch(carousel.currentItem.gameRpxPath,
-                                    carousel.currentItem.gameName,
-                                    carousel.currentItem.gameContentPath)
+    function focusContent() {
+        if (grid.count > 0) grid.forceActiveFocus()
+        else chooseFolder.forceActiveFocus()
     }
 
-    function activateCurrent() {
-        if (settingsFocused)
-            mainLoader.source = "pages/SettingsPage.qml"
-        else
-            launchCurrent()
+    function launchCurrent() {
+        if (EmulatorLauncher.running || !selected) return
+        AppPreferences.lastGame = selected.gameRpxPath
+        MenuAudio.play("launch")
+        EmulatorLauncher.launch(selected.gameRpxPath, selected.gameName, selected.gameContentPath)
+    }
+
+    function openSettings(tab) {
+        rootWindow.settingsTab = tab
+        rootWindow.libraryIndex = grid.currentIndex
+        mainLoader.source = "pages/SettingsPage.qml"
+    }
+
+    function selectIndex(index) {
+        grid.currentIndex = Math.max(0, Math.min(index, grid.count - 1))
+    }
+
+    function formatSize(bytes) {
+        const units = [qsTr("KB"), qsTr("MB"), qsTr("GB"), qsTr("TB")]
+        let value = bytes / 1024
+        let unit = 0
+        while (value >= 1024 && unit < units.length - 1) {
+            value /= 1024
+            unit++
+        }
+        return (value >= 100 ? value.toFixed(0) : value.toFixed(1)) + " " + units[unit]
+    }
+
+    onSelectedChanged: panelEnter.restart()
+
+    OpacityAnimator on opacity { from: 0; to: 1; duration: Theme.durationNormal }
+
+    Component.onCompleted: {
+        if (!rootWindow.startupSelectionDone) {
+            rootWindow.startupSelectionDone = true
+            if (AppPreferences.rememberLastGame)
+                rootWindow.libraryIndex = Math.max(0, TitleScanner.indexOfGame(AppPreferences.lastGame))
+        }
+        selectIndex(rootWindow.libraryIndex)
+        // Wait for the view's size. Positioning helpers ignore the top margin, so the first row is set directly.
+        Qt.callLater(() => {
+            if (grid.currentIndex < grid.columns) grid.contentY = -grid.topMargin
+            else grid.positionViewAtIndex(grid.currentIndex, GridView.Contain)
+        })
+        // The intro plays over the library and keeps the keys until it is done.
+        if (!rootWindow.introPlaying) focusContent()
+    }
+
+    Connections {
+        target: rootWindow
+        function onIntroPlayingChanged() {
+            if (!rootWindow.introPlaying) page.focusContent()
+        }
     }
 
     FolderDialog {
         id: libraryDialog
-        title: "Game library folder"
+        title: qsTr("Game library folder")
         onAccepted: TitleScanner.scanDirectory(selectedFolder.toString())
     }
 
@@ -47,92 +90,154 @@ Rectangle {
         anchors.top: parent.top
         anchors.left: parent.left
         anchors.right: parent.right
-        height: 64
-        color: "#ffffff"
+        height: Theme.controlHeight + 2 * Theme.space3
+        color: Theme.surface
+        z: 1
 
         Rectangle {
             anchors.bottom: parent.bottom
             width: parent.width
             height: 1
-            color: "#d0d0d5"
+            color: Theme.separator
         }
 
-        Text {
-            anchors.left: parent.left
-            anchors.leftMargin: 24
-            anchors.verticalCenter: parent.verticalCenter
-            text: "WEMU"
-            font.pixelSize: 24
-            font.bold: true
-            color: "#1a1a1a"
+        WemuLogo {
+            id: headerLogo
+            anchors.centerIn: parent
+            height: 28
+            // Hidden while the intro's own logo flies here.
+            opacity: rootWindow.introPlaying ? 0 : 1
         }
 
-        Row {
-            anchors.right: parent.right
-            anchors.rightMargin: 16
-            anchors.verticalCenter: parent.verticalCenter
-            spacing: 12
+        RowLayout {
+            anchors.fill: parent
+            anchors.leftMargin: Theme.space5
+            anchors.rightMargin: Theme.space5
+            spacing: Theme.space3
 
-            Button {
-                text: "Games folder"
-                icon.name: "folder-open"
-                enabled: !EmulatorLauncher.running
-                onClicked: libraryDialog.open()
-            }
-            Button {
-                text: "Refresh"
-                icon.name: "view-refresh"
-                enabled: !EmulatorLauncher.running && TitleScanner.searchPath !== ""
-                onClicked: TitleScanner.refresh()
+            Text {
+                visible: grid.count > 0
+                text: grid.count === 1 ? qsTr("1 game") : qsTr("%1 games").arg(grid.count)
+                font.pixelSize: Theme.fontBody
+                color: Theme.textMuted
             }
 
             RemoteGamepadBadge {
-                anchors.verticalCenter: parent.verticalCenter
+                id: phoneButton
+                Layout.leftMargin: Theme.space2
+                KeyNavigation.right: folderButton
+                onClicked: page.openSettings(4)
             }
 
-            Rectangle {
-                visible: carousel.count > 0
-                anchors.verticalCenter: parent.verticalCenter
-                width: countText.width + 24
-                height: 28
-                radius: 14
-                color: "#e4e4ea"
+            Item { Layout.fillWidth: true }
 
-                Text {
-                    id: countText
-                    anchors.centerIn: parent
-                    text: carousel.count + (carousel.count === 1 ? " game" : " games")
-                    color: "#444444"
-                    font.pixelSize: 12
-                    font.bold: true
-                }
+            MenuButton {
+                id: folderButton
+                Layout.preferredWidth: text === "" ? Theme.controlHeight : -1
+                leftPadding: text === "" ? 0 : Theme.space4
+                rightPadding: text === "" ? 0 : Theme.space4
+                soft: true
+                iconPath: Theme.iconFolder
+                text: page.compactHeader ? "" : qsTr("Games folder")
+                KeyNavigation.left: phoneButton
+                KeyNavigation.right: settingsButton
+                onClicked: libraryDialog.open()
             }
 
-            Rectangle {
-                anchors.verticalCenter: parent.verticalCenter
-                width: 130
-                height: 36
-                radius: 6
-                color: settingsMouseArea.containsMouse || page.settingsFocused ? "#d0d0d5" : "#e4e4ea"
-                border.color: page.settingsFocused ? "#3498ff" : "transparent"
-                border.width: page.settingsFocused ? 2 : 0
-                Behavior on color { ColorAnimation { duration: 100 } }
-                Behavior on border.color { ColorAnimation { duration: 120 } }
+            MenuButton {
+                id: settingsButton
+                Layout.preferredWidth: text === "" ? Theme.controlHeight : -1
+                leftPadding: text === "" ? 0 : Theme.space4
+                rightPadding: text === "" ? 0 : Theme.space4
+                soft: true
+                iconPath: Theme.iconSettings
+                text: page.compactHeader ? "" : qsTr("Settings")
+                KeyNavigation.left: folderButton
+                KeyNavigation.right: exitButton
+                onClicked: page.openSettings(0)
+            }
 
-                Text {
-                    anchors.centerIn: parent
-                    text: "Settings ▸"
-                    color: "#1a1a1a"
-                    font.pixelSize: 13
-                    font.bold: true
+            MenuButton {
+                id: exitButton
+                Layout.preferredWidth: text === "" ? Theme.controlHeight : -1
+                leftPadding: text === "" ? 0 : Theme.space4
+                rightPadding: text === "" ? 0 : Theme.space4
+                iconPath: Theme.iconPower
+                text: page.compactHeader ? "" : qsTr("Exit")
+                KeyNavigation.left: settingsButton
+                onClicked: exitDialog.open()
+            }
+        }
+
+        // Keys left unhandled by a header button return to the games.
+        Keys.onDownPressed: page.focusContent()
+        Keys.onEscapePressed: {
+            MenuAudio.play("back")
+            page.focusContent()
+        }
+    }
+
+    Popup {
+        id: exitDialog
+        anchors.centerIn: Overlay.overlay
+        width: Math.min(page.width - 2 * Theme.space7, 440)
+        padding: Theme.space5
+        modal: true
+        focus: true
+        onOpened: cancelExit.forceActiveFocus()
+        onClosed: exitButton.forceActiveFocus()
+
+        Overlay.modal: Rectangle { color: "#88000000" }
+
+        background: Rectangle {
+            radius: Theme.radiusLarge
+            color: Theme.surface
+            border.color: Theme.separator
+        }
+
+        contentItem: ColumnLayout {
+            spacing: Theme.space3
+
+            Text {
+                Layout.fillWidth: true
+                text: qsTr("Exit WEMU?")
+                font.pixelSize: Theme.fontTitle
+                font.bold: true
+                color: Theme.text
+            }
+
+            Text {
+                Layout.fillWidth: true
+                text: qsTr("WEMU will close.")
+                font.pixelSize: Theme.fontBody
+                color: Theme.textMuted
+                wrapMode: Text.WordWrap
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                Layout.topMargin: Theme.space3
+                spacing: Theme.space3
+
+                MenuButton {
+                    id: cancelExit
+                    Layout.fillWidth: true
+                    clickSound: "back"
+                    soft: true
+                    text: qsTr("Cancel")
+                    KeyNavigation.right: confirmExit
+                    onClicked: exitDialog.close()
                 }
 
-                MouseArea {
-                    id: settingsMouseArea
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: mainLoader.source = "pages/SettingsPage.qml"
+                MenuButton {
+                    id: confirmExit
+                    Layout.fillWidth: true
+                    primary: true
+                    clickSound: ""
+                    iconPath: Theme.iconPower
+                    text: qsTr("Exit")
+                    KeyNavigation.left: cancelExit
+                    onClicked: Qt.exit(0)
                 }
             }
         }
@@ -145,325 +250,459 @@ Rectangle {
         anchors.bottom: parent.bottom
         anchors.left: parent.left
         anchors.right: parent.right
-        visible: carousel.count === 0
+        visible: grid.count === 0
 
-        Rectangle {
+        ColumnLayout {
             anchors.centerIn: parent
-            width: Math.min(parent.width - 80, 520)
-            height: 220
-            radius: 14
-            color: "#ffffff"
-            border.color: "#d0d0d5"
-            border.width: 1
+            width: Math.min(parent.width - 2 * Theme.space7, 520)
+            spacing: Theme.space3
 
-            Column {
-                anchors.centerIn: parent
-                spacing: 14
-                width: parent.width - 48
+            Text {
+                Layout.alignment: Qt.AlignHCenter
+                text: qsTr("No games found")
+                font.pixelSize: Theme.fontTitle
+                font.bold: true
+                color: Theme.text
+            }
 
-                Text {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    text: "No games found"
-                    font.pixelSize: 22
-                    font.bold: true
-                    color: "#1a1a1a"
-                }
+            Text {
+                Layout.fillWidth: true
+                text: TitleScanner.searchPath === "" ? qsTr("Choose the folder that holds your Wii U games.")
+                                                     : qsTr("This folder has no games or RPX demos. Choose another one.")
+                font.pixelSize: Theme.fontBody
+                color: Theme.textMuted
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.WordWrap
+            }
 
-                Text {
-                    width: parent.width
-                    text: TitleScanner.searchPath === "" ? "No library folder selected" : "No games or RPX demos found in this folder"
-                    color: "#666666"
-                    font.pixelSize: 13
-                    horizontalAlignment: Text.AlignHCenter
-                    wrapMode: Text.WordWrap
-                }
+            Text {
+                Layout.fillWidth: true
+                visible: TitleScanner.searchPath !== ""
+                text: TitleScanner.searchPath
+                font.pixelSize: Theme.fontCaption
+                font.family: "monospace"
+                color: Theme.textMuted
+                horizontalAlignment: Text.AlignHCenter
+                elide: Text.ElideMiddle
+            }
 
-                Rectangle {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    width: Math.min(pathText.implicitWidth + 24, parent.width)
-                    height: pathText.implicitHeight + 14
-                    radius: 4
-                    color: "#f0f0f3"
-                    border.color: "#d0d0d5"
-
-                    Text {
-                        id: pathText
-                        anchors.centerIn: parent
-                        text: TitleScanner.searchPath
-                        font.family: "monospace"
-                        font.pixelSize: 12
-                        color: "#444444"
-                        elide: Text.ElideMiddle
-                    }
-                }
+            MenuButton {
+                id: chooseFolder
+                Layout.alignment: Qt.AlignHCenter
+                Layout.topMargin: Theme.space2
+                primary: true
+                text: qsTr("Choose folder")
+                KeyNavigation.up: settingsButton
+                onClicked: libraryDialog.open()
             }
         }
     }
 
-    // ───────────────────────────────────────────────────────────── carousel
+    // ───────────────────────────────────────────────────────── details panel
 
-    ListView {
-        id: carousel
+    Rectangle {
+        id: panel
         anchors.top: header.bottom
-        anchors.topMargin: 50
+        anchors.bottom: parent.bottom
         anchors.left: parent.left
-        anchors.right: parent.right
-        height: 300
-        visible: count > 0
+        width: page.panelWidth
+        color: Theme.surface
+        visible: grid.count > 0
 
-        orientation: ListView.Horizontal
-        snapMode: ListView.SnapToItem
-        highlightRangeMode: ListView.StrictlyEnforceRange
-        preferredHighlightBegin: width / 2 - 130
-        preferredHighlightEnd: width / 2 + 130
-        spacing: 30
-        clip: true
+        Rectangle {
+            anchors.right: parent.right
+            width: 1
+            height: parent.height
+            color: Theme.separator
+        }
 
-        model: TitleScanner
+        ParallelAnimation {
+            id: panelEnter
+            NumberAnimation { target: panelContent; property: "opacity"; from: 0.5; to: 1; duration: Theme.durationNormal }
+            NumberAnimation { target: panelShift; property: "x"; from: -Theme.space2; to: 0; duration: Theme.durationNormal; easing.type: Easing.OutCubic }
+        }
 
-        delegate: Item {
-            id: cardWrapper
-            width: 240
-            height: 280
-            // Visually selected only while the carousel itself has focus
-            // the highlight follows the focus up to the Settings button.
-            property bool isCurrent: ListView.isCurrentItem && !page.settingsFocused
-            property string gameName:      model.name !== "" ? model.name : "Unknown"
-            property string gamePublisher: model.publisher
-            property string gameVersion:   model.version
-            property string gameRpxPath:   model.rpxPath
-            property string gameContentPath: model.contentPath
-            property string gameIconPath:  model.iconPath
+        ColumnLayout {
+            id: panelContent
+            anchors.fill: parent
+            anchors.margins: Theme.space5
+            spacing: Theme.space2
+            transform: Translate { id: panelShift }
 
+            // The game's preview clip when it has one, its cover art otherwise.
             Rectangle {
-                id: card
-                anchors.centerIn: parent
-                width: 240
-                height: 260
-                radius: 14
-                scale: cardWrapper.isCurrent ? 1.06 : 0.92
-                color: "#ffffff"
-                border.color: cardWrapper.isCurrent ? "#3498ff" : "#d0d0d5"
-                border.width: cardWrapper.isCurrent ? 3 : 1
+                id: media
+                Layout.fillWidth: true
+                Layout.preferredHeight: Math.round(width * 9 / 16)
+                Layout.bottomMargin: Theme.space2
+                radius: Theme.radiusMedium
+                color: Theme.surfaceMuted
+                clip: true
 
-                Behavior on scale { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
-                Behavior on border.color { ColorAnimation { duration: 150 } }
-                Behavior on border.width { NumberAnimation { duration: 150 } }
+                readonly property string rpxPath: page.selected ? page.selected.gameRpxPath : ""
+                readonly property url clipUrl: GamePreviews.revision, GamePreviews.previewUrl(rpxPath)
+                readonly property bool waiting: GamePreviews.revision, clipUrl.toString() === "" && GamePreviews.pending(rpxPath)
+                // The game whose clip the player holds. Opening a clip is costly, so sweeping across the
+                // grid only pauses the current one; the next opens once the selection rests.
+                property string loadedFor: ""
+                readonly property bool playing: loadedFor === rpxPath && player.playbackState === MediaPlayer.PlayingState && player.hasVideo
 
-                MouseArea {
-                    anchors.fill: parent
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: {
-                        if (carousel.currentIndex === index)
-                            page.launchCurrent()
-                        else
-                            carousel.currentIndex = index
+                onClipUrlChanged: {
+                    player.pause()
+                    settle.restart()
+                }
+                Component.onCompleted: settle.restart()
+                Connections {
+                    target: rootWindow
+                    function onIntroPlayingChanged() { settle.restart() }
+                }
+
+                Timer {
+                    id: settle
+                    interval: 250
+                    onTriggered: {
+                        player.source = media.clipUrl
+                        media.loadedFor = media.rpxPath
+                        // Never under a running game or the intro.
+                        if (player.source.toString() !== "" && !EmulatorLauncher.running && !rootWindow.introPlaying) player.play()
                     }
                 }
 
-                Column {
+                Image {
+                    id: panelArt
                     anchors.fill: parent
-                    anchors.margins: 18
-                    spacing: 12
+                    anchors.margins: Theme.space2
+                    source: page.selected ? page.selected.gameIconPath : ""
+                    fillMode: Image.PreserveAspectFit
+                    asynchronous: true
+                    smooth: true
+                    opacity: media.playing ? 0 : 1
+                    Behavior on opacity { NumberAnimation { duration: Theme.durationNormal } }
+                }
+
+                Text {
+                    anchors.centerIn: parent
+                    visible: panelArt.status !== Image.Ready && !media.playing
+                    text: page.selected ? page.selected.gameName.charAt(0).toUpperCase() : ""
+                    font.pixelSize: 96
+                    font.bold: true
+                    color: Theme.textMuted
+                }
+
+                MediaPlayer {
+                    id: player
+                    videoOutput: preview
+                    loops: MediaPlayer.Infinite
+                }
+
+                VideoOutput {
+                    id: preview
+                    anchors.fill: parent
+                    fillMode: VideoOutput.PreserveAspectCrop
+                    opacity: media.playing ? 1 : 0
+                    Behavior on opacity { NumberAnimation { duration: Theme.durationNormal } }
+                }
+
+                Connections {
+                    target: EmulatorLauncher
+                    function onStateChanged(running) {
+                        if (running) player.stop()
+                        else if (media.loadedFor === media.rpxPath && player.source.toString() !== "") player.play()
+                    }
+                }
+
+                Rectangle {
+                    anchors.left: parent.left
+                    anchors.bottom: parent.bottom
+                    anchors.margins: Theme.space2
+                    visible: media.waiting
+                    width: waitingLabel.implicitWidth + 2 * Theme.space2
+                    height: waitingLabel.implicitHeight + Theme.space1
+                    radius: height / 2
+                    color: Theme.surface
+                    border.color: Theme.separator
+
+                    Text {
+                        id: waitingLabel
+                        anchors.centerIn: parent
+                        text: qsTr("Preparing preview…")
+                        font.pixelSize: Theme.fontCaption
+                        color: Theme.textMuted
+                        SequentialAnimation on opacity {
+                            running: media.waiting
+                            loops: Animation.Infinite
+                            NumberAnimation { to: 0.45; duration: 700; easing.type: Easing.InOutSine }
+                            NumberAnimation { to: 1; duration: 700; easing.type: Easing.InOutSine }
+                        }
+                    }
+                }
+            }
+
+            Text {
+                Layout.fillWidth: true
+                text: page.selected ? page.selected.gameName : ""
+                font.pixelSize: Theme.fontTitle
+                font.bold: true
+                color: Theme.text
+                wrapMode: Text.WordWrap
+                maximumLineCount: 2
+                elide: Text.ElideRight
+            }
+
+            Text {
+                Layout.fillWidth: true
+                visible: text !== ""
+                text: page.selected ? page.selected.gamePublisher : ""
+                font.pixelSize: Theme.fontBody
+                color: Theme.textMuted
+                elide: Text.ElideRight
+            }
+
+            Text {
+                Layout.fillWidth: true
+                text: {
+                    if (!page.selected) return ""
+                    const size = page.selected.gameSize
+                    const parts = page.selected.gameVersion !== "" ? [qsTr("Version %1").arg(page.selected.gameVersion)] : []
+                    parts.push(size < 0 ? qsTr("Measuring size…") : page.formatSize(size))
+                    return parts.join(" · ")
+                }
+                font.pixelSize: Theme.fontCaption
+                color: Theme.textMuted
+                elide: Text.ElideRight
+            }
+
+            Text {
+                Layout.fillWidth: true
+                text: qsTr("Controls: Profile %1").arg(InputProfileManager.currentProfileIndex + 1)
+                font.pixelSize: Theme.fontCaption
+                color: Theme.textMuted
+                elide: Text.ElideRight
+            }
+
+            MenuButton {
+                Layout.fillWidth: true
+                Layout.topMargin: Theme.space3
+                Layout.preferredHeight: 52
+                primary: true
+                clickSound: ""
+                focusPolicy: Qt.NoFocus
+                font.pixelSize: Theme.fontSubtitle
+                text: qsTr("▶  Play")
+                onClicked: page.launchCurrent()
+            }
+
+            Text {
+                Layout.fillWidth: true
+                Layout.topMargin: Theme.space2
+                visible: text !== ""
+                text: EmulatorLauncher.error
+                font.pixelSize: Theme.fontCaption
+                color: Theme.danger
+                wrapMode: Text.WordWrap
+                maximumLineCount: 3
+                elide: Text.ElideRight
+            }
+
+            MenuButton {
+                id: logButton
+                Layout.fillWidth: true
+                visible: EmulatorLauncher.logPath !== ""
+                text: qsTr("Session log")
+                KeyNavigation.right: grid
+                onClicked: EmulatorLauncher.openLog()
+            }
+
+            Item { Layout.fillHeight: true }
+
+            Text {
+                Layout.fillWidth: true
+                text: grid.activeFocus ? qsTr("A play · Up from the top row for the menu")
+                                       : qsTr("A select · B back to games")
+                font.pixelSize: Theme.fontCaption
+                color: Theme.textMuted
+                wrapMode: Text.WordWrap
+            }
+        }
+    }
+
+    // ────────────────────────────────────────────────────────────── grid
+
+    GridView {
+        id: grid
+        anchors.top: header.bottom
+        anchors.bottom: parent.bottom
+        anchors.left: panel.right
+        anchors.right: parent.right
+        visible: count > 0
+        clip: true
+        model: TitleScanner
+
+        readonly property int gap: Theme.space4
+        readonly property int minimumTile: 180
+        readonly property int availableWidth: width - 2 * Theme.space5
+        readonly property int columns: Math.max(2, Math.floor((availableWidth + gap) / (minimumTile + gap)))
+
+        // Each cell carries its trailing gap, so the right margin gives that much back.
+        leftMargin: Theme.space5
+        rightMargin: Theme.space5 - gap
+        topMargin: Theme.space5
+        bottomMargin: Theme.space5
+        cellWidth: Math.floor((availableWidth + gap) / columns)
+        cellHeight: cellWidth + Theme.space6 + Theme.space1
+        boundsBehavior: Flickable.StopAtBounds
+        keyNavigationEnabled: false
+        highlightMoveDuration: Theme.durationFast
+        highlightRangeMode: GridView.ApplyRange
+        preferredHighlightBegin: Theme.space5
+        preferredHighlightEnd: height - Theme.space5
+        cacheBuffer: 2 * cellHeight
+
+        // A rescan resets the model; keep the selection on the same row when it can.
+        property int indexBeforeReset: 0
+        onCurrentIndexChanged: {
+            if (count === 0) return
+            indexBeforeReset = currentIndex
+            if (activeFocus) MenuAudio.play("move")
+        }
+        onCountChanged: Qt.callLater(() => {
+            if (grid.count > 0) {
+                page.selectIndex(grid.indexBeforeReset)
+            } else if (grid.activeFocus) {
+                chooseFolder.forceActiveFocus()
+            }
+        })
+
+        Keys.onUpPressed: {
+            if (currentIndex < columns) settingsButton.forceActiveFocus()
+            else currentIndex -= columns
+        }
+        Keys.onDownPressed: {
+            if (currentIndex + columns < count) currentIndex += columns
+            else if (Math.floor(currentIndex / columns) < Math.floor((count - 1) / columns)) currentIndex = count - 1
+        }
+        Keys.onLeftPressed: {
+            if (currentIndex % columns > 0) currentIndex--
+            else if (logButton.visible) logButton.forceActiveFocus()
+        }
+        Keys.onRightPressed: {
+            if (currentIndex % columns < columns - 1 && currentIndex + 1 < count) currentIndex++
+        }
+        Keys.onPressed: event => {
+            if (event.key !== Qt.Key_Space && event.key !== Qt.Key_Return && event.key !== Qt.Key_Enter) return
+            if (!event.isAutoRepeat) page.launchCurrent()
+            event.accepted = true
+        }
+
+        delegate: Item {
+            id: tile
+            width: grid.cellWidth
+            height: grid.cellHeight
+
+            readonly property bool isCurrent: GridView.isCurrentItem
+            readonly property bool focused: isCurrent && grid.activeFocus
+            readonly property string gameName: model.name !== "" ? model.name : qsTr("Unknown")
+            readonly property string gamePublisher: model.publisher
+            readonly property string gameVersion: model.version
+            readonly property string gameRpxPath: model.rpxPath
+            readonly property string gameContentPath: model.contentPath
+            readonly property string gameIconPath: model.iconPath
+            readonly property real gameSize: model.sizeBytes
+
+            Rectangle {
+                id: card
+                anchors.fill: parent
+                anchors.rightMargin: grid.gap
+                anchors.bottomMargin: grid.gap
+                radius: Theme.radiusMedium
+                color: tileMouse.containsMouse && !tile.isCurrent ? Theme.surfaceMuted : Theme.surface
+                border.color: tile.isCurrent ? Theme.borderControl : Theme.separator
+                scale: tile.focused ? 1.05 : tileMouse.pressed ? 0.98 : 1
+                z: tile.focused ? 1 : 0
+                Behavior on scale { NumberAnimation { duration: Theme.durationNormal; easing.type: Easing.OutBack } }
+                Behavior on color { ColorAnimation { duration: Theme.durationFast } }
+
+                FocusRing {
+                    shown: tile.focused
+                    cornerRadius: Theme.radiusMedium
+                }
+
+                ColumnLayout {
+                    anchors.fill: parent
+                    anchors.margins: Theme.space2
+                    spacing: Theme.space2
 
                     Rectangle {
-                        width: parent.width
-                        height: parent.height - nameText.implicitHeight - parent.spacing
-                        color: "#f0f0f3"
-                        radius: 8
-                        border.color: "#e0e0e3"
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        radius: Theme.radiusSmall
+                        color: Theme.surfaceMuted
                         clip: true
 
                         Image {
+                            id: tileArt
                             anchors.fill: parent
-                            source: cardWrapper.gameIconPath
-                            fillMode: Image.PreserveAspectCrop
-                            visible: source.toString() !== ""
+                            source: tile.gameIconPath
+                            fillMode: Image.PreserveAspectFit
                             asynchronous: true
+                            smooth: true
+                        }
+
+                        Text {
+                            anchors.centerIn: parent
+                            visible: tileArt.status !== Image.Ready
+                            text: tile.gameName.charAt(0).toUpperCase()
+                            font.pixelSize: Theme.fontDisplay
+                            font.bold: true
+                            color: Theme.textMuted
                         }
                     }
 
                     Text {
-                        id: nameText
-                        width: parent.width
-                        text: cardWrapper.gameName
-                        color: "#1a1a1a"
-                        font.pixelSize: 15
-                        font.bold: true
+                        Layout.fillWidth: true
+                        text: tile.gameName
+                        font.pixelSize: Theme.fontBody
+                        font.bold: tile.focused
+                        color: Theme.text
                         horizontalAlignment: Text.AlignHCenter
                         elide: Text.ElideRight
                     }
                 }
             }
-        }
-    }
-
-    // ──────────────────────────────────────────────────────── selected info
-
-    Column {
-        visible: carousel.count > 0
-        anchors.top: carousel.bottom
-        anchors.horizontalCenter: parent.horizontalCenter
-        anchors.topMargin: 28
-        spacing: 14
-        width: parent.width - 80
-
-        Text {
-            anchors.horizontalCenter: parent.horizontalCenter
-            text: {
-                if (!carousel.currentItem) return ""
-                var pub = carousel.currentItem.gamePublisher
-                var ver = carousel.currentItem.gameVersion
-                if (pub && ver) return pub + " · v" + ver
-                if (pub) return pub
-                if (ver) return "v" + ver
-                return ""
-            }
-            color: "#666666"
-            font.pixelSize: 14
-            visible: text !== ""
-        }
-
-        Rectangle {
-            id: launchBtn
-            anchors.horizontalCenter: parent.horizontalCenter
-            width: 240
-            height: 56
-            radius: 10
-            color: page.launching ? "#9aa0a6"
-                 : launchMouseArea.containsMouse ? "#2980d9" : Theme.accent
-            Behavior on color { ColorAnimation { duration: 120 } }
-
-            Row {
-                anchors.centerIn: parent
-                spacing: 10
-
-                BusyIndicator {
-                    visible: false
-                    running: visible
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: 24
-                    height: 24
-                }
-
-                Text {
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: EmulatorLauncher.running ? "Stop" : "▶  Play"
-                    color: "white"
-                    font.pixelSize: 18
-                    font.bold: true
-                }
-            }
 
             MouseArea {
-                id: launchMouseArea
-                anchors.fill: parent
+                id: tileMouse
+                anchors.fill: card
                 hoverEnabled: true
                 cursorShape: Qt.PointingHandCursor
-                onClicked: EmulatorLauncher.running ? EmulatorLauncher.stop() : page.launchCurrent()
+                // Only a pointer that really moved selects: not one resting where the window opened,
+                // and not one with tiles scrolling under it.
+                onPositionChanged: mouse => {
+                    const scene = mapToItem(null, mouse.x, mouse.y)
+                    const moved = grid.lastPointer.x >= 0 && (scene.x !== grid.lastPointer.x || scene.y !== grid.lastPointer.y)
+                    grid.lastPointer = scene
+                    if (moved) grid.currentIndex = index
+                }
+                onClicked: {
+                    grid.currentIndex = index
+                    grid.forceActiveFocus()
+                }
+                onDoubleClicked: page.launchCurrent()
             }
         }
 
-        Text {
-            anchors.horizontalCenter: parent.horizontalCenter
-            width: parent.width
-            text: EmulatorLauncher.error
-            color: "#ad2637"
-            font.pixelSize: 13
-            wrapMode: Text.WordWrap
-            horizontalAlignment: Text.AlignHCenter
-            visible: text !== ""
-        }
-        Button {
-            anchors.horizontalCenter: parent.horizontalCenter
-            text: "Session log"
-            visible: EmulatorLauncher.logPath !== ""
-            onClicked: EmulatorLauncher.openLog()
-        }
-    }
-
-    // ─────────────────────────────────────────────────────── keyboard nav
-
-    Keys.onLeftPressed: if (!settingsFocused && carousel.count > 0) carousel.decrementCurrentIndex()
-    Keys.onRightPressed: if (!settingsFocused && carousel.count > 0) carousel.incrementCurrentIndex()
-    Keys.onUpPressed: settingsFocused = true
-    Keys.onDownPressed: settingsFocused = false
-    Keys.onReturnPressed: page.activateCurrent()
-    Keys.onEnterPressed: page.activateCurrent()
-
-    // ─────────────────────────────────────────────────────── controller nav
-
-    // Left-stick state: -1 = pushed left, +1 = pushed right, 0 = centered.
-    property int stickDir: 0
-
-    function stickStep() {
-        if (!rootWindow.visible || !page.visible || !page.enabled || carousel.count === 0 || settingsFocused) {
-            stickRepeat.stop()
-            stickDir = 0
-            return
-        }
-        if (stickDir < 0)      carousel.decrementCurrentIndex()
-        else if (stickDir > 0) carousel.incrementCurrentIndex()
-    }
-
-    Timer {
-        id: stickRepeat
-        repeat: true
-        onTriggered: {
-            interval = 140
-            page.stickStep()
-        }
-    }
-
-    Connections {
-        target: InputManager
-
-        function onButtonChanged(button, pressed, device) {
-            if (!rootWindow.visible || !page.visible || !page.enabled || !pressed) return
-            if (button === "Up")          page.settingsFocused = true
-            else if (button === "Down")   page.settingsFocused = false
-            else if (button === "Left"  && !page.settingsFocused)  carousel.decrementCurrentIndex()
-            else if (button === "Right" && !page.settingsFocused)  carousel.incrementCurrentIndex()
-            else if (button === "A")      page.activateCurrent()
-        }
-
-        function onAxisChanged(axis, value, device) {
-            if (!rootWindow.visible || !page.visible || !page.enabled) return
-
-            if (axis === "LX") {
-                if (page.stickDir === 0 && Math.abs(value) >= 0.5 && !page.settingsFocused) {
-                    page.stickDir = value < 0 ? -1 : 1
-                    page.stickStep()
-                    stickRepeat.interval = 350
-                    stickRepeat.restart()
-                } else if (page.stickDir !== 0 && Math.abs(value) < 0.25) {
-                    page.stickDir = 0
-                    stickRepeat.stop()
-                }
-            } else if (axis === "LY") {
-                if (page.vDir === 0 && Math.abs(value) >= 0.5) {
-                    page.vDir = value < 0 ? -1 : 1
-                    page.settingsFocused = (page.vDir === -1)
-                } else if (page.vDir !== 0 && Math.abs(value) < 0.25) {
-                    page.vDir = 0
-                }
-            }
-        }
+        property point lastPointer: Qt.point(-1, -1)
     }
 
     Connections {
         target: EmulatorLauncher
-        // Keep the carousel instance/selection while the isolated core fills the game view.
+        // Keep the grid and its selection while the isolated core fills the game view.
         function onStateChanged(running) {
-            if (running) {
-                page.launching = true
-            } else {
-                page.launching = false
-                rootWindow.visible = true
-                rootWindow.raise()
-                rootWindow.requestActivate()
-                page.forceActiveFocus()
-            }
+            if (running) return
+            rootWindow.visible = true
+            rootWindow.raise()
+            rootWindow.requestActivate()
+            page.focusContent()
         }
     }
 }

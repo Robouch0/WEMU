@@ -1,4 +1,5 @@
 import QtQuick
+import gui 1.0
 
 Rectangle {
     id: root
@@ -27,6 +28,6 @@ Rectangle {
         anchors.horizontalCenterOffset: -4.7
         anchors.verticalCenterOffset: -6.9
 
-        color: root.pressed ? "#3498ff" : "transparent"
+        color: root.pressed ? Theme.highlightOnArt : "transparent"
     }
 }

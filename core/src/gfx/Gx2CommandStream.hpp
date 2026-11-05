@@ -84,6 +84,8 @@ namespace Core::Gfx {
             operator const std::vector<std::uint32_t> &() const noexcept { return words(); }
             [[nodiscard]] std::size_t size() const noexcept { return m_words ? m_words->size() : 0; }
             [[nodiscard]] bool empty() const noexcept { return !size(); }
+            // Whether another payload still holds these words (overwrite() would allocate).
+            [[nodiscard]] bool shared() const noexcept { return m_words && m_words.use_count() > 1; }
             [[nodiscard]] const std::uint32_t *data() const noexcept { return words().data(); }
             [[nodiscard]] const std::uint32_t *begin() const noexcept { return data(); }
             [[nodiscard]] const std::uint32_t *end() const noexcept { return data() + size(); }
@@ -142,7 +144,7 @@ namespace Core::Gfx {
             std::uint32_t address{};
             std::size_t bytes{};
             Gx2Payload data; // raw guest byte order, padded to whole words
-            std::uint64_t hash{};
+            std::uint64_t hash{}; // identity of these bytes: a new version whenever they change
     };
 
     class Gx2CommandStream {

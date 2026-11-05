@@ -92,7 +92,7 @@ void RemoteGamepadServer::start()
     m_error.clear();
     const auto port = quint16(QSettings().value("remoteGamepad/port", RemoteProtocol::defaultPort).toUInt());
     if (!m_server.isListening() && !m_server.listen(QHostAddress::AnyIPv4, port))
-        m_error = QStringLiteral("Port %1 unavailable: %2").arg(port).arg(m_server.errorString());
+        m_error = tr("Port %1 unavailable: %2").arg(port).arg(m_server.errorString());
     if (m_discovery.state() != QAbstractSocket::BoundState &&
         !m_discovery.bind(QHostAddress::AnyIPv4, RemoteProtocol::discoveryPort, QUdpSocket::ShareAddress | QUdpSocket::ReuseAddressHint))
         qWarning("[REMOTE] discovery port %u unavailable: %s", RemoteProtocol::discoveryPort, qPrintable(m_discovery.errorString()));

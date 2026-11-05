@@ -220,6 +220,7 @@ namespace Core::Gfx {
                             // Each component is one word read as is or byte-reversed (every endian
                             // swap whose unit is the component size), so it loads without `order`.
                             bool wordLoad{}, wordSwap{};
+                            std::uint8_t kind{}; // decoder for the layout (AttributeKind in the .cpp)
                             std::array<std::uint8_t, 4> select{}; // mask: component 0-3, 4 zero, 5 one, else keep
                             const std::uint8_t *host{}; // set when every in-bounds element is resident
                             std::uint64_t count{}; // vertices whose element starts in the buffer
@@ -239,6 +240,7 @@ namespace Core::Gfx {
             // guest vertex bytes they were converted from are unchanged.
             struct DirectVertexEntry {
                     std::vector<std::uint32_t> fetchLayout, sourceIndices;
+                    std::vector<std::uint32_t> layout; // direct draws: each read element's binding state, source and offset
                     std::array<std::uint32_t, 32> semantics{};
                     std::array<Attrib, 8> attribs{};
                     unsigned attributeStride{}, mode{};

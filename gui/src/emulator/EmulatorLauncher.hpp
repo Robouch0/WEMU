@@ -28,7 +28,12 @@ class EmulatorLauncher : public QObject {
         Q_PROPERTY(int systemLanguage READ systemLanguage WRITE setSystemLanguage NOTIFY settingsChanged)
         Q_PROPERTY(int systemRegion READ systemRegion WRITE setSystemRegion NOTIFY settingsChanged)
     public:
-        explicit EmulatorLauncher(QObject *parent = nullptr);
+        // A background session (game previews) ignores the keyboard, plays no sound and
+        // leaves the menu audio alone.
+        enum class Mode { Interactive, Background };
+        explicit EmulatorLauncher(QObject *parent = nullptr, Mode mode = Mode::Interactive);
+        // Lets background work give way to the game and the menus.
+        static void lowerPriority(QProcess &process);
         ~EmulatorLauncher() override;
         bool running() const { return m_process.state() != QProcess::NotRunning; }
         QString error() const { return m_error; }
@@ -43,6 +48,8 @@ class EmulatorLauncher : public QObject {
         double movieFps() const { return m_movieFps; }
         QString gameTitle() const { return m_title; }
         QString gameRpxPath() const { return m_rpxPath; }
+        // Vertical blanks (60 Hz) the guest shows the frame last sent by frameReady for.
+        quint32 frameSwapInterval() const { return m_swapInterval; }
         int audioVolume() const;
         void setAudioVolume(int value);
         int systemLanguage() const;
@@ -87,6 +94,8 @@ class EmulatorLauncher : public QObject {
         void sendButtons();
         void sendGamepad();
         void dispatchFrame();
+        int sessionVolume() const { return m_mode == Mode::Background ? 0 : audioVolume(); }
+        Mode m_mode;
         QProcess m_process;
         QTimer m_stopTimer;
         QString m_error, m_logPath;
@@ -97,10 +106,12 @@ class EmulatorLauncher : public QObject {
         bool m_connected{}, m_hasFrame{}, m_paused{}, m_pausePending{}, m_showFps{};
         double m_presentFps{-1}, m_movieFps{-1};
         quint64 m_awaitingFrame{}, m_lastFrame{};
+        quint32 m_swapInterval{1};
         struct PendingFrame {
                 QImage image;
                 quint64 sequence{};
                 double presentFps{}, movieFps{};
+                quint32 swapInterval{1};
         };
         std::deque<PendingFrame> m_frames;
         quint32 m_buttons{}, m_remoteButtons{}, m_controllerButtons{}, m_suppressedControllerButtons{};

@@ -96,13 +96,16 @@ namespace Core::Gfx {
                                 m_bytes = 0;
                                 Gx2Payload data;
                                 std::memcpy(data.overwrite((bytes + 3) / 4).data(), source, bytes);
-                                const auto hash = hashData(data);
-                                snapshots.push_back({address, bytes, std::move(data), hash});
+                                snapshots.push_back({address, bytes, std::move(data), ++m_version});
                                 continue;
                             }
                             m_bytes += entry.data.empty() ? bytes : 0;
+                            // The previous version is usually still being replayed: write into the one
+                            // before it, which replay has released, instead of a new zeroed buffer.
+                            if (entry.data.shared())
+                                std::swap(entry.data, entry.spare);
                             std::memcpy(entry.data.overwrite((bytes + 3) / 4).data(), source, bytes);
-                            entry.hash = hashData(entry.data);
+                            entry.hash = ++m_version;
                         }
                         entry.generation = generation;
                     }
@@ -116,33 +119,15 @@ namespace Core::Gfx {
                     std::array<std::pair<std::uint64_t, std::uint64_t>, 4> outputs{};
             };
             struct Entry {
-                    Gx2Payload data;
+                    Gx2Payload data, spare; // spare: the version before, recycled once replay drops it
                     std::optional<std::uint64_t> generation;
                     std::uint64_t hash{};
             };
-            static std::uint64_t hashData(const Gx2Payload &data)
-            {
-                // Four independent 64-bit lanes avoid a multiply dependency for every guest
-                // word. Dynamic submitted buffers otherwise spent milliseconds per frame here.
-                // This hash is only a frame-content identity; it is not persisted or a guest ABI.
-                constexpr std::uint64_t prime = 1099511628211ull;
-                std::array<std::uint64_t, 4> lanes{1469598103934665603ull, 0x9E3779B97F4A7C15ull, 0xC2B2AE3D27D4EB4Full, 0x165667B19E3779F9ull};
-                std::size_t offset{};
-                for (; offset + 8 <= data.size(); offset += 8)
-                    for (unsigned lane = 0; lane < lanes.size(); ++lane) {
-                        std::uint64_t word;
-                        std::memcpy(&word, data.data() + offset + lane * 2, sizeof(word));
-                        lanes[lane] = std::rotl(lanes[lane] + word * 0xC2B2AE3D27D4EB4Full, 31) * 0x9E3779B185EBCA87ull;
-                    }
-                auto hash = std::rotl(lanes[0], 1) ^ std::rotl(lanes[1], 17) ^ std::rotl(lanes[2], 33) ^ std::rotl(lanes[3], 49) ^ data.size();
-                for (; offset < data.size(); ++offset)
-                    hash = (hash ^ data[offset]) * prime;
-                hash = (hash ^ (hash >> 33)) * 0xFF51AFD7ED558CCDull;
-                hash = (hash ^ (hash >> 33)) * 0xC4CEB9FE1A85EC53ull;
-                return hash ^ (hash >> 33);
-            }
             std::unordered_map<std::uint64_t, Entry> m_entries;
             std::uint64_t m_bytes{};
+            // Versions identify snapshot bytes for the frame-identical skip: hashing every changed
+            // buffer cost milliseconds per frame, and changed bytes never repeat a version.
+            std::uint64_t m_version{};
             State m_state;
             std::uint32_t m_context{};
             std::unordered_map<std::uint32_t, State> m_contexts;
