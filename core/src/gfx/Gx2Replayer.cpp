@@ -20,6 +20,7 @@
 #include "gfx/LatteVsInterp.hpp"
 #include "gfx/PrimitiveAssembly.hpp"
 #include "gfx/Renderer.hpp" // full definition: the GPU path calls Renderer::gpu* methods
+#include "gfx/ShaderInvalidations.hpp"
 #include "gfx/SurfaceLayout.hpp"
 #include "gfx/TextureFormat.hpp"
 #include "gfx/TriangleCoverage.hpp"
@@ -32,6 +33,20 @@
 namespace Core::Gfx {
 
     namespace {
+
+        void traceShaderHint(const char *stage, std::uint32_t program, std::uint32_t size, std::uint64_t frame)
+        {
+            if (!shaderInvalidationTrace() || !program)
+                return;
+            const auto hint = shaderInvalidations().covering(program, size);
+            if (!hint) {
+                Utils::Log::error("[SHADER_HINT] stage={} program=0x{:08X} size={} frame={} announced=0", stage, program, size, frame);
+                return;
+            }
+            const auto lead = std::chrono::duration_cast<std::chrono::milliseconds>(ShaderInvalidations::Clock::now() - hint->time).count();
+            Utils::Log::error("[SHADER_HINT] stage={} program=0x{:08X} size={} frame={} announced=1 swap={} lead_ms={} range=0x{:08X}+0x{:X}", stage,
+                              program, size, frame, hint->swap, lead, hint->address, hint->size);
+        }
 
         // GX2Surface field offsets (big-endian u32 each).
         constexpr std::uint32_t SURF_WIDTH = 0x04;
@@ -2051,6 +2066,15 @@ namespace Core::Gfx {
         return m_vsShader->vertexShader;
     }
 
+    std::shared_ptr<const Latte::FragmentShader> Gx2Replayer::lowerRecorded(const std::shared_ptr<const Latte::ShaderOrigin> &origin)
+    {
+        if (!origin)
+            return nullptr;
+        if (origin->vertex)
+            return m_vertexShaderCache.get(origin->words, origin->bufferWindow, origin->bufferWindows);
+        return m_fragmentShaderCache.get(origin->words, origin->resourceTypes, origin->onlyColorZero, origin->colorExport, origin->positionRegister);
+    }
+
     bool Gx2Replayer::colorOnlyEffects()
     {
         if (!m_psShader)
@@ -2922,6 +2946,7 @@ namespace Core::Gfx {
             if (found == cache.end()) {
                 if (cache.size() >= 128)
                     cache.erase(cache.begin());
+                Profile::Scope lowering(Profile::Stage::ShaderLower);
                 found = cache.emplace(key, std::make_shared<const Latte::FragmentShader>(
                                                    Latte::lowerStreamOutShader(*program, m_streamOutStrides, windows)))
                                 .first;
@@ -6811,6 +6836,7 @@ namespace Core::Gfx {
                             prog.clear();
                         }
                         Utils::Log::error("[GX2] VS 0x{:08X}: size={} program=0x{:08X} -> {} dwords captured", sh, size, ptr, prog.size());
+                        traceShaderHint("VS", ptr, size, m_presentCount);
                         it = m_vsCache.emplace(sh, std::make_shared<ShaderProgram>(ShaderProgram{std::move(prog)})).first;
                     }
                     m_vsShader = it->second;
@@ -6868,6 +6894,7 @@ namespace Core::Gfx {
                             prog.clear();
                         }
                         Utils::Log::error("[GX2] PS 0x{:08X}: size={} program=0x{:08X} -> {} dwords captured", sh, size, ptr, prog.size());
+                        traceShaderHint("PS", ptr, size, m_presentCount);
                         summarizePixelShaderBytecode(prog, sh);
                         it = m_psCache.emplace(sh, std::make_shared<ShaderProgram>(ShaderProgram{std::move(prog)})).first;
                     }
@@ -7128,6 +7155,8 @@ namespace Core::Gfx {
                                           m_presentCount, presented, m_lastScan.imagePtr, m_lastScan.width, m_lastScan.height, m_lastScan.format,
                                           m_color.imagePtr, m_lastDrawColor.imagePtr, m_pendingReadbacks.contains(makeSurfaceKey(m_lastScan)));
                     m_presentCount++;
+                    if (m_rasterBackend)
+                        m_rasterBackend->endFrame();
                     if ((m_presentCount % 100) == 0)
                         Utils::Log::error("[GX2] replay #{}: draws={} tris={} points={} px={} avgA={} skip(t/a/p)={}/{}/{} scan=0x{:08X} nz={}",
                                           m_presentCount, m_stats.draws, m_stats.tris, m_stats.points, m_stats.pixels,

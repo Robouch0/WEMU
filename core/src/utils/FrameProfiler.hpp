@@ -11,7 +11,25 @@
 #include "utils/Logger.hpp"
 
 namespace Core::Profile {
-    enum class Stage { Guest, Hle, Replay, NativeDraw, Readback, GpuWait, Video, Present, Pacing, Pause, Compile, Count };
+    // ShaderLower, ShaderCompile and PipelineCreate split first-use shader cost into Latte->GLSL
+    // lowering, GLSL->SPIR-V compilation and driver pipeline creation.
+    enum class Stage {
+        Guest,
+        Hle,
+        Replay,
+        NativeDraw,
+        Readback,
+        GpuWait,
+        Video,
+        Present,
+        Pacing,
+        Pause,
+        Compile,
+        ShaderLower,
+        ShaderCompile,
+        PipelineCreate,
+        Count
+    };
     constexpr auto stageCount = std::size_t(Stage::Count);
     struct Sample {
             std::uint64_t wall{};
@@ -126,12 +144,15 @@ namespace Core::Profile {
             return;
         const auto sample = timeline().frame();
         const auto us = [&](Stage stage) { return sample.time[std::size_t(stage)] / 1000; };
+        const auto n = [&](Stage stage) { return sample.calls[std::size_t(stage)]; };
         const auto accounted = std::accumulate(sample.time.begin(), sample.time.end(), std::uint64_t{});
         Utils::Log::error("[FRAME_PROFILE] frame={} movies={} wall_us={} guest_us={} hle_us={} replay_us={} native_us={} readback_us={} "
-                          "wait_us={} video_us={} present_us={} pace_us={} pause_us={} compile_us={} accounted_us={}",
+                          "wait_us={} video_us={} present_us={} pace_us={} pause_us={} compile_us={} lower_us={} lower_n={} shader_us={} "
+                          "shader_n={} pipeline_us={} pipeline_n={} accounted_us={}",
                           presents, movies, sample.wall / 1000, us(Stage::Guest), us(Stage::Hle), us(Stage::Replay), us(Stage::NativeDraw),
                           us(Stage::Readback), us(Stage::GpuWait), us(Stage::Video), us(Stage::Present), us(Stage::Pacing), us(Stage::Pause),
-                          us(Stage::Compile), accounted / 1000);
+                          us(Stage::Compile), us(Stage::ShaderLower), n(Stage::ShaderLower), us(Stage::ShaderCompile), n(Stage::ShaderCompile),
+                          us(Stage::PipelineCreate), n(Stage::PipelineCreate), accounted / 1000);
     }
 
     // Replay-thread record for one frame: that thread's own timeline, reset when the frame
@@ -142,7 +163,11 @@ namespace Core::Profile {
             return;
         const auto sample = timeline().frame();
         const auto us = [&](Stage stage) { return sample.time[std::size_t(stage)] / 1000; };
-        Utils::Log::error("[REPLAY_PROFILE] frame={} wall_us={} replay_us={} native_us={} readback_us={} wait_us={} compile_us={}", presents,
-                          sample.wall / 1000, us(Stage::Replay), us(Stage::NativeDraw), us(Stage::Readback), us(Stage::GpuWait), us(Stage::Compile));
+        const auto n = [&](Stage stage) { return sample.calls[std::size_t(stage)]; };
+        Utils::Log::error("[REPLAY_PROFILE] frame={} wall_us={} replay_us={} native_us={} readback_us={} wait_us={} compile_us={} lower_us={} "
+                          "lower_n={} shader_us={} shader_n={} pipeline_us={} pipeline_n={}",
+                          presents, sample.wall / 1000, us(Stage::Replay), us(Stage::NativeDraw), us(Stage::Readback), us(Stage::GpuWait),
+                          us(Stage::Compile), us(Stage::ShaderLower), n(Stage::ShaderLower), us(Stage::ShaderCompile), n(Stage::ShaderCompile),
+                          us(Stage::PipelineCreate), n(Stage::PipelineCreate));
     }
 } // namespace Core::Profile

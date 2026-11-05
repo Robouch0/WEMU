@@ -4,6 +4,14 @@
 Exclusive nested timings cover guest execution, HLE, replay, native draw CPU
 work, CPU readback, GPU fence waits, video decode, presentation, pacing, pause
 and native compilation. Their total accounts for the full measured wall interval.
+First-use shader work has its own fields on both records: `lower_us`/`lower_n` for
+Latte-to-GLSL lowering, `shader_us`/`shader_n` for GLSL-to-SPIR-V compilation on a
+disk-cache miss, and `pipeline_us`/`pipeline_n` for driver pipeline creation. A
+persistent SPIR-V hit costs neither; only the driver's own cache shortens
+`pipeline_us`. `WEMU_GX2_INVALIDATE_TRACE=1` logs shader-memory invalidations and, at
+each program's first bind, a `[SHADER_HINT]` record saying whether an earlier
+invalidation covered it and how many milliseconds before; see
+[shader compilation](shader-compilation.md).
 Stream-output passes additionally emit `[STREAMOUT_PROFILE]` with the frame,
 vertex count, wall time in microseconds and completion status. These passes run
 before ordinary raster draw timing begins; their time is already included in

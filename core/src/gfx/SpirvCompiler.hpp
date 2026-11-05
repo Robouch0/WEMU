@@ -20,8 +20,10 @@ namespace Core::Gfx {
 
     // Single rendering-thread service. Compile/validate on a cache miss only;
     // no shell, and no guest filenames or code execute on the host.
-    // Initial external-tool implementation can be replaced by an in-process
-    // compiler without changing the renderer's SPIR-V contract.
+    // Builds with glslang's development package compile in process (WEMU_SPIRV_VALIDATE=1 adds
+    // SPIR-V validation); others run glslangValidator and spirv-val. Both emit the same SPIR-V.
+    // Modules are unoptimized unless WEMU_SPIRV_OPTIMIZE=1: on MK8 the size optimizer cost 30 ms
+    // per shader and changed no draw's GPU time, which drivers optimize themselves.
     //
     // A non-empty cache directory additionally persists validated modules across sessions, keyed by
     // a hash of stage and source; each file also stores the full source, which must match exactly.
@@ -34,6 +36,7 @@ namespace Core::Gfx {
             SpirvCompiler(const SpirvCompiler &) = delete;
             SpirvCompiler &operator=(const SpirvCompiler &) = delete;
             static bool available() noexcept;
+            static bool optimizesForSize() noexcept;
             // Default persistent location: WEMU_SHADER_CACHE_DIR (empty disables), else
             // $XDG_CACHE_HOME/wemu/spirv or ~/.cache/wemu/spirv.
             static std::string defaultCacheDirectory();

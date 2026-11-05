@@ -65,6 +65,14 @@ void Renderer::flip_tv(const std::uint8_t *rgbx, std::uint32_t w, std::uint32_t 
     Core::Profile::report(guest_present_count(), movie_frame_count());
 }
 
+void Renderer::present_host_frame(const std::uint8_t *rgbx, std::uint32_t w, std::uint32_t h)
+{
+    if (!m_hostPresenter)
+        presentFrame(rgbx, w, h, false);
+    else if (!m_hostPresenter->present({rgbx, std::size_t(w) * h * 4}, w, h, hostStatistics()))
+        m_open = false;
+}
+
 void Renderer::flip_drc(const std::uint8_t *rgbx, std::uint32_t w, std::uint32_t h)
 {
     if (!drc_wanted() || m_pauseMenu.state() != Core::UI::PauseMenu::State::Running)

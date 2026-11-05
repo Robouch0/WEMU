@@ -1,8 +1,12 @@
 #pragma once
 
+#include <cstddef>
+#include <functional>
 #include <memory>
+#include <span>
 #include <string>
 
+#include "gfx/PipelineManifest.hpp"
 #include "gfx/RasterBackend.hpp"
 
 namespace Core::Gfx {
@@ -28,6 +32,18 @@ namespace Core::Gfx {
             std::optional<StreamOutResult> streamOut(const StreamOutDraw &draw) override;
             std::shared_ptr<StreamOutReadback> streamOutDeferred(const StreamOutDraw &draw) override;
             bool supportsRenderedMipLevels() const override;
+            // Persists new pipeline-cache data and manifest recipes in the background, at most every 10 seconds.
+            void endFrame() override;
+            // Records every pipeline this backend creates, from its Latte inputs, into `manifest`.
+            void setPipelineManifest(std::shared_ptr<PipelineManifest> manifest);
+            using ShaderLowering = std::function<std::shared_ptr<const Latte::FragmentShader>(const std::shared_ptr<const Latte::ShaderOrigin> &)>;
+            using PreloadProgress = std::function<bool(std::size_t done, std::size_t total)>;
+            // Creates the shader modules and pipelines of recorded recipes before any draw needs them,
+            // compiling on worker threads. `lower` supplies lowered shaders (the replayer's caches;
+            // Latte::lowerOrigin when empty). `progress` runs on the calling thread and stops the
+            // preload when it returns false. Recipes that no longer lower, compile or decode are
+            // skipped. Returns the number of pipelines created.
+            std::size_t preload(std::span<const PipelineRecipe> recipes, const ShaderLowering &lower, const PreloadProgress &progress);
             const std::string &lastError() const noexcept;
             std::uint64_t completedDraws() const noexcept;
             std::uint64_t reusedDraws() const noexcept;

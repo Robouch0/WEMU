@@ -123,6 +123,7 @@ declare -a APT_PKGS=(
   vulkan-validationlayers
   spirv-tools
   glslang-tools
+  glslang-dev
   glslc
   libglm-dev
 
@@ -170,7 +171,7 @@ declare -a DNF_PKGS=(
   'pkgconfig(libavcodec)' 'pkgconfig(libavformat)' 'pkgconfig(libavutil)' 'pkgconfig(libswscale)' 'pkgconfig(libswresample)'
   # The ffmpeg program records the game previews of the library.
   /usr/bin/ffmpeg
-  vulkan-loader-devel vulkan-tools vulkan-validation-layers glslang glslc
+  vulkan-loader-devel vulkan-tools vulkan-validation-layers glslang glslang-devel glslc
   glfw-devel SDL2-devel SDL2_image-devel glm-devel
   qt6-qtbase-devel qt6-qtdeclarative-devel qt6-qtmultimedia-devel
   qt6-qttools-devel qt6-qt5compat-devel

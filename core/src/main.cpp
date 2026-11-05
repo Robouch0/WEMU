@@ -269,6 +269,9 @@ int main(const int ac, char const *const *av)
             }
         }
 
+        // Before the title runs, so neither its clock nor its audio sees the preload.
+        PreloadGx2Pipelines(interpreter, rpxPath);
+
         auto &audio = Core::Audio::output();
         if (const char *value = std::getenv("WEMU_AUDIO_VOLUME")) {
             char *end{};

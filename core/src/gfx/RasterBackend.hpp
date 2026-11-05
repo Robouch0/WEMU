@@ -327,5 +327,7 @@ namespace Core::Gfx {
             // Same borrowed-input lifetime as render; only the owned readback may
             // outlive this call. Backends without deferred support remain synchronous.
             virtual std::optional<RasterResult> renderDeferred(const RasterDraw &draw) { return render(draw); }
+            // Called once per replayed frame, after its last draw, for work that must not run mid-frame.
+            virtual void endFrame() {}
     };
 } // namespace Core::Gfx

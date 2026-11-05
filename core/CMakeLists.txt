@@ -14,6 +14,8 @@ find_package(ZLIB REQUIRED)
 find_package(Threads REQUIRED)
 find_program(WEMU_RUNTIME_GLSLANG glslangValidator)
 find_program(WEMU_RUNTIME_SPIRV_VAL spirv-val)
+# glslang's development package compiles shaders in process; without it, the tools above do.
+find_package(glslang CONFIG QUIET)
 find_package(Vulkan REQUIRED)
 if(NOT Vulkan_FOUND)
     message(FATAL_ERROR "Vulkan SDK not found. Install it or set VULKAN_SDK.")
@@ -49,6 +51,7 @@ add_library(core STATIC
         src/utils/BeDecoder.cpp
         src/utils/Diagnostics.hpp
         src/utils/Diagnostics.cpp
+        src/utils/PrivateDirectory.cpp
         src/hle/MemHeap.hpp
         src/hle/MemHeap.cpp
         src/hle/ApplicationBoot.cpp
@@ -127,6 +130,8 @@ add_library(core STATIC
         src/gfx/LatteSurfaceLayout.cpp
         src/gfx/LatteShaderLowering.cpp
         src/gfx/SpirvCompiler.cpp
+        src/gfx/PipelineCacheStore.cpp
+        src/gfx/PipelineManifest.cpp
         src/gfx/VulkanRasterBackend.cpp
         src/gfx/RasterWorkers.cpp
         src/hle/Fs.hpp
@@ -137,6 +142,7 @@ add_library(core STATIC
         src/hle/Scheduler.cpp
         src/gfx/Renderer.cpp
         src/ui/PauseMenu.cpp
+        src/ui/PreloadScreen.cpp
         src/gfx/init/buffer.cpp
         src/gfx/init/cleanup.cpp
         src/gfx/init/commandPool.cpp
@@ -227,6 +233,11 @@ if(WEMU_ENABLE_X64_JIT AND CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_P
             src/cpu/jit/EmitInteger.cpp src/cpu/jit/EmitSystem.cpp src/cpu/jit/EmitMemory.cpp src/cpu/jit/EmitBranch.cpp src/cpu/jit/EmitFloat.cpp)
     target_include_directories(core SYSTEM PRIVATE third_party/xbyak)
     target_compile_definitions(core PUBLIC WEMU_HAS_X64_JIT=1)
+endif()
+if(TARGET glslang::SPIRV AND TARGET glslang::glslang-default-resource-limits)
+    message(STATUS "Shader compilation: in-process glslang ${glslang_VERSION}")
+    target_link_libraries(core PRIVATE glslang::glslang glslang::SPIRV glslang::glslang-default-resource-limits)
+    target_compile_definitions(core PUBLIC WEMU_HAS_GLSLANG=1)
 endif()
 if(WEMU_RUNTIME_GLSLANG AND WEMU_RUNTIME_SPIRV_VAL)
     target_compile_definitions(core PRIVATE

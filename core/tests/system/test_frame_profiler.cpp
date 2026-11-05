@@ -73,3 +73,39 @@ TEST(FrameProfilerTest, DisabledProfilingNeverReadsClockAndPauseIsSeparateFromAc
     EXPECT_EQ(frame.time[std::size_t(Stage::Pause)], 1000u);
     EXPECT_EQ(frame.time[std::size_t(Stage::Guest)], 5u);
 }
+
+TEST(FrameProfilerTest, ShaderStagesAreChargedExclusivelyInsideNativeDrawWithCallCounts)
+{
+    using namespace Core::Profile;
+    fakeTime = 0;
+    Timeline clock(true, fakeClock);
+    {
+        Scope draw(clock, Stage::NativeDraw);
+        fakeTime = 4;
+        for (int shader = 0; shader < 2; ++shader) {
+            {
+                Scope lowering(clock, Stage::ShaderLower);
+                fakeTime += 3;
+            }
+            {
+                Scope compiling(clock, Stage::ShaderCompile);
+                fakeTime += 20;
+            }
+        }
+        {
+            Scope creating(clock, Stage::PipelineCreate);
+            fakeTime += 100;
+        }
+        fakeTime += 1;
+    }
+    const auto frame = clock.frame();
+    EXPECT_EQ(frame.wall, 151u);
+    EXPECT_EQ(frame.time[std::size_t(Stage::NativeDraw)], 5u);
+    EXPECT_EQ(frame.time[std::size_t(Stage::ShaderLower)], 6u);
+    EXPECT_EQ(frame.time[std::size_t(Stage::ShaderCompile)], 40u);
+    EXPECT_EQ(frame.time[std::size_t(Stage::PipelineCreate)], 100u);
+    EXPECT_EQ(frame.calls[std::size_t(Stage::ShaderLower)], 2u);
+    EXPECT_EQ(frame.calls[std::size_t(Stage::ShaderCompile)], 2u);
+    EXPECT_EQ(frame.calls[std::size_t(Stage::PipelineCreate)], 1u);
+    EXPECT_EQ(std::accumulate(frame.time.begin(), frame.time.end(), std::uint64_t{}), frame.wall);
+}

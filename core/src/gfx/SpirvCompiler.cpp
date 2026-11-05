@@ -16,10 +16,20 @@
 #include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
+#ifdef WEMU_HAS_GLSLANG
+    #include <glslang/Public/ResourceLimits.h>
+    #include <glslang/Public/ShaderLang.h>
+    #include <glslang/SPIRV/GlslangToSpv.h>
+    #include <mutex>
+    #include <spirv-tools/libspirv.hpp>
+#endif
+
+#include "utils/FrameProfiler.hpp"
 
 extern char **environ;
 
 namespace Core::Gfx {
+#if !defined(WEMU_HAS_GLSLANG) && defined(WEMU_RUNTIME_GLSLANG) && defined(WEMU_RUNTIME_SPIRV_VAL)
     namespace {
         struct TemporaryDirectory {
                 std::filesystem::path path;
@@ -99,6 +109,7 @@ namespace Core::Gfx {
                 throw std::runtime_error("Shader tool failed: " + diagnostics(log));
         }
     } // namespace
+#endif
 
     namespace {
         constexpr char kCacheMagic[8]{'W', 'E', 'M', 'U', 'S', 'P', 'V', '1'};
@@ -116,9 +127,12 @@ namespace Core::Gfx {
         };
         bool privateOwner(const struct stat &info) { return info.st_uid == ::geteuid() && !(info.st_mode & 0077); }
 
+        // Optimized modules get their own entries; an unoptimized build accepts either, and entries
+        // written before optimization became optional were optimized.
+        std::uint32_t cachedStage(ShaderStage stage) { return std::uint32_t(stage) | (SpirvCompiler::optimizesForSize() ? 0x100u : 0u); }
         std::string cacheFilename(ShaderStage stage, std::string_view source)
         {
-            std::uint64_t hash = 0xCBF29CE484222325ull ^ std::uint64_t(stage); // FNV-1a
+            std::uint64_t hash = 0xCBF29CE484222325ull ^ std::uint64_t(cachedStage(stage)); // FNV-1a
             for (const unsigned char c: source)
                 hash = (hash ^ c) * 0x100000001B3ull;
             constexpr char hex[] = "0123456789abcdef";
@@ -203,7 +217,7 @@ namespace Core::Gfx {
         std::uint32_t storedStage{};
         std::uint64_t sourceBytes{}, wordCount{};
         if (!readAll(file.fd, magic, sizeof(magic)) || !std::equal(std::begin(magic), std::end(magic), kCacheMagic) ||
-            !readAll(file.fd, &storedStage, sizeof(storedStage)) || storedStage != std::uint32_t(stage) ||
+            !readAll(file.fd, &storedStage, sizeof(storedStage)) || storedStage != cachedStage(stage) ||
             !readAll(file.fd, &sourceBytes, sizeof(sourceBytes)) || sourceBytes != source.size() ||
             !readAll(file.fd, &wordCount, sizeof(wordCount)) || wordCount < 5 || wordCount > kMaxCachedWords ||
             std::uint64_t(info.st_size) !=
@@ -229,7 +243,7 @@ namespace Core::Gfx {
         Descriptor file{::openat(m_directory, temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600)};
         if (file.fd < 0)
             return;
-        const std::uint32_t storedStage = std::uint32_t(stage);
+        const std::uint32_t storedStage = cachedStage(stage);
         const std::uint64_t sourceBytes = source.size(), wordCount = module.words.size();
         const bool written = writeAll(file.fd, kCacheMagic, sizeof(kCacheMagic)) && writeAll(file.fd, &storedStage, sizeof(storedStage)) &&
                              writeAll(file.fd, &sourceBytes, sizeof(sourceBytes)) && writeAll(file.fd, &wordCount, sizeof(wordCount)) &&
@@ -238,9 +252,106 @@ namespace Core::Gfx {
             ::unlinkat(m_directory, temporary.c_str(), 0);
     }
 
+    namespace {
+#ifdef WEMU_HAS_GLSLANG
+        // The front end, options and target of `glslangValidator -V -Od|-Os --target-env vulkan1.0`,
+        // which produce the same SPIR-V words, without starting a process for each shader. glslang
+        // allows concurrent compilations once the process is initialized.
+        std::vector<std::uint32_t> compileInProcess(ShaderStage stage, std::string_view source)
+        {
+            static std::once_flag initialized;
+            std::call_once(initialized, [] { glslang::InitializeProcess(); });
+            const auto language = stage == ShaderStage::Vertex ? EShLangVertex : stage == ShaderStage::Fragment ? EShLangFragment : EShLangCompute;
+            glslang::TShader shader(language);
+            const char *text = source.data();
+            const int length = int(source.size());
+            shader.setStringsWithLengths(&text, &length, 1);
+            shader.setEnvInput(glslang::EShSourceGlsl, language, glslang::EShClientVulkan, 100);
+            shader.setEnvClient(glslang::EShClientVulkan, glslang::EShTargetVulkan_1_0);
+            shader.setEnvTarget(glslang::EShTargetSpv, glslang::EShTargetSpv_1_0);
+            // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange): glslang flags form a bitmask
+            const auto messages = EShMessages(EShMsgSpvRules | EShMsgVulkanRules);
+            if (!shader.parse(GetDefaultResources(), 100, false, messages))
+                throw std::runtime_error(std::string("GLSL compilation failed: ") + shader.getInfoLog());
+            glslang::TProgram program;
+            program.addShader(&shader);
+            if (!program.link(messages) || !program.mapIO())
+                throw std::runtime_error(std::string("GLSL link failed: ") + program.getInfoLog());
+            glslang::SpvOptions options;
+            options.disableOptimizer = !SpirvCompiler::optimizesForSize();
+            options.optimizeSize = SpirvCompiler::optimizesForSize();
+            std::vector<unsigned> words;
+            spv::SpvBuildLogger logger;
+            glslang::GlslangToSpv(*program.getIntermediate(language), words, &logger, &options);
+            if (words.empty())
+                throw std::runtime_error("SPIR-V generation failed: " + logger.getAllMessages());
+            // WEMU_SPIRV_VALIDATE=1 runs spirv-val's checks; glslang's output for accepted GLSL is valid.
+            static const bool validate = [] {
+                const auto *setting = std::getenv("WEMU_SPIRV_VALIDATE");
+                return setting && setting[0] == '1';
+            }();
+            if (validate) {
+                spvtools::SpirvTools tools(SPV_ENV_VULKAN_1_0);
+                std::string diagnostics;
+                tools.SetMessageConsumer([&](spv_message_level_t, const char *, const spv_position_t &, const char *message) {
+                    diagnostics += message;
+                    diagnostics += '\n';
+                });
+                if (!tools.Validate(words))
+                    throw std::runtime_error("SPIR-V validation failed: " + diagnostics);
+            }
+            return {words.begin(), words.end()};
+        }
+#elif defined(WEMU_RUNTIME_GLSLANG) && defined(WEMU_RUNTIME_SPIRV_VAL)
+        std::vector<std::uint32_t> compileWithTools(ShaderStage stage, std::string_view source)
+        {
+            TemporaryDirectory temporary;
+            const auto input = temporary.path / (stage == ShaderStage::Vertex     ? "shader.vert"
+                                                 : stage == ShaderStage::Fragment ? "shader.frag"
+                                                                                  : "shader.comp");
+            const auto output = temporary.path / "shader.spv";
+            const auto log = temporary.path / "tool.log";
+            {
+                std::ofstream file(input, std::ios::binary);
+                file.write(source.data(), static_cast<std::streamsize>(source.size()));
+                file.close();
+                if (!file)
+                    throw std::runtime_error("Cannot write shader source");
+            }
+            execute({WEMU_RUNTIME_GLSLANG, "-V", SpirvCompiler::optimizesForSize() ? "-Os" : "-Od", "--target-env", "vulkan1.0", "-o",
+                     output.string(), input.string()},
+                    log);
+            execute({WEMU_RUNTIME_SPIRV_VAL, "--target-env", "vulkan1.0", output.string()}, log);
+            std::ifstream file(output, std::ios::binary | std::ios::ate);
+            if (!file)
+                throw std::runtime_error("Cannot read compiled shader");
+            const auto bytes = file.tellg();
+            if (bytes < 20 || bytes > std::streamoff{16} * 1024 * 1024 || bytes % 4)
+                throw std::runtime_error("Invalid SPIR-V output size");
+            std::vector<std::uint32_t> words(static_cast<std::size_t>(bytes) / 4);
+            file.seekg(0);
+            file.read(reinterpret_cast<char *>(words.data()), bytes);
+            if (!file)
+                throw std::runtime_error("Cannot read compiled shader");
+            return words;
+        }
+#endif
+    } // namespace
+
+    bool SpirvCompiler::optimizesForSize() noexcept
+    {
+        static const bool value = [] {
+            const auto *setting = std::getenv("WEMU_SPIRV_OPTIMIZE");
+            return setting && setting[0] == '1';
+        }();
+        return value;
+    }
+
     bool SpirvCompiler::available() noexcept
     {
-#if defined(WEMU_RUNTIME_GLSLANG) && defined(WEMU_RUNTIME_SPIRV_VAL)
+#ifdef WEMU_HAS_GLSLANG
+        return true;
+#elif defined(WEMU_RUNTIME_GLSLANG) && defined(WEMU_RUNTIME_SPIRV_VAL)
         return access(WEMU_RUNTIME_GLSLANG, X_OK) == 0 && access(WEMU_RUNTIME_SPIRV_VAL, X_OK) == 0;
 #else
         return false;
@@ -283,33 +394,14 @@ namespace Core::Gfx {
             result->error = "glslangValidator and spirv-val were not found or are no longer executable";
             return result;
         }
-#if defined(WEMU_RUNTIME_GLSLANG) && defined(WEMU_RUNTIME_SPIRV_VAL)
         try {
-            TemporaryDirectory temporary;
-            const auto input = temporary.path / (stage == ShaderStage::Vertex     ? "shader.vert"
-                                                 : stage == ShaderStage::Fragment ? "shader.frag"
-                                                                                  : "shader.comp");
-            const auto output = temporary.path / "shader.spv";
-            const auto log = temporary.path / "tool.log";
-            {
-                std::ofstream file(input, std::ios::binary);
-                file.write(source.data(), static_cast<std::streamsize>(source.size()));
-                file.close();
-                if (!file)
-                    throw std::runtime_error("Cannot write shader source");
-            }
-            execute({WEMU_RUNTIME_GLSLANG, "-V", "-Os", "--target-env", "vulkan1.0", "-o", output.string(), input.string()}, log);
-            execute({WEMU_RUNTIME_SPIRV_VAL, "--target-env", "vulkan1.0", output.string()}, log);
-            std::ifstream file(output, std::ios::binary | std::ios::ate);
-            if (!file)
-                throw std::runtime_error("Cannot read compiled shader");
-            const auto bytes = file.tellg();
-            if (bytes < 20 || bytes > std::streamoff{16} * 1024 * 1024 || bytes % 4)
-                throw std::runtime_error("Invalid SPIR-V output size");
-            result->words.resize(static_cast<std::size_t>(bytes) / 4);
-            file.seekg(0);
-            file.read(reinterpret_cast<char *>(result->words.data()), bytes);
-            if (!file || result->words[0] != 0x07230203u)
+            Profile::Scope compiling(Profile::Stage::ShaderCompile);
+#ifdef WEMU_HAS_GLSLANG
+            result->words = compileInProcess(stage, source);
+#elif defined(WEMU_RUNTIME_GLSLANG) && defined(WEMU_RUNTIME_SPIRV_VAL)
+            result->words = compileWithTools(stage, source);
+#endif
+            if (result->words.size() < 5 || result->words[0] != 0x07230203u)
                 throw std::runtime_error("Invalid SPIR-V output");
             result->id = g_nextModuleId++;
             storeCached(stage, source, *result);
@@ -318,7 +410,6 @@ namespace Core::Gfx {
             result->words.clear();
             result->error = error.what();
         }
-#endif
         return result;
     }
 } // namespace Core::Gfx

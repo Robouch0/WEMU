@@ -9,6 +9,7 @@
 #include <stdexcept>
 
 #include "gfx/UniformBufferFetch.hpp"
+#include "utils/FrameProfiler.hpp"
 
 namespace Core::Gfx::Latte {
     std::shared_ptr<const FragmentShader> FragmentShaderCache::get(const std::vector<std::uint32_t> &words,
@@ -25,8 +26,14 @@ namespace Core::Gfx::Latte {
         }
         ++m_misses;
         Key key{words, {resourceTypes.begin(), resourceTypes.end()}, onlyColorZero, colorExport, positionRegister};
-        auto shader = std::make_shared<const FragmentShader>(
-                lowerFragmentShader(*decodeProgram(words), resourceTypes, onlyColorZero, colorExport, positionRegister));
+        const auto shader = [&] {
+            Profile::Scope lowering(Profile::Stage::ShaderLower);
+            auto lowered = std::make_shared<FragmentShader>(
+                    lowerFragmentShader(*decodeProgram(words), resourceTypes, onlyColorZero, colorExport, positionRegister));
+            lowered->origin = std::make_shared<const ShaderOrigin>(
+                    ShaderOrigin{words, key.resourceTypes, false, onlyColorZero, colorExport, positionRegister, 0, {}});
+            return std::shared_ptr<const FragmentShader>(std::move(lowered));
+        }();
         constexpr std::size_t maxBytes = std::size_t{256} * 1024 * 1024;
         const auto bytes = words.size() * sizeof(std::uint32_t) + resourceTypes.size() * sizeof(TextureType) + shader->source.size() +
                            shader->error.size() + shader->textures.size() * sizeof(TextureBinding);
@@ -1336,19 +1343,43 @@ vec3 cubeDirectionReference(vec3 coord) {
         static_cast<FragmentShader &>(shader) = lowerShader(program, resourceTypes, true, false, 0, bufferWindow, bufferWindows);
         return shader;
     }
+    std::shared_ptr<const FragmentShader> lowerOrigin(const std::shared_ptr<const ShaderOrigin> &origin)
+    {
+        if (!origin)
+            return nullptr;
+        const auto program = decodeProgram(origin->words);
+        std::shared_ptr<FragmentShader> shader;
+        if (origin->vertex)
+            shader = std::make_shared<VertexShader>(lowerVertexShader(*program, origin->resourceTypes, origin->bufferWindow, origin->bufferWindows));
+        else
+            shader = std::make_shared<FragmentShader>(
+                    lowerFragmentShader(*program, origin->resourceTypes, origin->onlyColorZero, origin->colorExport, origin->positionRegister));
+        shader->origin = origin;
+        return shader;
+    }
+
     std::shared_ptr<const VertexShader> VertexShaderCache::get(const std::vector<std::uint32_t> &words, unsigned bufferWindow,
                                                                const UniformBufferWindows &bufferWindows)
     {
         if (bufferWindow || std::ranges::any_of(bufferWindows, [](unsigned size) { return size != 0; })) {
             // Rare: only programs whose blocks outgrow the default budget, a few window sizes each.
             auto &shader = m_windowed[{bufferWindow, bufferWindows, words}];
-            if (!shader)
-                shader = std::make_shared<const VertexShader>(lowerVertexShader(*decodeProgram(words), {}, bufferWindow, bufferWindows));
+            if (!shader) {
+                Profile::Scope lowering(Profile::Stage::ShaderLower);
+                auto lowered = std::make_shared<VertexShader>(lowerVertexShader(*decodeProgram(words), {}, bufferWindow, bufferWindows));
+                lowered->origin = std::make_shared<const ShaderOrigin>(ShaderOrigin{words, {}, true, false, 0, 32, bufferWindow, bufferWindows});
+                shader = std::move(lowered);
+            }
             return shader;
         }
         if (const auto it = m_entries.find(words); it != m_entries.end())
             return it->second;
-        auto shader = std::make_shared<const VertexShader>(lowerVertexShader(*decodeProgram(words)));
+        const auto shader = [&] {
+            Profile::Scope lowering(Profile::Stage::ShaderLower);
+            auto lowered = std::make_shared<VertexShader>(lowerVertexShader(*decodeProgram(words)));
+            lowered->origin = std::make_shared<const ShaderOrigin>(ShaderOrigin{words, {}, true, false, 0, 32, 0, {}});
+            return std::shared_ptr<const VertexShader>(std::move(lowered));
+        }();
         if (m_entries.size() >= 4096)
             m_entries.clear();
         if (words.size() <= 16384 && shader->source.size() <= std::size_t{256} * 1024)

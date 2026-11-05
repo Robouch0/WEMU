@@ -54,6 +54,9 @@ class Renderer {
         }
 
         void flip_tv(const std::uint8_t *rgbx, std::uint32_t w, std::uint32_t h, unsigned swapInterval = 1);
+        // A TV frame the host draws itself (a loading screen): not a guest present, so it is
+        // neither paced, profiled nor counted in the present rate.
+        void present_host_frame(const std::uint8_t *rgbx, std::uint32_t w, std::uint32_t h);
         // GamePad screen. Forwarded only while the host streams it to a remote GamePad; never paces.
         void flip_drc(const std::uint8_t *rgbx, std::uint32_t w, std::uint32_t h);
         // True while a host consumer wants GamePad frames, so callers can skip building them.
