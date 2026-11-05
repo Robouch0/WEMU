@@ -147,3 +147,32 @@ MK8, 100 s from boot, with the manifest recorded by an earlier session:
 At the race start, 312 lowerings (35 ms) still happen during the game. They
 belong to draws that never created a native pipeline, so no recipe records
 them.
+
+## In-process compilation
+
+When CMake finds glslang's development package (`glslang-dev` on Debian and
+Ubuntu, `glslang-devel` on Fedora; Arch and Homebrew ship it in `glslang`),
+`SpirvCompiler` links glslang and the SPIRV-Tools optimizer and compiles in
+process. It uses the front end, options and target of
+`glslangValidator -V -Os --target-env vulkan1.0`. All 447 shaders of an MK8
+SPIR-V cache came out word for word identical, so existing caches stay valid.
+No process is started per shader. glslang is initialized once and then
+compiles concurrently, which the preload uses. SPIR-V validation is opt-in
+(`WEMU_SPIRV_VALIDATE=1`): it never rejected glslang output in those 447
+shaders, and it costs about as much as compiling unoptimized. Builds without
+the package keep running `glslangValidator` and `spirv-val`.
+
+Per shader, on those 447 MK8 shaders:
+
+| | Median per shader |
+|---|---|
+| `glslangValidator -Os` + `spirv-val` processes | 96.5 ms (in-emulator) |
+| In process, `-Os` | 35 ms |
+| In process, unoptimized | 5.6 ms |
+| In-process validation | 4.8 ms |
+
+MK8 with every cache empty and no manifest (100 s): compilation drops from
+44.7 s to 15.7 s, and the race-start frame from 28.9 s to 15.4 s (9.1 s for
+234 shaders, 5.3 s for cold-driver pipelines). A cold preload from the
+manifest drops from 12.9 s to 6.8 s. Most of what remains is the size
+optimizer, which step 6 can defer.

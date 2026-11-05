@@ -20,8 +20,8 @@ namespace Core::Gfx {
 
     // Single rendering-thread service. Compile/validate on a cache miss only;
     // no shell, and no guest filenames or code execute on the host.
-    // Initial external-tool implementation can be replaced by an in-process
-    // compiler without changing the renderer's SPIR-V contract.
+    // Builds with glslang's development package compile in process (WEMU_SPIRV_VALIDATE=1 adds
+    // SPIR-V validation); others run glslangValidator and spirv-val. Both emit the same SPIR-V.
     //
     // A non-empty cache directory additionally persists validated modules across sessions, keyed by
     // a hash of stage and source; each file also stores the full source, which must match exactly.

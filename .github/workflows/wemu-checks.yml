@@ -26,7 +26,7 @@ jobs:
             libxkbcommon-dev libsdl2-dev libsdl2-image-dev zlib1g-dev libglfw3-dev \
             libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev \
             libvulkan-dev vulkan-tools vulkan-validationlayers libglm-dev \
-            glslang-tools spirv-tools mesa-vulkan-drivers
+            glslang-tools glslang-dev spirv-tools mesa-vulkan-drivers
 
       - name: Cache CMake build
         uses: actions/cache@v4
@@ -73,7 +73,7 @@ jobs:
             cmake build-essential g++-14 pkg-config \
             libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev \
             zlib1g-dev libsdl2-dev libvulkan-dev vulkan-tools vulkan-validationlayers libglm-dev libglfw3-dev \
-            glslang-tools spirv-tools mesa-vulkan-drivers
+            glslang-tools glslang-dev spirv-tools mesa-vulkan-drivers
           if [ "${{ matrix.llvm }}" = "ON" ]; then
             sudo apt-get install -y llvm-19-dev
           fi
@@ -163,7 +163,7 @@ jobs:
             libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev \
             qt6-base-dev \
             zlib1g-dev libsdl2-dev clang-tidy-19 llvm-19-dev libvulkan-dev vulkan-tools vulkan-validationlayers libglm-dev libglfw3-dev \
-            glslang-tools spirv-tools
+            glslang-tools glslang-dev spirv-tools
 
       # LLVM_DIR pins LLVM 19 over the LLVM 18 package of the runner image.
       - name: Configure core (generate compile_commands.json)
