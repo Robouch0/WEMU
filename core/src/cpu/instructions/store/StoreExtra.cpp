@@ -60,7 +60,7 @@ namespace Core::Instruction {
         cpu.m_gpr[instr.ra] = ea;
     }
 
-    /** @brief Store Byte with Update Indexed. EA = RA + RB; MEM(EA,1) = RS[24:31]; RA = EA. */
+    /** @brief Store Byte with Update Indexed. EA = RA + RB; MEM(EA,1) = RS[24:31]; RA = EA. RA must not be 0 */
     void STBUX(Interpreter &cpu, const EncodedInstruction &instr)
     {
         const std::uint32_t ea = cpu.m_gpr[instr.ra] + cpu.m_gpr[instr.rb];
