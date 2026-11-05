@@ -764,7 +764,7 @@ TEST_F(Gx2CaptureTest, SubmittedBuffersKeepTheirBytesWhenTheCpuBuildsTheNextFram
     EXPECT_EQ(old[0], 0x12);
 }
 
-TEST_F(Gx2CaptureTest, SubmittedBufferHashesDetectChangesInEveryLaneAndPartialTail)
+TEST_F(Gx2CaptureTest, SubmittedBufferVersionsDetectChangesInEveryByteAndPartialTail)
 {
     constexpr std::uint32_t address = 0x28010000;
     for (unsigned byte = 0; byte < 89; ++byte)
@@ -776,23 +776,22 @@ TEST_F(Gx2CaptureTest, SubmittedBufferHashesDetectChangesInEveryLaneAndPartialTa
     Core::Gfx::Gx2BufferSnapshots cache;
     cache.capture(stream, cpu->m_memory);
     ASSERT_EQ(stream.bufferSnapshots().size(), 1u);
-    const auto original = stream.contentHash();
     // Capture includes 16 bytes of allowed fetch overrun and rounds storage to words.
     ASSERT_EQ(stream.bufferSnapshots()[0].bytes, 89u);
+    auto previous = stream.contentHash();
     for (unsigned byte = 0; byte < 89; ++byte) {
         SCOPED_TRACE(byte);
         cpu->m_memory.write<std::uint8_t>(address + byte, 0x80);
         cache.capture(stream, cpu->m_memory);
-        EXPECT_NE(stream.contentHash(), original);
+        EXPECT_NE(stream.contentHash(), previous);
+        previous = stream.contentHash();
+        cache.capture(stream, cpu->m_memory);
+        EXPECT_EQ(stream.contentHash(), previous); // unchanged bytes keep their version
         cpu->m_memory.write<std::uint8_t>(address + byte, 0);
         cache.capture(stream, cpu->m_memory);
-        EXPECT_EQ(stream.contentHash(), original);
+        EXPECT_NE(stream.contentHash(), previous);
+        previous = stream.contentHash();
     }
-    // Paired sign changes must not cancel: geometry can mirror several float components.
-    cpu->m_memory.write<std::uint8_t>(address + 7, 0x80);
-    cpu->m_memory.write<std::uint8_t>(address + 39, 0x80);
-    cache.capture(stream, cpu->m_memory);
-    EXPECT_NE(stream.contentHash(), original);
 }
 
 TEST_F(Gx2CaptureTest, SubmittedBuffersDetectStoresWithoutWriteTracking)
