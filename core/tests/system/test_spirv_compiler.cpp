@@ -50,8 +50,8 @@ TEST(SpirvCompilerTest, InProcessCompilationMatchesTheStandaloneCompiler)
         GTEST_SKIP() << "glslangValidator is not installed";
     TemporaryDirectory directory;
     std::ofstream(directory.path / "shader.frag") << fragmentSource;
-    const auto command = "glslangValidator -V -Os --target-env vulkan1.0 -o " + (directory.path / "shader.spv").string() + " " +
-                         (directory.path / "shader.frag").string() + " > /dev/null";
+    const auto command = std::string("glslangValidator -V ") + (SpirvCompiler::optimizesForSize() ? "-Os" : "-Od") + " --target-env vulkan1.0 -o " +
+                         (directory.path / "shader.spv").string() + " " + (directory.path / "shader.frag").string() + " > /dev/null";
     ASSERT_EQ(std::system(command.c_str()), 0);
     std::ifstream file(directory.path / "shader.spv", std::ios::binary);
     std::vector<char> bytes((std::istreambuf_iterator<char>(file)), {});

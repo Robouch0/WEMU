@@ -154,8 +154,9 @@ When CMake finds glslang's development package (`glslang-dev` on Debian and
 Ubuntu, `glslang-devel` on Fedora; Arch and Homebrew ship it in `glslang`),
 `SpirvCompiler` links glslang and the SPIRV-Tools optimizer and compiles in
 process. It uses the front end, options and target of
-`glslangValidator -V -Os --target-env vulkan1.0`. All 447 shaders of an MK8
-SPIR-V cache came out word for word identical, so existing caches stay valid.
+`glslangValidator -V -Od|-Os --target-env vulkan1.0`. All 447 shaders of an
+MK8 SPIR-V cache came out word for word identical with `-Os`, and a sample of
+20 with `-Od`.
 No process is started per shader. glslang is initialized once and then
 compiles concurrently, which the preload uses. SPIR-V validation is opt-in
 (`WEMU_SPIRV_VALIDATE=1`): it never rejected glslang output in those 447
@@ -176,3 +177,32 @@ MK8 with every cache empty and no manifest (100 s): compilation drops from
 234 shaders, 5.3 s for cold-driver pipelines). A cold preload from the
 manifest drops from 12.9 s to 6.8 s. Most of what remains is the size
 optimizer, which step 6 can defer.
+
+## First-ever shaders
+
+A draw never waits for a shader it could skip: a missing module or pipeline is
+always created before the draw. Step 6 therefore came down to making that
+creation short. On MK8, per-draw GPU timestamps (`WEMU_NATIVE_GPU_TIMING=1`)
+for 188 matching kinds of draws were equal with optimized and unoptimized
+SPIR-V. The median ratio was 1.00, the full-screen draws stayed within ±4 %,
+and the driver optimizes either form itself. The size optimizer cost 30 ms per
+shader for nothing, so modules are now unoptimized (`-Od`) unless
+`WEMU_SPIRV_OPTIMIZE=1`. Optimized modules get separate disk-cache entries.
+The unoptimized mode also accepts entries cached before this change, which are
+optimized and equally valid. No module is replaced in the background, because
+nothing would gain from it. All Vulkan tests also pass with every module
+compiled unoptimized.
+
+The driver takes longer on unoptimized SPIR-V (36 ms instead of 24.5 ms per
+cold pipeline), but the total is lower. MK8, 100 s:
+
+| | Optimized (step 3) | Unoptimized |
+|---|---|---|
+| Fully cold: compilation | 431 × 36 ms = 15.7 s | 443 × 6.5 ms = 2.9 s |
+| Fully cold: pipeline creation | 406 × 24.5 ms = 9.9 s | 414 × 37 ms = 15.4 s |
+| Fully cold: race-start frame | 15.4 s | 10.3 s |
+| Cold preload from the manifest | 6.8 s | 4.6 s |
+| Race FPS, warm caches | 47.0 | 48.2 |
+
+What remains at a cold race start is mostly driver pipeline creation, 7.8 s for
+214 pipelines needed by the same frame.

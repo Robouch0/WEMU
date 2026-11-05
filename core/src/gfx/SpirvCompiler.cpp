@@ -127,9 +127,12 @@ namespace Core::Gfx {
         };
         bool privateOwner(const struct stat &info) { return info.st_uid == ::geteuid() && !(info.st_mode & 0077); }
 
+        // Optimized modules get their own entries; an unoptimized build accepts either, and entries
+        // written before optimization became optional were optimized.
+        std::uint32_t cachedStage(ShaderStage stage) { return std::uint32_t(stage) | (SpirvCompiler::optimizesForSize() ? 0x100u : 0u); }
         std::string cacheFilename(ShaderStage stage, std::string_view source)
         {
-            std::uint64_t hash = 0xCBF29CE484222325ull ^ std::uint64_t(stage); // FNV-1a
+            std::uint64_t hash = 0xCBF29CE484222325ull ^ std::uint64_t(cachedStage(stage)); // FNV-1a
             for (const unsigned char c: source)
                 hash = (hash ^ c) * 0x100000001B3ull;
             constexpr char hex[] = "0123456789abcdef";
@@ -214,7 +217,7 @@ namespace Core::Gfx {
         std::uint32_t storedStage{};
         std::uint64_t sourceBytes{}, wordCount{};
         if (!readAll(file.fd, magic, sizeof(magic)) || !std::equal(std::begin(magic), std::end(magic), kCacheMagic) ||
-            !readAll(file.fd, &storedStage, sizeof(storedStage)) || storedStage != std::uint32_t(stage) ||
+            !readAll(file.fd, &storedStage, sizeof(storedStage)) || storedStage != cachedStage(stage) ||
             !readAll(file.fd, &sourceBytes, sizeof(sourceBytes)) || sourceBytes != source.size() ||
             !readAll(file.fd, &wordCount, sizeof(wordCount)) || wordCount < 5 || wordCount > kMaxCachedWords ||
             std::uint64_t(info.st_size) !=
@@ -240,7 +243,7 @@ namespace Core::Gfx {
         Descriptor file{::openat(m_directory, temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600)};
         if (file.fd < 0)
             return;
-        const std::uint32_t storedStage = std::uint32_t(stage);
+        const std::uint32_t storedStage = cachedStage(stage);
         const std::uint64_t sourceBytes = source.size(), wordCount = module.words.size();
         const bool written = writeAll(file.fd, kCacheMagic, sizeof(kCacheMagic)) && writeAll(file.fd, &storedStage, sizeof(storedStage)) &&
                              writeAll(file.fd, &sourceBytes, sizeof(sourceBytes)) && writeAll(file.fd, &wordCount, sizeof(wordCount)) &&
@@ -251,9 +254,9 @@ namespace Core::Gfx {
 
     namespace {
 #ifdef WEMU_HAS_GLSLANG
-        // The front end, options and target of `glslangValidator -V -Os --target-env vulkan1.0`, which
-        // produce the same SPIR-V words, without starting a process for each shader. glslang allows
-        // concurrent compilations once the process is initialized.
+        // The front end, options and target of `glslangValidator -V -Od|-Os --target-env vulkan1.0`,
+        // which produce the same SPIR-V words, without starting a process for each shader. glslang
+        // allows concurrent compilations once the process is initialized.
         std::vector<std::uint32_t> compileInProcess(ShaderStage stage, std::string_view source)
         {
             static std::once_flag initialized;
@@ -275,8 +278,8 @@ namespace Core::Gfx {
             if (!program.link(messages) || !program.mapIO())
                 throw std::runtime_error(std::string("GLSL link failed: ") + program.getInfoLog());
             glslang::SpvOptions options;
-            options.disableOptimizer = false;
-            options.optimizeSize = true;
+            options.disableOptimizer = !SpirvCompiler::optimizesForSize();
+            options.optimizeSize = SpirvCompiler::optimizesForSize();
             std::vector<unsigned> words;
             spv::SpvBuildLogger logger;
             glslang::GlslangToSpv(*program.getIntermediate(language), words, &logger, &options);
@@ -315,7 +318,9 @@ namespace Core::Gfx {
                 if (!file)
                     throw std::runtime_error("Cannot write shader source");
             }
-            execute({WEMU_RUNTIME_GLSLANG, "-V", "-Os", "--target-env", "vulkan1.0", "-o", output.string(), input.string()}, log);
+            execute({WEMU_RUNTIME_GLSLANG, "-V", SpirvCompiler::optimizesForSize() ? "-Os" : "-Od", "--target-env", "vulkan1.0", "-o",
+                     output.string(), input.string()},
+                    log);
             execute({WEMU_RUNTIME_SPIRV_VAL, "--target-env", "vulkan1.0", output.string()}, log);
             std::ifstream file(output, std::ios::binary | std::ios::ate);
             if (!file)
@@ -332,6 +337,15 @@ namespace Core::Gfx {
         }
 #endif
     } // namespace
+
+    bool SpirvCompiler::optimizesForSize() noexcept
+    {
+        static const bool value = [] {
+            const auto *setting = std::getenv("WEMU_SPIRV_OPTIMIZE");
+            return setting && setting[0] == '1';
+        }();
+        return value;
+    }
 
     bool SpirvCompiler::available() noexcept
     {
