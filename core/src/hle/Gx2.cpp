@@ -8,6 +8,7 @@
 #include <functional>
 #include <mutex>
 #include <pthread.h>
+#include <set>
 #include <thread>
 #include <unordered_map>
 
@@ -22,6 +23,7 @@
 #include "gfx/LatteProgram.hpp"
 #include "gfx/LatteSurfaceLayout.hpp"
 #include "gfx/Renderer.hpp"
+#include "gfx/ShaderInvalidations.hpp"
 #include "gfx/SurfaceLayout.hpp"
 #include "gfx/VulkanRasterBackend.hpp"
 #include "utils/Diagnostics.hpp"
@@ -1005,6 +1007,28 @@ namespace {
 
     void gx2_noop(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; }
 
+    // GX2Invalidate(GX2InvalidateMode mode, void *buffer, u32 size). Host caches never hold stale
+    // guest data, so only the trace observes it.
+    void gx2_Invalidate(Core::Interpreter &cpu)
+    {
+        if (Core::Gfx::shaderInvalidationTrace()) {
+            constexpr std::uint32_t shaderMode = 1u << 3;
+            const auto mode = cpu.m_gpr[3], address = cpu.m_gpr[4], size = cpu.m_gpr[5];
+            static std::mutex mutex;
+            static std::set<std::uint32_t> modes;
+            bool firstMode;
+            {
+                std::scoped_lock lock(mutex);
+                firstMode = modes.insert(mode).second;
+            }
+            if (firstMode)
+                Utils::Log::error("[GX2_INVALIDATE] first mode=0x{:X} swap={}", mode, g_swapCount);
+            if ((mode & shaderMode) && Core::Gfx::shaderInvalidations().record(address, size, g_swapCount))
+                Utils::Log::error("[GX2_INVALIDATE] swap={} mode=0x{:X} addr=0x{:08X} size=0x{:X}", g_swapCount, mode, address, size);
+        }
+        cpu.m_gpr[3] = 0;
+    }
+
     template<bool Stack>
     void gx2_ShaderResources(Core::Interpreter &cpu)
     {
@@ -1457,7 +1481,6 @@ namespace {
             "GX2InitSamplerXYFilter",
             "GX2InitSamplerZMFilter",
             "GX2InitTextureRegs",
-            "GX2Invalidate",
             "GX2QueryBegin",
             "GX2QueryBeginConditionalRender",
             "GX2QueryEnd",
@@ -1748,6 +1771,7 @@ void RegisterGx2Functions()
     });
     // CPU and captured GPU commands share the same coherent guest storage.
     Core::syscallHandler.registerSyscall("GX2RInvalidateBuffer", gx2_noop);
+    Core::syscallHandler.registerSyscall("GX2Invalidate", gx2_Invalidate);
     Core::syscallHandler.registerSyscall("GX2RSetAttributeBuffer", [](Core::Interpreter &cpu) {
         const auto buffer = cpu.m_gpr[3], index = cpu.m_gpr[4], stride = cpu.m_gpr[5], offset = cpu.m_gpr[6];
         const auto bytes = std::uint64_t{cpu.m_memory.read<unsigned>(buffer + 4)} * cpu.m_memory.read<unsigned>(buffer + 8);

@@ -20,6 +20,7 @@
 #include "gfx/LatteVsInterp.hpp"
 #include "gfx/PrimitiveAssembly.hpp"
 #include "gfx/Renderer.hpp" // full definition: the GPU path calls Renderer::gpu* methods
+#include "gfx/ShaderInvalidations.hpp"
 #include "gfx/SurfaceLayout.hpp"
 #include "gfx/TextureFormat.hpp"
 #include "gfx/TriangleCoverage.hpp"
@@ -32,6 +33,20 @@
 namespace Core::Gfx {
 
     namespace {
+
+        void traceShaderHint(const char *stage, std::uint32_t program, std::uint32_t size, std::uint64_t frame)
+        {
+            if (!shaderInvalidationTrace() || !program)
+                return;
+            const auto hint = shaderInvalidations().covering(program, size);
+            if (!hint) {
+                Utils::Log::error("[SHADER_HINT] stage={} program=0x{:08X} size={} frame={} announced=0", stage, program, size, frame);
+                return;
+            }
+            const auto lead = std::chrono::duration_cast<std::chrono::milliseconds>(ShaderInvalidations::Clock::now() - hint->time).count();
+            Utils::Log::error("[SHADER_HINT] stage={} program=0x{:08X} size={} frame={} announced=1 swap={} lead_ms={} range=0x{:08X}+0x{:X}", stage,
+                              program, size, frame, hint->swap, lead, hint->address, hint->size);
+        }
 
         // GX2Surface field offsets (big-endian u32 each).
         constexpr std::uint32_t SURF_WIDTH = 0x04;
@@ -2795,6 +2810,7 @@ namespace Core::Gfx {
             if (found == cache.end()) {
                 if (cache.size() >= 128)
                     cache.erase(cache.begin());
+                Profile::Scope lowering(Profile::Stage::ShaderLower);
                 found = cache.emplace(key, std::make_shared<const Latte::FragmentShader>(
                                                    Latte::lowerStreamOutShader(*program, m_streamOutStrides, windows)))
                                 .first;
@@ -6613,6 +6629,7 @@ namespace Core::Gfx {
                             prog.clear();
                         }
                         Utils::Log::error("[GX2] VS 0x{:08X}: size={} program=0x{:08X} -> {} dwords captured", sh, size, ptr, prog.size());
+                        traceShaderHint("VS", ptr, size, m_presentCount);
                         it = m_vsCache.emplace(sh, std::make_shared<ShaderProgram>(ShaderProgram{std::move(prog)})).first;
                     }
                     m_vsShader = it->second;
@@ -6670,6 +6687,7 @@ namespace Core::Gfx {
                             prog.clear();
                         }
                         Utils::Log::error("[GX2] PS 0x{:08X}: size={} program=0x{:08X} -> {} dwords captured", sh, size, ptr, prog.size());
+                        traceShaderHint("PS", ptr, size, m_presentCount);
                         summarizePixelShaderBytecode(prog, sh);
                         it = m_psCache.emplace(sh, std::make_shared<ShaderProgram>(ShaderProgram{std::move(prog)})).first;
                     }

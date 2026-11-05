@@ -9,6 +9,7 @@
 #include <stdexcept>
 
 #include "gfx/UniformBufferFetch.hpp"
+#include "utils/FrameProfiler.hpp"
 
 namespace Core::Gfx::Latte {
     std::shared_ptr<const FragmentShader> FragmentShaderCache::get(const std::vector<std::uint32_t> &words,
@@ -25,8 +26,11 @@ namespace Core::Gfx::Latte {
         }
         ++m_misses;
         Key key{words, {resourceTypes.begin(), resourceTypes.end()}, onlyColorZero, colorExport, positionRegister};
-        auto shader = std::make_shared<const FragmentShader>(
-                lowerFragmentShader(*decodeProgram(words), resourceTypes, onlyColorZero, colorExport, positionRegister));
+        const auto shader = [&] {
+            Profile::Scope lowering(Profile::Stage::ShaderLower);
+            return std::make_shared<const FragmentShader>(
+                    lowerFragmentShader(*decodeProgram(words), resourceTypes, onlyColorZero, colorExport, positionRegister));
+        }();
         constexpr std::size_t maxBytes = std::size_t{256} * 1024 * 1024;
         const auto bytes = words.size() * sizeof(std::uint32_t) + resourceTypes.size() * sizeof(TextureType) + shader->source.size() +
                            shader->error.size() + shader->textures.size() * sizeof(TextureBinding);
@@ -1342,13 +1346,18 @@ vec3 cubeDirectionReference(vec3 coord) {
         if (bufferWindow || std::ranges::any_of(bufferWindows, [](unsigned size) { return size != 0; })) {
             // Rare: only programs whose blocks outgrow the default budget, a few window sizes each.
             auto &shader = m_windowed[{bufferWindow, bufferWindows, words}];
-            if (!shader)
+            if (!shader) {
+                Profile::Scope lowering(Profile::Stage::ShaderLower);
                 shader = std::make_shared<const VertexShader>(lowerVertexShader(*decodeProgram(words), {}, bufferWindow, bufferWindows));
+            }
             return shader;
         }
         if (const auto it = m_entries.find(words); it != m_entries.end())
             return it->second;
-        auto shader = std::make_shared<const VertexShader>(lowerVertexShader(*decodeProgram(words)));
+        const auto shader = [&] {
+            Profile::Scope lowering(Profile::Stage::ShaderLower);
+            return std::make_shared<const VertexShader>(lowerVertexShader(*decodeProgram(words)));
+        }();
         if (m_entries.size() >= 4096)
             m_entries.clear();
         if (words.size() <= 16384 && shader->source.size() <= std::size_t{256} * 1024)

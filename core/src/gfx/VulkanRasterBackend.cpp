@@ -619,7 +619,10 @@ namespace Core::Gfx {
                     gp.pDepthStencilState = &depthState;
                     gp.layout = created.layout;
                     gp.renderPass = pass;
-                    check(vkCreateGraphicsPipelines(device, pipelineCache, 1, &gp, nullptr, &created.pipeline), "create pipeline");
+                    {
+                        Profile::Scope creating(Profile::Stage::PipelineCreate);
+                        check(vkCreateGraphicsPipelines(device, pipelineCache, 1, &gp, nullptr, &created.pipeline), "create pipeline");
+                    }
                     for (auto module: modules)
                         vkDestroyShaderModule(device, module, nullptr);
                     ++pipelineCreations;
@@ -801,7 +804,10 @@ void main() {
                     pipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
                     pipelineInfo.stage.module = shader;
                     pipelineInfo.stage.pName = "main";
-                    const auto created = vkCreateComputePipelines(device, pipelineCache, 1, &pipelineInfo, nullptr, &depthQuantizePipeline);
+                    const auto created = [&] {
+                        Profile::Scope creating(Profile::Stage::PipelineCreate);
+                        return vkCreateComputePipelines(device, pipelineCache, 1, &pipelineInfo, nullptr, &depthQuantizePipeline);
+                    }();
                     vkDestroyShaderModule(device, shader, nullptr);
                     check(created, "create depth quantizer pipeline");
                 }
@@ -1016,8 +1022,11 @@ void main() {
                         create.stage.pName = "main";
                         create.layout = m_layout;
                         VkPipeline value{};
-                        check(vkCreateComputePipelines(device, m_context->pipelineCache, 1, &create, nullptr, &value),
-                              "create stream output pipeline");
+                        {
+                            Profile::Scope creating(Profile::Stage::PipelineCreate);
+                            check(vkCreateComputePipelines(device, m_context->pipelineCache, 1, &create, nullptr, &value),
+                                  "create stream output pipeline");
+                        }
                         if (m_pipelines.size() >= 128) {
                             for (const auto &slot: m_slots)
                                 m_context->wait(slot->fence);

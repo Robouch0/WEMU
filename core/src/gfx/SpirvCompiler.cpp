@@ -17,6 +17,8 @@
 #include <thread>
 #include <unistd.h>
 
+#include "utils/FrameProfiler.hpp"
+
 extern char **environ;
 
 namespace Core::Gfx {
@@ -285,6 +287,7 @@ namespace Core::Gfx {
         }
 #if defined(WEMU_RUNTIME_GLSLANG) && defined(WEMU_RUNTIME_SPIRV_VAL)
         try {
+            Profile::Scope compiling(Profile::Stage::ShaderCompile);
             TemporaryDirectory temporary;
             const auto input = temporary.path / (stage == ShaderStage::Vertex     ? "shader.vert"
                                                  : stage == ShaderStage::Fragment ? "shader.frag"
