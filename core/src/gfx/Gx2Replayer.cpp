@@ -4951,6 +4951,18 @@ namespace Core::Gfx {
                     mix(size);
                     mix(bytes ? contentHash(bytes, size) : 0);
                 }
+                // Admission counts sightings per draw site (its addresses), not per content:
+                // animated geometry has new content every frame but is still drawn twice by
+                // shadow/color passes, so its first sighting at a known site is cached.
+                std::uint64_t siteKey = 0;
+                const auto mixSite = [&](std::uint64_t value) { siteKey = (siteKey ^ value) * 0x100000001B3ull + (siteKey >> 29); };
+                for (unsigned i = 0; i < 6; ++i)
+                    mixSite(cmd.gpr[i]);
+                mixSite(idx.size());
+                mixSite(mode);
+                mixSite(attributeStride);
+                for (const auto &binding: m_attribs)
+                    mixSite((std::uint64_t(binding.addr) << 32) ^ binding.stride ^ (std::uint64_t(binding.size) << 16));
                 const auto found = m_directVertexCache.find(directKey);
                 if (found != m_directVertexCache.end()) {
                     auto &entry = found->second;
@@ -4985,7 +4997,7 @@ namespace Core::Gfx {
                 if (!directArrays) {
                     if (m_directVertexSeen.size() >= 65536)
                         m_directVertexSeen.clear();
-                    auto &changes = m_directVertexSeen[directKey];
+                    auto &changes = m_directVertexSeen[siteKey];
                     cacheDirect = changes > 0;
                     if (found != m_directVertexCache.end() || !changes)
                         changes = std::uint8_t(std::min(changes + 1, 255));

@@ -3324,8 +3324,9 @@ TEST_F(Gx2CaptureTest, DirectVertexArraysAreReusedUntilGuestVertexBytesChange)
     EXPECT_NE(std::vector(fb.begin(), fb.begin() + 4), std::vector(fb.end() - 4, fb.end()));
     // A pose that changes every frame must still reuse its conversion in a later pass.
     // Earlier admission policy permanently abandoned such geometry after four changes.
+    // Every pose is new content: earlier ones stay cached by content and would hit twice.
     for (unsigned pose = 0; pose < 10; ++pose) {
-        writeQuad(float((pose + 1) % 4) / 4);
+        writeQuad(float(pose + 1) / 16);
         const auto hits = native.directVertexReuses();
         frame(true);
         EXPECT_EQ(native.directVertexReuses(), hits + 1);
