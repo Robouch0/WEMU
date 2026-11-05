@@ -25,15 +25,15 @@ Every step keeps game files read-only: caches live under the user's cache
 directory, keyed by title and host device, and nothing changes what the guest
 observes.
 
-| Step | Goal | Done when |
-|---|---|---|
-| 0 | Measure where first-use time goes | Frame profile separates GLSL→SPIR-V compilation from driver pipeline creation, GX2Invalidate calls on shader memory can be traced, and an MK8 cold/warm measurement is recorded below |
-| 1 | Persist the Vulkan pipeline cache | Pipeline cache data is loaded at startup and written atomically, per device and driver, with corrupt or foreign data ignored |
-| 2 | Per-title manifest and preloading | Every created pipeline is recorded from its Latte inputs; the next launch recreates all of them in parallel before the guest starts, with visible progress |
-| 3 | Compile in process | No process is spawned per shader; SPIR-V validation is opt-in |
-| 4 | Shader objects and dynamic state | Fixed-function state no longer multiplies compilations where the device supports `VK_EXT_shader_object` (or the graphics pipeline library as fallback) |
-| 5 | Anticipate from load-time hints | Shaders announced by the title before their first draw are compiled in the background |
-| 6 | First-ever shaders without skipped draws | A never-seen shader costs a short fast compile and is upgraded in the background; no draw is dropped |
+| Step | Goal | Done when | Status |
+|---|---|---|---|
+| 0 | Measure where first-use time goes | Frame profile separates GLSL→SPIR-V compilation from driver pipeline creation, GX2Invalidate calls on shader memory can be traced, and an MK8 cold/warm measurement is recorded below | Done |
+| 1 | Persist the Vulkan pipeline cache | Pipeline cache data is loaded at startup and written atomically, per device and driver, with corrupt or foreign data ignored | Done |
+| 2 | Per-title manifest and preloading | Every created pipeline is recorded from its Latte inputs; the next launch recreates all of them in parallel before the guest starts, with visible progress | Done |
+| 3 | Compile in process | No process is spawned per shader; SPIR-V validation is opt-in | Done |
+| 4 | Shader objects and dynamic state | Fixed-function state no longer multiplies compilations where the device supports `VK_EXT_shader_object` (or the graphics pipeline library as fallback) | Deferred: state adds 77 of MK8's 417 pipelines, mostly through the target format, and separate stages would mean 447 compilations |
+| 5 | Anticipate from load-time hints | Shaders announced by the title before their first draw are compiled in the background | Deferred: GX2Invalidate announces 10 of 838 programs; anticipating modules from shader binds can save at most the 1.5 s of SPIR-V compilation left at a first-ever race start |
+| 6 | First-ever shaders without skipped draws | A never-seen shader costs a short fast compile and is upgraded in the background; no draw is dropped | Done without the upgrade, which measured no GPU benefit |
 
 An interpreting ubershader is only considered if step 6 still leaves visible
 hitches.
