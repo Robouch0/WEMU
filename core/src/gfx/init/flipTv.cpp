@@ -3,6 +3,7 @@
 //
 
 #include <cstring>
+#include <stdexcept>
 
 #include "../Renderer.hpp"
 
@@ -10,13 +11,16 @@ void Renderer::initFlipTV()
 {
     const VkDeviceSize bufSize = WIDTH * HEIGHT * 4;
 
-    createBuffer(bufSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                 m_tvStagingBuffer, m_tvStagingMemory);
-
-    void *mapped = nullptr;
-    vkMapMemory(m_logicalDevice, m_tvStagingMemory, 0, bufSize, 0, &mapped);
-    std::memset(mapped, 0, bufSize);
-    vkUnmapMemory(m_logicalDevice, m_tvStagingMemory);
+    m_tvStagingBuffers.resize(MAX_FRAMES_IN_FLIGHT);
+    m_tvStagingMemories.resize(MAX_FRAMES_IN_FLIGHT);
+    m_tvStagingMapped.resize(MAX_FRAMES_IN_FLIGHT);
+    for (std::size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+        createBuffer(bufSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                     m_tvStagingBuffers[i], m_tvStagingMemories[i]);
+        if (vkMapMemory(m_logicalDevice, m_tvStagingMemories[i], 0, bufSize, 0, &m_tvStagingMapped[i]) != VK_SUCCESS)
+            throw std::runtime_error("failed to map TV upload buffer");
+        std::memset(m_tvStagingMapped[i], 0, bufSize);
+    }
 
     createImage(WIDTH, HEIGHT,
                 VK_FORMAT_R8G8B8A8_UNORM, // matches your swapchain BGRA format

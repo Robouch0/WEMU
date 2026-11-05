@@ -1,11 +1,12 @@
 #include "InputManager.hpp"
 
-#include <iostream>
+#include <QCoreApplication>
 #include <QDebug>
 #include <SDL2/SDL.h>
-#include "SDLGamepadInput.hpp"
+#include <iostream>
 
 #include "KeyboardInput.hpp"
+#include "SDLGamepadInput.hpp"
 
 InputManager::InputManager(QObject *parent)
     : QObject(parent)
@@ -23,7 +24,9 @@ void InputManager::pollSDLEvents()
 
     SDL_PumpEvents();
     while (SDL_PollEvent(&e)) {
-        if (e.type == SDL_CONTROLLERDEVICEADDED) {
+        if (e.type == SDL_QUIT) {
+            QCoreApplication::quit();
+        } else if (e.type == SDL_CONTROLLERDEVICEADDED) {
             addDevice(new SDLGamepadInput(e.cdevice.which, this));
         } else if (e.type == SDL_CONTROLLERDEVICEREMOVED) {
             const SDL_JoystickID id = e.cdevice.which;
@@ -32,7 +35,9 @@ void InputManager::pollSDLEvents()
                 auto* pad = dynamic_cast<SDLGamepadInput*>(*it);
 
                 if (pad && pad->instanceId() == id) {
+                    pad->deleteLater();
                     it = m_devices.erase(it);
+                    emit devicesChanged();
                 } else {
                     ++it;
                 }
@@ -59,6 +64,7 @@ void InputManager::addDevice(IInputDevice *device)
                     emit axisChanged(axis, value, pad->name());
                 });
     }
+    emit devicesChanged();
 }
 
 void InputManager::removeDevice(const QString &deviceName)
@@ -110,6 +116,21 @@ float InputManager::getAxis(const QString &axisName) const
     return 0.0f;
 }
 
+ControllerMapping::State InputManager::controllerState(const QMap<QString, QString> &bindings) const
+{
+    ControllerMapping::State state;
+
+    for (const auto *device: m_devices) {
+        const auto *pad = dynamic_cast<const SDLGamepadInput *>(device);
+        if (!pad)
+            continue;
+        state.buttons |= ControllerMapping::vpadButtons(bindings, [pad](const QString &button) { return pad->isButtonPressed(button); });
+        state.leftStick = ControllerMapping::stronger(state.leftStick, ControllerMapping::stick(pad->getAxisValue("LX"), pad->getAxisValue("LY")));
+        state.rightStick = ControllerMapping::stronger(state.rightStick, ControllerMapping::stick(pad->getAxisValue("RX"), pad->getAxisValue("RY")));
+    }
+    return state;
+}
+
 bool InputManager::isButtonReleased(const QString &buttonName) const
 {
     for (const auto *device: m_devices) {
@@ -117,6 +138,16 @@ bool InputManager::isButtonReleased(const QString &buttonName) const
             return true;
     }
     return false;
+}
+
+QStringList InputManager::controllerNames() const
+{
+    QStringList names;
+
+    for (const auto *device: m_devices)
+        if (const auto *pad = dynamic_cast<const SDLGamepadInput *>(device))
+            names.append(pad->displayName());
+    return names;
 }
 
 QStringList InputManager::connectedDevices() const

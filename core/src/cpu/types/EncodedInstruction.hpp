@@ -173,4 +173,13 @@ union EncodedInstruction {
                 std::uint32_t me : 5;
                 std::uint32_t : 26;
         };
+
+        // Paired-single quantized load/store (psq_l / psq_st), D-form:
+        // PPC bits 20-31 = 12-bit signed displacement, 17-19 = GQR index, 16 = W.
+        struct {
+                std::uint32_t psd : 12;
+                std::uint32_t psI : 3;
+                std::uint32_t psW : 1;
+                std::uint32_t : 16;
+        };
 };

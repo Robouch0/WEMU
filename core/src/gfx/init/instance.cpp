@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "../Renderer.hpp"
+#include "../VulkanPortability.hpp"
 
 void Renderer::createInstance()
 {
@@ -25,8 +26,7 @@ void Renderer::createInstance()
     VkInstanceCreateInfo createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     createInfo.pApplicationInfo = &appInfo;
-    createInfo.enabledExtensionCount = extensionCount;
-    createInfo.ppEnabledExtensionNames = extensions.data();
+    Core::Gfx::Portability::enableEnumeration(createInfo, extensions);
     createInfo.enabledLayerCount = 0;
 
     if (vkCreateInstance(&createInfo, nullptr, &m_instance) != VK_SUCCESS)

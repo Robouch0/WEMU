@@ -1,4 +1,5 @@
 import QtQuick
+import gui 1.0
 
 Rectangle {
     id: root
@@ -12,7 +13,7 @@ Rectangle {
     radius: 12
 
     border.width: 2
-    border.color: pressed ? "#3498ff" : "white"
+    border.color: pressed ? Theme.highlightOnArt : "white"
     color: "transparent"
 
     Text {
@@ -20,6 +21,6 @@ Rectangle {
         text: root.label
         font.family: "sans-serif"
         font.pointSize: root.fontSize
-        color: root.pressed ? "#3498ff" : "white"
+        color: root.pressed ? Theme.highlightOnArt : "white"
     }
 }
