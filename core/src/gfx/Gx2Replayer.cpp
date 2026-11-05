@@ -6948,6 +6948,8 @@ namespace Core::Gfx {
                                           m_presentCount, presented, m_lastScan.imagePtr, m_lastScan.width, m_lastScan.height, m_lastScan.format,
                                           m_color.imagePtr, m_lastDrawColor.imagePtr, m_pendingReadbacks.contains(makeSurfaceKey(m_lastScan)));
                     m_presentCount++;
+                    if (m_rasterBackend)
+                        m_rasterBackend->endFrame();
                     if ((m_presentCount % 100) == 0)
                         Utils::Log::error("[GX2] replay #{}: draws={} tris={} points={} px={} avgA={} skip(t/a/p)={}/{}/{} scan=0x{:08X} nz={}",
                                           m_presentCount, m_stats.draws, m_stats.tris, m_stats.points, m_stats.pixels,

@@ -28,6 +28,8 @@ namespace Core::Gfx {
             std::optional<StreamOutResult> streamOut(const StreamOutDraw &draw) override;
             std::shared_ptr<StreamOutReadback> streamOutDeferred(const StreamOutDraw &draw) override;
             bool supportsRenderedMipLevels() const override;
+            // Persists new pipeline-cache data in the background, at most every 10 seconds.
+            void endFrame() override;
             const std::string &lastError() const noexcept;
             std::uint64_t completedDraws() const noexcept;
             std::uint64_t reusedDraws() const noexcept;

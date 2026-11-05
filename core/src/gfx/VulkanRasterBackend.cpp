@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <format>
+#include <future>
 #include <limits>
 #include <map>
 #include <mutex>
@@ -21,6 +22,7 @@
 #include <vector>
 #include <vulkan/vulkan.h>
 
+#include "gfx/PipelineCacheStore.hpp"
 #include "gfx/SpirvCompiler.hpp"
 #include "gfx/VulkanPortability.hpp"
 #include "utils/FrameProfiler.hpp"
@@ -411,6 +413,10 @@ namespace Core::Gfx {
                         assembledTextureHits{};
                 std::uint64_t targetUploadTransfers{}, targetCopyTransfers{}, fullOverwriteDraws{}, targetClears{}, depthClears{};
                 std::uint64_t pipelineCreations{};
+                std::unique_ptr<PipelineCacheStore> pipelineStore;
+                std::uint64_t pipelineCacheChanges{}, savedPipelineCacheChanges{};
+                std::chrono::steady_clock::time_point lastPipelineSave{};
+                std::future<bool> pipelineSave;
                 VkDescriptorSetLayout depthQuantizeSetLayout{};
                 VkPipelineLayout depthQuantizeLayout{};
                 VkPipeline depthQuantizePipeline{};
@@ -626,6 +632,7 @@ namespace Core::Gfx {
                     for (auto module: modules)
                         vkDestroyShaderModule(device, module, nullptr);
                     ++pipelineCreations;
+                    ++pipelineCacheChanges;
                     return pipelines.emplace(key, created).first->second;
                 }
                 void destroyPipelines() noexcept
@@ -636,6 +643,54 @@ namespace Core::Gfx {
                         vkDestroyDescriptorSetLayout(device, bundle.setLayout, nullptr);
                     }
                     pipelines.clear();
+                }
+                std::vector<std::uint8_t> pipelineCacheData() const
+                {
+                    for (int attempt = 0; attempt < 4; ++attempt) {
+                        std::size_t size = 0;
+                        if (vkGetPipelineCacheData(device, pipelineCache, &size, nullptr) != VK_SUCCESS || !size)
+                            return {};
+                        std::vector<std::uint8_t> data(size);
+                        const auto result = vkGetPipelineCacheData(device, pipelineCache, &size, data.data());
+                        if (result == VK_SUCCESS) {
+                            data.resize(size);
+                            return data;
+                        }
+                        if (result != VK_INCOMPLETE)
+                            return {};
+                    }
+                    return {};
+                }
+                // Snapshots run off the replay thread: the cache is internally synchronized against
+                // concurrent pipeline creation, and ~Context waits for the snapshot before destroying it.
+                // Each snapshot holds the whole cache, so only a failed last snapshot needs a retry.
+                void schedulePipelineSave()
+                {
+                    using namespace std::chrono_literals;
+                    if (!pipelineStore || !pipelineStore->enabled() || pipelineCacheChanges == savedPipelineCacheChanges)
+                        return;
+                    const auto now = std::chrono::steady_clock::now();
+                    if (now - lastPipelineSave < 10s || (pipelineSave.valid() && pipelineSave.wait_for(0s) != std::future_status::ready))
+                        return;
+                    savedPipelineCacheChanges = pipelineCacheChanges;
+                    lastPipelineSave = now;
+                    pipelineSave = std::async(std::launch::async, [this] { return pipelineStore->store(pipelineCacheData()); });
+                }
+                void finishPipelineSave() noexcept
+                {
+                    try {
+                        const bool lastSaved = !pipelineSave.valid() || pipelineSave.get();
+                        if (!pipelineStore || !pipelineCache || (lastSaved && pipelineCacheChanges == savedPipelineCacheChanges))
+                            return;
+                        const auto data = pipelineCacheData();
+                        if (pipelineStore->store(data))
+                            savedPipelineCacheChanges = pipelineCacheChanges;
+                        else if (pipelineStore->enabled())
+                            Utils::Log::error("[PIPELINE_CACHE] could not save {} bytes to {}", data.size(), pipelineStore->filename());
+                    } catch (...) {
+                        // Teardown continues; the last complete cache file, if any, stays valid.
+                        pipelineStore.reset();
+                    }
                 }
                 void clearPipelines()
                 {
@@ -657,6 +712,7 @@ namespace Core::Gfx {
                         vkDestroyPipelineLayout(device, depthQuantizeLayout, nullptr);
                     if (depthQuantizeSetLayout)
                         vkDestroyDescriptorSetLayout(device, depthQuantizeSetLayout, nullptr);
+                    finishPipelineSave();
                     if (pipelineCache)
                         vkDestroyPipelineCache(device, pipelineCache, nullptr);
                     if (device)
@@ -742,8 +798,20 @@ namespace Core::Gfx {
                     check(vkCreateDevice(physical, &di, nullptr, &device), "create device");
                     vkGetDeviceQueue(device, family, 0, &queue);
 
+                    PipelineCacheIdentity identity{props.vendorID, props.deviceID, props.driverVersion, {}};
+                    std::copy(std::begin(props.pipelineCacheUUID), std::end(props.pipelineCacheUUID), identity.cacheUuid.begin());
+                    pipelineStore = std::make_unique<PipelineCacheStore>(PipelineCacheStore::defaultDirectory(), identity);
+                    const auto initial = pipelineStore->load();
                     VkPipelineCacheCreateInfo cache{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
-                    check(vkCreatePipelineCache(device, &cache, nullptr, &pipelineCache), "create pipeline cache");
+                    cache.initialDataSize = initial.size();
+                    cache.pInitialData = initial.empty() ? nullptr : initial.data();
+                    if (vkCreatePipelineCache(device, &cache, nullptr, &pipelineCache) != VK_SUCCESS) {
+                        cache.initialDataSize = 0;
+                        cache.pInitialData = nullptr;
+                        check(vkCreatePipelineCache(device, &cache, nullptr, &pipelineCache), "create pipeline cache");
+                    }
+                    Utils::Log::error("[PIPELINE_CACHE] enabled={} loaded_bytes={} file={}", pipelineStore->enabled(), initial.size(),
+                                      pipelineStore->filename());
                 }
                 void initializeDepthQuantizer()
                 {
@@ -810,6 +878,7 @@ void main() {
                     }();
                     vkDestroyShaderModule(device, shader, nullptr);
                     check(created, "create depth quantizer pipeline");
+                    ++pipelineCacheChanges;
                 }
         };
 
@@ -1027,6 +1096,7 @@ void main() {
                             check(vkCreateComputePipelines(device, m_context->pipelineCache, 1, &create, nullptr, &value),
                                   "create stream output pipeline");
                         }
+                        ++m_context->pipelineCacheChanges;
                         if (m_pipelines.size() >= 128) {
                             for (const auto &slot: m_slots)
                                 m_context->wait(slot->fence);
@@ -4236,6 +4306,11 @@ void main() {
     std::uint64_t VulkanRasterBackend::residentTargetCopies() const noexcept { return m_impl->residentTargetCopies; }
     std::uint64_t VulkanRasterBackend::readbackTransfers() const noexcept { return m_impl->context ? m_impl->context->readbackTransfers : 0; }
     std::uint64_t VulkanRasterBackend::pipelineCreations() const noexcept { return m_impl->context ? m_impl->context->pipelineCreations : 0; }
+    void VulkanRasterBackend::endFrame()
+    {
+        if (m_impl->context)
+            m_impl->context->schedulePipelineSave();
+    }
 
     std::optional<RasterResult> VulkanRasterBackend::render(const RasterDraw &draw) { return renderImpl(draw, false); }
 

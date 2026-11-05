@@ -49,6 +49,7 @@ add_library(core STATIC
         src/utils/BeDecoder.cpp
         src/utils/Diagnostics.hpp
         src/utils/Diagnostics.cpp
+        src/utils/PrivateDirectory.cpp
         src/hle/MemHeap.hpp
         src/hle/MemHeap.cpp
         src/hle/ApplicationBoot.cpp
@@ -127,6 +128,7 @@ add_library(core STATIC
         src/gfx/LatteSurfaceLayout.cpp
         src/gfx/LatteShaderLowering.cpp
         src/gfx/SpirvCompiler.cpp
+        src/gfx/PipelineCacheStore.cpp
         src/gfx/VulkanRasterBackend.cpp
         src/gfx/RasterWorkers.cpp
         src/hle/Fs.hpp

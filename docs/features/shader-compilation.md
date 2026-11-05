@@ -81,3 +81,27 @@ Consequences for the roadmap:
   signal.
 - In the warm run, frames 1734–1758 still spend 0.6–0.65 s each in replay
   without any shader work. That cost is outside this roadmap.
+
+## Persistent pipeline cache
+
+`VulkanRasterBackend` creates its `VkPipelineCache` from
+`$XDG_CACHE_HOME/wemu/pipelines` (else `~/.cache/wemu/pipelines`;
+`WEMU_PIPELINE_CACHE_DIR` overrides it, and an empty value disables it). Each
+device gets its own file, named after the vendor, device, driver version and
+pipeline-cache UUID. The data comes with a checksum, and reaches the driver
+only when its Vulkan header names this device. A driver update therefore
+starts a new file, and a corrupt or foreign file starts an empty cache.
+
+When a frame has created pipelines, the backend snapshots the cache in the
+background, at most every 10 seconds, and once more on shutdown. Every write
+goes to a private temporary file that is then renamed, so a killed session
+keeps the last complete snapshot.
+
+On MK8 with NVIDIA's own disk cache disabled (`__GL_SHADER_DISK_CACHE=0`),
+100 s from boot:
+
+| | First run | Next run |
+|---|---|---|
+| Pipeline creation | 415 × 24.7 ms = 10.2 s | 417 × 0.31 ms = 0.13 s |
+| Race-start frame 1729, pipelines | 5.04 s | 29 ms |
+| Cache file | 13 MB written | 13 MB loaded |
