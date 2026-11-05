@@ -10,13 +10,18 @@
 #include <cstdlib>
 #include <cstring>
 #include <format>
+#include <functional>
 #include <future>
 #include <limits>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <set>
+#include <span>
 #include <stdexcept>
 #include <string>
+#include <system_error>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -311,6 +316,140 @@ namespace Core::Gfx {
                 }
         };
 
+        constexpr std::string_view kBuiltinVertexSource = R"(#version 450
+layout(location=0) in vec2 position;
+layout(location=1) in vec4 attributes[16];
+layout(location=17) in vec2 depthAndW;
+layout(location=0) out vec4 inputs[16];
+layout(location=16) noperspective out float windowDepth;
+invariant gl_Position; precise gl_Position;
+layout(push_constant) uniform Viewport { vec2 scale; float depthEnabled; } viewport;
+void main() {
+    gl_PointSize=1.0;
+    float w=1.0/depthAndW.y;
+    gl_Position=vec4((position*viewport.scale-vec2(1.0))*w,viewport.depthEnabled!=0.0?depthAndW.x*w:0.0,w);
+    for(int i=0;i<16;++i) inputs[i]=attributes[i];
+    windowDepth=depthAndW.x;
+}
+)";
+        std::uint64_t mixKey(std::uint64_t seed, std::uint64_t value) { return seed ^ (value + 0x9E3779B97F4A7C15ull + (seed << 6) + (seed >> 2)); }
+        // Compiled modules are found by the lowered source's precomputed hash and the draw's source
+        // variant, so a hit neither patches nor hashes the GLSL text. Zero: not cached.
+        std::uint64_t vertexModuleKey(const Latte::FragmentShader *vertex)
+        {
+            return vertex ? vertex->sourceHash ? mixKey(0x5653, vertex->sourceHash) : 0 : 0x5650;
+        }
+        std::uint64_t fragmentModuleKey(const Latte::FragmentShader &fragment, unsigned variant)
+        {
+            return fragment.sourceHash ? mixKey(mixKey(0x4653, fragment.sourceHash), variant) : 0;
+        }
+        // Vertex samplers follow the 16 pixel bindings; nullopt when a binding cannot be renumbered.
+        std::optional<std::string> vertexStageSource(const Latte::FragmentShader *vertex)
+        {
+            if (!vertex)
+                return std::string(kBuiltinVertexSource);
+            auto patched = vertex->source;
+            for (const auto &binding: vertex->textures) {
+                const auto old = "binding=" + std::to_string(binding.binding) + ")";
+                const auto pos = patched.find(old);
+                if (pos == std::string::npos)
+                    return std::nullopt;
+                patched.replace(pos, old.size(), "binding=" + std::to_string(binding.binding + 17) + ")");
+            }
+            return patched;
+        }
+        // variant bit 0: polygon offset applied in the shader (non-float depth); bits 1/2: direct draws
+        // quantize UNORM16/UNORM24 depth.
+        std::string fragmentStageSource(std::string source, unsigned variant)
+        {
+            if (variant & 1) {
+                source.insert(source.find('\n') + 1, "layout(push_constant) uniform Bias { layout(offset=112) vec4 value; } bias;\n"
+                                                     "float biasedDepth() { float slope=max(abs(dFdx(gl_FragCoord.z)),abs(dFdy(gl_FragCoord.z))); "
+                                                     "float b=bias.value.x+bias.value.y*slope; "
+                                                     "if(bias.value.z>0.0) b=min(b,bias.value.z); else if(bias.value.z<0.0) b=max(b,bias.value.z); "
+                                                     "return clamp(gl_FragCoord.z+b,0.0,1.0); }\n");
+                const auto initial = source.find("gl_FragDepth=gl_FragCoord.z;");
+                if (initial != std::string::npos)
+                    source.replace(initial, std::string("gl_FragDepth=gl_FragCoord.z;").size(), "gl_FragDepth=biasedDepth();");
+                else
+                    source.insert(source.find("void main() {") + std::string("void main() {").size(), "\ngl_FragDepth=biasedDepth();\n");
+            }
+            if (variant & 6) {
+                // Direct draws store fixed-point depth from the fragment shader instead of the bundle
+                // quantization pass (three full-surface copies per draw). Rounding matches that pass;
+                // the depth test then compares quantized incoming values, as fixed-point hardware does.
+                const bool writesDepth = source.find("gl_FragDepth=") != std::string::npos;
+                const auto maximum = variant & 2 ? "65535u" : "16777215u";
+                source.insert(source.find('\n') + 1, std::format(R"(float wemuQuantizedDepth(float depth) {{
+    const uint maximum={0};
+    float value=clamp(depth,0.0,1.0);
+    float scaled=value*float(maximum+1u);
+    uint integer=uint(int(scaled)+int(floor(fract(scaled)-value+0.5)));
+    if(integer==0u) return 0.0;
+    if(integer>=maximum) return 1.0;
+    uint leading=uint(findMSB(integer));
+    uint t=integer<<(23u-leading);
+    uint significand=t+(maximum==65535u ? (t+32767u)/65535u : 1u);
+    uint exponent=leading+(maximum==65535u ? 111u : 103u);
+    return uintBitsToFloat((exponent<<23)|(significand&0x7fffffu));
+}}
+)",
+                                                                 maximum));
+                source.insert(source.rfind('}'),
+                              std::format("gl_FragDepth=wemuQuantizedDepth({});\n", writesDepth ? "gl_FragDepth" : "gl_FragCoord.z"));
+            }
+            return source;
+        }
+
+        // The draw state pipeline creation reads besides its key, and the formats of the render pass
+        // the pipeline must be compatible with. Plain data, so a pipeline can be recorded and created
+        // again before any draw exists.
+        struct PipelineDraw {
+                bool vertexShader{}, points{}, cullFront{}, cullBack{}, frontFaceClockwise{};
+                bool depthTest{}, depthWrite{}, depthClamp{}, depthBias{}, stencilTest{};
+                unsigned depthCompare{7}, channelMask{};
+                DepthFormat depthFormat{DepthFormat::Float32};
+                std::uint32_t stencilControl{};
+                std::array<std::uint32_t, 2> stencilMasks{};
+                RasterDraw::Blend blend;
+                VkFormat passColor{VK_FORMAT_UNDEFINED}, passDepth{VK_FORMAT_UNDEFINED};
+        };
+        PipelineDraw pipelineDraw(const RasterDraw &draw, VkFormat passColor, VkFormat passDepth)
+        {
+            return {bool(draw.vertexStage.shader),
+                    draw.topology == RasterDraw::Topology::Points,
+                    draw.cullFront,
+                    draw.cullBack,
+                    draw.frontFaceClockwise,
+                    draw.depth.test,
+                    draw.depth.write,
+                    draw.depth.clamp,
+                    draw.depthBias.enabled,
+                    draw.depth.stencil.test,
+                    draw.depth.compare,
+                    draw.channelMask,
+                    draw.depth.format,
+                    draw.depth.stencil.control,
+                    draw.depth.stencil.masks,
+                    draw.blend,
+                    passColor,
+                    passDepth};
+        }
+        bool attachmentFormat(std::uint32_t format)
+        {
+            switch (VkFormat(format)) {
+                case VK_FORMAT_UNDEFINED:
+                case VK_FORMAT_R8G8B8A8_UNORM:
+                case VK_FORMAT_R32G32B32A32_SFLOAT:
+                case VK_FORMAT_B10G11R11_UFLOAT_PACK32:
+                case VK_FORMAT_D32_SFLOAT:
+                case VK_FORMAT_D32_SFLOAT_S8_UINT:
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
         struct Context {
                 struct BatchFence {
                         VkDevice device{};
@@ -401,6 +540,85 @@ namespace Core::Gfx {
                         VkPipelineLayout layout{};
                         VkPipeline pipeline{};
                 };
+                // Recorded pipeline state (PipelineRecipe::state): the key without its module ids,
+                // then the PipelineDraw fields. Decoding rejects other versions and out-of-range values.
+                static constexpr std::uint32_t recordedStateVersion = 1;
+                static std::vector<std::uint32_t> encodePipeline(const PipelineKey &key, const PipelineDraw &draw)
+                {
+                    std::vector<std::uint32_t> words{recordedStateVersion, std::uint32_t(key.bindings.size())};
+                    words.insert(words.end(), key.bindings.begin(), key.bindings.end());
+                    words.push_back(key.channelMask);
+                    words.insert(words.end(), key.blend.begin(), key.blend.end());
+                    words.insert(words.end(), key.depth.begin(), key.depth.end());
+                    for (const unsigned value: {key.topology, key.colorFormat, key.cull, unsigned(key.depthBias), key.attributeStride})
+                        words.push_back(value);
+                    const unsigned flags = unsigned(draw.vertexShader) | unsigned(draw.points) << 1 | unsigned(draw.cullFront) << 2 |
+                                           unsigned(draw.cullBack) << 3 | unsigned(draw.frontFaceClockwise) << 4 | unsigned(draw.depthTest) << 5 |
+                                           unsigned(draw.depthWrite) << 6 | unsigned(draw.depthClamp) << 7 | unsigned(draw.depthBias) << 8 |
+                                           unsigned(draw.stencilTest) << 9 | unsigned(draw.blend.enabled) << 10;
+                    for (const std::uint32_t value:
+                         {flags, draw.depthCompare, draw.channelMask, unsigned(draw.depthFormat), draw.stencilControl, draw.stencilMasks[0],
+                          draw.stencilMasks[1], draw.blend.colorSource, draw.blend.colorDestination, draw.blend.colorOperation,
+                          draw.blend.alphaSource, draw.blend.alphaDestination, draw.blend.alphaOperation,
+                          std::bit_cast<std::uint32_t>(draw.blend.constant), std::uint32_t(draw.passColor), std::uint32_t(draw.passDepth)})
+                        words.push_back(value);
+                    return words;
+                }
+                static std::optional<std::pair<PipelineKey, PipelineDraw>> decodePipeline(std::span<const std::uint32_t> words)
+                {
+                    constexpr std::size_t fixedWords = 2 + 1 + 11 + 9 + 5 + 16;
+                    if (words.size() < fixedWords || words[0] != recordedStateVersion || words[1] > 32 || words.size() != fixedWords + words[1])
+                        return std::nullopt;
+                    PipelineKey key;
+                    std::size_t at = 2;
+                    key.bindings.assign(words.begin() + 2, words.begin() + 2 + words[1]);
+                    at += words[1];
+                    key.channelMask = words[at++];
+                    for (auto &value: key.blend)
+                        value = words[at++];
+                    for (auto &value: key.depth)
+                        value = words[at++];
+                    key.topology = words[at++];
+                    key.colorFormat = words[at++];
+                    key.cull = words[at++];
+                    const auto depthBias = words[at++];
+                    key.depthBias = depthBias;
+                    key.attributeStride = words[at++];
+                    PipelineDraw draw;
+                    const auto flags = words[at++];
+                    draw.vertexShader = flags & 1;
+                    draw.points = flags & 2;
+                    draw.cullFront = flags & 4;
+                    draw.cullBack = flags & 8;
+                    draw.frontFaceClockwise = flags & 16;
+                    draw.depthTest = flags & 32;
+                    draw.depthWrite = flags & 64;
+                    draw.depthClamp = flags & 128;
+                    draw.depthBias = flags & 256;
+                    draw.stencilTest = flags & 512;
+                    draw.blend.enabled = flags & 1024;
+                    draw.depthCompare = words[at++];
+                    draw.channelMask = words[at++];
+                    const auto depthFormat = words[at++];
+                    draw.depthFormat = DepthFormat(depthFormat);
+                    draw.stencilControl = words[at++];
+                    draw.stencilMasks = {words[at], words[at + 1]};
+                    at += 2;
+                    for (auto *value: {&draw.blend.colorSource, &draw.blend.colorDestination, &draw.blend.colorOperation, &draw.blend.alphaSource,
+                                       &draw.blend.alphaDestination, &draw.blend.alphaOperation})
+                        *value = words[at++];
+                    draw.blend.constant = std::bit_cast<std::array<std::uint8_t, 4>>(words[at++]);
+                    const auto passColor = words[at++], passDepth = words[at++];
+                    if (flags >= 2048 || depthBias > 1 || key.topology > 1 || key.colorFormat > unsigned(ColorFormat::R11G11B10Float) ||
+                        key.attributeStride > 16 || draw.depthCompare > 7 || draw.channelMask > 15 || depthFormat > unsigned(DepthFormat::UNorm24) ||
+                        draw.blend.colorOperation > 4 || draw.blend.alphaOperation > 4 || !attachmentFormat(passColor) ||
+                        !attachmentFormat(passDepth) ||
+                        std::ranges::any_of(key.bindings, [](std::uint32_t binding) { return binding == 0 || binding == 17 || binding > 40; }))
+                        return std::nullopt;
+                    draw.passColor = VkFormat(passColor);
+                    draw.passDepth = VkFormat(passDepth);
+                    return std::pair{std::move(key), draw};
+                }
                 VkInstance instance{};
                 VkPhysicalDevice physical{};
                 VkDevice device{};
@@ -487,161 +705,183 @@ namespace Core::Gfx {
                 // Pipelines depend on attachment formats only through render-pass compatibility, so any
                 // pass with the draw's color/depth formats can create one. Modules are only needed
                 // while compiling. Owners never destroy cached handles; clearPipelines() does.
+                // Reads only the device and the internally synchronized pipeline cache, so preloading
+                // calls it from several threads; a failure destroys whatever it had created.
+                PipelineBundle createPipeline(const PipelineKey &key, const PipelineDraw &draw, const SpirvModule &vertex,
+                                              const SpirvModule &fragment, VkRenderPass pass) const
+                {
+                    const auto colorSource = blendFactor(draw.blend.colorSource);
+                    const auto colorDestination = blendFactor(draw.blend.colorDestination);
+                    const auto alphaSource = blendFactor(draw.blend.alphaSource);
+                    const auto alphaDestination = blendFactor(draw.blend.alphaDestination);
+                    if (draw.blend.enabled && (!colorSource || !colorDestination || !alphaSource || !alphaDestination))
+                        throw std::runtime_error("Unsupported blend factors");
+                    PipelineBundle created;
+                    std::vector<VkShaderModule> modules;
+                    const auto release = [&] {
+                        for (auto module: modules)
+                            vkDestroyShaderModule(device, module, nullptr);
+                    };
+                    try {
+                        std::vector<VkDescriptorSetLayoutBinding> bindings{
+                                {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}};
+                        if (draw.vertexShader)
+                            bindings.push_back({17, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr});
+                        for (const auto binding: key.bindings)
+                            bindings.push_back({binding, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+                                                binding > 17 ? VK_SHADER_STAGE_VERTEX_BIT : VK_SHADER_STAGE_FRAGMENT_BIT, nullptr});
+                        VkDescriptorSetLayoutCreateInfo si{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+                        si.bindingCount = bindings.size();
+                        si.pBindings = bindings.data();
+                        check(vkCreateDescriptorSetLayout(device, &si, nullptr, &created.setLayout), "create descriptor layout");
+                        VkPushConstantRange push{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 128};
+                        VkPipelineLayoutCreateInfo li{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+                        li.setLayoutCount = li.pushConstantRangeCount = 1;
+                        li.pSetLayouts = &created.setLayout;
+                        li.pPushConstantRanges = &push;
+                        check(vkCreatePipelineLayout(device, &li, nullptr, &created.layout), "create pipeline layout");
+                        VkPipelineShaderStageCreateInfo stages[2]{};
+                        for (unsigned i = 0; i < 2; ++i) {
+                            const auto &code = (i ? fragment : vertex).words;
+                            VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+                            mi.codeSize = code.size() * sizeof(std::uint32_t);
+                            mi.pCode = code.data();
+                            VkShaderModule module{};
+                            check(vkCreateShaderModule(device, &mi, nullptr, &module), "create shader");
+                            modules.push_back(module);
+                            stages[i].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+                            stages[i].stage = i ? VK_SHADER_STAGE_FRAGMENT_BIT : VK_SHADER_STAGE_VERTEX_BIT;
+                            stages[i].module = module;
+                            stages[i].pName = "main";
+                        }
+                        VkVertexInputBindingDescription vertexBindings[2]{{0, sizeof(RasterDraw::Vertex), VK_VERTEX_INPUT_RATE_VERTEX}};
+                        VkVertexInputAttributeDescription attributes[18]{};
+                        VkPipelineVertexInputStateCreateInfo input{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+                        input.pVertexBindingDescriptions = vertexBindings;
+                        input.pVertexAttributeDescriptions = attributes;
+                        if (const auto stride = key.attributeStride) {
+                            // Translated programs read locations 1..16 only. The first `stride` come from
+                            // the compact buffer, the rest from a constant defaults buffer (stride 0).
+                            vertexBindings[0] = {0, stride * unsigned(sizeof(float) * 4), VK_VERTEX_INPUT_RATE_VERTEX};
+                            vertexBindings[1] = {1, 0, VK_VERTEX_INPUT_RATE_VERTEX};
+                            for (unsigned i = 0; i < 16; ++i)
+                                attributes[i] = {i + 1, i < stride ? 0u : 1u, VK_FORMAT_R32G32B32A32_SFLOAT, unsigned(i * sizeof(float) * 4)};
+                            input.vertexBindingDescriptionCount = 2;
+                            input.vertexAttributeDescriptionCount = 16;
+                        } else {
+                            attributes[0] = {0, 0, VK_FORMAT_R32G32_SFLOAT, 0};
+                            for (unsigned i = 0; i < 16; ++i)
+                                attributes[i + 1] = {i + 1, 0, VK_FORMAT_R32G32B32A32_SFLOAT,
+                                                     unsigned(offsetof(RasterDraw::Vertex, inputs) + i * sizeof(float) * 4)};
+                            attributes[17] = {17, 0, VK_FORMAT_R32G32_SFLOAT, unsigned(offsetof(RasterDraw::Vertex, z))};
+                            input.vertexBindingDescriptionCount = 1;
+                            input.vertexAttributeDescriptionCount = 18;
+                        }
+                        VkPipelineInputAssemblyStateCreateInfo assembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+                        assembly.topology = draw.points ? VK_PRIMITIVE_TOPOLOGY_POINT_LIST : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+                        // Viewport and scissor are dynamic; these placeholders are never used.
+                        const VkViewport viewport{0, 0, 1, 1, 0, 1};
+                        const VkRect2D scissor{{0, 0}, {1, 1}};
+                        VkPipelineViewportStateCreateInfo viewportState{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+                        viewportState.viewportCount = viewportState.scissorCount = 1;
+                        viewportState.pViewports = &viewport;
+                        viewportState.pScissors = &scissor;
+                        constexpr VkDynamicState dynamicStates[]{VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_DEPTH_BIAS};
+                        VkPipelineDynamicStateCreateInfo dynamic{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+                        dynamic.dynamicStateCount = std::size(dynamicStates);
+                        dynamic.pDynamicStates = dynamicStates;
+                        VkPipelineRasterizationStateCreateInfo raster{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+                        raster.polygonMode = VK_POLYGON_MODE_FILL;
+                        raster.cullMode = (draw.cullFront ? VK_CULL_MODE_FRONT_BIT : 0) | (draw.cullBack ? VK_CULL_MODE_BACK_BIT : 0);
+                        raster.frontFace = draw.frontFaceClockwise ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE;
+                        raster.lineWidth = 1;
+                        raster.depthBiasEnable = draw.depthBias && draw.depthFormat == DepthFormat::Float32;
+                        raster.depthClampEnable = draw.depthClamp;
+                        VkPipelineMultisampleStateCreateInfo samples{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+                        samples.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+                        VkPipelineColorBlendAttachmentState blend{};
+                        blend.colorWriteMask = draw.channelMask;
+                        if (draw.blend.enabled) {
+                            blend.blendEnable = VK_TRUE;
+                            blend.srcColorBlendFactor = *colorSource;
+                            blend.dstColorBlendFactor = *colorDestination;
+                            blend.colorBlendOp = blendOperation(draw.blend.colorOperation);
+                            blend.srcAlphaBlendFactor = *alphaSource;
+                            blend.dstAlphaBlendFactor = *alphaDestination;
+                            blend.alphaBlendOp = blendOperation(draw.blend.alphaOperation);
+                        }
+                        VkPipelineColorBlendStateCreateInfo blending{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+                        blending.attachmentCount = draw.depthTest && !draw.channelMask ? 0 : 1;
+                        blending.pAttachments = &blend;
+                        for (unsigned i = 0; i < 4; ++i)
+                            blending.blendConstants[i] = float(draw.blend.constant[i]) / 255.0f;
+                        VkGraphicsPipelineCreateInfo gp{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+                        gp.stageCount = 2;
+                        gp.pStages = stages;
+                        gp.pVertexInputState = &input;
+                        gp.pInputAssemblyState = &assembly;
+                        gp.pViewportState = &viewportState;
+                        gp.pDynamicState = &dynamic;
+                        gp.pRasterizationState = &raster;
+                        gp.pMultisampleState = &samples;
+                        gp.pColorBlendState = &blending;
+                        VkPipelineDepthStencilStateCreateInfo depthState{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+                        depthState.depthTestEnable = draw.depthTest;
+                        depthState.depthWriteEnable = draw.depthTest && draw.depthWrite;
+                        depthState.depthCompareOp = VkCompareOp(draw.depthCompare);
+                        depthState.stencilTestEnable = draw.stencilTest;
+                        if (draw.stencilTest) {
+                            const auto face = [&](unsigned shift, std::uint32_t mask) {
+                                VkStencilOpState state{};
+                                state.compareOp = VkCompareOp((draw.stencilControl >> shift) & 7);
+                                state.failOp = VkStencilOp((draw.stencilControl >> (shift + 3)) & 7);
+                                state.passOp = VkStencilOp((draw.stencilControl >> (shift + 6)) & 7);
+                                state.depthFailOp = VkStencilOp((draw.stencilControl >> (shift + 9)) & 7);
+                                state.compareMask = (mask >> 8) & 255;
+                                state.writeMask = (mask >> 16) & 255;
+                                state.reference = mask & 255;
+                                return state;
+                            };
+                            depthState.front = face(8, draw.stencilMasks[0]);
+                            depthState.back = (draw.stencilControl & (1u << 7)) ? face(20, draw.stencilMasks[1]) : depthState.front;
+                        }
+                        gp.pDepthStencilState = &depthState;
+                        gp.layout = created.layout;
+                        gp.renderPass = pass;
+                        Profile::Scope creating(Profile::Stage::PipelineCreate);
+                        check(vkCreateGraphicsPipelines(device, pipelineCache, 1, &gp, nullptr, &created.pipeline), "create pipeline");
+                    } catch (...) {
+                        release();
+                        destroyBundle(created);
+                        throw;
+                    }
+                    release();
+                    return created;
+                }
+                void destroyBundle(const PipelineBundle &bundle) const noexcept
+                {
+                    vkDestroyPipeline(device, bundle.pipeline, nullptr);
+                    vkDestroyPipelineLayout(device, bundle.layout, nullptr);
+                    vkDestroyDescriptorSetLayout(device, bundle.setLayout, nullptr);
+                }
+                // Invoked after pipelineFor creates a pipeline, for recording.
+                std::function<void(const PipelineKey &, const PipelineDraw &)> pipelineCreated;
                 const PipelineBundle &pipelineFor(const PipelineKey &key, const SpirvModule &vertex, const SpirvModule &fragment,
-                                                  const RasterDraw &draw, const std::vector<unsigned> &textureBindings, VkRenderPass pass)
+                                                  const PipelineDraw &draw, VkRenderPass pass)
                 {
                     if (const auto it = pipelines.find(key); it != pipelines.end())
                         return it->second;
-                    PipelineBundle created;
-                    std::vector<VkDescriptorSetLayoutBinding> bindings{
-                            {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}};
-                    if (draw.vertexStage.shader)
-                        bindings.push_back({17, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr});
-                    for (const auto binding: textureBindings)
-                        bindings.push_back({binding, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
-                                            binding > 17 ? VK_SHADER_STAGE_VERTEX_BIT : VK_SHADER_STAGE_FRAGMENT_BIT, nullptr});
-                    VkDescriptorSetLayoutCreateInfo si{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-                    si.bindingCount = bindings.size();
-                    si.pBindings = bindings.data();
-                    check(vkCreateDescriptorSetLayout(device, &si, nullptr, &created.setLayout), "create descriptor layout");
-                    std::vector<VkShaderModule> modules;
-                    VkPushConstantRange push{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 128};
-                    VkPipelineLayoutCreateInfo li{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-                    li.setLayoutCount = li.pushConstantRangeCount = 1;
-                    li.pSetLayouts = &created.setLayout;
-                    li.pPushConstantRanges = &push;
-                    check(vkCreatePipelineLayout(device, &li, nullptr, &created.layout), "create pipeline layout");
-                    VkPipelineShaderStageCreateInfo stages[2]{};
-                    for (unsigned i = 0; i < 2; ++i) {
-                        const auto &code = (i ? fragment : vertex).words;
-                        VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
-                        mi.codeSize = code.size() * sizeof(std::uint32_t);
-                        mi.pCode = code.data();
-                        VkShaderModule module{};
-                        check(vkCreateShaderModule(device, &mi, nullptr, &module), "create shader");
-                        modules.push_back(module);
-                        stages[i].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-                        stages[i].stage = i ? VK_SHADER_STAGE_FRAGMENT_BIT : VK_SHADER_STAGE_VERTEX_BIT;
-                        stages[i].module = module;
-                        stages[i].pName = "main";
-                    }
-                    VkVertexInputBindingDescription vertexBindings[2]{{0, sizeof(RasterDraw::Vertex), VK_VERTEX_INPUT_RATE_VERTEX}};
-                    VkVertexInputAttributeDescription attributes[18]{};
-                    VkPipelineVertexInputStateCreateInfo input{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
-                    input.pVertexBindingDescriptions = vertexBindings;
-                    input.pVertexAttributeDescriptions = attributes;
-                    if (const auto stride = key.attributeStride) {
-                        // Translated programs read locations 1..16 only. The first `stride` come from
-                        // the compact buffer, the rest from a constant defaults buffer (stride 0).
-                        vertexBindings[0] = {0, stride * unsigned(sizeof(float) * 4), VK_VERTEX_INPUT_RATE_VERTEX};
-                        vertexBindings[1] = {1, 0, VK_VERTEX_INPUT_RATE_VERTEX};
-                        for (unsigned i = 0; i < 16; ++i)
-                            attributes[i] = {i + 1, i < stride ? 0u : 1u, VK_FORMAT_R32G32B32A32_SFLOAT, unsigned(i * sizeof(float) * 4)};
-                        input.vertexBindingDescriptionCount = 2;
-                        input.vertexAttributeDescriptionCount = 16;
-                    } else {
-                        attributes[0] = {0, 0, VK_FORMAT_R32G32_SFLOAT, 0};
-                        for (unsigned i = 0; i < 16; ++i)
-                            attributes[i + 1] = {i + 1, 0, VK_FORMAT_R32G32B32A32_SFLOAT,
-                                                 unsigned(offsetof(RasterDraw::Vertex, inputs) + i * sizeof(float) * 4)};
-                        attributes[17] = {17, 0, VK_FORMAT_R32G32_SFLOAT, unsigned(offsetof(RasterDraw::Vertex, z))};
-                        input.vertexBindingDescriptionCount = 1;
-                        input.vertexAttributeDescriptionCount = 18;
-                    }
-                    VkPipelineInputAssemblyStateCreateInfo assembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
-                    assembly.topology =
-                            draw.topology == RasterDraw::Topology::Points ? VK_PRIMITIVE_TOPOLOGY_POINT_LIST : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-                    VkViewport viewport{0, 0, float(rasterWidth(draw)), float(rasterHeight(draw)), 0, 1};
-                    const auto scissor = clippedScissor(draw);
-                    VkPipelineViewportStateCreateInfo viewportState{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
-                    viewportState.viewportCount = viewportState.scissorCount = 1;
-                    viewportState.pViewports = &viewport;
-                    viewportState.pScissors = &scissor;
-                    constexpr VkDynamicState dynamicStates[]{VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_DEPTH_BIAS};
-                    VkPipelineDynamicStateCreateInfo dynamic{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
-                    dynamic.dynamicStateCount = std::size(dynamicStates);
-                    dynamic.pDynamicStates = dynamicStates;
-                    VkPipelineRasterizationStateCreateInfo raster{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
-                    raster.polygonMode = VK_POLYGON_MODE_FILL;
-                    raster.cullMode = (draw.cullFront ? VK_CULL_MODE_FRONT_BIT : 0) | (draw.cullBack ? VK_CULL_MODE_BACK_BIT : 0);
-                    raster.frontFace = draw.frontFaceClockwise ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE;
-                    raster.lineWidth = 1;
-                    raster.depthBiasEnable = draw.depthBias.enabled && draw.depth.format == DepthFormat::Float32;
-                    raster.depthClampEnable = draw.depth.clamp;
-                    VkPipelineMultisampleStateCreateInfo samples{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
-                    samples.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-                    VkPipelineColorBlendAttachmentState blend{};
-                    blend.colorWriteMask = draw.channelMask;
-                    if (draw.blend.enabled) {
-                        blend.blendEnable = VK_TRUE;
-                        const auto colorSource = blendFactor(draw.blend.colorSource);
-                        const auto colorDestination = blendFactor(draw.blend.colorDestination);
-                        const auto alphaSource = blendFactor(draw.blend.alphaSource);
-                        const auto alphaDestination = blendFactor(draw.blend.alphaDestination);
-                        if (!colorSource || !colorDestination || !alphaSource || !alphaDestination)
-                            throw std::runtime_error("Unsupported blend factors");
-                        blend.srcColorBlendFactor = *colorSource;
-                        blend.dstColorBlendFactor = *colorDestination;
-                        blend.colorBlendOp = blendOperation(draw.blend.colorOperation);
-                        blend.srcAlphaBlendFactor = *alphaSource;
-                        blend.dstAlphaBlendFactor = *alphaDestination;
-                        blend.alphaBlendOp = blendOperation(draw.blend.alphaOperation);
-                    }
-                    VkPipelineColorBlendStateCreateInfo blending{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-                    blending.attachmentCount = depthOnly(draw) ? 0 : 1;
-                    blending.pAttachments = &blend;
-                    for (unsigned i = 0; i < 4; ++i)
-                        blending.blendConstants[i] = float(draw.blend.constant[i]) / 255.0f;
-                    VkGraphicsPipelineCreateInfo gp{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
-                    gp.stageCount = 2;
-                    gp.pStages = stages;
-                    gp.pVertexInputState = &input;
-                    gp.pInputAssemblyState = &assembly;
-                    gp.pViewportState = &viewportState;
-                    gp.pDynamicState = &dynamic;
-                    gp.pRasterizationState = &raster;
-                    gp.pMultisampleState = &samples;
-                    gp.pColorBlendState = &blending;
-                    VkPipelineDepthStencilStateCreateInfo depthState{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
-                    depthState.depthTestEnable = draw.depth.test;
-                    depthState.depthWriteEnable = draw.depth.test && draw.depth.write;
-                    depthState.depthCompareOp = VkCompareOp(draw.depth.compare);
-                    depthState.stencilTestEnable = draw.depth.stencil.test;
-                    if (draw.depth.stencil.test) {
-                        const auto face = [&](unsigned shift, std::uint32_t mask) {
-                            VkStencilOpState state{};
-                            state.compareOp = VkCompareOp((draw.depth.stencil.control >> shift) & 7);
-                            state.failOp = VkStencilOp((draw.depth.stencil.control >> (shift + 3)) & 7);
-                            state.passOp = VkStencilOp((draw.depth.stencil.control >> (shift + 6)) & 7);
-                            state.depthFailOp = VkStencilOp((draw.depth.stencil.control >> (shift + 9)) & 7);
-                            state.compareMask = (mask >> 8) & 255;
-                            state.writeMask = (mask >> 16) & 255;
-                            state.reference = mask & 255;
-                            return state;
-                        };
-                        depthState.front = face(8, draw.depth.stencil.masks[0]);
-                        depthState.back = (draw.depth.stencil.control & (1u << 7)) ? face(20, draw.depth.stencil.masks[1]) : depthState.front;
-                    }
-                    gp.pDepthStencilState = &depthState;
-                    gp.layout = created.layout;
-                    gp.renderPass = pass;
-                    {
-                        Profile::Scope creating(Profile::Stage::PipelineCreate);
-                        check(vkCreateGraphicsPipelines(device, pipelineCache, 1, &gp, nullptr, &created.pipeline), "create pipeline");
-                    }
-                    for (auto module: modules)
-                        vkDestroyShaderModule(device, module, nullptr);
+                    const auto &created = pipelines.emplace(key, createPipeline(key, draw, vertex, fragment, pass)).first->second;
                     ++pipelineCreations;
                     ++pipelineCacheChanges;
-                    return pipelines.emplace(key, created).first->second;
+                    if (pipelineCreated)
+                        pipelineCreated(key, draw);
+                    return created;
                 }
                 void destroyPipelines() noexcept
                 {
-                    for (const auto &[key, bundle]: pipelines) {
-                        vkDestroyPipeline(device, bundle.pipeline, nullptr);
-                        vkDestroyPipelineLayout(device, bundle.layout, nullptr);
-                        vkDestroyDescriptorSetLayout(device, bundle.setLayout, nullptr);
-                    }
+                    for (const auto &[key, bundle]: pipelines)
+                        destroyBundle(bundle);
                     pipelines.clear();
                 }
                 std::vector<std::uint8_t> pipelineCacheData() const
@@ -1577,12 +1817,13 @@ void main() {
                     key.topology = unsigned(draw.topology);
                     key.colorFormat = unsigned(draw.colorFormat);
                     key.cull = unsigned(draw.cullFront) | (unsigned(draw.cullBack) << 1) | (unsigned(draw.frontFaceClockwise) << 2);
-                    std::vector<unsigned> textureBindings;
-                    for (const auto &texture: textures) {
+                    for (const auto &texture: textures)
                         key.bindings.push_back(texture.binding);
-                        textureBindings.push_back(texture.binding);
-                    }
-                    const auto &cached = context.pipelineFor(key, vertex, fragment, draw, textureBindings, pass);
+                    const auto &cached =
+                            context.pipelineFor(key, vertex, fragment,
+                                                pipelineDraw(draw, depthOnly(draw) ? VK_FORMAT_UNDEFINED : colorVkFormat(draw.colorFormat),
+                                                             draw.depth.test ? depthImage->format : VK_FORMAT_UNDEFINED),
+                                                pass);
                     setLayout = cached.setLayout;
                     layout = cached.layout;
                     pipeline = cached.pipeline;
@@ -3134,8 +3375,9 @@ void main() {
                         vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0,
                                              copiedVertices ? 1 : 0, &vertexCopy, 0, nullptr, unsigned(barriers.size()), barriers.data());
 
-                    const auto pass = renderPass(hasColor ? colorVkFormat(draw.colorFormat) : VK_FORMAT_UNDEFINED,
-                                                 draw.depth.test ? directDepthFormat(draw.depth.format) : VK_FORMAT_UNDEFINED);
+                    const auto passColor = hasColor ? colorVkFormat(draw.colorFormat) : VK_FORMAT_UNDEFINED;
+                    const auto passDepth = draw.depth.test ? directDepthFormat(draw.depth.format) : VK_FORMAT_UNDEFINED;
+                    const auto pass = renderPass(passColor, passDepth);
                     Context::PipelineKey key{in.vertex.id, in.fragment.id, {}, draw.channelMask};
                     key.blend = blendKey(draw.blend);
                     key.depth = depthKey(draw.depth);
@@ -3145,12 +3387,9 @@ void main() {
                     key.colorFormat = unsigned(draw.colorFormat);
                     key.cull = unsigned(draw.cullFront) | (unsigned(draw.cullBack) << 1) | (unsigned(draw.frontFaceClockwise) << 2);
                     key.attributeStride = draw.vertexStage.attributeStride;
-                    std::vector<unsigned> textureBindings;
-                    for (const auto &texture: in.textures) {
+                    for (const auto &texture: in.textures)
                         key.bindings.push_back(texture.binding);
-                        textureBindings.push_back(texture.binding);
-                    }
-                    const auto &pipeline = context.pipelineFor(key, in.vertex, in.fragment, draw, textureBindings, pass);
+                    const auto &pipeline = context.pipelineFor(key, in.vertex, in.fragment, pipelineDraw(draw, passColor, passDepth), pass);
 
                     mark(6);
                     const auto descriptor = allocateDescriptor(segment, pipeline.setLayout);
@@ -3327,6 +3566,8 @@ void main() {
                     report();
                     return result;
                 }
+                // A pass every pipeline recorded with these attachment formats is compatible with.
+                VkRenderPass compatiblePass(VkFormat colorFormat, VkFormat depthFormat) { return renderPass(colorFormat, depthFormat); }
 
             private:
                 // Device-local blocks for vertex arrays reused across draws. A range returns to its
@@ -4259,6 +4500,42 @@ void main() {
             std::unique_ptr<StreamOutResources> streamOutput;
             // Compiled modules by lowered-source hash and source variant (see renderImpl).
             std::unordered_map<std::uint64_t, std::shared_ptr<const SpirvModule>> modules;
+            // What each cached module was compiled from, by SpirvModule id, so a created pipeline can
+            // be recorded from its Latte inputs.
+            struct ModuleOrigin {
+                    std::shared_ptr<const Latte::ShaderOrigin> origin; // null with builtin: the built-in vertex stage
+                    unsigned variant{};
+                    bool builtin{};
+            };
+            std::unordered_map<std::uint64_t, ModuleOrigin> moduleOrigins;
+            std::shared_ptr<PipelineManifest> manifest;
+            void remember(std::uint64_t key, const std::shared_ptr<const SpirvModule> &module, const ModuleOrigin &origin)
+            {
+                if (modules.size() >= 8192) {
+                    modules.clear();
+                    moduleOrigins.clear();
+                }
+                modules.emplace(key, module);
+                if (*module)
+                    moduleOrigins.emplace(module->id, origin);
+            }
+            void record(const Context::PipelineKey &key, const PipelineDraw &draw)
+            {
+                const auto vertex = moduleOrigins.find(key.vertex), fragment = moduleOrigins.find(key.fragment);
+                if (!manifest || vertex == moduleOrigins.end() || fragment == moduleOrigins.end() || !fragment->second.origin ||
+                    (!vertex->second.builtin && !vertex->second.origin))
+                    return;
+                manifest->add({vertex->second.origin, fragment->second.origin, fragment->second.variant, Context::encodePipeline(key, draw)});
+            }
+            void ensureContext()
+            {
+                if (context)
+                    return;
+                auto created = std::make_shared<Context>();
+                created->initialize();
+                created->pipelineCreated = [this](const Context::PipelineKey &key, const PipelineDraw &draw) { record(key, draw); };
+                context = std::move(created);
+            }
             struct ResourceEntry {
                     std::shared_ptr<DrawResources> value;
                     std::uint64_t bytes{}, used{};
@@ -4285,7 +4562,12 @@ void main() {
         m_impl->lazyReadback = lazyReadback;
         m_impl->directDraws = directDraws;
     }
-    VulkanRasterBackend::~VulkanRasterBackend() = default;
+    VulkanRasterBackend::~VulkanRasterBackend()
+    {
+        // Deferred readbacks may keep the context alive after this backend.
+        if (m_impl->context)
+            m_impl->context->pipelineCreated = nullptr;
+    }
     const std::string &VulkanRasterBackend::lastError() const noexcept { return m_impl->error; }
     std::uint64_t VulkanRasterBackend::completedDraws() const noexcept { return m_impl->completed; }
     std::uint64_t VulkanRasterBackend::reusedDraws() const noexcept { return m_impl->resourceHits; }
@@ -4308,8 +4590,170 @@ void main() {
     std::uint64_t VulkanRasterBackend::pipelineCreations() const noexcept { return m_impl->context ? m_impl->context->pipelineCreations : 0; }
     void VulkanRasterBackend::endFrame()
     {
+        using namespace std::chrono_literals;
         if (m_impl->context)
             m_impl->context->schedulePipelineSave();
+        if (m_impl->manifest)
+            m_impl->manifest->saveInBackground(10s);
+    }
+
+    void VulkanRasterBackend::setPipelineManifest(std::shared_ptr<PipelineManifest> manifest) { m_impl->manifest = std::move(manifest); }
+
+    std::size_t VulkanRasterBackend::preload(std::span<const PipelineRecipe> recipes, const ShaderLowering &lower, const PreloadProgress &progress)
+    {
+        using namespace std::chrono_literals;
+        struct Shader {
+                std::shared_ptr<const Latte::FragmentShader> lowered;
+                bool vertexStage{};
+                unsigned variant{};
+                std::uint64_t key{};
+                Impl::ModuleOrigin origin;
+                std::shared_ptr<const SpirvModule> module;
+                bool cached{};
+        };
+        struct Pipeline {
+                std::size_t vertex{}, fragment{};
+                Context::PipelineKey key;
+                PipelineDraw draw;
+                Context::PipelineBundle bundle;
+                bool created{};
+        };
+        // Lowering is cheap and the caller's caches are single-threaded, so it runs here first.
+        std::vector<Shader> shaders;
+        std::unordered_map<std::uint64_t, std::size_t> shaderIndex;
+        std::map<std::shared_ptr<const Latte::ShaderOrigin>, std::shared_ptr<const Latte::FragmentShader>> lowered;
+        const auto shaderFor = [&](const std::shared_ptr<const Latte::ShaderOrigin> &origin, bool vertexStage,
+                                   unsigned variant) -> std::optional<std::size_t> {
+            std::shared_ptr<const Latte::FragmentShader> shader;
+            if (origin) {
+                auto &entry = lowered[origin];
+                if (!entry)
+                    entry = lower ? lower(origin) : Latte::lowerOrigin(origin);
+                shader = entry;
+                if (!shader || !*shader)
+                    return std::nullopt;
+            }
+            const auto key = vertexStage ? vertexModuleKey(shader.get()) : fragmentModuleKey(*shader, variant);
+            if (!key)
+                return std::nullopt;
+            if (const auto found = shaderIndex.find(key); found != shaderIndex.end())
+                return found->second;
+            Shader entry{shader, vertexStage, variant, key, {origin, variant, vertexStage && !origin}, {}, false};
+            if (const auto existing = m_impl->modules.find(key); existing != m_impl->modules.end()) {
+                entry.module = existing->second;
+                entry.cached = true;
+            }
+            shaders.push_back(std::move(entry));
+            return shaderIndex[key] = shaders.size() - 1;
+        };
+        std::vector<Pipeline> pipelines;
+        for (const auto &recipe: recipes) {
+            auto decoded = recipe.fragment ? Context::decodePipeline(recipe.state) : std::nullopt;
+            if (!decoded || decoded->second.vertexShader != bool(recipe.vertex))
+                continue;
+            const auto vertex = shaderFor(recipe.vertex, true, 0);
+            const auto fragment = shaderFor(recipe.fragment, false, recipe.fragmentVariant);
+            if (vertex && fragment)
+                pipelines.push_back({*vertex, *fragment, std::move(decoded->first), decoded->second, {}, false});
+        }
+        if (pipelines.empty())
+            return 0;
+
+        std::vector<std::size_t> compiles;
+        for (std::size_t i = 0; i < shaders.size(); ++i)
+            if (!shaders[i].module)
+                compiles.push_back(i);
+        const auto total = compiles.size() + pipelines.size();
+        std::atomic<std::size_t> done{};
+        std::atomic<bool> cancelled{};
+        // Spreads work over at most six threads (each compilation may run glslang), reporting
+        // progress from this thread until every worker has returned.
+        const auto parallel = [&](const std::vector<std::size_t> &items, const auto &work) {
+            std::atomic<std::size_t> next{}, finished{};
+            const auto workers = std::min<std::size_t>(items.size(), std::clamp(std::thread::hardware_concurrency() / 2, 1u, 6u));
+            std::vector<std::thread> threads;
+            try {
+                for (std::size_t t = 0; t < workers; ++t)
+                    threads.emplace_back([&] {
+                        for (std::size_t i = next++; !cancelled && i < items.size(); i = next++, ++done)
+                            work(items[i]);
+                        ++finished;
+                    });
+            } catch (const std::system_error &) {
+                cancelled = true;
+            }
+            while (finished < threads.size()) {
+                if (progress && !progress(done, total))
+                    cancelled = true;
+                std::this_thread::sleep_for(50ms);
+            }
+            for (auto &thread: threads)
+                thread.join();
+        };
+        parallel(compiles, [&](std::size_t i) {
+            auto &shader = shaders[i];
+            try {
+                SpirvCompiler compiler{SpirvCompiler::defaultCacheDirectory()};
+                const auto source = shader.vertexStage ? vertexStageSource(shader.lowered.get())
+                                                       : std::optional(fragmentStageSource(shader.lowered->source, shader.variant));
+                if (source)
+                    shader.module = compiler.compile(shader.vertexStage ? ShaderStage::Vertex : ShaderStage::Fragment, *source);
+            } catch (const std::exception &) {
+                shader.module.reset();
+            }
+        });
+
+        m_impl->ensureContext();
+        auto &context = *m_impl->context;
+        if (!m_impl->direct)
+            m_impl->direct = std::make_shared<DirectRenderer>(m_impl->context);
+        std::map<std::pair<VkFormat, VkFormat>, VkRenderPass> passes;
+        std::set<Context::PipelineKey> pending;
+        std::vector<std::size_t> creations;
+        for (std::size_t i = 0; i < pipelines.size(); ++i) {
+            auto &pipeline = pipelines[i];
+            const auto &vertex = shaders[pipeline.vertex].module, &fragment = shaders[pipeline.fragment].module;
+            if (!vertex || !*vertex || !fragment || !*fragment)
+                continue;
+            pipeline.key.vertex = vertex->id;
+            pipeline.key.fragment = fragment->id;
+            if (context.pipelines.contains(pipeline.key) || !pending.insert(pipeline.key).second)
+                continue;
+            auto &pass = passes[{pipeline.draw.passColor, pipeline.draw.passDepth}];
+            if (!pass)
+                pass = m_impl->direct->compatiblePass(pipeline.draw.passColor, pipeline.draw.passDepth);
+            creations.push_back(i);
+        }
+        done += pipelines.size() - creations.size();
+        parallel(creations, [&](std::size_t i) {
+            auto &pipeline = pipelines[i];
+            try {
+                pipeline.bundle =
+                        context.createPipeline(pipeline.key, pipeline.draw, *shaders[pipeline.vertex].module, *shaders[pipeline.fragment].module,
+                                               passes.at({pipeline.draw.passColor, pipeline.draw.passDepth}));
+                pipeline.created = true;
+            } catch (const std::exception &) {
+                pipeline.created = false;
+            }
+        });
+
+        for (auto &shader: shaders)
+            if (!shader.cached && shader.module)
+                m_impl->remember(shader.key, shader.module, shader.origin);
+        std::size_t created = 0;
+        for (auto &pipeline: pipelines) {
+            if (!pipeline.created)
+                continue;
+            if (context.pipelines.emplace(pipeline.key, pipeline.bundle).second) {
+                ++context.pipelineCreations;
+                ++context.pipelineCacheChanges;
+                ++created;
+            } else
+                context.destroyBundle(pipeline.bundle);
+        }
+        if (progress)
+            progress(total, total);
+        return created;
     }
 
     std::optional<RasterResult> VulkanRasterBackend::render(const RasterDraw &draw) { return renderImpl(draw, false); }
@@ -4373,11 +4817,7 @@ void main() {
         const auto module = m_impl->compiler.compile(ShaderStage::Compute, draw.shader.source);
         if (!*module)
             return reject(module->error);
-        if (!m_impl->context) {
-            auto context = std::make_shared<Context>();
-            context->initialize();
-            m_impl->context = std::move(context);
-        }
+        m_impl->ensureContext();
         if (!m_impl->context->computeQueue)
             return reject("Graphics queue does not support compute");
         VkPhysicalDeviceProperties properties{};
@@ -4607,22 +5047,6 @@ void main() {
             if (textureBytes > std::uint64_t{128} * 1024 * 1024)
                 return reject("Texture upload budget exceeded");
         }
-        static constexpr auto vertexSource = R"(#version 450
-layout(location=0) in vec2 position;
-layout(location=1) in vec4 attributes[16];
-layout(location=17) in vec2 depthAndW;
-layout(location=0) out vec4 inputs[16];
-layout(location=16) noperspective out float windowDepth;
-invariant gl_Position; precise gl_Position;
-layout(push_constant) uniform Viewport { vec2 scale; float depthEnabled; } viewport;
-void main() {
-    gl_PointSize=1.0;
-    float w=1.0/depthAndW.y;
-    gl_Position=vec4((position*viewport.scale-vec2(1.0))*w,viewport.depthEnabled!=0.0?depthAndW.x*w:0.0,w);
-    for(int i=0;i<16;++i) inputs[i]=attributes[i];
-    windowDepth=depthAndW.x;
-}
-)";
         static const bool timing = [] {
             const auto *value = std::getenv("WEMU_NATIVE_TIMING");
             return value && value[0] == '1';
@@ -4635,20 +5059,14 @@ void main() {
         const bool overwriteTarget = overwritesTarget(draw);
         // Modules of lowered shaders are found by their precomputed source hash and the draw's
         // source variant, so a hit neither patches nor hashes the GLSL text.
-        const auto mixKey = [](std::uint64_t seed, std::uint64_t value) {
-            return seed ^ (value + 0x9E3779B97F4A7C15ull + (seed << 6) + (seed >> 2));
-        };
-        const auto cachedModule = [&](std::uint64_t key, auto &&build) -> std::shared_ptr<const SpirvModule> {
+        const auto cachedModule = [&](std::uint64_t key, const Impl::ModuleOrigin &origin, auto &&build) -> std::shared_ptr<const SpirvModule> {
             if (!key)
                 return build();
             if (const auto found = m_impl->modules.find(key); found != m_impl->modules.end())
                 return found->second;
             auto module = build();
-            if (module) {
-                if (m_impl->modules.size() >= 8192)
-                    m_impl->modules.clear();
-                m_impl->modules.emplace(key, module);
-            }
+            if (module)
+                m_impl->remember(key, module, origin);
             return module;
         };
         static const bool directDraws = [] {
@@ -4673,86 +5091,25 @@ void main() {
             return reject("Missing canonical stencil storage");
 
         const auto *vertexShader = draw.vertexStage.shader.get();
-        const auto vertex = cachedModule(vertexShader ? vertexShader->sourceHash ? mixKey(0x5653, vertexShader->sourceHash) : 0 : 0x5650,
+        const auto vertex = cachedModule(vertexModuleKey(vertexShader), {vertexShader ? vertexShader->origin : nullptr, 0, !vertexShader},
                                          [&]() -> std::shared_ptr<const SpirvModule> {
-                                             if (!vertexShader)
-                                                 return m_impl->compiler.compile(ShaderStage::Vertex, vertexSource);
-                                             if (vertexShader->textures.empty())
-                                                 return m_impl->compiler.compile(ShaderStage::Vertex, vertexShader->source);
-                                             // Vertex samplers follow the 16 pixel bindings.
-                                             auto patched = vertexShader->source;
-                                             for (const auto &binding: vertexShader->textures) {
-                                                 const auto old = "binding=" + std::to_string(binding.binding) + ")";
-                                                 const auto pos = patched.find(old);
-                                                 if (pos == std::string::npos)
-                                                     return nullptr;
-                                                 patched.replace(pos, old.size(), "binding=" + std::to_string(binding.binding + 17) + ")");
-                                             }
-                                             return m_impl->compiler.compile(ShaderStage::Vertex, patched);
+                                             const auto source = vertexStageSource(vertexShader);
+                                             return source ? m_impl->compiler.compile(ShaderStage::Vertex, *source) : nullptr;
                                          });
         if (!vertex)
             return reject("Invalid vertex sampler interface");
         const bool biasedDepth = draw.depthBias.enabled && draw.depth.format != DepthFormat::Float32;
         const bool quantizedDepth = direct && draw.depth.test && draw.depth.write && draw.depth.format != DepthFormat::Float32;
         const auto fragmentVariant = unsigned(biasedDepth) | (quantizedDepth ? draw.depth.format == DepthFormat::UNorm16 ? 2u : 4u : 0u);
-        const auto fragment = cachedModule(draw.shader.sourceHash ? mixKey(mixKey(0x4653, draw.shader.sourceHash), fragmentVariant) : 0, [&] {
-            std::string_view fragmentView = draw.shader.source;
-            std::string fragmentSource;
-            if (biasedDepth) {
-                fragmentSource = draw.shader.source;
-                fragmentSource.insert(fragmentSource.find('\n') + 1,
-                                      "layout(push_constant) uniform Bias { layout(offset=112) vec4 value; } bias;\n"
-                                      "float biasedDepth() { float slope=max(abs(dFdx(gl_FragCoord.z)),abs(dFdy(gl_FragCoord.z))); "
-                                      "float b=bias.value.x+bias.value.y*slope; "
-                                      "if(bias.value.z>0.0) b=min(b,bias.value.z); else if(bias.value.z<0.0) b=max(b,bias.value.z); "
-                                      "return clamp(gl_FragCoord.z+b,0.0,1.0); }\n");
-                const auto initial = fragmentSource.find("gl_FragDepth=gl_FragCoord.z;");
-                if (initial != std::string::npos)
-                    fragmentSource.replace(initial, std::string("gl_FragDepth=gl_FragCoord.z;").size(), "gl_FragDepth=biasedDepth();");
-                else
-                    fragmentSource.insert(fragmentSource.find("void main() {") + std::string("void main() {").size(),
-                                          "\ngl_FragDepth=biasedDepth();\n");
-                fragmentView = fragmentSource;
-            }
-            if (quantizedDepth) {
-                // Direct draws store fixed-point depth from the fragment shader instead of the bundle
-                // quantization pass (three full-surface copies per draw). Rounding matches that pass;
-                // the depth test then compares quantized incoming values, as fixed-point hardware does.
-                if (fragmentSource.empty())
-                    fragmentSource = draw.shader.source;
-                const bool writesDepth = fragmentSource.find("gl_FragDepth=") != std::string::npos;
-                const auto maximum = draw.depth.format == DepthFormat::UNorm16 ? "65535u" : "16777215u";
-                fragmentSource.insert(fragmentSource.find('\n') + 1, std::format(R"(float wemuQuantizedDepth(float depth) {{
-    const uint maximum={0};
-    float value=clamp(depth,0.0,1.0);
-    float scaled=value*float(maximum+1u);
-    uint integer=uint(int(scaled)+int(floor(fract(scaled)-value+0.5)));
-    if(integer==0u) return 0.0;
-    if(integer>=maximum) return 1.0;
-    uint leading=uint(findMSB(integer));
-    uint t=integer<<(23u-leading);
-    uint significand=t+(maximum==65535u ? (t+32767u)/65535u : 1u);
-    uint exponent=leading+(maximum==65535u ? 111u : 103u);
-    return uintBitsToFloat((exponent<<23)|(significand&0x7fffffu));
-}}
-)",
-                                                                                 maximum));
-                fragmentSource.insert(fragmentSource.rfind('}'),
-                                      std::format("gl_FragDepth=wemuQuantizedDepth({});\n", writesDepth ? "gl_FragDepth" : "gl_FragCoord.z"));
-                fragmentView = fragmentSource;
-            }
-            return m_impl->compiler.compile(ShaderStage::Fragment, fragmentView);
+        const auto fragment = cachedModule(fragmentModuleKey(draw.shader, fragmentVariant), {draw.shader.origin, fragmentVariant, false}, [&] {
+            return m_impl->compiler.compile(ShaderStage::Fragment, fragmentStageSource(draw.shader.source, fragmentVariant));
         });
         if (!*vertex || !*fragment) {
             m_impl->error = !*vertex ? vertex->error : fragment->error;
             return std::nullopt;
         }
         const auto t1 = std::chrono::steady_clock::now();
-        if (!m_impl->context) {
-            auto context = std::make_shared<Context>();
-            context->initialize();
-            m_impl->context = std::move(context);
-        }
+        m_impl->ensureContext();
         const auto t2 = std::chrono::steady_clock::now();
         if (draw.depthBias.enabled &&
             (!std::isfinite(draw.depthBias.constant) || !std::isfinite(draw.depthBias.slope) || !std::isfinite(draw.depthBias.clamp) ||

@@ -2,9 +2,12 @@
 
 #include <algorithm>
 #include <bit>
+#include <chrono>
 #include <cmath>
 #include <condition_variable>
 #include <exception>
+#include <filesystem>
+#include <format>
 #include <functional>
 #include <mutex>
 #include <pthread.h>
@@ -22,10 +25,12 @@
 #include "gfx/Gx2Replayer.hpp"
 #include "gfx/LatteProgram.hpp"
 #include "gfx/LatteSurfaceLayout.hpp"
+#include "gfx/PipelineManifest.hpp"
 #include "gfx/Renderer.hpp"
 #include "gfx/ShaderInvalidations.hpp"
 #include "gfx/SurfaceLayout.hpp"
 #include "gfx/VulkanRasterBackend.hpp"
+#include "ui/PreloadScreen.hpp"
 #include "utils/Diagnostics.hpp"
 #include "utils/DisplayTiming.hpp"
 #include "utils/FrameProfiler.hpp"
@@ -129,6 +134,9 @@ namespace {
             std::unordered_map<std::uint32_t, std::vector<BufferAllocatorCall>> bufferCalls;
             std::unique_ptr<Core::Gfx::Gx2Replayer> replayer;
             bool nativeInitialized{};
+            // Created by PreloadGx2Pipelines before the title starts, else at the first swap.
+            std::shared_ptr<Core::Gfx::VulkanRasterBackend> nativeBackend;
+            std::shared_ptr<Core::Gfx::PipelineManifest> manifest;
             // Asynchronous replay: the frame owned by the worker while it is in flight.
             std::unique_ptr<ReplayWorker> worker;
             std::unique_ptr<Core::Gfx::Gx2BufferSnapshots> bufferSnapshots;
@@ -139,6 +147,31 @@ namespace {
         static HostReplayState state;
         return state;
     }
+
+    // WEMU_GPU rasterises the frame on the GPU (Vulkan) instead of the software rasteriser.
+    //   =1 -> the general multi-target render graph (offscreen buffers + render-to-texture)
+    //   =2 -> the legacy single-target quad compositor (flattens everything to the scan target)
+    int gpuMode()
+    {
+        static const int mode = []() {
+            const char *e = std::getenv("WEMU_GPU");
+            return e ? std::atoi(e) : 0;
+        }();
+        return mode;
+    }
+    bool nativeRasterRequested()
+    {
+        const auto *enabled = std::getenv("WEMU_NATIVE_RASTER");
+        return !gpuMode() && enabled && enabled[0] == '1';
+    }
+    std::shared_ptr<Core::Gfx::VulkanRasterBackend> createNativeBackend()
+    {
+        const char *textureReuse = std::getenv("WEMU_NATIVE_TEXTURE_REUSE");
+        const char *lazyReadback = std::getenv("WEMU_NATIVE_LAZY_READBACK");
+        return std::make_shared<Core::Gfx::VulkanRasterBackend>(!textureReuse || std::string_view(textureReuse) != "0",
+                                                                lazyReadback && std::string_view(lazyReadback) == "1");
+    }
+
 
     // Cafe exports its default allocators as writable data pointers. Application
     // preinit may replace them after reserving the base heap for its own arena.
@@ -652,24 +685,15 @@ namespace {
         if (!host.replayer)
             host.replayer = std::make_unique<Core::Gfx::Gx2Replayer>();
         auto &replayer = *host.replayer;
-        // WEMU_GPU rasterises the frame on the GPU (Vulkan) instead of the software rasteriser.
-        //   =1 -> the general multi-target render graph (offscreen buffers + render-to-texture)
-        //   =2 -> the legacy single-target quad compositor (flattens everything to the scan target)
-        static const int gpuMode = []() {
-            const char *e = std::getenv("WEMU_GPU");
-            return e ? std::atoi(e) : 0;
-        }();
-        if (gpuMode) {
+        if (const auto mode = gpuMode()) {
             replayer.setGpuRenderer(cpu.m_renderer);
-            replayer.setGpuRenderGraph(gpuMode == 1);
+            replayer.setGpuRenderGraph(mode == 1);
         }
         if (!host.nativeInitialized) {
-            const auto *enabled = std::getenv("WEMU_NATIVE_RASTER");
-            if (!gpuMode && enabled && enabled[0] == '1') {
-                const char *textureReuse = std::getenv("WEMU_NATIVE_TEXTURE_REUSE");
-                const char *lazyReadback = std::getenv("WEMU_NATIVE_LAZY_READBACK");
-                replayer.setRasterBackend(std::make_shared<Core::Gfx::VulkanRasterBackend>(!textureReuse || std::string_view(textureReuse) != "0",
-                                                                                           lazyReadback && std::string_view(lazyReadback) == "1"));
+            if (nativeRasterRequested()) {
+                if (!host.nativeBackend)
+                    host.nativeBackend = createNativeBackend();
+                replayer.setRasterBackend(host.nativeBackend);
                 Utils::Log::error("[GX2] experimental translated Vulkan raster backend enabled; unsupported draws remain software");
             }
             host.nativeInitialized = true;
@@ -1551,6 +1575,41 @@ namespace Core::Gfx {
     }
 } // namespace Core::Gfx
 
+void PreloadGx2Pipelines(Core::Interpreter &cpu, const std::filesystem::path &executable)
+{
+    using namespace std::chrono_literals;
+    if (!nativeRasterRequested())
+        return;
+    auto &host = hostReplayState();
+    host.nativeBackend = createNativeBackend();
+    host.manifest = std::make_shared<Core::Gfx::PipelineManifest>(Core::Gfx::PipelineManifest::defaultDirectory(),
+                                                                  Core::Gfx::PipelineManifest::filenameFor(executable));
+    host.nativeBackend->setPipelineManifest(host.manifest);
+    const auto recipes = host.manifest->load();
+    Utils::Log::error("[PIPELINE_MANIFEST] enabled={} file={} recipes={}", host.manifest->enabled(), host.manifest->filename(), recipes.size());
+    if (recipes.empty() || !cpu.m_renderer)
+        return;
+    if (!host.replayer)
+        host.replayer = std::make_unique<Core::Gfx::Gx2Replayer>();
+    auto &replayer = *host.replayer;
+    auto &renderer = *cpu.m_renderer;
+    const auto started = std::chrono::steady_clock::now();
+    std::chrono::steady_clock::time_point shown{};
+    const auto created = host.nativeBackend->preload(
+            recipes, [&](const std::shared_ptr<const Core::Gfx::Latte::ShaderOrigin> &origin) { return replayer.lowerRecorded(origin); },
+            [&](std::size_t done, std::size_t total) {
+                const auto now = std::chrono::steady_clock::now();
+                if (now - shown >= 100ms || done == total) {
+                    shown = now;
+                    const auto frame = Core::UI::preloadScreen(done, total);
+                    renderer.present_host_frame(frame.data(), Core::UI::preloadScreenWidth, Core::UI::preloadScreenHeight);
+                }
+                return renderer.poll_events();
+            });
+    Utils::Log::error("[PIPELINE_MANIFEST] preloaded {} pipelines from {} recipes in {} ms", created, recipes.size(),
+                      std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count());
+}
+
 void ReleaseGx2HostResources() noexcept
 {
     // Drop worker/image/readback owners while Vulkan, renderer and guest memory
@@ -1561,6 +1620,8 @@ void ReleaseGx2HostResources() noexcept
     host.worker.reset(); // finish the frame in flight before its replayer goes away
     host.bufferSnapshots.reset();
     host.replayer.reset();
+    host.nativeBackend.reset();
+    host.manifest.reset(); // saves recipes recorded since the last background save
     host.frame.clear();
     host.nativeInitialized = false;
     g_openLists.clear();

@@ -129,6 +129,7 @@ add_library(core STATIC
         src/gfx/LatteShaderLowering.cpp
         src/gfx/SpirvCompiler.cpp
         src/gfx/PipelineCacheStore.cpp
+        src/gfx/PipelineManifest.cpp
         src/gfx/VulkanRasterBackend.cpp
         src/gfx/RasterWorkers.cpp
         src/hle/Fs.hpp
@@ -139,6 +140,7 @@ add_library(core STATIC
         src/hle/Scheduler.cpp
         src/gfx/Renderer.cpp
         src/ui/PauseMenu.cpp
+        src/ui/PreloadScreen.cpp
         src/gfx/init/buffer.cpp
         src/gfx/init/cleanup.cpp
         src/gfx/init/commandPool.cpp

@@ -1888,6 +1888,15 @@ namespace Core::Gfx {
         return m_vsShader->vertexShader;
     }
 
+    std::shared_ptr<const Latte::FragmentShader> Gx2Replayer::lowerRecorded(const std::shared_ptr<const Latte::ShaderOrigin> &origin)
+    {
+        if (!origin)
+            return nullptr;
+        if (origin->vertex)
+            return m_vertexShaderCache.get(origin->words, origin->bufferWindow, origin->bufferWindows);
+        return m_fragmentShaderCache.get(origin->words, origin->resourceTypes, origin->onlyColorZero, origin->colorExport, origin->positionRegister);
+    }
+
     bool Gx2Replayer::colorOnlyEffects()
     {
         if (!m_psShader)

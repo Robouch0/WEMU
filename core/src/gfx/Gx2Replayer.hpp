@@ -75,6 +75,8 @@ namespace Core::Gfx {
             // on the GPU instead of by the software rasteriser; the result is read back into m_fb.
             void setGpuRenderer(::Renderer *r) noexcept { m_gpuRenderer = r; }
             void setRasterBackend(std::shared_ptr<RasterBackend> backend) { m_rasterBackend = std::move(backend); }
+            // Lowers a recorded shader through this replayer's caches, so its first draw finds it.
+            std::shared_ptr<const Latte::FragmentShader> lowerRecorded(const std::shared_ptr<const Latte::ShaderOrigin> &origin);
             // Diagnostic only: compare sampled native draws, then retain native output.
             void setNativeVerificationInterval(std::uint64_t interval) { m_nativeVerifyEvery = interval; }
             [[nodiscard]] std::uint64_t comparedNativeDraws() const noexcept { return m_comparedNativeDraws; }

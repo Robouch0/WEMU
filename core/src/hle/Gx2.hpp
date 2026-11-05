@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <filesystem>
 
 namespace Core {
     class Interpreter;
@@ -12,6 +13,10 @@ namespace Core {
 
 // Registers GX2 HLE queries, command capture and display-list recording/replay.
 void RegisterGx2Functions();
+
+// With the native raster backend, creates the pipelines recorded by earlier sessions of `executable`
+// before the title runs, presenting progress through cpu.m_renderer, and records new ones.
+void PreloadGx2Pipelines(Core::Interpreter &cpu, const std::filesystem::path &executable);
 
 // End a host session before its renderer/memory and driver TLS are destroyed.
 void ReleaseGx2HostResources() noexcept;

@@ -105,3 +105,45 @@ On MK8 with NVIDIA's own disk cache disabled (`__GL_SHADER_DISK_CACHE=0`),
 | Pipeline creation | 415 × 24.7 ms = 10.2 s | 417 × 0.31 ms = 0.13 s |
 | Race-start frame 1729, pipelines | 5.04 s | 29 ms |
 | Cache file | 13 MB written | 13 MB loaded |
+
+## Pipeline manifest and preloading
+
+Lowering caches attach a `Latte::ShaderOrigin` to every shader they produce:
+the program words and lowering parameters that `Latte::lowerOrigin` needs to
+produce the same source again. When the native backend creates a pipeline, it
+records a `PipelineRecipe`: the origins of both stages, the fragment variant,
+and the plain pipeline state the backend needs to rebuild it. That state is the
+key without module ids, the draw state pipeline creation reads, and the
+render-pass formats. Pipelines whose shaders have no origin are not recorded.
+
+Recipes are stored per executable, in
+`$XDG_CACHE_HOME/wemu/manifests/<rpx stem>-<FNV-1a of the rpx>.manifest`
+(`WEMU_PIPELINE_MANIFEST_DIR` overrides the directory, and an empty value
+disables manifests). An update with a different RPX starts its own manifest.
+Programs and origins are stored once each. Parsing checks a format version, a
+checksum and the range of every field, and a file that fails any check is
+ignored.
+
+`PreloadGx2Pipelines` runs before `interpreter.run()`. It loads the manifest,
+lowers each origin through the replayer's own caches, and calls
+`VulkanRasterBackend::preload`. That function compiles the missing SPIR-V
+modules, then creates the pipelines, both on up to six worker threads. Each
+module and pipeline is filed under the same cache key a draw computes, so the
+first draw finds it. Recipes that no longer lower, compile or decode are
+skipped.
+
+While this runs, a black host frame shows "Preparing shaders", the count and a
+progress bar. That frame is not a guest present: it is not paced, profiled or
+counted. The guest has not started, so its clock and audio see nothing.
+
+MK8, 100 s from boot, with the manifest recorded by an earlier session:
+
+| | No manifest | Preload, warm caches | Preload, empty SPIR-V, pipeline and NVIDIA caches |
+|---|---|---|---|
+| Preload before the title starts | — | 404 pipelines in 0.24 s | 417 pipelines in 12.9 s |
+| Race-start frame 1729 | 22.8 s (234 shaders, 214 pipelines) | 0.90 s, no compilation | 0.94 s, no compilation |
+| Replay frames over 50 ms dominated by shader work | 37 | 8 (content the recording run never reached) | 0 |
+
+At the race start, 312 lowerings (35 ms) still happen during the game. They
+belong to draws that never created a native pipeline, so no recipe records
+them.

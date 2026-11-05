@@ -8,6 +8,7 @@
 #include <string>
 #include <tuple>
 #include <unordered_map>
+#include <vector>
 
 #include "gfx/LatteProgram.hpp"
 
@@ -21,6 +22,17 @@ namespace Core::Gfx::Latte {
             bool implicitLod{};
             bool explicitLod{};
             bool derivativeLod{}; // SAMPLE coordinates proven available across the whole quad.
+    };
+
+    // Everything a cached shader was lowered from, so it can be lowered again in a later session
+    // (recorded pipelines are re-created before their first draw).
+    struct ShaderOrigin {
+            std::vector<std::uint32_t> words;
+            std::vector<TextureType> resourceTypes; // trailing 2D entries removed
+            bool vertex{}, onlyColorZero{};
+            unsigned colorExport{}, positionRegister{32}, bufferWindow{};
+            std::array<unsigned, 16> bufferWindows{};
+            bool operator==(const ShaderOrigin &) const = default;
     };
 
     struct FragmentShader {
@@ -56,6 +68,8 @@ namespace Core::Gfx::Latte {
             // Constant registers u.c[0, constantRegisters) the program may read; hand-written
             // shaders keep the whole file.
             unsigned constantRegisters{256};
+            // Set by VertexShaderCache/FragmentShaderCache; null for hand-written or uncached shaders.
+            std::shared_ptr<const ShaderOrigin> origin;
             explicit operator bool() const { return error.empty() && !source.empty(); }
     };
 
@@ -89,6 +103,8 @@ namespace Core::Gfx::Latte {
     // bufferWindow: vectors per dynamically indexed uniform block (0: the shared default budget).
     VertexShader lowerVertexShader(const Program &program, std::span<const TextureType> resourceTypes = {}, unsigned bufferWindow = 0,
                                    const UniformBufferWindows &bufferWindows = {});
+    // Same result as the cache that recorded `origin`; vertex origins yield a VertexShader.
+    std::shared_ptr<const FragmentShader> lowerOrigin(const std::shared_ptr<const ShaderOrigin> &origin);
     class VertexShaderCache {
         public:
             std::shared_ptr<const VertexShader> get(const std::vector<std::uint32_t> &words, unsigned bufferWindow = 0,
