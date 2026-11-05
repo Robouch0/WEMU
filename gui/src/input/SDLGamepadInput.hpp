@@ -17,6 +17,8 @@ public:
         bool isButtonReleased(const QString &) const override { return false; }
         float getAxisValue(const QString &axisName) const override;
         QString name() const override;
+        // What SDL reports for the hardware, such as "Xbox One Controller".
+        QString displayName() const;
 
         SDL_JoystickID instanceId() const;
 
@@ -32,6 +34,8 @@ public:
         float m_lastLY = 0.0f;
         float m_lastRX = 0.0f;
         float m_lastRY = 0.0f;
+        float m_lastLTAmount = 0.0f;
+        float m_lastRTAmount = 0.0f;
         bool m_lastLT = false;
         bool m_lastRT = false;
 

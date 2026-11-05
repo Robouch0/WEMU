@@ -41,7 +41,7 @@ TEST(SessionProtocolTest, SeparatePixelPayloadUsesIdenticalWireFormat)
     QByteArray metadata;
     QDataStream stream(&metadata, QIODevice::WriteOnly);
     WemuSession::configure(stream);
-    stream << quint32(WemuSession::Type::Frame) << quint64(17) << quint32(2) << quint32(1) << 30.0 << 15.0 << quint64(18) << quint64(9);
+    stream << quint32(WemuSession::Type::Frame) << quint64(17) << quint32(2) << quint32(1) << 30.0 << 15.0 << quint64(18) << quint64(9) << quint32(2);
     const QByteArray pixels("\x01\x02\x03\xff\x04\x05\x06\xff", 8);
     const auto bytes = WemuSession::packetHeader(metadata, pixels.size()) + pixels;
     EXPECT_EQ(bytes, WemuSession::packet(metadata + pixels));

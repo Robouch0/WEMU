@@ -5,6 +5,7 @@
 #include <QFileInfo>
 #include <QSettings>
 #include <QTemporaryDir>
+#include <QThread>
 #include <QUrl>
 #include <QDebug>
 #include <stdexcept>
@@ -48,6 +49,19 @@ int main(int argc, char **argv)
         TitleScanner scanner;
         scanner.scanDirectory(QUrl::fromLocalFile(root).toString());
         require(scanner.rowCount({}) == 2, "base/update deduplication or orphan filtering failed");
+        const auto firstProgram = scanner.data(scanner.index(1), TitleScanner::RpxPathRole).toString();
+        require(scanner.indexOfGame(firstProgram) == 1, "a game was not found by its program");
+        require(scanner.indexOfGame("/missing.rpx") == -1, "a missing game was reported as found");
+        const auto sizeOf = [&](int row) { return scanner.data(scanner.index(row), TitleScanner::SizeBytesRole).toLongLong(); };
+        require(sizeOf(0) == -1, "size must be pending until it has been measured");
+        for (int attempt = 0; attempt < 500 && (sizeOf(0) < 0 || sizeOf(1) < 0); ++attempt) {
+            QCoreApplication::processEvents();
+            QThread::msleep(1);
+        }
+        require(sizeOf(0) > 0, "game size was not measured in the background");
+        const auto updatedTitle = sizeOf(0) > sizeOf(1) ? sizeOf(0) : sizeOf(1);
+        const auto baseOnly = sizeOf(0) > sizeOf(1) ? sizeOf(1) : sizeOf(0);
+        require(updatedTitle > baseOnly, "a title's size must include its installed update");
         const auto first = scanner.index(0, 0);
         require(scanner.data(first, TitleScanner::NameRole) == "First title", "update replaced display metadata");
         require(scanner.data(first, TitleScanner::RpxPathRole) == update + "/code/program.rpx", "highest numeric update not selected");
@@ -118,6 +132,18 @@ int main(int argc, char **argv)
         require(QDir().mkpath(binaryDirectory) && QDir().mkpath(gamesDirectory) && QDir().mkpath(elsewhere), "discovery fixture failed");
         require(TitleScanner::defaultLibraryPath(binaryDirectory, elsewhere) == gamesDirectory, "nested build cannot find repository games");
         require(TitleScanner::defaultLibraryPath(elsewhere, checkout) == gamesDirectory, "working-directory discovery failed");
+        // A game copied in stages must appear on its own, without a manual refresh.
+        const auto watchedRoot = temporaryRoot + "/watched library";
+        require(QDir().mkpath(watchedRoot + "/copied game/code"), "watch fixture failed");
+        TitleScanner watcher;
+        watcher.scanDirectory(watchedRoot);
+        require(watcher.rowCount({}) == 0, "an empty game folder was listed");
+        write(watchedRoot + "/copied game/code/program.rpx", "fixture");
+        for (int attempt = 0; attempt < 3000 && watcher.rowCount({}) == 0; ++attempt) {
+            QCoreApplication::processEvents();
+            QThread::msleep(1);
+        }
+        require(watcher.rowCount({}) == 1, "a file arriving in code/ did not update the library");
         qInfo() << "Library discovery, commercial update pairing, RPX demos, metadata, persistence and refresh passed";
         return 0;
     } catch (const std::exception &e) { qCritical() << e.what(); return 1; }

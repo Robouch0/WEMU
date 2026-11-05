@@ -54,7 +54,9 @@ void Renderer::flip_tv(const std::uint8_t *rgbx, std::uint32_t w, std::uint32_t 
         Core::Profile::Scope presenting(Core::Profile::Stage::Present);
         if (m_hostPresenter) {
             m_presentRate.record(Core::UI::FrameRate::Clock::now());
-            if (!m_hostPresenter->present({rgbx, std::size_t(w) * h * 4}, w, h, hostStatistics()))
+            auto statistics = hostStatistics();
+            statistics.swapInterval = swapInterval;
+            if (!m_hostPresenter->present({rgbx, std::size_t(w) * h * 4}, w, h, statistics))
                 m_open = false;
             pacePresentation(swapInterval);
         } else

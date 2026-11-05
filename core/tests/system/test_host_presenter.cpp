@@ -48,6 +48,16 @@ TEST(HostPresenterTest, RemoteFramesPreserveGuestPixelsWithoutAnSdlWindow)
     EXPECT_EQ(renderer.guest_present_count(), 1u);
 }
 
+TEST(HostPresenterTest, FramesCarryTheGuestSwapInterval)
+{
+    auto presenter = std::make_unique<TestPresenter>();
+    auto *transport = presenter.get();
+    Renderer renderer(std::move(presenter));
+    const std::vector<std::uint8_t> frame(4 * 4 * 4, 37);
+    renderer.flip_tv(frame.data(), 4, 4, 2);
+    EXPECT_EQ(transport->lastStatistics.swapInterval, 2u);
+}
+
 TEST(HostPresenterTest, SafePauseAcknowledgementPreservesCountersAndStopsInput)
 {
     auto presenter = std::make_unique<TestPresenter>();

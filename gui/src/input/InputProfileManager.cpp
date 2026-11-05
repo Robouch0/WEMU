@@ -21,6 +21,7 @@ InputProfileManager::InputProfileManager(QObject *parent)
         m_profiles.append(createDefaultProfile("Profile " + QString::number(i + 1)));
 
     load();
+    m_editedIndex = m_currentIndex;
 }
 
 InputProfile InputProfileManager::createDefaultProfile(const QString &name)
@@ -47,7 +48,7 @@ InputProfile InputProfileManager::createDefaultProfile(const QString &name)
 QVariantList InputProfileManager::bindingModel() const
 {
     QVariantList result;
-    const auto &profile = m_profiles[m_currentIndex];
+    const auto &profile = m_profiles[m_editedIndex];
 
     for (const auto &wiiu : s_displayOrder) {
         QVariantMap entry;
@@ -75,9 +76,18 @@ void InputProfileManager::selectProfile(int index)
     emit bindingsChanged();
 }
 
+void InputProfileManager::editProfile(int index)
+{
+    if (index < 0 || index >= k_maxProfiles || index == m_editedIndex)
+        return;
+
+    m_editedIndex = index;
+    emit bindingsChanged();
+}
+
 void InputProfileManager::setBinding(const QString &wiiuButton, const QString &xboxButton)
 {
-    auto &bindings = m_profiles[m_currentIndex].bindings;
+    auto &bindings = m_profiles[m_editedIndex].bindings;
     const QString oldXbox = bindings.value(wiiuButton);
 
     for (auto it = bindings.begin(); it != bindings.end(); ++it) {
@@ -92,21 +102,21 @@ void InputProfileManager::setBinding(const QString &wiiuButton, const QString &x
     emit bindingsChanged();
 }
 
-void InputProfileManager::resetCurrentProfile()
+void InputProfileManager::resetEditedProfile()
 {
-    m_profiles[m_currentIndex] = createDefaultProfile(m_profiles[m_currentIndex].name);
+    m_profiles[m_editedIndex] = createDefaultProfile(m_profiles[m_editedIndex].name);
     save();
     emit bindingsChanged();
 }
 
 QString InputProfileManager::getBinding(const QString &wiiuButton) const
 {
-    return m_profiles[m_currentIndex].bindings.value(wiiuButton, "");
+    return m_profiles[m_editedIndex].bindings.value(wiiuButton, "");
 }
 
 bool InputProfileManager::isKnownXboxButton(const QString &button) const
 {
-    const auto &bindings = m_profiles[m_currentIndex].bindings;
+    const auto &bindings = m_profiles[m_editedIndex].bindings;
     return bindings.values().contains(button);
 }
 

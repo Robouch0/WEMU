@@ -154,6 +154,9 @@ declare -a APT_PKGS=(
   qml6-module-qtmultimedia
   qml6-module-qt-labs-platform
 
+  # Records the game previews of the library
+  ffmpeg
+
   # Tests
   libgtest-dev
   libgmock-dev
@@ -166,6 +169,8 @@ declare -a DNF_PKGS=(
   # Resolved by provide so dnf picks ffmpeg-devel (RPM Fusion) or
   # libavcodec-free-devel (Fedora) depending on which FFmpeg is installed.
   'pkgconfig(libavcodec)' 'pkgconfig(libavformat)' 'pkgconfig(libavutil)' 'pkgconfig(libswscale)' 'pkgconfig(libswresample)'
+  # The ffmpeg program records the game previews of the library.
+  /usr/bin/ffmpeg
   vulkan-loader-devel vulkan-tools vulkan-validation-layers glslang glslang-devel glslc
   glfw-devel SDL2-devel SDL2_image-devel glm-devel
   qt6-qtbase-devel qt6-qtdeclarative-devel qt6-qtmultimedia-devel

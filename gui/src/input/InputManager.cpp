@@ -37,6 +37,7 @@ void InputManager::pollSDLEvents()
                 if (pad && pad->instanceId() == id) {
                     pad->deleteLater();
                     it = m_devices.erase(it);
+                    emit devicesChanged();
                 } else {
                     ++it;
                 }
@@ -63,6 +64,7 @@ void InputManager::addDevice(IInputDevice *device)
                     emit axisChanged(axis, value, pad->name());
                 });
     }
+    emit devicesChanged();
 }
 
 void InputManager::removeDevice(const QString &deviceName)
@@ -136,6 +138,16 @@ bool InputManager::isButtonReleased(const QString &buttonName) const
             return true;
     }
     return false;
+}
+
+QStringList InputManager::controllerNames() const
+{
+    QStringList names;
+
+    for (const auto *device: m_devices)
+        if (const auto *pad = dynamic_cast<const SDLGamepadInput *>(device))
+            names.append(pad->displayName());
+    return names;
 }
 
 QStringList InputManager::connectedDevices() const

@@ -100,7 +100,7 @@ namespace Core::Frontend {
         QDataStream stream(&body, QIODevice::WriteOnly);
         WemuSession::configure(stream);
         stream << quint32(WemuSession::Type::Frame) << ++m_sequence << quint32(width) << quint32(height) << statistics.presentFps
-               << statistics.movieFps << quint64(statistics.presents) << quint64(statistics.movies);
+               << statistics.movieFps << quint64(statistics.presents) << quint64(statistics.movies) << quint32(statistics.swapInterval);
         if (!send(body, rgba))
             return false;
         // Two-frame pipeline, like the standalone presentation slots. Every visible frame is acknowledged in order.
