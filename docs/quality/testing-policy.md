@@ -94,7 +94,19 @@ The following critical-path files are currently below the $\ge 80\%$ line covera
 | `core/src/hle/Gx2.cpp` | 68% | Secondary buffer size calculation variants and mip surface copies |
 
 #### Update 2026-11-12
-After the loader validation tests (19) and the interpreter dispatch, branch, compare and SPR/CR tests (88): **69.3%** line coverage of WEMU core code. `Loader.cpp` 64.7% → 74.9%, `BeDecoder` 80.0% → 95.6%, `Interpreter.cpp` 60.3% → 60.6%.
+After the loader, Fs, coreinit, run-loop, GX2 tests and the removal of game-specific code: **74.8%** line coverage of WEMU core code, 1,286 tests.
+
+| Critical-path file | 2026-11-06 | 2026-11-12 |
+|---|---|---|
+| `binary/Loader.cpp` | 64.7% | 98.6% |
+| `hle/Fs.cpp` | 58.3% | 92.7% |
+| `hle/Coreinit.cpp` | 56.0% | 81.3% |
+| `hle/CoreinitExtra.cpp` | 56.4% | 91.7% |
+| `cpu/interpreter/Interpreter.cpp` | 60.3% | 85.3% |
+| `hle/Gx2.cpp` | 68.5% | 81.3% |
+| `gfx/Gx2Replayer.cpp` | 65.2% | 65.2% (next) |
+
+WEMU contains no game-specific patches or addresses (tech-debt item 15): every title runs the same code.
 
 ### Reproducing Coverage Locally
 

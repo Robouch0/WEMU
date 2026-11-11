@@ -89,3 +89,22 @@ GitHub Actions (`.github/workflows/wemu-checks.yml`) runs the unit tests, clang-
 | **LDR-05** | truncated file, bad magic, little-endian/64-bit or non-PowerPC ELF | read past the end or misparsed headers | clear `LoaderException` naming the file (`TruncatedFilesAreRejectedCleanly`, `BadMagicIsRejected`, ...) |
 
 A seeded corruption sweep (`CorruptedHeadersNeverCrash`, 40 rounds) checks that random header damage only ever ends in a `LoaderException`. `RealTitlesStillLoad` (opt-in, `WEMU_TEST_RPX_DIR=games`) confirmed that the 13 local titles, including Mario Kart 8, Pikmin 3 and Smash, still load with the checks on.
+
+---
+
+## 5. Defects Found While Raising Critical-Path Coverage (2026-11-12)
+
+Each defect below was found by a new test, fixed, and checked by running the test against the old code (it fails) and the fixed code (it passes).
+
+| ID | Defect | Effect on a title | Test | Fix |
+|---|---|---|---|---|
+| **COV-01** | Nested `OSUninterruptibleSpinLock` saved the interrupt state on every acquire, so after the outer release interrupts stayed disabled. A release by a thread that did not hold the lock also restored its state. | Preemption silently stops for the rest of the session once a title nests a spinlock. | `CoreinitSyncTest.NestedSpinLockRestoresInterruptsOnlyAtTheOutermostRelease`, `SpinLockHeldByAnotherThreadCannotBeTakenOrReleasedFromOutside` | Per-lock owner, depth and saved state (`core/src/hle/Coreinit.cpp`) |
+| **COV-02** | `OSBlockMove` and `OSBlockSet` returned 0 instead of the destination pointer (wut declares `void *`). | Code that uses the result, like `memmove`/`memset`, gets NULL. | `CoreinitSyncTest.BlockMoveHandlesOverlapBothWaysAndReturnsTheDestination`, `BlockSetUsesOnlyTheLowByteAndStopsAtTheGivenSize` | Return `dst` |
+| **COV-03** | `OSGetThreadPriority` always returned 16. | A title that saves a priority and restores it later resets the thread to 16. | `CoreinitRuntimeTest.RaisingAReadyThreadAboveTheCallerHandsItTheCpu` | Read the scheduler's value (new `Scheduler::thread()` lookup) |
+| **COV-04** | `OSGetSystemInfo` and `OSGetSharedData` cached their guest pointer in a function `static`, valid only in the first guest memory. | A second emulator instance (or a reset memory) reads clock info / the system font from unallocated memory. | `CoreinitRuntimeTest.SystemInfoDescribesTheEspressoClocksInEachGuestMemory`, `CoreinitExtraTest.SharedFontComesFromTheConfiguredFileInEveryGuestMemory` | Re-create the data when the memory changes or no longer holds it |
+| **COV-05** | Decoded fetch-shader layouts were cached by program address only, the same class of bug as REG-06. | After a title loads a different fetch shader at a reused address, its vertices are read with the old attribute formats. | `Gx2FetchShaderTest.NewMicrocodeAtAReusedAddressIsDecodedAgain` | Cache the microcode with the layout and decode again when it differs (`core/src/hle/Gx2.cpp`) |
+| **COV-06** | The interpreter's hook filter was rebuilt only when the number of hooks changed. | Replacing the hook set with one of the same size left new hooks unseen (found when two tests registered one hook each). | `RunLoopTest.WorkerThreadFinishesAndTheTitleCarriesOnUntilMainReturns` (after `HookedAddressRunsTheHostHandlerAndReturnsToTheCaller`) | Force a rebuild at the start of `run()` |
+| **COV-07** | `SetFsContentRoot` kept the content layers added for the previous root. | A new title in the same process would read files from the previous title's update layers. | `FsScenarioTest.UpdateContentWinsAndTheBaseGameFillsInWhatTheUpdateLacks` | Clear the layers when the root changes (`core/src/hle/Fs.cpp`) |
+
+The RPX suite was run after these fixes (`results/20261112-052306`, then best of 3 for `cpu_jobs`, `textures`, `shadows`): same probe results as 2026-11-06 and no frame-rate regression.
+

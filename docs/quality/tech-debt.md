@@ -24,6 +24,10 @@ Costs are estimated as **S** ($< 2$ days), **M** ($2\text{--}5$ days), or **L** 
 | **12. Coverage Excludes GUI & Unpublished in CI** | Low: Team lacks automated PR visibility into coverage regressions; GUI coverage remains unmeasured. | Coverage toolchain slows down CI execution; local reporting was deemed sufficient initially. | **S** | `TODO(team): Assign owner` |
 | **13. RPX Suite Timing Noise on Laptops** | Low: Benchmarking results vary with thermal throttling and CPU power states; false regression warnings. | High-precision host performance counters require standardized server hardware. | **S** | `TODO(team): Assign owner` |
 | **14. CI Checks Not Listed as Required** | Medium: A pull request with failing tests could be merged once it has its approvals. | Rulesets were set up for reviews first. | **S** | `TODO(team): Assign owner` |
+| ~~**15. Title-Specific Workarounds in Core Loops**~~ (resolved) | Medium: Mario Kart 8 code keyed to that game's addresses in the run loop, `gx2_swap`, `CoreinitExtra` and `Diagnostics`. | Added during MK8 bring-up. | **M** | Resolved 2026-11-12 |
+| **16. `OSTicksToCalendarTime` Is a Fixed Date** | Low: Every title sees the same date in 2026, whatever time it passes. | `OSGetTime` counts from boot, not from 2000-01-01, so a real conversion needs a wall-clock base first. | **S** | `TODO(team): Assign owner` |
+| **17. `GX2CalcTVSize`/`GX2CalcDRCSize` Ignore Mode, Format and Buffering** | Medium: Always the 720p (854x480 for the GamePad), 32-bit, double-buffered size. A 1080p or triple-buffered title gets an undersized scan buffer. | Scan-out was written for 720p first. | **M** | `TODO(team): Assign owner` |
+| **18. Remaining Stubs** | Low: `__os_snprintf` writes an empty string; `OSGetTitleID` returns 0; `nn::act` ID getters return constants. Not tested on purpose: a test would only freeze placeholder behaviour. | Implemented as needed to boot titles. | **S** | `TODO(team): Assign owner` |
 
 ---
 
@@ -98,3 +102,17 @@ Costs are estimated as **S** ($< 2$ days), **M** ($2\text{--}5$ days), or **L** 
 - **Detail:** As read through the GitHub API on 2026-11-12, the `Dev protection` ruleset requires 1 approving review and blocks deletion and force-pushes, but lists no required status checks. `Main protection` requires 2 approvals and only the `check-source-branch` check. The `wemu-checks.yml` jobs (`Full Build (core + gui)`, `Unit Tests`, `macOS arm64`, `clang-format`, `clang-tidy`) do not appear as required.
 - **Risk:** The policy says CI must pass before merge, but GitHub does not enforce it.
 - **Remediation:** Add those job names as required status checks in both rulesets, or close this item if they are enforced somewhere the API does not report.
+
+### Item 15: Title-Specific Workarounds in Core Loops (resolved 2026-11-12)
+- **What was removed:** the MK8 drive-menu trampoline and title-sequence deferral in `Interpreter::run()`; ten MK8/sead/FLVC tracers and skips in `utils/Diagnostics.cpp` (about 800 lines); the scene-state debugging in `gx2_swap`; `InstallTitleSeqPoolFix`, `InstallSceneConfigWorkaround`, `InstallSceneUpdateForce` and `InstallSubsysReadyForce`. No game address is left in `core/src`. Generic debugging tools (`WEMU_WATCH_*`, `WEMU_PC_COUNT`, `WEMU_HEARTBEAT`, `WEMU_PATCH`) stay.
+- **Why it was safe:** everything except the two `Install*` fixes was behind environment variables, and GUI sessions already ran without those two.
+- **Check:** Mario Kart 8, Pikmin 3 and Smash Bros were run for 1,500 frames through the GUI session protocol before and after (`scratchpad/session_probe.py`, A pressed at frames 900 and 1200). All 15 captured frames are byte-identical, and the frame rates match within 1% (MK8 59.2 vs 58.8 fps, Pikmin 3 10.0 vs 10.0, Smash 21.6 vs 21.5).
+
+### Item 16: `OSTicksToCalendarTime` Returns a Fixed Date
+- **Detail:** `core/src/hle/CoreinitExtra.cpp` writes one constant `OSCalendarTime` for any input.
+- **Remediation:** Decide on a guest wall-clock base (host time at boot, or a fixed date for deterministic runs), add it to `OSGetTime`, then convert ticks (bus clock / 4 per second, epoch 2000-01-01) with tests on known dates and leap years.
+
+### Item 17: Scan Buffer Size Ignores the Requested Mode
+- **Detail:** `gx2_CalcTVSize` and `gx2_CalcDRCSize` in `core/src/hle/Gx2.cpp` ignore r3 (render mode), r4 (surface format) and r5 (buffering mode).
+- **Remediation:** Compute the size from the mode's resolution, the format's bytes per pixel and the buffer count. Test 480p/720p/1080p, 8- and 10-bit formats, and double/triple buffering.
+
