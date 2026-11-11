@@ -278,7 +278,20 @@ namespace {
     std::vector<OpenDisplayList> &openLists(const Core::Interpreter &cpu) { return g_openLists[cpu.m_scheduler.currentHandle()]; }
     using CapturedList = std::vector<Core::Gfx::Gx2Command>;
     std::unordered_map<std::uint32_t, std::shared_ptr<const CapturedList>> g_displayLists;
-    std::unordered_map<std::uint32_t, std::vector<std::uint32_t>> g_fetchLayouts;
+    // Decoded layouts per program address, with the microcode they were decoded from: a title can
+    // free a shader archive and load different microcode at the same address.
+    struct FetchLayout {
+            std::vector<std::uint8_t> microcode;
+            std::vector<std::uint32_t> layout;
+    };
+    std::unordered_map<std::uint32_t, FetchLayout> g_fetchLayouts;
+
+    std::vector<std::uint8_t> fetchMicrocode(const Core::Interpreter &cpu, std::uint32_t shader, std::uint32_t program)
+    {
+        const auto size = cpu.m_memory.read<std::uint32_t>(shader + 8);
+        const auto *bytes = size <= 0x10000 ? cpu.m_memory.hostPtr(program, size) : nullptr;
+        return bytes ? std::vector<std::uint8_t>(bytes, bytes + size) : std::vector<std::uint8_t>{};
+    }
 
     // Fetch shaders loaded from a title's shader archives never pass through GX2InitFetchShaderEx,
     // so rebuild their GX2AttribStream layout (location, buffer, offset, format, type, divisor,
@@ -428,11 +441,12 @@ namespace {
         c.callerLr = cpu.m_lr + Core::Memory::MemoryMap::ApplicationCode;
         if (type == Core::Gfx::Gx2Cmd::SetFetchShader && c.gpr[0]) {
             const auto program = cpu.m_memory.read<std::uint32_t>(c.gpr[0] + 0xC);
+            auto microcode = fetchMicrocode(cpu, c.gpr[0], program);
             auto it = g_fetchLayouts.find(program);
-            if (it == g_fetchLayouts.end()) {
-                it = g_fetchLayouts.emplace(program, decodeFetchShader(cpu, c.gpr[0])).first;
+            if (it == g_fetchLayouts.end() || it->second.microcode != microcode) {
+                it = g_fetchLayouts.insert_or_assign(program, FetchLayout{std::move(microcode), decodeFetchShader(cpu, c.gpr[0])}).first;
                 static const bool trace = std::getenv("WEMU_FETCH_TRACE") != nullptr;
-                if (trace && it->second.empty()) {
+                if (trace && it->second.layout.empty()) {
                     std::string words;
                     try {
                         const auto size = cpu.m_memory.read<std::uint32_t>(c.gpr[0] + 8);
@@ -444,12 +458,12 @@ namespace {
                     }
                 }
                 if (trace)
-                    for (std::size_t i = 0; i + 7 < it->second.size(); i += 8)
+                    for (std::size_t i = 0; i + 7 < it->second.layout.size(); i += 8)
                         Utils::Log::error("[FETCHDECODE] program={:08X} loc={} buf={} off={} fmt={:X} type={} mask={:08X} endian={}", program,
-                                          it->second[i], it->second[i + 1], it->second[i + 2], it->second[i + 3], it->second[i + 4],
-                                          it->second[i + 6], it->second[i + 7]);
+                                          it->second.layout[i], it->second.layout[i + 1], it->second.layout[i + 2], it->second.layout[i + 3],
+                                          it->second.layout[i + 4], it->second.layout[i + 6], it->second.layout[i + 7]);
             }
-            c.payload = it->second;
+            c.payload = it->second.layout;
         }
         // Uniform data lives in stack/ring memory the game reuses immediately — copy it now.
         std::uint32_t ptr = 0, words = 0;
@@ -1353,8 +1367,8 @@ namespace {
         const auto count = std::min(cpu.m_gpr[5], 32u), streams = cpu.m_gpr[6];
         if (!shader || !program || (count && !streams))
             return;
-        auto &layout = g_fetchLayouts[program];
-        layout.clear();
+        std::vector<std::uint32_t> layout;
+        layout.reserve(std::size_t{count} * 8);
         for (std::uint32_t i = 0; i < count * 8; i++)
             layout.push_back(cpu.m_memory.read<std::uint32_t>(streams + i * 4));
         for (std::uint32_t off = 0; off < 0x20; off += 4)
@@ -1363,6 +1377,9 @@ namespace {
         cpu.m_memory.write<std::uint32_t>(shader + 8, alignUp(32 + count * 16, 0x100));
         cpu.m_memory.write<std::uint32_t>(shader + 0xC, program);
         cpu.m_memory.write<std::uint32_t>(shader + 0x10, count);
+        // The layout comes from the attribute streams; the program buffer is snapshotted so that other
+        // microcode loaded at this address later is decoded instead of inheriting this layout.
+        g_fetchLayouts.insert_or_assign(program, FetchLayout{fetchMicrocode(cpu, shader, program), std::move(layout)});
         cpu.m_gpr[3] = 0;
     }
     void gx2_TempGpuVersion(Core::Interpreter &cpu) { cpu.m_gpr[3] = 2u; }
