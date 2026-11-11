@@ -760,7 +760,12 @@ namespace {
 
 } // namespace
 
-void SetFsContentRoot(const std::string &hostPath) { g_contentRoot = hostPath; }
+// A new content root is a new title: fallback layers belong to the previous one.
+void SetFsContentRoot(const std::string &hostPath)
+{
+    g_contentRoot = hostPath;
+    g_contentLayers.clear();
+}
 void SetFsSdRoot(const std::string &hostPath)
 {
     g_sdRoot = hostPath;

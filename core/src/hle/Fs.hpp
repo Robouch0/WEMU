@@ -6,7 +6,8 @@
 // "/vol/content" are served from the host content root set via SetFsContentRoot().
 void RegisterFsFunctions();
 
-// Sets the host directory that backs "/vol/content" (typically "<gamedir>/content").
+// Sets the host directory that backs "/vol/content" (typically "<gamedir>/content") and drops any
+// content layers added for the previous root.
 void SetFsContentRoot(const std::string &hostPath);
 
 // Optional host SD card root. Empty disables SD card emulation.

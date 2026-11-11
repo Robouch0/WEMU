@@ -1,6 +1,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <string>
 
 #include "TestFixture.hpp"
@@ -432,4 +433,390 @@ TEST_F(FsTest, ReadFileWithPos)
     EXPECT_EQ(static_cast<std::int32_t>(cpu->m_gpr[3]), 4);
     EXPECT_EQ(cpu->m_memory.read<std::uint8_t>(BUF + 0), 'D');
     EXPECT_EQ(cpu->m_memory.read<std::uint8_t>(BUF + 3), 'A');
+}
+
+namespace {
+    constexpr std::uint32_t FsPath = 0x02100000, FsMode = 0x02100100, FsOut = 0x02100200, FsStat = 0x02100300, FsBuffer = 0x02100400;
+    constexpr std::uint32_t FsEntry = 0x02100800; // FSDirEntry: FSStat at +0, name at +0x64
+    constexpr std::int32_t StatusEnd = -2, StatusNotFound = -6, StatusExists = -5, StatusFatal = -0x400;
+    constexpr std::uint32_t StatIsDirectory = 0x80000000u;
+
+    void writeHostFile(const std::filesystem::path &path, const std::string &content)
+    {
+        std::filesystem::create_directories(path.parent_path());
+        std::ofstream(path, std::ios::binary) << content;
+    }
+} // namespace
+
+// Gives FsTest one-line wrappers for the calls the scenarios below repeat.
+class FsScenarioTest : public FsTest {
+    protected:
+        std::int32_t status() const { return static_cast<std::int32_t>(cpu->m_gpr[3]); }
+
+        // FSOpenFile: returns the handle, or 0 with the status left in r3.
+        std::uint32_t open(const std::string &path, const char *mode = "rb")
+        {
+            putStr(FsPath, path);
+            putStr(FsMode, mode);
+            cpu->m_gpr[3] = 0;
+            cpu->m_gpr[5] = FsPath;
+            cpu->m_gpr[6] = FsMode;
+            cpu->m_gpr[7] = FsOut;
+            call("FSOpenFile");
+            return status() == 0 ? cpu->m_memory.read<std::uint32_t>(FsOut) : 0;
+        }
+
+        std::string read(std::uint32_t handle, std::uint32_t bytes)
+        {
+            cpu->m_gpr[5] = FsBuffer;
+            cpu->m_gpr[6] = 1;
+            cpu->m_gpr[7] = bytes;
+            cpu->m_gpr[8] = handle;
+            call("FSReadFile");
+            if (status() < 0)
+                return {};
+            return {reinterpret_cast<const char *>(cpu->m_memory.hostPtr(FsBuffer)), cpu->m_gpr[3]};
+        }
+
+        void write(std::uint32_t handle, const std::string &bytes)
+        {
+            putStr(FsBuffer, bytes);
+            cpu->m_gpr[5] = FsBuffer;
+            cpu->m_gpr[6] = 1;
+            cpu->m_gpr[7] = static_cast<std::uint32_t>(bytes.size());
+            cpu->m_gpr[8] = handle;
+            call("FSWriteFile");
+        }
+
+        void close(std::uint32_t handle)
+        {
+            cpu->m_gpr[5] = handle;
+            call("FSCloseFile");
+        }
+
+        // FSGetStat by path: returns the status; flags and size land in FsStat.
+        std::int32_t stat(const std::string &path)
+        {
+            putStr(FsPath, path);
+            cpu->m_gpr[3] = 0;
+            cpu->m_gpr[5] = FsPath;
+            cpu->m_gpr[6] = FsStat;
+            call("FSGetStat");
+            return status();
+        }
+
+        std::uint32_t statFlags() const { return cpu->m_memory.read<std::uint32_t>(FsStat); }
+        std::uint32_t statSize() const { return cpu->m_memory.read<std::uint32_t>(FsStat + 0x10); }
+
+        struct Entry {
+                std::uint32_t flags, size;
+        };
+
+        // FSOpenDir + FSReadDir until FS_STATUS_END; fails the test on a duplicate name.
+        std::map<std::string, Entry> listDir(const std::string &path)
+        {
+            putStr(FsPath, path);
+            cpu->m_gpr[3] = 0;
+            cpu->m_gpr[5] = FsPath;
+            cpu->m_gpr[6] = FsOut;
+            call("FSOpenDir");
+            if (status() != 0)
+                return {};
+            const auto handle = cpu->m_memory.read<std::uint32_t>(FsOut);
+            std::map<std::string, Entry> entries;
+            for (int guard = 0; guard < 64; ++guard) {
+                cpu->m_gpr[5] = handle;
+                cpu->m_gpr[6] = FsEntry;
+                call("FSReadDir");
+                if (status() == StatusEnd)
+                    break;
+                EXPECT_EQ(status(), 0);
+                const std::string name(reinterpret_cast<const char *>(cpu->m_memory.hostPtr(FsEntry + 0x64)));
+                EXPECT_TRUE(
+                        entries.emplace(name, Entry{cpu->m_memory.read<std::uint32_t>(FsEntry), cpu->m_memory.read<std::uint32_t>(FsEntry + 0x10)})
+                                .second)
+                        << name << " listed twice";
+            }
+            // Past the end the handle keeps answering END until it is closed.
+            cpu->m_gpr[5] = handle;
+            cpu->m_gpr[6] = FsEntry;
+            call("FSReadDir");
+            EXPECT_EQ(status(), StatusEnd);
+            cpu->m_gpr[5] = handle;
+            call("FSCloseDir");
+            EXPECT_EQ(status(), 0);
+            cpu->m_gpr[5] = handle;
+            cpu->m_gpr[6] = FsEntry;
+            call("FSReadDir");
+            EXPECT_EQ(status(), StatusNotFound) << "a closed directory handle must not keep listing";
+            return entries;
+        }
+};
+
+TEST_F(FsScenarioTest, UpdateContentWinsAndTheBaseGameFillsInWhatTheUpdateLacks)
+{
+    writeHostFile(root / "update" / "ui" / "hello.bin", "UPDATE!!");
+    writeHostFile(root / "base" / "ui" / "hello.bin", "BASE");
+    writeHostFile(root / "base" / "ui" / "only_base.bin", "FROMBASE!");
+    SetFsContentRoot((root / "update").string());
+    AddFsContentLayer((root / "base").string());
+
+    auto handle = open("/vol/content/ui/hello.bin");
+    ASSERT_NE(handle, 0u);
+    EXPECT_EQ(read(handle, 16), "UPDATE!!");
+    close(handle);
+
+    handle = open("/vol/content/ui/only_base.bin");
+    ASSERT_NE(handle, 0u);
+    EXPECT_EQ(read(handle, 16), "FROMBASE!");
+    close(handle);
+    EXPECT_EQ(stat("/vol/content/ui/only_base.bin"), 0);
+    EXPECT_EQ(statSize(), 9u);
+
+    EXPECT_EQ(open("/vol/content/ui/missing.bin"), 0u);
+    EXPECT_EQ(status(), StatusNotFound);
+
+    // Selecting a content root again starts a new title: the base layer is gone.
+    SetFsContentRoot((root / "update").string());
+    EXPECT_EQ(open("/vol/content/ui/only_base.bin"), 0u);
+    EXPECT_EQ(status(), StatusNotFound);
+}
+
+TEST_F(FsScenarioTest, DirectoryListingMergesLayersAndDescribesEachEntry)
+{
+    writeHostFile(root / "update" / "ui" / "hello.bin", "UPDATE!!");
+    std::filesystem::create_directories(root / "update" / "ui" / "sound");
+    writeHostFile(root / "base" / "ui" / "hello.bin", "BASE");
+    writeHostFile(root / "base" / "ui" / "only_base.bin", "FROMBASE!");
+    SetFsContentRoot((root / "update").string());
+    AddFsContentLayer((root / "base").string());
+
+    const auto entries = listDir("/vol/content/ui");
+    ASSERT_EQ(entries.size(), 3u);
+    ASSERT_TRUE(entries.contains("hello.bin"));
+    EXPECT_EQ(entries.at("hello.bin").size, 8u) << "the update's copy hides the base one";
+    EXPECT_EQ(entries.at("hello.bin").flags, 0u);
+    ASSERT_TRUE(entries.contains("only_base.bin"));
+    EXPECT_EQ(entries.at("only_base.bin").size, 9u);
+    ASSERT_TRUE(entries.contains("sound"));
+    EXPECT_EQ(entries.at("sound").flags, StatIsDirectory);
+
+    putStr(FsPath, "/vol/content/no_such_dir");
+    cpu->m_gpr[5] = FsPath;
+    cpu->m_gpr[6] = FsOut;
+    call("FSOpenDir");
+    EXPECT_EQ(status(), StatusNotFound);
+}
+
+TEST_F(FsScenarioTest, SeekingAndStatingKeepTheReadPositionWhereTheGameExpectsIt)
+{
+    const auto handle = open("/vol/content/ui/hello.bin");
+    ASSERT_NE(handle, 0u);
+    cpu->m_gpr[5] = handle;
+    cpu->m_gpr[6] = 4;
+    call("FSSetPosFile");
+    ASSERT_EQ(status(), 0);
+    EXPECT_EQ(read(handle, 2), "AT");
+
+    cpu->m_gpr[5] = handle;
+    cpu->m_gpr[6] = FsStat;
+    call("FSGetStatFile");
+    ASSERT_EQ(status(), 0);
+    EXPECT_EQ(statSize(), 8u);
+    EXPECT_EQ(read(handle, 8), "A!") << "FSGetStatFile must not move the file position";
+    EXPECT_EQ(read(handle, 8), "") << "reading at the end returns zero blocks";
+    EXPECT_EQ(cpu->m_gpr[3], 0u);
+    close(handle);
+
+    EXPECT_EQ(stat("/vol/content/ui"), 0);
+    EXPECT_EQ(statFlags(), StatIsDirectory);
+    EXPECT_EQ(statSize(), 0u);
+    EXPECT_EQ(stat("/vol/content/ui/missing.bin"), StatusNotFound);
+}
+
+TEST_F(FsScenarioTest, StaleOrInvalidHandlesAreRefusedWithoutTouchingMemory)
+{
+    const auto handle = open("/vol/content/ui/hello.bin");
+    ASSERT_NE(handle, 0u);
+    close(handle);
+    putStr(FsBuffer, "untouched");
+
+    EXPECT_EQ(read(handle, 4), "");
+    EXPECT_EQ(status(), StatusNotFound);
+    cpu->m_gpr[5] = FsBuffer;
+    cpu->m_gpr[6] = 1;
+    cpu->m_gpr[7] = 4;
+    cpu->m_gpr[8] = 0;
+    cpu->m_gpr[9] = handle;
+    call("FSReadFileWithPos");
+    EXPECT_EQ(status(), StatusNotFound);
+    cpu->m_gpr[5] = handle;
+    cpu->m_gpr[6] = 0;
+    call("FSSetPosFile");
+    EXPECT_EQ(status(), StatusNotFound);
+    cpu->m_gpr[5] = handle;
+    cpu->m_gpr[6] = FsStat;
+    call("FSGetStatFile");
+    EXPECT_EQ(status(), StatusNotFound);
+    cpu->m_gpr[5] = FsBuffer;
+    cpu->m_gpr[6] = 1;
+    cpu->m_gpr[7] = 4;
+    cpu->m_gpr[8] = handle;
+    call("FSWriteFile");
+    EXPECT_EQ(status(), StatusNotFound);
+    EXPECT_STREQ(reinterpret_cast<char *>(cpu->m_memory.hostPtr(FsBuffer)), "untouched");
+
+    // A zero block size would divide by zero when counting blocks.
+    const auto live = open("/vol/content/ui/hello.bin");
+    ASSERT_NE(live, 0u);
+    cpu->m_gpr[5] = FsBuffer;
+    cpu->m_gpr[6] = 0;
+    cpu->m_gpr[7] = 4;
+    cpu->m_gpr[8] = live;
+    call("FSReadFile");
+    EXPECT_EQ(status(), StatusNotFound);
+    close(live);
+
+    cpu->m_gpr[5] = 0xDEAD;
+    cpu->m_gpr[6] = FsEntry;
+    call("FSReadDir");
+    EXPECT_EQ(status(), StatusNotFound);
+}
+
+TEST_F(FsScenarioTest, DirectoryCreationReportsExistingAndUnmountedPaths)
+{
+    putStr(FsPath, "/vol/content/levels");
+    cpu->m_gpr[5] = FsPath;
+    call("FSMakeDir");
+    EXPECT_EQ(status(), 0);
+    cpu->m_gpr[5] = FsPath;
+    call("FSMakeDir");
+    EXPECT_EQ(status(), StatusExists);
+
+    putStr(FsPath, "/dev/hfio01/levels");
+    cpu->m_gpr[5] = FsPath;
+    call("FSMakeDir");
+    EXPECT_EQ(status(), StatusNotFound) << "paths outside the mounts never reach the host";
+
+    // FSOpenFileEx flags (r8) such as encryption are not supported and must not be ignored.
+    putStr(FsMode, "r");
+    putStr(FsPath, "/vol/content/ui/hello.bin");
+    cpu->m_gpr[5] = FsPath;
+    cpu->m_gpr[6] = FsMode;
+    cpu->m_gpr[8] = 1;
+    cpu->m_gpr[10] = FsOut;
+    call("FSOpenFileEx");
+    EXPECT_EQ(status(), StatusFatal);
+}
+
+TEST_F(FsScenarioTest, SaveDataPersistsPerAccountAndIsReachableThroughVolSave)
+{
+    SetFsContentRoot((root / "content").string()); // saves go to <content>/../wemu_save
+    const auto saveCall = [&](const char *name, std::uint32_t slot, const std::string &path, std::uint32_t r7, std::uint32_t r8 = 0) {
+        putStr(FsPath, path);
+        cpu->m_gpr[3] = 0;
+        cpu->m_gpr[5] = slot;
+        cpu->m_gpr[6] = FsPath;
+        cpu->m_gpr[7] = r7;
+        cpu->m_gpr[8] = r8;
+        call(name);
+        return status();
+    };
+    constexpr std::uint32_t Account = 1, Common = 255;
+
+    cpu->m_gpr[3] = Account;
+    call("SAVEInitSaveDir");
+    EXPECT_EQ(status(), 0);
+    EXPECT_TRUE(std::filesystem::is_directory(root / "wemu_save" / "80000001"));
+
+    putStr(FsMode, "r");
+    EXPECT_EQ(saveCall("SAVEOpenFile", Account, "progress.dat", FsMode, FsOut), StatusNotFound);
+    putStr(FsMode, "w");
+    ASSERT_EQ(saveCall("SAVEOpenFile", Account, "slot0/progress.dat", FsMode, FsOut), 0);
+    const auto handle = cpu->m_memory.read<std::uint32_t>(FsOut);
+    write(handle, "LEVEL7");
+    EXPECT_EQ(cpu->m_gpr[3], 6u);
+    close(handle);
+    EXPECT_TRUE(std::filesystem::is_regular_file(root / "wemu_save" / "80000001" / "slot0" / "progress.dat"));
+
+    EXPECT_EQ(saveCall("SAVEGetStat", Account, "slot0/progress.dat", FsStat), 0);
+    EXPECT_EQ(statSize(), 6u);
+    EXPECT_EQ(saveCall("SAVEGetStat", Account, "slot0", FsStat), 0);
+    EXPECT_EQ(statFlags(), StatIsDirectory);
+    EXPECT_EQ(saveCall("SAVEGetStat", Common, "slot0/progress.dat", FsStat), StatusNotFound) << "the common save is a separate directory";
+
+    // The save is the same file the title can open through /vol/save.
+    const auto viaFs = open("/vol/save/80000001/slot0/progress.dat");
+    ASSERT_NE(viaFs, 0u);
+    EXPECT_EQ(read(viaFs, 16), "LEVEL7");
+    close(viaFs);
+
+    ASSERT_EQ(saveCall("SAVEOpenDir", Account, "", FsOut), 0);
+    const auto dir = cpu->m_memory.read<std::uint32_t>(FsOut);
+    cpu->m_gpr[5] = dir;
+    cpu->m_gpr[6] = FsEntry;
+    call("FSReadDir");
+    ASSERT_EQ(status(), 0);
+    EXPECT_STREQ(reinterpret_cast<char *>(cpu->m_memory.hostPtr(FsEntry + 0x64)), "slot0");
+    cpu->m_gpr[5] = dir;
+    call("FSReadDir");
+    EXPECT_EQ(status(), StatusEnd);
+    cpu->m_gpr[5] = dir;
+    call("FSCloseDir");
+
+    EXPECT_EQ(saveCall("SAVERemove", Account, "slot0", 0), 0);
+    EXPECT_EQ(saveCall("SAVEGetStat", Account, "slot0/progress.dat", FsStat), StatusNotFound);
+    EXPECT_FALSE(std::filesystem::exists(root / "wemu_save" / "80000001" / "slot0"));
+}
+
+TEST_F(FsScenarioTest, SaveQueriesReportFreeSpaceAndSharedDataPaths)
+{
+    constexpr std::uint32_t Size = 0x02100900;
+    cpu->m_gpr[6] = Size;
+    call("SAVEGetFreeSpaceSize");
+    EXPECT_EQ(status(), 0);
+    EXPECT_EQ(cpu->m_memory.read<std::uint64_t>(Size), 512ull * 1024 * 1024);
+
+    putStr(FsPath, "font.ttf");
+    cpu->m_gpr[5] = FsPath;
+    cpu->m_gpr[6] = FsBuffer;
+    cpu->m_gpr[7] = 0x80;
+    call("SAVEGetSharedDataTitlePath");
+    EXPECT_EQ(status(), 0);
+    EXPECT_STREQ(reinterpret_cast<char *>(cpu->m_memory.hostPtr(FsBuffer)), "/vol/shared_data/font.ttf");
+
+    cpu->m_gpr[7] = 8; // truncated, but still NUL-terminated inside the buffer
+    call("SAVEGetSharedDataTitlePath");
+    EXPECT_STREQ(reinterpret_cast<char *>(cpu->m_memory.hostPtr(FsBuffer)), "/vol/sh");
+}
+
+TEST_F(FsScenarioTest, StackTraceFilterLogsTheCallerOfAMatchingFileAccess)
+{
+    // A guest back-chain: r1 -> frame0 -> frame1 (saved LR at +4) -> end.
+    constexpr std::uint32_t Frame0 = 0x02102000, Frame1 = 0x02102100;
+    cpu->m_memory.write<std::uint32_t>(Frame0, Frame1);
+    cpu->m_memory.write<std::uint32_t>(Frame1, 0);
+    cpu->m_memory.write<std::uint32_t>(Frame1 + 4, 0x00001234);
+    cpu->m_gpr[1] = Frame0;
+
+    const auto handle = open("/vol/content/ui/hello.bin");
+    ASSERT_NE(handle, 0u);
+    setenv("WEMU_FS_TRACE_STACK", "hello.bin", 1);
+    testing::internal::CaptureStderr();
+    cpu->m_gpr[5] = handle;
+    cpu->m_gpr[6] = FsStat;
+    call("FSGetStatFile");
+    const auto matching = testing::internal::GetCapturedStderr();
+    testing::internal::CaptureStderr();
+    EXPECT_EQ(stat("/vol/content/ui"), 0); // does not match the filter
+    const auto other = testing::internal::GetCapturedStderr();
+    unsetenv("WEMU_FS_TRACE_STACK");
+    close(handle);
+
+    EXPECT_NE(matching.find("[FSTRACE] stack op=statfile path=/vol/content/ui/hello.bin"), std::string::npos) << matching;
+    EXPECT_NE(matching.find("statOut@0x02100300 +00=00000000"), std::string::npos) << "the stat result is dumped: " << matching;
+    EXPECT_NE(matching.find("+10=00000008"), std::string::npos) << matching;
+    EXPECT_NE(matching.find("#0 sp=0x02102100"), std::string::npos) << "the back-chain is walked: " << matching;
+    EXPECT_EQ(matching.find("#1 "), std::string::npos) << "the walk stops at a null back-chain";
+    EXPECT_EQ(other.find("[FSTRACE]"), std::string::npos) << other;
 }
