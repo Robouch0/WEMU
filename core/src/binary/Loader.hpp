@@ -37,6 +37,7 @@ namespace Core {
 
         private:
             void loadHeader();
+            void validateHeader() const;
 
             void loadSections();
             void loadSectionsRaw();
@@ -74,6 +75,7 @@ namespace Core {
 
             Binary m_bin;
             Utils::BeDecoder m_beDecoder;
+            std::size_t m_fileSize; // bounds every offset and size read from the file
 
             // Relocation statistics, filled by loadRelocations() and printed as a
             // summary so we can see at a glance how much of a real title we cover.

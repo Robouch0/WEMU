@@ -10,6 +10,8 @@
 #include <bitset>
 #include <cassert>
 #include <cpu/types/InstructionID.hpp>
+#include <cstring>
+#include <filesystem>
 #include <format>
 #include <iostream>
 
@@ -23,15 +25,29 @@ namespace Core {
     class InterpreterException;
 }
 
-Core::Loader::Loader(const std::string &filepath) : m_bin({}), m_beDecoder(filepath)
+namespace {
+    // Largest section the loader accepts once decompressed: above any Wii U
+    // title's memory, low enough that a corrupt size cannot exhaust the host.
+    constexpr std::size_t MaxSectionSize = 512u << 20;
+
+    // A section's bytes must lie inside the file before anything is allocated for them.
+    bool fitsInFile(std::uint64_t offset, std::uint64_t size, std::size_t fileSize) { return offset <= fileSize && size <= fileSize - offset; }
+} // namespace
+
+Core::Loader::Loader(const std::string &filepath) : m_bin({}), m_beDecoder(filepath), m_fileSize(std::filesystem::file_size(filepath))
 {
-    loadHeader();
-    loadSections();
-    loadSymbols();
-    loadSectionsInMemory();
-    loadRelocations();
-    resolveDataImports();
-    loadFileInfo();
+    try {
+        loadHeader();
+        loadSections();
+        loadSymbols();
+        loadSectionsInMemory();
+        loadRelocations();
+        resolveDataImports();
+        loadFileInfo();
+    } catch (const Utils::BeDecoderException &error) {
+        // Reads past the end of the file: report it as a malformed executable.
+        throw LoaderException(std::format("{}: truncated or malformed file ({})", filepath, error.what()));
+    }
 }
 
 // Data imports (.dimport_* sections: SHT_RPL_IMPORTS, not executable) are pointer-sized slots that
@@ -98,6 +114,26 @@ void Core::Loader::loadHeader()
     m_bin.header.e_shentsize = m_beDecoder.extractSwap<Elf32_Half>();
     m_bin.header.e_shnum = m_beDecoder.extractSwap<Elf32_Half>();
     m_bin.header.e_shstrndx = m_beDecoder.extractSwap<Elf32_Half>();
+    validateHeader();
+}
+
+// Rejects anything that is not a big-endian 32-bit PowerPC ELF/RPX with a
+// section table inside the file, before any size from it is trusted.
+void Core::Loader::validateHeader() const
+{
+    const auto &h = m_bin.header;
+    if (std::memcmp(h.e_ident, ELFMAG, SELFMAG) != 0)
+        throw LoaderException("not an ELF/RPX file (bad magic)");
+    if (h.e_ident[EI_CLASS] != ELFCLASS32 || h.e_ident[EI_DATA] != ELFDATA2MSB)
+        throw LoaderException("not a 32-bit big-endian ELF (Wii U executables are ELF32 MSB)");
+    if (h.e_machine != EM_PPC)
+        throw LoaderException(std::format("unsupported machine type {} (expected PowerPC)", h.e_machine));
+    if (h.e_shnum == 0 || h.e_shentsize < sizeof(Elf32_Shdr))
+        throw LoaderException(std::format("invalid section table ({} entries of {} bytes)", h.e_shnum, h.e_shentsize));
+    if (!fitsInFile(h.e_shoff, std::uint64_t(h.e_shnum) * h.e_shentsize, m_fileSize))
+        throw LoaderException("section table lies outside the file");
+    if (h.e_shstrndx >= h.e_shnum)
+        throw LoaderException(std::format("section-name table index {} out of range", h.e_shstrndx));
 }
 
 void Core::Loader::loadSectionsRaw()
@@ -119,11 +155,15 @@ void Core::Loader::loadSectionsRaw()
 void Core::Loader::loadSectionsName()
 {
     const Section &shStr = m_bin.sections[m_bin.header.e_shstrndx];
-    char const *sectionNames = shStr.raw.data.data();
+    const auto &names = shStr.raw.data;
 
     for (std::size_t i = 0; i < m_bin.header.e_shnum; i++) {
         auto &section = m_bin.sections[i];
-        section.name = sectionNames + section.raw.header.sh_name;
+        const auto offset = section.raw.header.sh_name;
+        if (offset >= names.size())
+            throw LoaderException(std::format("section {} name offset {} outside the name table", i, offset));
+        // Bounded: a name table without a terminator must not read past its end.
+        section.name.assign(names.data() + offset, strnlen(names.data() + offset, names.size() - offset));
     }
 }
 
@@ -147,6 +187,9 @@ void Core::Loader::loadSectionData(Section &section)
     // loadSectionsInMemory allocates and zeroes them using sh_size.
     if (section.raw.header.sh_type == SHT_NOBITS)
         return;
+    if (!fitsInFile(section.raw.header.sh_offset, section.raw.header.sh_size, m_fileSize))
+        throw LoaderException(
+                std::format("section data at 0x{:X} (+0x{:X}) lies outside the file", section.raw.header.sh_offset, section.raw.header.sh_size));
     section.raw.data.resize(section.raw.header.sh_size);
     m_beDecoder.extract<>(section.raw.data.data(), section.raw.header.sh_size);
 }
@@ -155,7 +198,13 @@ void Core::Loader::loadAndDecompressSectionData(Section &section)
 {
     auto stream = z_stream{};
     auto ret = Z_OK;
-    section.raw.data.resize(m_beDecoder.extractSwap<uint32_t>());
+    if (!fitsInFile(section.raw.header.sh_offset, section.raw.header.sh_size, m_fileSize))
+        throw LoaderException(std::format("compressed section at 0x{:X} (+0x{:X}) lies outside the file", section.raw.header.sh_offset,
+                                          section.raw.header.sh_size));
+    const auto inflatedSize = m_beDecoder.extractSwap<uint32_t>();
+    if (inflatedSize > MaxSectionSize)
+        throw LoaderException(std::format("compressed section claims {} bytes once inflated (limit {})", inflatedSize, MaxSectionSize));
+    section.raw.data.resize(inflatedSize);
     std::memset(&stream, 0, sizeof(stream));
     stream.zalloc = nullptr;
     stream.zfree = nullptr;
@@ -169,10 +218,10 @@ void Core::Loader::loadAndDecompressSectionData(Section &section)
         stream.avail_out = static_cast<uInt>(section.raw.data.size());
         stream.next_out = reinterpret_cast<Bytef *>(section.raw.data.data());
         ret = inflate(&stream, Z_FINISH);
-        if (ret != Z_OK && ret != Z_STREAM_END) {
-            section.raw.data.clear();
-        }
         inflateEnd(&stream);
+        // A corrupt stream used to leave the section silently empty, failing much later.
+        if (ret != Z_OK && ret != Z_STREAM_END)
+            throw LoaderException(std::format("corrupt compressed section at 0x{:X} (zlib error {})", section.raw.header.sh_offset, ret));
     }
 }
 
@@ -280,6 +329,8 @@ void Core::Loader::writeFunctionThunk(Core::Symbol &symbol, Core::Section &secti
     syscall.bd = symbol.meta.index;
 
     const std::uint32_t offset = symbol.meta.virtAddress - section.meta.virtAddress;
+    if (std::uint64_t(offset) + sizeof(EncodedInstruction) > section.raw.data.size())
+        throw LoaderException(std::format("import symbol '{}' lies outside its section {}", symbol.name, section.name));
     char *sectionData = section.raw.data.data();
     EncodedInstruction syscallEndianSwapped = syscall.endianSwap();
     std::memcpy(sectionData + offset, &syscallEndianSwapped, sizeof(EncodedInstruction));
@@ -312,6 +363,8 @@ void Core::Loader::loadSymbolsRaw()
 {
     const auto &symSection = m_bin.findSection(".symtab");
     Utils::BeDecoder symDecoder(symSection.raw.data);
+    if (symSection.raw.header.sh_entsize < sizeof(Elf32_Sym))
+        throw LoaderException(std::format("symbol table entry size {} is invalid", symSection.raw.header.sh_entsize));
     const std::size_t symAmount = symSection.raw.data.size() / symSection.raw.header.sh_entsize;
 
     m_bin.symbols.resize(symAmount);
