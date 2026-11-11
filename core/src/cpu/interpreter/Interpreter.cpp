@@ -82,6 +82,7 @@ void Core::Interpreter::run()
     std::uint32_t ppc_pc = m_binary.header.e_entry;
     m_hooks_min = 0xFFFFFFFFu;
     m_hooks_max = 0u;
+    m_hookFilterCount = ~std::size_t{0}; // the hook set may have been replaced by one of the same size
     for (const auto &[addr, _]: m_hooks) {
         if (addr < m_hooks_min)
             m_hooks_min = addr;
