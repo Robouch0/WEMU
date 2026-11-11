@@ -519,6 +519,14 @@ namespace Core {
         return true;
     }
 
+    const ThreadContext *Scheduler::thread(const std::uint32_t osThread) const
+    {
+        for (const auto &t: m_threads)
+            if (t->osThreadPtr == osThread)
+                return t.get();
+        return nullptr;
+    }
+
     void Scheduler::setPriority(const std::uint32_t osThread, const std::int32_t priority)
     {
         if (ThreadContext *t = find(osThread))

@@ -445,10 +445,15 @@ namespace {
         // WEMU_SHARED_FONT=<path to .ttf> serves a dumped console font for every requested type.
         // Like Cemu, fall back to a freely licensed system TTF instead of failing: titles such as
         // MK8 dereference the returned font unconditionally and crash on a null result.
-        static std::uint32_t fontPtr = 0, fontSize = 0;
-        static bool loaded = false;
-        if (!loaded) {
-            loaded = true;
+        // Loaded once per guest memory (the pointer is only valid there). A new memory can reuse the
+        // old one's host address, so the font's first word is checked as well.
+        static const Core::Memory *owner = nullptr;
+        static std::uint32_t fontPtr = 0, fontSize = 0, fontHead = 0;
+        const bool current = owner == &cpu.m_memory &&
+                             (!fontSize || (cpu.m_memory.hostPtr(fontPtr, fontSize) && cpu.m_memory.read<std::uint32_t>(fontPtr) == fontHead));
+        if (!current) {
+            owner = &cpu.m_memory;
+            fontPtr = fontSize = 0;
             std::vector<std::string> candidates;
             if (const char *path = std::getenv("WEMU_SHARED_FONT"))
                 candidates.emplace_back(path);
@@ -477,6 +482,7 @@ namespace {
                 }
                 std::fclose(f);
                 if (fontSize) {
+                    fontHead = cpu.m_memory.read<std::uint32_t>(fontPtr);
                     Utils::Log::error("[HLE] OSGetSharedData: font '{}' -> guest 0x{:08X} ({} bytes)", path, fontPtr, fontSize);
                     break;
                 }

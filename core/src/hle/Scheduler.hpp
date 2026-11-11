@@ -131,6 +131,8 @@ namespace Core {
             [[nodiscard]] std::uint32_t mainHandle() const { return m_mainHandle; }
             [[nodiscard]] const std::vector<std::unique_ptr<ThreadContext>> &threads() const { return m_threads; }
             [[nodiscard]] const ThreadContext *current() const { return m_current; }
+            // Read-only lookup of a thread by its OSThread handle; nullptr when unknown.
+            [[nodiscard]] const ThreadContext *thread(std::uint32_t osThread) const;
             [[nodiscard]] std::uint64_t now() const { return m_now; } // Espresso time-base ticks
             void setCurrentName(const std::string &name)
             {

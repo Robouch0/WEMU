@@ -288,8 +288,16 @@ static void hle_OSGetTitleID(Core::Interpreter &cpu)
 // 0x00 busSpeed, 0x04 coreSpeed, 0x08 baseTime(u64), 0x10..0x18 per-core L2 size, 0x1C cpuRatio.
 static void hle_OSGetSystemInfo(Core::Interpreter &cpu)
 {
+    // One OSSystemInfo per guest memory: the address is only valid in the memory it was allocated in.
+    // A new memory can reuse the old one's host address, so the contents are checked as well.
+    static const Core::Memory *owner = nullptr;
     static std::uint32_t infoAddr = 0;
-    if (!infoAddr) {
+    const auto current = [&] {
+        return owner == &cpu.m_memory && infoAddr && cpu.m_memory.hostPtr(infoAddr, 0x20) &&
+               cpu.m_memory.read<std::uint32_t>(infoAddr) == kBusClockSpeed;
+    };
+    if (!current()) {
+        owner = &cpu.m_memory;
         infoAddr = cpu.m_memory.heapAllocate(0x20, 8);
         cpu.m_memory.write<std::uint32_t>(infoAddr + 0x00, kBusClockSpeed);
         cpu.m_memory.write<std::uint32_t>(infoAddr + 0x04, kCoreClockSpeed);
@@ -592,7 +600,7 @@ static void hle_OSBlockMove(Core::Interpreter &cpu)
         std::memmove(dst, src, size);
         CopyGx2DisplayListState(cpu.m_gpr[3], cpu.m_gpr[4], size);
     }
-    cpu.m_gpr[3] = 0;
+    // Returns dst, like memmove (r3 already holds it).
 }
 
 // OSBlockSet(dst, value, size) — memset on a guest buffer.
@@ -604,7 +612,7 @@ static void hle_OSBlockSet(Core::Interpreter &cpu)
         std::memset(dst, static_cast<int>(cpu.m_gpr[4] & 0xFF), size);
         CopyGx2DisplayListState(cpu.m_gpr[3], 0, size);
     }
-    cpu.m_gpr[3] = 0;
+    // Returns dst, like memset (r3 already holds it).
 }
 
 // ---- DC (cache) ----
@@ -615,23 +623,44 @@ static void hle_DCInvalidateRange(Core::Interpreter &cpu) { (void) cpu; }
 // ---- OS sync ----
 // Spinlocks and fast mutexes share the scheduler's mutex table (distinct guest addresses).
 // Cafe's spinlock Acquire also disables interrupts for the critical section, saving the prior
-// state in the lock; we mirror that so preemption stays off until the matching Release.
+// state in the lock; we mirror that so preemption stays off until the matching Release. The lock
+// is recursive: only the outermost Acquire saves the state and only the last Release restores it.
 
-static std::unordered_map<std::uint32_t, bool> g_spinSavedIntr;
+namespace {
+    struct SpinLockState {
+            std::uint32_t owner = 0;
+            unsigned depth = 0;
+            bool savedInterruptsDisabled = false;
+    };
+    std::unordered_map<std::uint32_t, SpinLockState> g_spinLocks;
+
+    void enterSpinLock(Core::Interpreter &cpu, std::uint32_t lock)
+    {
+        auto &state = g_spinLocks[lock];
+        const auto self = cpu.m_scheduler.currentHandle();
+        if (state.depth == 0 || state.owner != self) // first entry, or taken over from a dead owner
+            state = SpinLockState{self, 0, cpu.m_interruptsDisabled};
+        ++state.depth;
+        cpu.m_interruptsDisabled = true;
+        cpu.m_gpr[3] = 1; // BOOL acquired
+    }
+} // namespace
 
 static void hle_OSUninterruptibleSpinLock_Acquire(Core::Interpreter &cpu)
 {
     const std::uint32_t lock = cpu.m_gpr[3];
     if (!cpu.m_scheduler.mutexLock(cpu, lock))
         return; // parked; the SC re-executes on wake
-    g_spinSavedIntr[lock] = cpu.m_interruptsDisabled;
-    cpu.m_interruptsDisabled = true;
-    cpu.m_gpr[3] = 1; // BOOL acquired
+    enterSpinLock(cpu, lock);
 }
 static void hle_OSUninterruptibleSpinLock_Release(Core::Interpreter &cpu)
 {
     const std::uint32_t lock = cpu.m_gpr[3];
-    cpu.m_interruptsDisabled = g_spinSavedIntr[lock];
+    const auto it = g_spinLocks.find(lock);
+    if (it != g_spinLocks.end() && it->second.owner == cpu.m_scheduler.currentHandle() && --it->second.depth == 0) {
+        cpu.m_interruptsDisabled = it->second.savedInterruptsDisabled;
+        g_spinLocks.erase(it);
+    }
     cpu.m_scheduler.mutexUnlock(lock);
     cpu.m_gpr[3] = 1;
     cpu.m_scheduler.rescheduleAfterHle(cpu);
@@ -643,9 +672,7 @@ static void hle_OSUninterruptibleSpinLock_TryAcquire(Core::Interpreter &cpu)
         cpu.m_gpr[3] = 0;
         return;
     }
-    g_spinSavedIntr[lock] = cpu.m_interruptsDisabled;
-    cpu.m_interruptsDisabled = true;
-    cpu.m_gpr[3] = 1;
+    enterSpinLock(cpu, lock);
 }
 
 static void hle_OSFastMutex_Init(Core::Interpreter &cpu) { cpu.m_scheduler.mutexReset(cpu.m_gpr[3]); }
@@ -657,7 +684,12 @@ static void hle_OSFastMutex_Unlock(Core::Interpreter &cpu)
 }
 static void hle_OSFastMutex_TryLock(Core::Interpreter &cpu) { cpu.m_gpr[3] = cpu.m_scheduler.mutexTryLock(cpu.m_gpr[3]) ? 1 : 0; }
 
-static void hle_OSGetThreadPriority(Core::Interpreter &cpu) { cpu.m_gpr[3] = 16; } // default priority
+static void hle_OSGetThreadPriority(Core::Interpreter &cpu)
+{
+    // Titles save a priority, change it and restore it later, so this must be the real value.
+    const auto *thread = cpu.m_scheduler.thread(cpu.m_gpr[3]);
+    cpu.m_gpr[3] = static_cast<std::uint32_t>(thread ? thread->priority : 16); // 16: default for unknown threads
+}
 // ---- OSMessageQueue ----
 // A faithful ring buffer. The guest owns the OSMessage[] storage (16 bytes/entry: message + args[3]);
 // we track head/count host-side keyed by the guest queue pointer and copy whole 16-byte entries in
