@@ -186,17 +186,9 @@ int main(const int ac, char const *const *av)
 
 
         Core::installStdlibHooks(interpreter, interpreter.m_binary);
-        if (guiSession)
-            std::cout << "[BOOT] GUI session: title-specific hooks disabled" << std::endl;
         // mvplayer.rpl HLE: Create() hands out method tables pointing at these sentinels, so the
-        // intercepts are library emulation, not a title patch, and GUI sessions need them too.
+        // intercepts are library emulation, not a title patch.
         InstallMVPlayerHooks(interpreter);
-        if (!guiSession) {
-            InstallTitleSeqPoolFix(interpreter); // seed the title-sequence frame pool (title -> menu gate)
-            InstallSceneConfigWorkaround(interpreter); // skip the empty scene-config iteration (scene-init gate)
-            InstallSceneUpdateForce(interpreter); // EXPERIMENT: WEMU_FORCE_SCENE=1 forces scene "not busy"
-            InstallSubsysReadyForce(interpreter); // EXPERIMENT: WEMU_FORCE_SUBSYS=1 forces scene-obj subsystem ready
-        }
         Core::Diag::installPcCountSignalDump(); // WEMU_PC_COUNT: report tallies even when a hung boot is killed
 
         // 6. Init CPU state (emulate the Wii U loader's hand-off to the module entry)

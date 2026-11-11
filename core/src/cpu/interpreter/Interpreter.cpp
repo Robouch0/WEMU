@@ -126,16 +126,6 @@ void Core::Interpreter::run()
     const bool haveWatchRegs = Diag::hasWatchRegs();
     const bool haveHeartbeat = Diag::heartbeatInterval() != 0;
     const bool haveCountPcs = !Diag::countPcs().empty();
-    const bool haveOrderFix = Diag::titleSeqOrderFix();
-    const bool haveResourceLookupTrace = Diag::resourceLookupTrace();
-    const bool haveReadinessTrace = Diag::readinessTrace();
-    const bool haveItemResourceTrace = Diag::itemResourceTrace();
-    const bool haveFlvcNullTrace = Diag::flvcNullTrace();
-    const bool haveMk8UiArrayZeroFill = Diag::mk8UiArrayZeroFill();
-    const bool haveMk8WorkQueueTrace = Diag::mk8WorkQueueTrace();
-    const bool haveSeadHeapTrace = Diag::seadHeapTrace();
-    const bool haveSeadHeapContextTrace = Diag::seadHeapContextTrace();
-    const bool haveDriveMenuExperiment = std::getenv("WEMU_DRIVE_MENU") != nullptr;
     // Light-JIT block cache. Verified byte-identical to the pure interpreter and ~15% faster, so
     // it is ON by default; set WEMU_JIT=0 to fall back to the plain per-instruction interpreter
     // (the correctness reference). Per-instruction diagnostics use the slow path. PC observers
@@ -144,10 +134,7 @@ void Core::Interpreter::run()
         const char *e = std::getenv("WEMU_JIT");
         return !e || e[0] != '0';
     }();
-    const bool jitFastPath = m_jitEnabled && !haveWatchWords && !haveWatchCstrs && !haveWatchRegs && !haveHeartbeat && !haveCountPcs &&
-                             !haveOrderFix && !haveResourceLookupTrace && !haveReadinessTrace && !haveItemResourceTrace && !haveFlvcNullTrace &&
-                             !haveMk8UiArrayZeroFill && !haveMk8WorkQueueTrace && !haveSeadHeapTrace && !haveSeadHeapContextTrace &&
-                             !haveDriveMenuExperiment;
+    const bool jitFastPath = m_jitEnabled && !haveWatchWords && !haveWatchCstrs && !haveWatchRegs && !haveHeartbeat && !haveCountPcs;
     const bool x64Requested = [] {
         const char *e = std::getenv("WEMU_X64_JIT");
         return e && e[0] == '1';
@@ -206,69 +193,7 @@ void Core::Interpreter::run()
     }());
     auto threadDumpMark = ipsMark;
     std::uint64_t ipsLast = 0;
-    constexpr std::uint32_t kDriveMenuInlineSentinel = 0x0FFFFFECu;
     constexpr std::uint32_t kSentinelLow = 0x0FFFFFE0u;
-    struct InlineDriveMenuCall {
-            bool active{false};
-            std::uint32_t phase{0};
-            std::uint32_t task{0};
-            std::uint32_t drainFunc{0};
-            std::uint32_t returnPc{0};
-            Core::ConditionRegister cr{};
-            std::uint32_t lr{0};
-            std::uint32_t ctr{0};
-            std::array<std::uint32_t, 32> gpr{};
-            Core::FixedPointExceptionRegister xer{};
-            std::array<double, 32> fpr{};
-            std::array<double, 32> ps1{};
-            std::array<std::uint32_t, 8> gqr{};
-            Core::FloatingPointStatusAndControlRegister fpscr{};
-    } inlineDriveMenuCall;
-    const auto saveInlineDriveMenuState = [&]() {
-        inlineDriveMenuCall.cr = m_cr;
-        inlineDriveMenuCall.lr = m_lr;
-        inlineDriveMenuCall.ctr = m_ctr;
-        inlineDriveMenuCall.xer = m_xer;
-        inlineDriveMenuCall.fpscr = m_fpscr;
-        for (int i = 0; i < 32; i++) {
-            inlineDriveMenuCall.gpr[i] = m_gpr[i];
-            inlineDriveMenuCall.fpr[i] = m_fpr[i];
-            inlineDriveMenuCall.ps1[i] = m_ps1[i];
-        }
-        for (int i = 0; i < 8; i++)
-            inlineDriveMenuCall.gqr[i] = m_gqr[i];
-    };
-    const auto restoreInlineDriveMenuState = [&]() {
-        m_cr = inlineDriveMenuCall.cr;
-        m_lr = inlineDriveMenuCall.lr;
-        m_ctr = inlineDriveMenuCall.ctr;
-        m_xer = inlineDriveMenuCall.xer;
-        m_fpscr = inlineDriveMenuCall.fpscr;
-        for (int i = 0; i < 32; i++) {
-            m_gpr[i] = inlineDriveMenuCall.gpr[i];
-            m_fpr[i] = inlineDriveMenuCall.fpr[i];
-            m_ps1[i] = inlineDriveMenuCall.ps1[i];
-        }
-        for (int i = 0; i < 8; i++)
-            m_gqr[i] = inlineDriveMenuCall.gqr[i];
-    };
-    const auto startInlineDriveMenuCall = [&](const std::uint32_t func, const std::uint32_t task, const std::uint32_t returnPc,
-                                              const std::uint32_t drainFunc, const std::uint32_t forcedTask0) {
-        if (inlineDriveMenuCall.active)
-            return;
-        saveInlineDriveMenuState();
-        inlineDriveMenuCall.active = true;
-        inlineDriveMenuCall.phase = 1;
-        inlineDriveMenuCall.task = task;
-        inlineDriveMenuCall.drainFunc = drainFunc;
-        inlineDriveMenuCall.returnPc = returnPc;
-        if (forcedTask0 != 0xFFFFFFFFu)
-            m_memory.write<std::uint32_t>(task, forcedTask0);
-        m_pc = func - Core::Memory::MemoryMap::ApplicationCode;
-        m_nextPc = m_pc;
-        m_lr = kDriveMenuInlineSentinel - Core::Memory::MemoryMap::ApplicationCode;
-        m_gpr[3] = task;
-    };
     static const bool hotBlocks = std::getenv("WEMU_HOT_BLOCKS") != nullptr; // TEMP-HOTBLOCKS
     std::unordered_map<std::uint32_t, std::uint64_t> hotBlockCounts; // TEMP-HOTBLOCKS
     struct HotDump { // TEMP-HOTBLOCKS
@@ -288,36 +213,8 @@ void Core::Interpreter::run()
                                  (unsigned long long) v[i].first, 100.0 * double(v[i].first) / double(total ? total : 1));
             }
     } hotDump{hotBlockCounts}; // TEMP-HOTBLOCKS
-    static const std::uint32_t driveMenuTask = []() -> std::uint32_t {
-        const char *e = std::getenv("WEMU_DRIVE_MENU");
-        return e ? static_cast<std::uint32_t>(std::strtoul(e, nullptr, 16)) : 0;
-    }();
-    static std::uint32_t driveMenuCalls = 0;
-    static const bool drainDriveMenuActive = [] {
-        const char *e = std::getenv("WEMU_DRAIN_ACTIVE");
-        return e && e[0] == '1';
-    }();
-    static const bool drainDriveMenuScheduled = [] {
-        const char *e = std::getenv("WEMU_DRAIN_SCHEDULED");
-        return e && e[0] == '1';
-    }();
-    static const bool inlineDriveMenuScene = [] {
-        const char *e = std::getenv("WEMU_INLINE_SCENE");
-        return e && e[0] == '1';
-    }();
-    static const std::uint32_t forcedDriveMenuTask0 = []() -> std::uint32_t {
-        const char *e = std::getenv("WEMU_FORCE_TASK0");
-        return e ? static_cast<std::uint32_t>(std::strtoul(e, nullptr, 16)) : 0xFFFFFFFFu;
-    }();
-    const bool haveFlvcSkip = [] {
-        const char *e = std::getenv("WEMU_FLVC_SKIP_NULL_TARGET");
-        return e && e[0] == '1';
-    }();
     // One branch per dispatch instead of one per diagnostic when none is configured.
-    const bool havePcDiagnostics = haveWatchPcs || haveWatchWords || haveWatchCstrs || haveWatchRegs || haveCountPcs || haveHeartbeat ||
-                                   haveResourceLookupTrace || haveReadinessTrace || haveItemResourceTrace || haveFlvcNullTrace ||
-                                   haveMk8UiArrayZeroFill || haveMk8WorkQueueTrace || haveSeadHeapTrace || haveSeadHeapContextTrace || haveFlvcSkip ||
-                                   haveOrderFix || driveMenuTask;
+    const bool havePcDiagnostics = haveWatchPcs || haveWatchWords || haveWatchCstrs || haveWatchRegs || haveCountPcs || haveHeartbeat;
 #ifdef WEMU_HAS_X64_JIT
     // Compiled blocks chain without passing through this loop, so per-dispatch PC diagnostics
     // keep the interpreter.
@@ -459,9 +356,8 @@ void Core::Interpreter::run()
         // below the code base, so ordinary code addresses skip all of these checks at once.
         static_assert(Core::Gx2::bufferAllocatorReturn == kSentinelLow);
         static_assert(Core::Hle::preinitReturn > Core::Gx2::bufferAllocatorReturn && Core::Hle::preinitReturn != Core::H264::callbackSentinel);
-        static_assert(Core::H264::callbackSentinel >= kSentinelLow && kDriveMenuInlineSentinel >= kSentinelLow &&
-                      Core::ASYNC_CB_SENTINEL >= kSentinelLow && Core::AX_FRAME_SENTINEL >= kSentinelLow &&
-                      Core::RETURN_SENTINEL < Core::Memory::MemoryMap::ApplicationData);
+        static_assert(Core::H264::callbackSentinel >= kSentinelLow && Core::ASYNC_CB_SENTINEL >= kSentinelLow &&
+                      Core::AX_FRAME_SENTINEL >= kSentinelLow && Core::RETURN_SENTINEL < Core::Memory::MemoryMap::ApplicationData);
         if (ppc_pc - Core::Memory::MemoryMap::ApplicationCode >= kSentinelLow - Core::Memory::MemoryMap::ApplicationCode) [[unlikely]] {
             if (ppc_pc == Core::Gx2::bufferAllocatorReturn) {
                 Core::Gx2::onBufferAllocatorReturn(*this);
@@ -483,27 +379,6 @@ void Core::Interpreter::run()
             // The async-callback pump finished one deferred call: run the next or park it.
             if (ppc_pc == Core::ASYNC_CB_SENTINEL) {
                 Core::Async::OnSentinelReturn(*this);
-                continue;
-            }
-            // WEMU_INLINE_SCENE=1: run the MK8 drive-menu diagnostic callbacks on the current guest
-            // thread instead of the synthetic nnAsync thread. Scene construction handlers touch
-            // per-thread/global context that is not valid on nnAsync; this trampoline preserves the
-            // interrupted thread's registers and resumes at the original PC after the injected call(s).
-            if (ppc_pc == kDriveMenuInlineSentinel && inlineDriveMenuCall.active) {
-                if (inlineDriveMenuCall.phase == 1 && inlineDriveMenuCall.drainFunc) {
-                    restoreInlineDriveMenuState();
-                    inlineDriveMenuCall.phase = 2;
-                    m_pc = inlineDriveMenuCall.drainFunc - Core::Memory::MemoryMap::ApplicationCode;
-                    m_nextPc = m_pc;
-                    m_lr = kDriveMenuInlineSentinel - Core::Memory::MemoryMap::ApplicationCode;
-                    m_gpr[3] = inlineDriveMenuCall.task;
-                    continue;
-                }
-                const std::uint32_t returnPc = inlineDriveMenuCall.returnPc;
-                restoreInlineDriveMenuState();
-                inlineDriveMenuCall.active = false;
-                m_pc = returnPc - Core::Memory::MemoryMap::ApplicationCode;
-                m_nextPc = m_pc;
                 continue;
             }
             // A thread (or the main thread) returned to the trampoline address seeded in LR: it has
@@ -540,59 +415,6 @@ void Core::Interpreter::run()
                 Diag::notePcCount(ppc_pc);
             if (haveHeartbeat)
                 Diag::pollHeartbeat(*this, ppc_pc);
-            if (haveResourceLookupTrace)
-                Diag::noteResourceLookup(*this, ppc_pc);
-            if (haveReadinessTrace)
-                Diag::noteReadinessGate(*this, ppc_pc);
-            if (haveItemResourceTrace)
-                Diag::noteItemResourceTrace(*this, ppc_pc);
-            if (haveFlvcNullTrace)
-                Diag::noteFlvcNullTrace(*this, ppc_pc);
-            if (haveMk8UiArrayZeroFill)
-                Diag::zeroMk8UiArrayAlloc(*this, ppc_pc);
-            if (haveMk8WorkQueueTrace)
-                Diag::noteMk8WorkQueueTrace(*this, ppc_pc);
-            if (haveSeadHeapTrace)
-                Diag::noteSeadHeapTrace(*this, ppc_pc);
-            if (haveSeadHeapContextTrace)
-                Diag::noteSeadHeapContextTrace(*this, ppc_pc);
-            if (haveFlvcSkip && Diag::skipNullFlvcTarget(*this, ppc_pc))
-                continue;
-            // EXPERIMENT (WEMU_ORDER_FIX=1, default off): skip MK8's title sequence calc while its
-            // decision input is still stale, so the game retries it on a later frame. Unlike m_hooks
-            // this is conditional per call, which is the whole point -- see Diag::deferTitleSeqCalc.
-            if (haveOrderFix && Diag::deferTitleSeqCalc(*this, ppc_pc)) {
-                m_pc = m_lr;
-                continue;
-            }
-            // WEMU_DRIVE_MENU is an MK8-only diagnostic experiment.  Its title forward
-            // edge is stored in staleSlot+0x147 and otherwise reaches the driver before
-            // the post-present probe can hold it.
-            if (driveMenuTask && ppc_pc == 0x024D6430) {
-                try {
-                    const std::uint32_t incoming = driveMenuTask + 0xDC;
-                    if (m_memory.read<std::uint32_t>(incoming + 0x34) == 0) {
-                        const std::uint32_t staleSlot = m_memory.read<std::uint32_t>(0x101D6944);
-                        if (staleSlot)
-                            m_memory.write<std::uint8_t>(staleSlot + 0x147, 0);
-                        if (m_gpr[3])
-                            m_memory.write<std::uint8_t>(m_gpr[3] + 0x143, 0);
-                        if (++driveMenuCalls % 60 == 0) {
-                            if (inlineDriveMenuScene) {
-                                const std::uint32_t drainFunc = drainDriveMenuScheduled ? 0x0253A4F8 : (drainDriveMenuActive ? 0x0253A3C4 : 0);
-                                startInlineDriveMenuCall(0x025467D0, driveMenuTask, ppc_pc, drainFunc, forcedDriveMenuTask0);
-                                continue;
-                            } else {
-                                Core::Async::enqueue(0x025467D0, driveMenuTask);
-                                if (drainDriveMenuActive)
-                                    Core::Async::enqueue(0x0253A3C4, driveMenuTask);
-                            }
-                        }
-                    }
-                } catch (const Core::MemoryException &e) {
-                    Utils::Log::debug("[DIAG] Cannot inspect drive-menu state: {}", e.what());
-                }
-            }
         }
         if (hooked(ppc_pc)) {
 #ifdef WEMU_HAS_X64_JIT
