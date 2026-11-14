@@ -55,24 +55,26 @@ GitHub Actions (`.github/workflows/wemu-checks.yml`) runs the unit tests, clang-
 
 ### CI-01: Vertex cache stopped reusing animated geometry
 - **Date:** 2026-11-05
-- **Change:** `6cf8863` "perf(gfx): content-keyed vertex cache, batched attribute decode and cheaper buffer snapshots" (PR #295, branch `feat/enhance-gui-mainmenu-and-settings-page`)
-- **Caught by:** `Gx2CaptureTest.DirectVertexArraysAreReusedUntilGuestVertexBytesChange` (`core/tests/system/test_gx2capture.cpp`), failing in every `Unit Tests` and `Full Build` job of runs `42016554442` and `42018136260`
+- **Change:** `6cf8863` "perf(gfx): content-keyed vertex cache, batched attribute decode and cheaper buffer snapshots" ([PR #295](https://github.com/Robouch0/WEMU/pull/295), branch `feat/enhance-gui-mainmenu-and-settings-page`)
+- **Caught by:** `Gx2CaptureTest.DirectVertexArraysAreReusedUntilGuestVertexBytesChange` (`core/tests/system/test_gx2capture.cpp`), failing in every `Unit Tests` and `Full Build` job of runs [`42016554442`](https://github.com/Robouch0/WEMU/actions/runs/42016554442) and [`42018136260`](https://github.com/Robouch0/WEMU/actions/runs/42018136260)
 - **What it would have broken:** the new cache counted admissions per vertex *content*. Animated meshes have new content every frame, so they never reached the cache even though the shadow and colour passes draw them twice per frame. That is the per-frame cost the change was meant to remove.
 - **Fix:** `d59555d` "fix(gfx): count vertex cache admissions per draw site so animated meshes reuse their second pass". It keys admissions on the draw site (registers, attribute bindings, index count, mode) and updates the test so every pose has new content.
+- **Blocked, then passed:** red on 2026-11-05 11:08 and 11:20; the fix's run [`42047482195`](https://github.com/Robouch0/WEMU/actions/runs/42047482195) passed at 14:41, and PR #295 was merged into `dev` at 15:02.
 
 ### CI-02: Implicit widening in a pointer offset (static analysis)
 - **Date:** 2026-11-05
 - **Change:** `6cf8863` (same PR as CI-01)
-- **Caught by:** `clang-tidy` job, run `42016554442`: `core/src/gfx/Gx2Replayer.cpp:78:40: error: result of multiplication in type 'unsigned int' is used as a pointer offset after an implicit widening conversion to type 'size_t' [bugprone-implicit-widening-of-multiplication-result]`
+- **Caught by:** `clang-tidy` job, run [`42016554442`](https://github.com/Robouch0/WEMU/actions/runs/42016554442): `core/src/gfx/Gx2Replayer.cpp:78:40: error: result of multiplication in type 'unsigned int' is used as a pointer offset after an implicit widening conversion to type 'size_t' [bugprone-implicit-widening-of-multiplication-result]`
 - **What it would have broken:** the product is computed in 32 bits before it is widened, so a large enough offset would wrap and address the wrong memory.
-- **Fix:** `2a3e959` "style(gfx): apply clang-format 19 and fix a clang-tidy widening warning".
+- **Fix:** `2a3e959` "style(gfx): apply clang-format 19 and fix a clang-tidy widening warning". Its run [`42018136260`](https://github.com/Robouch0/WEMU/actions/runs/42018136260) no longer fails `clang-format` or `clang-tidy` (only the CI-01 test still failed).
 
 ### CI-03: Compressed texture rounding differs between GPU drivers
 - **Date:** 2026-10-24
-- **Change:** `ddd87fb`, branch `fix/smash-startup-rendering` (PR #291)
-- **Caught by:** `Gx2CaptureTest.DeclaredAttributesAndPixelSemanticRenderWithEveryIndexEndian`, run `40132681724`
+- **Change:** `ddd87fb`, branch `fix/smash-startup-rendering` ([PR #291](https://github.com/Robouch0/WEMU/pull/291))
+- **Caught by:** `Gx2CaptureTest.DeclaredAttributesAndPixelSemanticRenderWithEveryIndexEndian`, [`40132681724`](https://github.com/Robouch0/WEMU/actions/runs/40132681724)
 - **What it showed:** the native Vulkan path decoded BC2/BC3 colour with different rounding on the CI's llvmpipe driver (169 where the CPU reference gives 170). Byte-exact comparison would have failed on some user GPUs as well.
 - **Fix:** `81edf5f` "fix(ci): resolve formatting, audio lint, and Vulkan test failures". The test allows ±1 on BC2/BC3 colour channels only. Alpha and every other format stay byte-exact.
+- **Blocked, then passed:** red on 2026-10-24 21:05 (every job); the fix's run [`40134346461`](https://github.com/Robouch0/WEMU/actions/runs/40134346461) passed at 21:28, and PR #291 was merged into `dev` on 2026-10-25.
 
 ---
 
