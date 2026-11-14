@@ -1,0 +1,130 @@
+WEMU core unit-test coverage - 2026-11-15, commit d9502bd
+GCC 14 + gcov-14, lcov 2.0, 1,305 GoogleTest cases (WEMU_TEST_VULKAN=1, lavapipe)
+Exclusions: stb_image.h, core/src/gfx/init/, core/tests/ (docs/quality/testing-policy.md#coverage-exclusions)
+
+                                    |Lines      |Functions 
+Filename                            |Rate    Num|Rate  Num
+==========================================================
+[core/src/]
+audio/MovieAudio.cpp                |86.5%   111| 100%   7
+audio/Output.cpp                    |89.6%   211|95.5%  22
+audio/Resampler.hpp                 |93.3%    15| 100%   2
+audio/TimeStretcher.cpp             |97.4%    39| 100%   6
+audio/Voice.cpp                     |95.1%    61| 100%   4
+binary/Binary.hpp                   |85.3%    34|50.0%   6
+binary/Loader.cpp                   |98.6%   347| 100%  26
+binary/Loader.hpp                   | 100%     3|75.0%   4
+cpu/instructions/Branch.cpp         |96.0%    25| 100%   5
+cpu/instructions/BranchExtra.cpp    |90.4%    73| 100%   4
+cpu/instructions/Cmp.cpp            | 100%    19| 100%   5
+cpu/instructions/CrLogical.cpp      | 100%    41| 100%  27
+cpu/instructions/Sc.cpp             |91.9%    37| 100%   3
+cpu/instructions/Trap.cpp           |90.9%    11| 100%   1
+cpu/instructions/arithmetic/Add.cpp |95.0%    60|75.0%  12
+cpu/instructions/arithmetic/Div.cpp | 100%    18| 100%   2
+cpu/instructions/arithmetic/Mul.cpp | 100%    22| 100%   4
+cpu/instructions/arithmetic/Neg.cpp | 100%     6| 100%   1
+cpu/instructions/arithmetic/Sub.cpp | 100%    45| 100%   6
+cpu/instructions/...t/FloatArith.cpp| 100%    94| 100%  29
+cpu/instructions/...FloatCompare.cpp| 100%    47| 100%   3
+cpu/instructions/float/FloatLoad.cpp| 100%    14| 100%   2
+cpu/instructions/...adStoreExtra.cpp| 100%    75| 100%  18
+cpu/instructions/float/FloatMove.cpp| 100%    12| 100%   3
+cpu/instructions/...PairedSingle.cpp| 100%   249| 100%  59
+cpu/instructions/load/Load.cpp      | 100%    53| 100%  11
+cpu/instructions/load/LoadExtra.cpp | 100%    54| 100%  10
+cpu/instructions/logical/And.cpp    | 100%    20| 100%   5
+cpu/instructions/logical/Ext.cpp    | 100%     8| 100%   2
+cpu/instructions/logical/Or.cpp     | 100%    17| 100%   5
+cpu/instructions/logical/Xor.cpp    | 100%    13| 100%   4
+cpu/instructions/shift/Extend.cpp   | 100%     4| 100%   1
+cpu/instructions/shift/Rotate.cpp   | 100%    25| 100%   4
+cpu/instructions/shift/Shift.cpp    | 100%    28| 100%   4
+cpu/instructions/spr/Cache.cpp      | 100%     8| 100%   8
+cpu/instructions/spr/Spr.cpp        | 100%    52| 100%   5
+cpu/instructions/store/Store.cpp    | 100%    39| 100%   8
+cpu/instructions/...e/StoreExtra.cpp|98.2%    55| 100%  10
+cpu/interpreter/Interpreter.cpp     |88.8%   484| 100%  28
+cpu/interpreter/Interpreter.hpp     | 100%    41|90.0%  10
+cpu/interpreter/SyscallHandler.hpp  | 100%     5| 100%   2
+cpu/jit/Callouts.cpp                |77.1%    35|99.5% 195
+cpu/jit/CodeBuffer.cpp              |86.4%    44| 100%   6
+cpu/jit/CodeBuffer.hpp              | 100%     4| 100%   4
+cpu/jit/EmitBranch.cpp              | 100%    58| 100%   2
+cpu/jit/EmitFloat.cpp               |99.8%   430| 100%  20
+cpu/jit/EmitInteger.cpp             |99.3%   271| 100%   5
+cpu/jit/EmitMemory.cpp              | 100%   187| 100%   8
+cpu/jit/EmitSystem.cpp              | 100%    67| 100%   1
+cpu/jit/Emitter.cpp                 |92.3%   414| 100%  31
+cpu/jit/Emitter.hpp                 | 100%    11| 100%  11
+cpu/jit/X64Jit.cpp                  |76.6%   291|92.3%  26
+cpu/memory/Memory.hpp               |98.5%   198|97.8%  45
+cpu/recompiler/Block.cpp            |46.8%   158|57.1%   7
+cpu/tables/cpu_fields.anh           | 100%     6| 100%   6
+cpu/tables/cpu_instructions.anh     | 100%   192|    -   0
+cpu/types/EncodedInstruction.hpp    | 100%     2| 100%   2
+cpu/types/Instruction.hpp           |66.7%     3| 100%   1
+cpu/types/InstructionTraits.hpp     | 100%     9| 100%   2
+exception/Exception.cpp             | 100%     1|50.0%   2
+exception/Exception.hpp             |80.0%     5|66.7%   3
+gfx/ColorTarget.hpp                 |71.4%   105| 100%  12
+gfx/CubeSampler.hpp                 |98.4%    63|62.5%   8
+gfx/Depth.hpp                       |93.2%    73| 100%   8
+gfx/Gx2BufferSnapshots.hpp          |82.5%    80| 100%   3
+gfx/Gx2CommandStream.hpp            |97.3%    75|97.1%  34
+gfx/Gx2Replayer.cpp                 |65.7%  5612|72.9% 328
+gfx/Gx2Replayer.hpp                 |96.1%    77|97.1%  34
+gfx/HostPresenter.hpp               |33.3%     3|25.0%   4
+gfx/LatteProgram.cpp                |95.5%   111| 100%   2
+gfx/LatteProgram.hpp                | 100%    11| 100%   8
+gfx/LatteShaderLowering.cpp         |91.8%   984| 100%  39
+gfx/LatteShaderLowering.hpp         | 100%    16| 100%   8
+gfx/LatteSurfaceLayout.cpp          |92.2%    90| 100%   6
+gfx/LatteVsInterp.cpp               |85.6%   728|95.8%  24
+gfx/PrimitiveAssembly.hpp           |94.9%    39| 100%   3
+gfx/RasterBackend.hpp               |71.6%    67|51.9%  27
+gfx/RasterWorkers.cpp               |86.6%    67| 100%   8
+gfx/Renderer.cpp                    |34.5%   278|68.8%  16
+gfx/Renderer.hpp                    |42.9%    28|80.0%  10
+gfx/SpirvCompiler.cpp               |75.7%   230|95.0%  20
+gfx/SpirvCompiler.hpp               | 100%     8| 100%   4
+gfx/SurfaceLayout.hpp               |97.1%    69| 100%   3
+gfx/TextureFormat.hpp               | 100%    34| 100%   5
+gfx/TextureSampler.hpp              | 100%    66|66.9% 121
+gfx/TriangleCoverage.hpp            | 100%    18| 100%   3
+gfx/UniformBufferFetch.hpp          |92.3%    13| 100%   1
+gfx/VolumeSampler.hpp               | 100%     6|33.3%   9
+gfx/VulkanPortability.hpp           |96.3%    27| 100%   6
+gfx/VulkanRasterBackend.cpp         |87.1%  3952|92.4% 238
+gfx/VulkanRasterBackend.hpp         |88.9%     9|88.9%   9
+hle/ApplicationBoot.cpp             |96.9%    32| 100%   2
+hle/AsyncCallbacks.cpp              |74.1%    85|90.0%  10
+hle/Ax.cpp                          |87.9%   694|84.1%  69
+hle/Coreinit.cpp                    |82.4%   905|62.2% 156
+hle/CoreinitExtra.cpp               |92.4%   525|78.3%  69
+hle/Fs.cpp                          |92.7%   550|98.1%  52
+hle/Gx2.cpp                         |81.4%  1299|89.2% 166
+hle/H264.cpp                        |77.6%   281|77.8%  36
+hle/Libc.cpp                        | 100%    76| 100%  14
+hle/LockedCache.cpp                 | 100%    80| 100%  16
+hle/MemHeap.cpp                     |93.5%   292| 100%  39
+hle/MvPlayer.cpp                    |66.2%   231|92.3%  13
+hle/NnOnline.cpp                    |87.9%   107|66.7%  12
+hle/Scheduler.cpp                   |88.4%   441|97.4%  38
+hle/Scheduler.hpp                   | 100%    12| 100%   7
+hle/SystemConfig.hpp                | 100%    33| 100%   7
+ui/PauseMenu.cpp                    |95.8%   142| 100%  13
+ui/PauseMenu.hpp                    | 100%    14| 100%   8
+utils/BeDecoder.cpp                 |93.8%    16| 100%   3
+utils/BeDecoder.hpp                 |96.6%    29|91.7%  12
+utils/Diagnostics.cpp               |79.8%   476|89.8%  49
+utils/DisplayTiming.hpp             | 100%     3| 100%   2
+utils/FrameProfiler.hpp             |79.2%    77|83.3%  18
+utils/Logger.hpp                    |82.4%    17|24.8% 298
+video/H264Decoder.cpp               |86.5%    89| 100%   9
+video/H264Sps.hpp                   |69.7%    99|80.0%   5
+video/MovieDecoder.cpp              |89.8%    98| 100%   9
+==========================================================
+                              Total:|82.6% 24603|80.8%  2k
+Message summary:
+  no messages were reported

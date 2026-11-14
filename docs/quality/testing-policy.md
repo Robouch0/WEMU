@@ -11,15 +11,17 @@ The critical path encompasses the core emulator stages required to boot, execute
 | Stage | Subsystem / Files | Why Critical |
 |---|---|---|
 | **1. Game Loading** | `core/src/binary/Loader.cpp` | Parses ELF and RPX headers, unpacks zlib-compressed sections, and loads program segments into guest memory. If loading fails or corrupts segments, no title can launch. |
-| **2. PowerPC Execution** | `core/src/cpu/interpreter/`, `core/src/cpu/jit/` | Executes 32-bit PowerPC 750CL / Espresso instructions via the interpreter or x64 JIT. Instruction encoding, flag setting (`CR`, `XER`), and register arithmetic must be exact for game logic and branching. |
+| **2. PowerPC Execution** | `core/src/cpu/interpreter/`, `core/src/cpu/jit/`, `core/src/cpu/instructions/`, `core/src/cpu/memory/` | Executes 32-bit PowerPC 750CL / Espresso instructions via the interpreter or x64 JIT. Instruction encoding, flag setting (`CR`, `XER`), and register arithmetic must be exact for game logic and branching. |
 | **3. OS Emulation (HLE)** | `core/src/hle/Coreinit.cpp`, `CoreinitExtra.cpp`, `Fs.cpp`, `MemHeap.cpp` | Implements Wii U operating system syscalls, including thread scheduling, synchronization primitives, memory allocation, and filesystem operations. Incomplete or incorrect syscall behavior leads to deadlocks or crashes. |
 | **4. GX2 Command Processing** | `core/src/hle/Gx2.cpp`, `core/src/gfx/Gx2Replayer.cpp` | Intercepts Wii U GX2 graphics API calls, validates surface formats, and queues draw calls and state updates into replayer structures. |
-| **5. Shader Translation** | `core/src/gfx/latte/`, `core/src/gfx/vulkan/` | Translates AMD Latte (R700) GPU bytecode into SPIR-V shaders and manages Vulkan pipelines. Instruction translation bugs produce visual corruption or GPU device crashes. |
+| **5. Shader Translation** | `core/src/gfx/Latte*.cpp`, `SpirvCompiler.cpp`, `VulkanRasterBackend.cpp` | Translates AMD Latte (R700) GPU bytecode into SPIR-V shaders and manages Vulkan pipelines. Instruction translation bugs produce visual corruption or GPU device crashes. |
 | **6. GUI & Presentation** | `gui/src/emulator/`, `core/src/video/` | Manages surface swapchains, frame pacing, audio mixing, user input forwarding, and presentation to the user window. |
 
 ### Coverage Target for Critical Path
 - **Target:** $\ge 80\%$ line coverage on all critical-path files; $\ge 70\%$ line coverage across the overall WEMU codebase.
-- **Scope Distinction:** Hardware initialization and window surface routines (`gfx/init`, `GpuRenderGraph`, `GpuQuadRasterizer`) require an active GPU display surface. These components are validated by the integration test suite rather than headless unit tests.
+- **Why 80% on the critical path:** every stage there stops a title from booting or rendering when it breaks, and most of it is deterministic code (instruction semantics, loader parsing, syscalls) that unit tests reach cheaply. The last 20% is mostly error paths for hardware states a headless runner cannot produce, which the RPX suite and manual runs cover instead.
+- **Why 70% overall:** the rest includes debugging tools, the experimental LLVM recompiler and hardware bring-up code, where a test would mostly freeze behaviour that is still changing.
+- **Scope Distinction:** Window and device initialisation (`gfx/init`) requires an active display surface. It is excluded from the figure (see [Coverage exclusions](#coverage-exclusions)) and validated by running WEMU on a desktop.
 
 ---
 
@@ -39,13 +41,13 @@ WEMU employs a layered testing strategy balancing fast local feedback, automated
        |   (12 Qt/lifecycle/protocol test programs)  |
        +---------------------------------------------+
        |            Core Unit Tests                  |
-       |     (~1,215 GoogleTest cases, CI gates)     |
+       |     (~1,305 GoogleTest cases, CI gates)     |
        +---------------------------------------------+
 ```
 
 | Level | Scope | Framework / Tool | Automation | Rationale & Scope |
 |---|---|---|---|---|
-| **Core Unit Tests** | CPU instructions, registers, memory maps, JIT blocks, math utilities | GoogleTest | Automated (CI + local `ctest`) | ~1,215 test cases across 12 areas (`arithmetic`, `binary`, `branch`, `float`, `interpreter`, `jit`, `load`, `logical`, `shift`, `spr`, `store`, `system`). Deterministic; the whole binary takes about 2 minutes in a Debug coverage build, most of it in `system`. |
+| **Core Unit Tests** | CPU instructions, registers, memory maps, JIT blocks, math utilities | GoogleTest | Automated (CI + local `ctest`) | ~1,305 test cases across 12 areas (`arithmetic`, `binary`, `branch`, `float`, `interpreter`, `jit`, `load`, `logical`, `shift`, `spr`, `store`, `system`). Deterministic; the whole binary takes about 2 minutes in a Debug coverage build, most of it in `system`. |
 | **GUI Tests** | Remote protocol, launch environment, profile manager, title scanner, preferences, session lifecycle | Qt Test / Custom runners | Automated (CI + local `ctest`) | 12 test binaries verifying GUI configuration, state transitions, and background process management using headless Vulkan (lavapipe). |
 | **Functional / Integration** | Full pipeline: Loader $\rightarrow$ CPU $\rightarrow$ HLE $\rightarrow$ GX2 $\rightarrow$ Vulkan $\rightarrow$ Framebuffer | Homebrew RPX suite (`tests/rpx-suite/`) | Automated locally (`run.py`), manual in CI | Exercises 13 scenes under retail-like workloads. Evaluates pixel color probes, multi-core determinism, frame pacing, and memory stability against baselines. |
 | **Manual Verification** | Interactive viewer, visual inspection, commercial compatibility | WEMU GUI (`WEMU_FRAME_PROFILE=1`) | Manual | Verifies interactive GamePad input, UI styling, and real-world audio/visual feel. Direct hardware comparison with a retail Wii U cannot be automated in CI; CPU-calculated probe math is used instead. |
@@ -66,57 +68,54 @@ WEMU employs a layered testing strategy balancing fast local feedback, automated
 
 ## 3. Code Coverage
 
-### Current Coverage Figures (Verified 2026-11-06)
+### Current Coverage Figures (Verified 2026-11-15)
 
-Measurements obtained locally with `gcov-14` / `lcov` on `core` unit tests:
-- **WEMU Core Code:** **69.1% line coverage** / **66.4% function coverage**
-- **With Vendored Third-Party Code:** **61.0% line coverage** (includes `stb_image.h`)
+Measured locally with `gcov-14` / `lcov` on the `core` unit tests (1,305 tests, commit `d9502bd`), with the [exclusions](#coverage-exclusions) below. Per-file figures: [analysis/coverage-2026-11-15.txt](analysis/coverage-2026-11-15.txt).
 
-#### Line Coverage by Subsystem
+| Scope | Lines | Functions | Target |
+|---|---|---|---|
+| **Critical path** (stages 1–6 of §1, core side) | **82.5%** (16,240 of 19,675) | **88.3%** | $\ge 80\%$: met |
+| **All WEMU core code** | **82.6%** (20,310 of 24,603) | **80.8%** | $\ge 70\%$: met |
 
-| Subsystem / Area | Line Coverage | Status / Assessment |
+The critical path is 80% of the measured core code. Stage 6 is counted for `core/src/video/` only: the GUI side (`gui/src/emulator/`) is tested by the GUI test binaries, whose coverage is not measured ([tech-debt.md](tech-debt.md) item 12).
+
+#### Critical Path by Stage
+
+| Stage | Lines | Functions |
 |---|---|---|
-| `cpu/memory` | 97% | Excellent |
-| `ui` | 96% | Excellent |
-| `cpu/jit` | 93% | Excellent |
-| `cpu/instructions` | 93% | Excellent |
-| `audio` | 90% | High |
-| `video` | 82% | High |
-| `gfx` | 71% | Meets target |
-| `hle` | 69% | Near target |
-| `binary` (ELF/RPX loader) | 67% (Loader.cpp 75% on 2026-11-12) | Below target |
-| `cpu/interpreter` | 62% | Below target |
-| `cpu/recompiler` | 47% | Under development |
-| `cpu/tables` | 32% | Low (mostly static instruction tables) |
-| `utils` | 22% | Low (helpers tested through callers) |
-| `gfx/init`, `GpuRenderGraph`, `GpuQuadRasterizer` | 0% | Requires live GPU/window; validated by RPX suite |
+| 1. Game loading (`binary/Loader.cpp`) | 98.6% | 100% |
+| 2. PowerPC execution (`cpu/interpreter`, `jit`, `instructions`, `memory`) | 95.0% | 98.8% |
+| 3. OS emulation (`Coreinit`, `CoreinitExtra`, `Fs`, `MemHeap`) | 88.6% | 76.2% |
+| 4. GX2 command processing (`hle/Gx2.cpp`, `gfx/Gx2Replayer.cpp`) | 68.7% | 81.0% |
+| 5. Shader translation and Vulkan (`Latte*`, `SpirvCompiler`, `VulkanRasterBackend`) | 87.5% | 93.9% |
+| 6. Presentation, core side (`video/`) | 81.8% | 95.7% |
 
-#### Weak Critical-Path Files
+#### Critical-Path Files Below 80%
 
-The following critical-path files are currently below the $\ge 80\%$ line coverage target:
+| File | Lines | What is not covered | Checked instead by |
+|---|---|---|---|
+| `gfx/Gx2Replayer.cpp` | 65.7% of 5,612 | The software rasteriser's rarely used paths: tiling layouts, stream-out and texture formats no test title uses yet | The RPX suite (texture, shadow, post-processing and stream-out scenes) |
+| `gfx/SpirvCompiler.cpp` | 75.7% | System-call failures around the shader compiler subprocess (spawn, pipe, reap, 15 s deadline) and the on-disk SPIR-V cache's I/O errors | Each failure throws or skips the cache with a message; a working machine never takes these paths |
+| `cpu/jit/X64Jit.cpp` | 76.6% | Debugging switches (`WEMU_JIT_CALLOUT` family masks, the `WEMU_JIT_PERF_MAP` symbol map, the end-of-run report) and the block-compile failure path | A failed block falls back to the interpreter, which is covered |
+| `video/H264Sps.hpp` | 69.7% | Malformed-header errors and H.264 header fields (scaling lists, picture order type 1) the tested streams do not use | Menu movies in the GUI; a malformed header is rejected, not decoded |
 
-| File | Line Coverage | Primary Missing Coverage |
+#### History
+
+| Date | All core code (lines) | What changed |
 |---|---|---|
-| `core/src/hle/Coreinit.cpp` | 56% | Unimplemented or rarely-called thread/heap management APIs |
-| `core/src/hle/CoreinitExtra.cpp` | 56% | Extended system configuration and peripheral queries |
-| `core/src/hle/Fs.cpp` | 58% | Asynchronous file I/O operations and error edge cases |
-| `core/src/cpu/interpreter/Interpreter.cpp` | 61% | Almost all misses are in `Interpreter::run()` (JIT/native dispatch, profiling, thread switching), which needs a full scheduler and memory setup to test |
-| `core/src/binary/Loader.cpp` | 75% (was 65%) | Relocation and import-resolution branches used only by specific titles |
-| `core/src/gfx/Gx2Replayer.cpp` | 65% | Rare surface tiling layouts and unsupported texture formats |
-| `core/src/hle/Gx2.cpp` | 68% | Secondary buffer size calculation variants and mip surface copies |
+| 2026-11-06 | 69.1% | First measurement (61.0% with `stb_image.h`) |
+| 2026-11-12 | 82.5% | Loader validation, Fs, coreinit, run loop, GX2, JIT callout, diagnostics, AX and heap tests; game-specific and legacy GPU code removed |
+| 2026-11-15 | 82.6% | Calloc overflow and symbol-index fixes, audio and sync tests |
 
-#### Update 2026-11-12
-After the loader, Fs, coreinit, run-loop, GX2, JIT callout, diagnostics, AX and heap tests, and the removal of game-specific and legacy GPU code: **82.5% of lines and 80.5% of functions** with the exclusions below (80.7% / 79.4% without them), 1,306 tests.
-
-| Critical-path file | 2026-11-06 | 2026-11-12 |
-|---|---|---|
-| `binary/Loader.cpp` | 64.7% | 98.6% |
-| `hle/Fs.cpp` | 58.3% | 92.7% |
-| `hle/Coreinit.cpp` | 56.0% | 81.3% |
-| `hle/CoreinitExtra.cpp` | 56.4% | 91.7% |
-| `cpu/interpreter/Interpreter.cpp` | 60.3% | 85.3% |
-| `hle/Gx2.cpp` | 68.5% | 81.3% |
-| `gfx/Gx2Replayer.cpp` | 65.2% | 65.2% (next) |
+| Critical-path file | 2026-11-06 | 2026-11-12 | 2026-11-15 |
+|---|---|---|---|
+| `binary/Loader.cpp` | 64.7% | 98.6% | 98.6% |
+| `hle/Fs.cpp` | 58.3% | 92.7% | 92.7% |
+| `hle/Coreinit.cpp` | 56.0% | 81.3% | 82.4% |
+| `hle/CoreinitExtra.cpp` | 56.4% | 91.7% | 92.4% |
+| `cpu/interpreter/Interpreter.cpp` | 60.3% | 85.3% | 88.8% |
+| `hle/Gx2.cpp` | 68.5% | 81.3% | 81.4% |
+| `gfx/Gx2Replayer.cpp` | 65.2% | 65.2% | 65.7% |
 
 WEMU contains no game-specific patches or addresses (tech-debt item 15): every title runs the same code.
 
