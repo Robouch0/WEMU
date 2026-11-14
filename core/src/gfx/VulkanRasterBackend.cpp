@@ -4198,6 +4198,23 @@ void main() {
             bool retainTextures = true;
             bool lazyReadback = false;
             bool directDraws = true;
+
+            // The device is opened on the first draw that needs it. Without one the session stops:
+            // the software renderer cannot draw lit or shaded scenes, so carrying on would only show
+            // a black screen at a few frames per second (see docs/quality/testing-policy.md §4).
+            void ensureContext()
+            {
+                if (context)
+                    return;
+                try {
+                    auto created = std::make_shared<Context>();
+                    created->initialize();
+                    context = std::move(created);
+                } catch (const std::exception &failure) {
+                    Utils::Log::error("[NATIVE_VULKAN] no usable Vulkan device ({}): WEMU needs a GPU with a Vulkan driver", failure.what());
+                    throw;
+                }
+            }
     };
 
     VulkanRasterBackend::VulkanRasterBackend(bool retainTextures, bool lazyReadback, bool directDraws) : m_impl(std::make_unique<Impl>())
@@ -4289,11 +4306,7 @@ void main() {
         const auto module = m_impl->compiler.compile(ShaderStage::Compute, draw.shader.source);
         if (!*module)
             return reject(module->error);
-        if (!m_impl->context) {
-            auto context = std::make_shared<Context>();
-            context->initialize();
-            m_impl->context = std::move(context);
-        }
+        m_impl->ensureContext();
         if (!m_impl->context->computeQueue)
             return reject("Graphics queue does not support compute");
         VkPhysicalDeviceProperties properties{};
@@ -4666,11 +4679,7 @@ void main() {
             return std::nullopt;
         }
         const auto t1 = std::chrono::steady_clock::now();
-        if (!m_impl->context) {
-            auto context = std::make_shared<Context>();
-            context->initialize();
-            m_impl->context = std::move(context);
-        }
+        m_impl->ensureContext();
         const auto t2 = std::chrono::steady_clock::now();
         if (draw.depthBias.enabled &&
             (!std::isfinite(draw.depthBias.constant) || !std::isfinite(draw.depthBias.slope) || !std::isfinite(draw.depthBias.clamp) ||
