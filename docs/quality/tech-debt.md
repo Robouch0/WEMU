@@ -23,7 +23,7 @@ Costs are estimated as **S** ($< 2$ days), **M** ($2\text{--}5$ days), or **L** 
 | **11. CI Linting & Formatting Excludes `gui/`** | Low: GUI code quality and formatting drift over time; potential bugprone patterns in Qt bridges. | Clang-tidy build setup was complex to integrate with Qt MOC headers. | **S** | `TODO(team): Assign owner` |
 | **12. Coverage Excludes GUI & Unpublished in CI** | Low: Team lacks automated PR visibility into coverage regressions; GUI coverage remains unmeasured. | Coverage toolchain slows down CI execution; local reporting was deemed sufficient initially. | **S** | `TODO(team): Assign owner` |
 | **13. RPX Suite Timing Noise on Laptops** | Low: Benchmarking results vary with thermal throttling and CPU power states; false regression warnings. | High-precision host performance counters require standardized server hardware. | **S** | `TODO(team): Assign owner` |
-| **14. CI Checks Not Listed as Required** | Medium: A pull request with failing tests could be merged once it has its approvals. | Rulesets were set up for reviews first. | **S** | `TODO(team): Assign owner` |
+| **14. CI Checks Not Listed as Required** (partly resolved) | Low: `dev` now requires the full build and tests; formatting, static analysis, the standalone unit-test matrix and macOS are still advisory. | Rulesets were set up for reviews first. | **S** | `TODO(team): Assign owner` |
 | ~~**15. Title-Specific Workarounds in Core Loops**~~ (resolved) | Medium: Mario Kart 8 code keyed to that game's addresses in the run loop, `gx2_swap`, `CoreinitExtra` and `Diagnostics`. | Added during MK8 bring-up. | **M** | Resolved 2026-11-12 |
 | **16. `OSTicksToCalendarTime` Is a Fixed Date** | Low: Every title sees the same date in 2026, whatever time it passes. | `OSGetTime` counts from boot, not from 2000-01-01, so a real conversion needs a wall-clock base first. | **S** | `TODO(team): Assign owner` |
 | **17. `GX2CalcTVSize`/`GX2CalcDRCSize` Ignore Mode, Format and Buffering** | Medium: Always the 720p (854x480 for the GamePad), 32-bit, double-buffered size. A 1080p or triple-buffered title gets an undersized scan buffer. | Scan-out was written for 720p first. | **M** | `TODO(team): Assign owner` |
@@ -96,12 +96,13 @@ Costs are estimated as **S** ($< 2$ days), **M** ($2\text{--}5$ days), or **L** 
 ### Item 13: Benchmark Timing Noise on Portable Hardware
 - **Detail:** The RPX test suite performance benchmarks fluctuate on laptops due to thermal throttling, battery vs. AC power states, and CPU frequency governors.
 - **Risk:** Automated performance checks can produce false-positive regression alerts or mask real regressions when run on non-standardized developer hardware.
-- **Remediation:** Current mitigation uses best-of-3 runs (`--repeat 3`) and relative baseline comparisons (`--baseline`). Long-term resolution is running automated regression benchmarks on dedicated CI bare-metal runners.
+- **Measured 2026-11-14:** the swings come from GPU wait time, not the CPU. A GPU-light scene runs at two speeds from one run to the next (about 110 and 250 fps for `postfx`) while guest and HLE time stay the same. Pinning the core to the performance cores does not remove it.
+- **Remediation:** `run.py` keeps the best of 3 runs, records the machine state (power, profile, load) and does not judge performance when it is unreliable, and only reports a scene slower or faster when its runs do not overlap the baseline's. Long-term resolution is running the benchmarks on a dedicated machine with fixed GPU clocks.
 
-### Item 14: CI Checks Not Listed as Required Status Checks
-- **Detail:** As read through the GitHub API on 2026-11-12, the `Dev protection` ruleset requires 1 approving review and blocks deletion and force-pushes, but lists no required status checks. `Main protection` requires 2 approvals and only the `check-source-branch` check. The `wemu-checks.yml` jobs (`Full Build (core + gui)`, `Unit Tests`, `macOS arm64`, `clang-format`, `clang-tidy`) do not appear as required.
-- **Risk:** The policy says CI must pass before merge, but GitHub does not enforce it.
-- **Remediation:** Add those job names as required status checks in both rulesets, or close this item if they are enforced somewhere the API does not report.
+### Item 14: CI Checks Not Listed as Required Status Checks (partly resolved 2026-11-12)
+- **Now:** the `Dev protection` ruleset requires 1 approving review and the `Full Build (core + gui)` check, which builds everything and runs the core and GUI tests. A pull request with failing tests can no longer be merged into `dev`.
+- **Still advisory:** `clang-format`, `clang-tidy`, `Unit Tests` (Linux LLVM matrix) and `macOS arm64` on `dev`; `main` requires only `check-source-branch` (its changes come from `dev`).
+- **Remediation:** add `clang-format` and `clang-tidy` to the `dev` ruleset so style and static-analysis regressions are also blocked.
 
 ### Item 15: Title-Specific Workarounds in Core Loops (resolved 2026-11-12)
 - **What was removed:** the MK8 drive-menu trampoline and title-sequence deferral in `Interpreter::run()`; ten MK8/sead/FLVC tracers and skips in `utils/Diagnostics.cpp` (about 800 lines); the scene-state debugging in `gx2_swap`; `InstallTitleSeqPoolFix`, `InstallSceneConfigWorkaround`, `InstallSceneUpdateForce` and `InstallSubsysReadyForce`. No game address is left in `core/src`. Generic debugging tools (`WEMU_WATCH_*`, `WEMU_PC_COUNT`, `WEMU_HEARTBEAT`, `WEMU_PATCH`) stay.

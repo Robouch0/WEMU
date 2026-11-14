@@ -50,6 +50,18 @@ WEMU employs a layered testing strategy balancing fast local feedback, automated
 | **Functional / Integration** | Full pipeline: Loader $\rightarrow$ CPU $\rightarrow$ HLE $\rightarrow$ GX2 $\rightarrow$ Vulkan $\rightarrow$ Framebuffer | Homebrew RPX suite (`tests/rpx-suite/`) | Automated locally (`run.py`), manual in CI | Exercises 13 scenes under retail-like workloads. Evaluates pixel color probes, multi-core determinism, frame pacing, and memory stability against baselines. |
 | **Manual Verification** | Interactive viewer, visual inspection, commercial compatibility | WEMU GUI (`WEMU_FRAME_PROFILE=1`) | Manual | Verifies interactive GamePad input, UI styling, and real-world audio/visual feel. Direct hardware comparison with a retail Wii U cannot be automated in CI; CPU-calculated probe math is used instead. |
 
+
+### Functional suite (RPX)
+
+`tests/rpx-suite/` is a homebrew title that loads like a retail game and runs 13 scenes through real GX2/Latte shaders. Commands and scene details are in [its README](../../tests/rpx-suite/README.md).
+
+- **When to run it:** before merging a change to `core/src/gfx/`, `core/src/hle/Gx2.cpp` or the CPU back ends, and after any change meant to improve performance. It is not run in CI: it needs a GPU and a Wii U toolchain.
+- **Verdict:** `run.py` ends with `PASS`, `FAIL` (a check failed that is not a known failure, or a run did not finish) or `SLOWER` (a scene is slower than this machine's baseline). The exit code is 0 only for `PASS`. A pull request reports the verdict line.
+- **Known failures:** `tests/rpx-suite/expectations.json` lists the probes that fail because of an open bug, each pointing to its entry in [regressions.md](regressions.md). A fix that makes one pass is reported as `fixed`, and the same pull request removes the entry and closes the regression. A new bug found by the suite gets a `REG-` entry before it is added there.
+- **Baseline:** one per machine (`tests/rpx-suite/run.py --save-baseline`, kept out of git), recorded on AC power. Runs on battery, in a power-saving profile or on a busy host still check correctness but report "performance not judged".
+- **Noise:** the best of 3 runs counts, and a scene is only reported slower or faster when its runs do not overlap the baseline's runs. GPU-light scenes are often too noisy to judge on a laptop (see [tech-debt.md](tech-debt.md) item 13).
+- **From the GUI:** start `WEMU_FRAME_PROFILE=1 build/gui/appgui`, open "WEMU RPX Test Suite", press − (keyboard M) for the full sequence, then `tests/rpx-suite/run.py --analyze-last`. This measures pacing at 60 Hz; probes are checked on screen only.
+
 ---
 
 ## 3. Code Coverage
@@ -94,7 +106,7 @@ The following critical-path files are currently below the $\ge 80\%$ line covera
 | `core/src/hle/Gx2.cpp` | 68% | Secondary buffer size calculation variants and mip surface copies |
 
 #### Update 2026-11-12
-After the loader, Fs, coreinit, run-loop, GX2 tests and the removal of game-specific code: **74.8%** line coverage of WEMU core code, 1,286 tests.
+After the loader, Fs, coreinit, run-loop, GX2, JIT callout, diagnostics, AX and heap tests, and the removal of game-specific and legacy GPU code: **82.5% of lines and 80.5% of functions** with the exclusions below (80.7% / 79.4% without them), 1,306 tests.
 
 | Critical-path file | 2026-11-06 | 2026-11-12 |
 |---|---|---|
@@ -110,23 +122,42 @@ WEMU contains no game-specific patches or addresses (tech-debt item 15): every t
 
 ### Reproducing Coverage Locally
 
-To generate coverage reports without exceeding memory limits on 16 GB machines:
+From the repository root. Keep the build at `-j3` or lower: more parallel jobs exhaust memory on a 16 GB machine.
 
 ```bash
-# 1. Configure with coverage enabled and LLVM disabled
+# 1. Configure once: Debug, coverage on, LLVM off, GCC 14
 cmake -S core -B build-cov -DCMAKE_BUILD_TYPE=Debug -DENABLE_COVERAGE=ON -DWEMU_ENABLE_LLVM=OFF -DCMAKE_CXX_COMPILER=g++-14
 
-# 2. Build with limited concurrency (maximum 3 parallel jobs to avoid memory exhaustion)
-cmake --build build-cov -j3
+# 2. Build the tests
+cmake --build build-cov --target wemu_tests -j3
 
-# 3. Run unit tests with headless Vulkan enabled
-WEMU_TEST_VULKAN=1 ctest --test-dir build-cov --output-on-failure
+# 3. Reset the counters and run every test (about 5 minutes)
+find build-cov -name '*.gcda' -delete
+WEMU_TEST_VULKAN=1 ./build-cov/tests/wemu_tests --gtest_brief=1
 
-# 4. Capture coverage data and generate HTML
-lcov --gcov-tool gcov-14 --capture --directory build-cov --output-file build-cov/coverage.info
-lcov --remove build-cov/coverage.info '/usr/*' '*/tests/*' '*/external/*' --output-file build-cov/coverage_clean.info
-genhtml build-cov/coverage_clean.info --output-directory build-cov/coverage_html
+# 4. Collect, keep core/src only, apply the exclusions below
+lcov --gcov-tool gcov-14 --capture --directory build-cov -o build-cov/cov.info --ignore-errors inconsistent,corrupt,mismatch,negative,unused -q
+lcov --gcov-tool gcov-14 --extract build-cov/cov.info "$PWD/core/src/*" -o build-cov/cov-core.info --ignore-errors inconsistent,unused -q
+lcov --gcov-tool gcov-14 --remove build-cov/cov-core.info '*stb_image*' '*/core/src/gfx/init/*' -o build-cov/cov-wemu.info --ignore-errors inconsistent,unused -q
+
+# 5. Summary and HTML report
+lcov --summary build-cov/cov-wemu.info --ignore-errors inconsistent
+genhtml build-cov/cov-wemu.info -o build-cov/coverage_report --ignore-errors inconsistent,corrupt -q
+xdg-open build-cov/coverage_report/index.html
 ```
+
+`gcov-14` must match the compiler: the default `gcov` from GCC 15 cannot read GCC 14 data. The `make coverage` / `make coverage-html` targets in `core/CMakeLists.txt` apply the same exclusions and pick the matching `gcov` automatically.
+
+#### Coverage exclusions
+Only code that unit tests cannot reach is excluded, and every exclusion is listed here.
+
+| Excluded | Why | How it is checked instead |
+|---|---|---|
+| `core/src/gfx/init/` | The standalone SDL window and Vulkan device setup (instance, surface, swap chain, device selection). It needs a real window and display, which a headless test machine does not have. The GUI does not use it: it presents through the session protocol. | Running WEMU on a desktop; the GUI path is covered by the session tests and the RPX suite. |
+| `stb_image.h` | Vendored third-party image decoder. | Upstream. |
+| `core/tests/` | Test code itself. | — |
+
+Not excluded on purpose: `cpu/recompiler/` (compiled only with LLVM; measure it with `-DWEMU_ENABLE_LLVM=ON`) and log-call template instances in `utils/Logger.hpp`, which lcov 2.0 counts as separate functions. Per source function, 85% of functions are covered (2026-11-12).
 
 > **Note:** Coverage reports are not currently published by CI workflows by team consensus.
 
@@ -172,9 +203,10 @@ Game files are the main untrusted input. `core/src/binary/Loader.cpp` validates 
 3. **CI Pass Required:** No code may merge into `dev` or `main` without passing all GitHub Actions checks. The rulesets enforce reviews (below); see [tech-debt.md](tech-debt.md) item 14 for which checks are required.
 
 ### Branch Protection & Review Policies
-- **`dev` Branch:** Requires at least **1 approved review** from a maintainer and passing CI checks.
-- **`main` Branch:** Requires at least **2 approved reviews** and passing CI checks.
-- **Review History (as of 2026-11-05):** 111 merged PRs, 107 with recorded reviews, 204 total reviews submitted, 15 "changes requested" outcomes.
+- **`dev` Branch:** Requires at least **1 approved review** and the `Full Build (core + gui)` check (full build plus core and GUI tests) to pass.
+- **`main` Branch:** Requires at least **2 approved reviews** and the `check-source-branch` check. Changes reach `main` from `dev`, where the build and tests are already required.
+- **Review History (as of 2026-11-12):** 119 PRs, 111 merged, 107 with recorded reviews, 204 reviews, 13 PRs with a "changes requested" review.
+- **Reviews that changed the code:** four documented cases in [code-review.md](code-review.md).
 
 ### Continuous Integration Pipeline (.github/workflows/wemu-checks.yml)
 The CI pipeline runs on every push and PR targeting `dev` or `main`:
@@ -220,5 +252,5 @@ export VK_DRIVER_FILES="/usr/share/vulkan/icd.d/lvp_icd.x86_64.json"
 ctest --test-dir build -R ".*Test.*" --output-on-failure
 
 # Run the RPX integration suite (see tests/rpx-suite/README.md)
-tests/rpx-suite/run.py --baseline tests/rpx-suite/baselines/$(hostname).json
+tests/rpx-suite/run.py   # compares with baselines/<host>-<cpu>.json when it exists
 ```

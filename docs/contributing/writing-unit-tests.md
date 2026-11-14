@@ -61,10 +61,12 @@ ctest --output-on-failure
 
 ```bash
 cmake .. -DENABLE_COVERAGE=ON
-make -j$(nproc)
+make -j3               # coverage builds are memory-hungry: more jobs can exhaust 16 GB
 make coverage          # terminal summary
 make coverage-html     # + HTML report at build/coverage_report/index.html
 ```
+
+The report excludes test sources, `stb_image.h` and `core/src/gfx/init/`. The reasons, and the manual `lcov` commands, are in [the testing policy](../quality/testing-policy.md#reproducing-coverage-locally).
 
 > Requires `lcov`: `sudo dnf install lcov` (Fedora) or `sudo apt install lcov` (Debian/Ubuntu)
 
