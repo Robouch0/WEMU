@@ -23,6 +23,9 @@ namespace Core {
 
             [[nodiscard]] virtual bool isFatal() const { return false; }
 
+            // The message without the "[Type]: " prefix of what().
+            [[nodiscard]] const std::string &message() const noexcept { return m_errorMessage; }
+
             [[nodiscard]] char const *what() const noexcept override
             {
                 m_formatedMessage = std::string("[" + m_errorType + "]: " + m_errorMessage);

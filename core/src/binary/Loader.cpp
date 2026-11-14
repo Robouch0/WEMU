@@ -47,6 +47,9 @@ Core::Loader::Loader(const std::string &filepath) : m_bin({}), m_beDecoder(filep
     } catch (const Utils::BeDecoderException &error) {
         // Reads past the end of the file: report it as a malformed executable.
         throw LoaderException(std::format("{}: truncated or malformed file ({})", filepath, error.what()));
+    } catch (const LoaderException &error) {
+        // Every rejection names the file, so the log says which title is broken.
+        throw LoaderException(std::format("{}: {}", filepath, error.message()));
     }
 }
 

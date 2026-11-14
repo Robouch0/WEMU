@@ -166,6 +166,19 @@ TEST(LoaderValidationTest, CompressedSectionInflatesToItsDeclaredContents)
 
 TEST(LoaderValidationTest, MissingFileIsReported) { EXPECT_THROW(Core::Loader("/nonexistent/wemu/missing.rpx"), Utils::BeDecoderException); }
 
+TEST(LoaderValidationTest, EveryRejectionNamesTheFile)
+{
+    ImageBuilder image;
+    image.bytes[0] = 0; // bad magic: a check inside the loader, not a read past the end
+    TempFile file(image.bytes);
+    try {
+        Core::Loader loader(file.path);
+        FAIL() << "a file without the ELF magic loaded";
+    } catch (const Core::LoaderException &error) {
+        EXPECT_EQ(error.message(), file.path + ": not an ELF/RPX file (bad magic)");
+    }
+}
+
 TEST(LoaderValidationTest, EmptyFileIsRejectedAsTruncated) { EXPECT_NE(rejection({}).find("truncated"), std::string::npos); }
 
 TEST(LoaderValidationTest, BadMagicIsRejected)
