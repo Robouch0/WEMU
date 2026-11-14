@@ -1,7 +1,9 @@
 #include <array>
 #include <cstdint>
+#include <fstream>
 #include <gtest/gtest.h>
 #include <limits>
+#include <memory>
 #include <type_traits>
 #include <utility>
 
@@ -245,3 +247,32 @@ TEST(MemoryTest, WatchedRangesPreserveHolesAndExactBitmapWordBoundaries)
     EXPECT_FALSE(memory.writeGeneration(first - pageBytes, pageBytes));
     EXPECT_FALSE(memory.writeGeneration(first + 67 * pageBytes, pageBytes));
 }
+
+#ifdef __linux__
+namespace {
+    // Resident set size of this process, from /proc/self/statm (in pages).
+    std::size_t residentBytes()
+    {
+        std::size_t size = 0, resident = 0;
+        std::ifstream("/proc/self/statm") >> size >> resident;
+        return resident * 4096;
+    }
+} // namespace
+
+TEST(MemoryTest, GuestRamIsZeroButOnlyBackedOnceTouched)
+{
+    const auto before = residentBytes();
+    std::array<std::unique_ptr<Core::Memory>, 3> memories;
+    for (auto &memory: memories)
+        memory = std::make_unique<Core::Memory>(); // 1.7 GB of guest RAM each
+    EXPECT_LT(residentBytes() - before, std::size_t{256} << 20) << "guest RAM was filled by hand";
+
+    auto &memory = *memories[1];
+    const auto last = Core::Memory::ApplicationMemoryEnd - 4;
+    EXPECT_EQ(memory.read<std::uint32_t>(Core::Memory::ApplicationCode), 0u);
+    EXPECT_EQ(memory.read<std::uint32_t>(last), 0u);
+    memory.write<std::uint32_t>(last, 0xCAFEF00D);
+    EXPECT_EQ(memory.read<std::uint32_t>(last), 0xCAFEF00Du);
+    EXPECT_EQ(memories[2]->read<std::uint32_t>(last), 0u) << "each instance has its own RAM";
+}
+#endif

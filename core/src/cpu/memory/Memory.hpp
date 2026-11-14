@@ -6,6 +6,7 @@
 #include <atomic>
 #include <bit>
 #include <cinttypes>
+#include <cstdlib>
 #include <cstring>
 #include <format>
 #include <iomanip>
@@ -36,6 +37,44 @@ namespace Core {
             [[nodiscard]] bool isFatal() const override { return true; }
     };
 
+    // Guest RAM is about 1.7 GB, so it is not zero-filled by hand: calloc gets pages that are
+    // already zero and, on Linux and macOS, not backed until first touched. RAM then costs
+    // only what the title uses, and several interpreters fit in memory at once (tests).
+    template<class T>
+    struct LazyZeroAllocator {
+            using value_type = T;
+
+            LazyZeroAllocator() noexcept = default;
+            template<class U>
+            LazyZeroAllocator(const LazyZeroAllocator<U> &) noexcept
+            {
+            }
+
+            [[nodiscard]] T *allocate(std::size_t count)
+            {
+                if (void *data = std::calloc(count, sizeof(T)))
+                    return static_cast<T *>(data);
+                throw std::bad_alloc();
+            }
+            void deallocate(T *data, std::size_t) noexcept { std::free(data); }
+
+            // Value-initialising a new element writes nothing: calloc storage is already zero.
+            // Only valid because the buffer is sized once, right after it is allocated.
+            template<class U>
+            void construct(U *) noexcept
+            {
+            }
+            template<class U, class... Args>
+            void construct(U *place, Args &&...args)
+            {
+                ::new (static_cast<void *>(place)) U(std::forward<Args>(args)...);
+            }
+
+            friend bool operator==(const LazyZeroAllocator &, const LazyZeroAllocator &) noexcept { return true; }
+    };
+
+    using GuestRam = std::vector<char, LazyZeroAllocator<char>>;
+
     class Memory {
         public:
             enum MemoryMap : std::uint32_t {
@@ -63,7 +102,7 @@ namespace Core {
                 m_memory(), m_virtAddress(ApplicationCode), m_memSize(size)
             {
                 // Guest code walks pointers across hundreds of MB: back RAM with transparent huge
-                // pages (requested before the zero fill touches it) to spare TLB misses.
+                // pages (requested before the guest first touches it) to spare TLB misses.
                 m_memory.reserve(size);
                 adviseHugePages(m_memory.data(), size);
                 m_memory.resize(size);
@@ -306,8 +345,8 @@ namespace Core {
                 return replacement;
             }
 
-            [[nodiscard]] std::vector<char> &getMemory() noexcept { return m_memory; }
-            [[nodiscard]] const std::vector<char> &getMemory() const noexcept { return m_memory; }
+            [[nodiscard]] GuestRam &getMemory() noexcept { return m_memory; }
+            [[nodiscard]] const GuestRam &getMemory() const noexcept { return m_memory; }
 
             [[nodiscard]] std::size_t translate(const std::size_t &address) const { return allocate(address, 1); }
 
@@ -381,7 +420,7 @@ namespace Core {
                 return std::pair{offset >> kCodePageShift, (offset + bytes - 1) >> kCodePageShift};
             }
 
-            std::vector<char> m_memory;
+            GuestRam m_memory;
             std::vector<char> m_stack;
             std::vector<char> m_dimport;
             std::vector<char> m_lockedCache;
