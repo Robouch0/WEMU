@@ -664,20 +664,9 @@ namespace {
         if (!host.replayer)
             host.replayer = std::make_unique<Core::Gfx::Gx2Replayer>();
         auto &replayer = *host.replayer;
-        // WEMU_GPU rasterises the frame on the GPU (Vulkan) instead of the software rasteriser.
-        //   =1 -> the general multi-target render graph (offscreen buffers + render-to-texture)
-        //   =2 -> the legacy single-target quad compositor (flattens everything to the scan target)
-        static const int gpuMode = []() {
-            const char *e = std::getenv("WEMU_GPU");
-            return e ? std::atoi(e) : 0;
-        }();
-        if (gpuMode) {
-            replayer.setGpuRenderer(cpu.m_renderer);
-            replayer.setGpuRenderGraph(gpuMode == 1);
-        }
         if (!host.nativeInitialized) {
             const auto *enabled = std::getenv("WEMU_NATIVE_RASTER");
-            if (!gpuMode && enabled && enabled[0] == '1') {
+            if (enabled && enabled[0] == '1') {
                 const char *textureReuse = std::getenv("WEMU_NATIVE_TEXTURE_REUSE");
                 const char *lazyReadback = std::getenv("WEMU_NATIVE_LAZY_READBACK");
                 replayer.setRasterBackend(std::make_shared<Core::Gfx::VulkanRasterBackend>(!textureReuse || std::string_view(textureReuse) != "0",

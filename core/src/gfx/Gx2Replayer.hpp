@@ -20,7 +20,6 @@ namespace Core {
     class Memory;
 }
 
-class Renderer; // global (core/src/gfx/Renderer.hpp)
 
 // GX2 -> framebuffer replay (first stage of GX2->Vulkan presentation).
 //
@@ -70,10 +69,6 @@ namespace Core::Gfx {
             [[nodiscard]] const std::vector<std::uint8_t> &drcFramebuffer() const noexcept { return m_drcFb; }
             [[nodiscard]] std::uint32_t presentCount() const noexcept { return m_presentCount; }
 
-            // GPU rasterisation (WEMU_GPU=1). When a renderer is supplied, each draw's screen-space
-            // triangles are computed on the CPU (reusing all the shader/placement logic) and filled
-            // on the GPU instead of by the software rasteriser; the result is read back into m_fb.
-            void setGpuRenderer(::Renderer *r) noexcept { m_gpuRenderer = r; }
             void setRasterBackend(std::shared_ptr<RasterBackend> backend) { m_rasterBackend = std::move(backend); }
             // Diagnostic only: compare sampled native draws, then retain native output.
             void setNativeVerificationInterval(std::uint64_t interval) { m_nativeVerifyEvery = interval; }
@@ -94,11 +89,6 @@ namespace Core::Gfx {
             [[nodiscard]] std::uint64_t directVertexReuses() const noexcept { return m_directVertexReuses; }
             void setVertexCacheEnabled(bool enabled) noexcept { m_vertexCacheEnabled = enabled; }
 
-            // GPU render-target graph (the general multi-target compositor). When set, each guest
-            // colour buffer becomes a persistent GPU image and draws render into their actual target
-            // (offscreen buffers, bloom mips) rather than one flattened scan target; a draw whose
-            // bound texture is itself a colour target samples that image directly (render-to-texture).
-            void setGpuRenderGraph(bool on) noexcept { m_gpuGraph = on; }
 
         private:
             std::optional<std::uint64_t> m_nativeVerifyEvery;
@@ -305,33 +295,13 @@ namespace Core::Gfx {
                                                const std::vector<float> *depthFeedback = nullptr) const;
             static bool supportsGather(const Surface &surface, const TextureSampler &sampler);
 
-            // Decode a whole guest surface to a linear RGBA8 image (reuses sample() per texel, so it
-            // shares the untiling / BC / format handling) for upload to the GPU rasteriser.
-            void decodeTextureToRgba(const Surface &s, std::vector<std::uint8_t> &out, std::uint32_t &tw, std::uint32_t &th) const;
-
             // WEMU_PROJ_FIX=1: every collapsing UI/menu draw reads one shared screen-projection whose
             // X/Y scale rows are uploaded as zero, so the shader maps every pane to a single point.
             // This detects that projection in the register file (by its z/w rows) and synthesises the
             // missing X/Y rows so the whole menu places at once. Scale is WEMU_PROJ_SCALE-tunable.
             void repairProjection();
 
-            ::Renderer *m_gpuRenderer{nullptr}; // non-null => GPU rasterisation path
             std::shared_ptr<RasterBackend> m_rasterBackend;
-            bool m_gpuGraph{false}; // true => route draws through the multi-target render graph
-            std::uint32_t m_gpuScanAddr{0}; // colour buffer copied to the TV scan-out this frame (graph mode)
-            std::vector<float> m_gpuTri; // current draw's triangles, interleaved x,y,u,v
-            std::vector<std::uint8_t> m_texScratch; // decoded-texture scratch for GPU upload
-            // Decoded-texture cache (GPU path), keyed by guest image address. Decoding a tiled/BC
-            // surface to RGBA8 is as costly as sampling it per pixel, so without this the GPU path
-            // pays a full CPU decode of every texture — including the 1280x720 render-target reads —
-            // on every frame and ends up slower than the software rasteriser. Guest textures are
-            // static for the menu (and in GPU mode the CPU never writes the colour buffers), so a
-            // decode-once cache is safe here; a later multi-target design keeps them on the GPU.
-            struct DecodedTex {
-                    std::vector<std::uint8_t> rgba;
-                    std::uint32_t w = 0, h = 0;
-            };
-            std::unordered_map<std::uint32_t, DecodedTex> m_texCache;
             // Guest bytes compared only when stores may have reached them: an entry is trusted
             // once two comparisons saw the same write generation, and re-compared periodically.
             struct WriteValidation {

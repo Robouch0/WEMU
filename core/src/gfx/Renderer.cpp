@@ -8,8 +8,6 @@
 #include <stdexcept>
 #include <thread>
 
-#include "GpuQuadRasterizer.hpp"
-#include "GpuRenderGraph.hpp"
 #include "Renderer.hpp"
 #include "utils/DisplayTiming.hpp"
 #include "utils/FrameProfiler.hpp"
@@ -287,65 +285,6 @@ void Renderer::processHostCommands(std::chrono::milliseconds wait)
         m_hostButtonSamples.clear();
         m_open = false;
     }
-}
-
-void Renderer::gpuBegin()
-{
-    if (!m_gpuQuad)
-        m_gpuQuad = new Core::Gfx::GpuQuadRasterizer(m_physicalDevice, m_logicalDevice, m_graphicsQueue, m_commandPool, WIDTH, HEIGHT);
-    m_gpuQuad->begin();
-}
-
-void Renderer::gpuDrawTriangles(std::uint64_t key, const std::uint8_t *rgba, std::uint32_t tw, std::uint32_t th, const float *xyuv,
-                                std::uint32_t count)
-{
-    if (m_gpuQuad)
-        m_gpuQuad->drawTriangles(key, rgba, tw, th, reinterpret_cast<const Core::Gfx::GpuQuadRasterizer::Vertex *>(xyuv), count);
-}
-
-void Renderer::gpuEnd(std::uint8_t *outRgbx)
-{
-    if (m_gpuQuad)
-        m_gpuQuad->end(outRgbx);
-}
-
-void Renderer::gpuBeginFrame()
-{
-    if (!m_gpuGraph)
-        m_gpuGraph = new Core::Gfx::GpuRenderGraph(m_physicalDevice, m_logicalDevice, m_graphicsQueue, m_commandPool, WIDTH, HEIGHT);
-    m_gpuGraph->beginFrame();
-}
-
-void Renderer::gpuBindTarget(std::uint32_t addr, std::uint32_t w, std::uint32_t h)
-{
-    if (m_gpuGraph)
-        m_gpuGraph->bindTarget(addr, w, h);
-}
-
-void Renderer::gpuClearTarget(std::uint32_t addr, std::uint32_t w, std::uint32_t h, const float rgba[4])
-{
-    if (m_gpuGraph)
-        m_gpuGraph->clearTarget(addr, w, h, rgba);
-}
-
-bool Renderer::gpuIsTarget(std::uint32_t addr) const { return m_gpuGraph && m_gpuGraph->isTarget(addr); }
-
-void Renderer::gpuDrawTexture(std::uint64_t key, const std::uint8_t *rgba, std::uint32_t tw, std::uint32_t th, const float *xyuv, std::uint32_t count)
-{
-    if (m_gpuGraph)
-        m_gpuGraph->draw(static_cast<std::uint32_t>(key), rgba, tw, th, reinterpret_cast<const Core::Gfx::GpuRenderGraph::Vertex *>(xyuv), count);
-}
-
-void Renderer::gpuDrawTarget(std::uint32_t srcAddr, const float *xyuv, std::uint32_t count)
-{
-    if (m_gpuGraph)
-        m_gpuGraph->draw(srcAddr, nullptr, 0, 0, reinterpret_cast<const Core::Gfx::GpuRenderGraph::Vertex *>(xyuv), count);
-}
-
-void Renderer::gpuPresentTarget(std::uint32_t scanAddr, std::uint8_t *outRgbx)
-{
-    if (m_gpuGraph)
-        m_gpuGraph->present(scanAddr, outRgbx);
 }
 
 bool Renderer::poll_events()

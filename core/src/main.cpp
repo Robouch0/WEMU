@@ -172,9 +172,6 @@ int main(const int ac, char const *const *av)
         std::unique_ptr<Core::Gfx::HostPresenter> hostPresenter;
 #ifdef WEMU_QT_FRONTEND
         if (windowChannel) {
-            const auto *legacyGpu = std::getenv("WEMU_GPU");
-            if (legacyGpu && std::atoi(legacyGpu))
-                throw std::runtime_error("The legacy WEMU_GPU compositor requires standalone SDL presentation");
             hostPresenter = std::make_unique<Core::Frontend::QtHostPresenter>(QString::fromUtf8(av[4]));
         }
 #endif

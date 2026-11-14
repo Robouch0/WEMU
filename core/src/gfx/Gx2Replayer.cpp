@@ -2246,24 +2246,6 @@ namespace Core::Gfx {
         }
     }
 
-    void Gx2Replayer::decodeTextureToRgba(const Surface &s, std::vector<std::uint8_t> &out, std::uint32_t &tw, std::uint32_t &th) const
-    {
-        tw = s.width ? std::min(s.width, 2048u) : 1;
-        th = s.height ? std::min(s.height, 2048u) : 1;
-        out.resize(static_cast<std::size_t>(tw) * th * 4);
-        for (std::uint32_t y = 0; y < th; y++) {
-            for (std::uint32_t x = 0; x < tw; x++) {
-                const auto t =
-                        sample(s, (static_cast<float>(x) + 0.5f) / static_cast<float>(tw), (static_cast<float>(y) + 0.5f) / static_cast<float>(th));
-                const std::size_t o = (static_cast<std::size_t>(y) * tw + x) * 4;
-                out[o + 0] = t[0];
-                out[o + 1] = t[1];
-                out[o + 2] = t[2];
-                out[o + 3] = t[3];
-            }
-        }
-    }
-
     std::array<std::uint8_t, 4> Gx2Replayer::sample(const Surface &s, float u, float v) const
     {
         if (!m_mem || !s.imagePtr)
@@ -3148,8 +3130,7 @@ namespace Core::Gfx {
         // simultaneous MRT path, so retain fallback for those. Only the pixel units the
         // shader samples count as feedback: titles leave earlier draws' textures bound
         // (Pikmin 3's light passes keep the array they render into on an unused unit).
-        if (selectedColor < 0 && std::popcount(writableColors) > 1 && (!m_depthTest || !m_depthWrite) && !m_stencilTest && !m_multiWriteEnable &&
-            !m_gpuRenderer) {
+        if (selectedColor < 0 && std::popcount(writableColors) > 1 && (!m_depthTest || !m_depthWrite) && !m_stencilTest && !m_multiWriteEnable) {
             bool independent = true;
             const auto aliases = [](const Surface &a, const Surface &b) {
                 return a.imagePtr && b.imagePtr && std::uint64_t(a.imagePtr) < std::uint64_t(b.imagePtr) + b.imageSize &&
@@ -3216,8 +3197,6 @@ namespace Core::Gfx {
         if (selectedColor < 0 && m_colorBuffers[0].imagePtr && (writableColors == 1 || (colorShader && *colorShader && colorShader->exportsColor))) {
             m_color = m_colorBuffers[0];
             m_colorTarget = 0;
-            if (m_gpuGraph && m_gpuRenderer)
-                m_gpuRenderer->gpuBindTarget(m_color.imagePtr, m_color.width, m_color.height);
         }
         if (!m_mem || !m_color.imagePtr) {
             m_stats.skipNoTarget++;
@@ -4303,7 +4282,7 @@ namespace Core::Gfx {
         // pixel. AA surfaces use that same representation on the native path;
         // retaining their flag must not force shader interpretation on the CPU.
         // This does not yet implement per-sample coverage or MSAA texture fetches.
-        const bool collectBackend = m_rasterBackend && !m_gpuRenderer && !rawTarget && (stencilIdentity || nativeStencil) && !m_multiWriteEnable &&
+        const bool collectBackend = m_rasterBackend && !rawTarget && (stencilIdentity || nativeStencil) && !m_multiWriteEnable &&
                                     (!drawDepth || !splitBias) && (!m_depthTest || !m_depth.imagePtr || drawDepth) &&
                                     (!drawDepth || (nativeDepthEnabled && m_rasterBackend->supportsDepth())) && pixelProgram && useViewBacking() &&
                                     m_pixelInputCount <= 16 && m_color.pitch >= m_color.width && m_color.aa <= 3 && m_color.dimension == 1 &&
@@ -4491,17 +4470,6 @@ namespace Core::Gfx {
                                                drawDepth->format, m_polygonOffset[biasIndex], m_polygonOffset[biasIndex + 1], m_polygonOffset[4])
                             : 0.f;
             m_stats.tris++;
-            // GPU path: hand the screen-space triangle to the GPU rasteriser instead of filling it
-            // here. All the geometry work above (shader execution, placement, UV) is reused as-is.
-            if (m_gpuRenderer) {
-                for (int i = 0; i < 3; i++) {
-                    m_gpuTri.push_back(rv[i].x);
-                    m_gpuTri.push_back(rv[i].y);
-                    m_gpuTri.push_back(rv[i].u);
-                    m_gpuTri.push_back(rv[i].v);
-                }
-                return;
-            }
             const int minX = std::max(sx0, static_cast<int>(std::floor(std::min({rv[0].x, rv[1].x, rv[2].x}))));
             const int maxX = std::min(sx1 - 1, static_cast<int>(std::ceil(std::max({rv[0].x, rv[1].x, rv[2].x}))));
             const int minY = std::max(sy0, static_cast<int>(std::floor(std::min({rv[0].y, rv[1].y, rv[2].y}))));
@@ -5975,32 +5943,6 @@ namespace Core::Gfx {
                                                            return vulkan ? vulkan->lastError() : std::string{};
                                                        }());
         }
-        // GPU path: flush this draw's collected triangles with its texture (one draw call, one
-        // texture upload — cached by address+content, so a static texture uploads once).
-        if (m_gpuRenderer && !m_gpuTri.empty()) {
-            const std::uint32_t verts = static_cast<std::uint32_t>(m_gpuTri.size() / 4);
-            // Graph mode: if the bound texture is itself a colour target rendered this frame, sample
-            // that GPU image directly (render-to-texture) instead of decoding a CPU copy of it.
-            if (m_gpuGraph && m_gpuRenderer->gpuIsTarget(m_texture.imagePtr)) {
-                m_gpuRenderer->gpuDrawTarget(m_texture.imagePtr, m_gpuTri.data(), verts);
-            } else {
-                // Decode once per texture address and reuse; the GPU-side upload cache then also skips
-                // re-uploading since the pixels are byte-identical frame to frame.
-                auto it = m_texCache.find(m_texture.imagePtr);
-                if (it == m_texCache.end()) {
-                    if (m_texCache.size() > 512)
-                        m_texCache.clear(); // bound the cache for titles that cycle through many surfaces
-                    DecodedTex d;
-                    decodeTextureToRgba(m_texture, d.rgba, d.w, d.h);
-                    it = m_texCache.emplace(m_texture.imagePtr, std::move(d)).first;
-                }
-                if (m_gpuGraph)
-                    m_gpuRenderer->gpuDrawTexture(m_texture.imagePtr, it->second.rgba.data(), it->second.w, it->second.h, m_gpuTri.data(), verts);
-                else
-                    m_gpuRenderer->gpuDrawTriangles(m_texture.imagePtr, it->second.rgba.data(), it->second.w, it->second.h, m_gpuTri.data(), verts);
-            }
-            m_gpuTri.clear();
-        }
         if (m_trace && shouldDumpAfterDraw(m_stats.draws)) {
             char kind[32];
             std::snprintf(kind, sizeof(kind), "after_draw%03u", m_stats.draws);
@@ -6474,17 +6416,6 @@ namespace Core::Gfx {
         m_mem = m_writableMem = mem;
         m_bufferSnapshots = stream.bufferSnapshots();
         m_lastDrawColor = {};
-        // GPU path: open a fresh GPU frame; draws append triangles, the present writes back to m_fb.
-        if (m_gpuRenderer) {
-            if (m_fb.size() != static_cast<std::size_t>(kWidth) * kHeight * 4)
-                m_fb.assign(static_cast<std::size_t>(kWidth) * kHeight * 4, 0);
-            if (m_gpuGraph)
-                m_gpuRenderer->gpuBeginFrame();
-            else
-                m_gpuRenderer->gpuBegin();
-            m_gpuScanAddr = 0;
-            m_gpuTri.clear();
-        }
         // WEMU_GX2_TRACE=0: auto-trace the first frame that binds a vertex uniform block and has a
         // full draw load (a real menu frame) — explicit frame numbers race the boot's variable pace.
         static const bool autoTrace = []() {
@@ -6634,10 +6565,7 @@ namespace Core::Gfx {
                     if (std::getenv("WEMU_SCAN_TRACE")) // TEMP-SCANTRACE
                         Utils::Log::error("[SCAN] frame={} clear surface={:08X} after_draw={} rgba=({},{},{},{})", m_presentCount, cs.imagePtr,
                                           m_stats.draws, m_clear[0], m_clear[1], m_clear[2], m_clear[3]);
-                    if (m_gpuGraph && m_gpuRenderer)
-                        m_gpuRenderer->gpuClearTarget(cs.imagePtr, cs.width, cs.height, m_clear);
-                    else
-                        clearSurface(cs, m_clear);
+                    clearSurface(cs, m_clear);
                     if (cmd.type == Gx2Cmd::ClearBuffersEx) {
                         Gx2Command depthCmd = cmd;
                         depthCmd.gpr[0] = cmd.gpr[1];
@@ -6658,8 +6586,6 @@ namespace Core::Gfx {
                     m_colorBuffers[m_colorTarget] = m_color;
                     traceSurfaceAlias(m_color, "color");
                     dumpSurface(m_color, "color");
-                    if (m_gpuGraph && m_gpuRenderer && m_color.imagePtr)
-                        m_gpuRenderer->gpuBindTarget(m_color.imagePtr, m_color.width, m_color.height);
                     break;
                 case Gx2Cmd::SetPixelSampler:
                 case Gx2Cmd::SetVertexSampler: {
@@ -7052,19 +6978,15 @@ namespace Core::Gfx {
                         Utils::Log::error("[SCAN] frame={} copy target={} surface={:08X}", m_presentCount, cmd.gpr[1], parseSurface(cmd).imagePtr);
                     // The DRC copy is captured where it is issued: titles commonly reuse one colour
                     // buffer for both screens, so reading it back at the swap would show the TV image.
-                    if ((cmd.gpr[1] & 4) && m_drcCapture && !m_gpuRenderer) {
+                    if ((cmd.gpr[1] & 4) && m_drcCapture) {
                         m_lastDrcScan = parseSurface(cmd);
                         copyToDrcBuffer(m_lastDrcScan);
                         drcPresented = true;
                     }
                     if (cmd.gpr[1] & 1) {
                         m_lastScan = attachmentSurface(parseSurface(cmd));
-                        if (m_gpuGraph)
-                            m_gpuScanAddr = m_lastScan.imagePtr;
-                        else if (!m_gpuRenderer) {
-                            copyToScanBuffer(m_lastScan);
-                            presented = true;
-                        }
+                        copyToScanBuffer(m_lastScan);
+                        presented = true;
                     }
                     break;
                 case Gx2Cmd::SwapScanBuffers:
@@ -7096,17 +7018,7 @@ namespace Core::Gfx {
                                               m_lastDrawColor.imagePtr);
                         }
                     }
-                    if (m_gpuGraph && m_gpuRenderer) {
-                        // Execute the recorded render graph and read the TV scan source back into m_fb.
-                        // Titles that render straight into the scan buffer never issue a copy, so fall
-                        // back to the last bound colour target.
-                        const std::uint32_t scan = m_gpuScanAddr ? m_gpuScanAddr : m_color.imagePtr;
-                        m_gpuRenderer->gpuPresentTarget(scan, m_fb.data());
-                    } else if (m_gpuRenderer) {
-                        // Finish the GPU frame: submit the queued draws and read the composited
-                        // image back into m_fb, which Renderer::flip_tv then presents.
-                        m_gpuRenderer->gpuEnd(m_fb.data());
-                    } else if (std::getenv("WEMU_PRESENT_LAST_COLOR") && m_lastDrawColor.imagePtr) {
+                    if (std::getenv("WEMU_PRESENT_LAST_COLOR") && m_lastDrawColor.imagePtr) {
                         // Experiment: MK8's richer post-title frames draw a final full-screen pass
                         // from the previous TV scan source into another colour target, then may bind
                         // the old scan surface again before SwapScanBuffers. Presenting the most
@@ -7121,7 +7033,7 @@ namespace Core::Gfx {
                         else
                             buildClearFrame();
                     }
-                    if (m_drcCapture && !drcPresented && m_lastDrcScan.imagePtr && !m_gpuRenderer)
+                    if (m_drcCapture && !drcPresented && m_lastDrcScan.imagePtr)
                         copyToDrcBuffer(m_lastDrcScan);
                     if (std::getenv("WEMU_SCAN_TRACE")) // TEMP-SCANTRACE
                         Utils::Log::error("[SCAN] frame={} presented={} lastScan={:08X} {}x{} fmt={:X} color={:08X} lastDraw={:08X} pending={}",

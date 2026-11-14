@@ -120,8 +120,6 @@ add_library(core STATIC
         src/gfx/Gx2CommandStream.hpp
         src/gfx/Gx2Replayer.hpp
         src/gfx/Gx2Replayer.cpp
-        src/gfx/GpuQuadRasterizer.cpp
-        src/gfx/GpuRenderGraph.cpp
         src/gfx/LatteVsInterp.cpp
         src/gfx/LatteProgram.cpp
         src/gfx/LatteSurfaceLayout.cpp
@@ -262,6 +260,9 @@ add_subdirectory(tests)
 if(ENABLE_COVERAGE)
     find_program(LCOV lcov REQUIRED)
     find_program(GENHTML genhtml)
+    # gcov must come from the compiler that built the objects (gcov from GCC 15 cannot read GCC 14 data).
+    string(REGEX MATCH "^[0-9]+" WEMU_GCC_MAJOR "${CMAKE_CXX_COMPILER_VERSION}")
+    find_program(GCOV NAMES gcov-${WEMU_GCC_MAJOR} gcov REQUIRED)
 
     set(COVERAGE_RAW    ${CMAKE_BINARY_DIR}/coverage_raw.info)
     set(COVERAGE_INFO   ${CMAKE_BINARY_DIR}/coverage.info)
@@ -274,6 +275,7 @@ if(ENABLE_COVERAGE)
             COMMAND ${LCOV}
             --capture
             --directory ${CMAKE_BINARY_DIR}
+            --gcov-tool ${GCOV}
             --branch-coverage
             --ignore-errors mismatch,unused,inconsistent
             --rc geninfo_unexecuted_blocks=1
@@ -282,6 +284,11 @@ if(ENABLE_COVERAGE)
             COMMAND ${LCOV}
             --remove ${COVERAGE_RAW}
             "${CMAKE_BINARY_DIR}/_deps/*"
+            # Excluded on purpose, see docs/quality/testing-policy.md "Coverage exclusions":
+            # test sources, vendored stb_image, and the standalone SDL window/Vulkan bootstrap.
+            "*/core/tests/*"
+            "*/stb_image*"
+            "*/core/src/gfx/init/*"
             --branch-coverage
             --ignore-errors mismatch,unused,inconsistent
             --output-file ${COVERAGE_INFO}
