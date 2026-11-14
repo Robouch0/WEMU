@@ -165,19 +165,68 @@ Not excluded on purpose: `cpu/recompiler/` (compiled only with LLVM; measure it 
 ## 4. Input Validation and Resilience
 
 ### Input validation
-Game files are the main untrusted input. `core/src/binary/Loader.cpp` validates every RPX/ELF before anything is mapped into guest memory:
 
-- ELF identity: magic, 32-bit, big-endian, `EM_PPC`, a usable section table, and a valid `e_shstrndx`.
-- Bounds: every section offset and size must fit in the file. Section names must lie inside `.shstrtab`. Symbol tables need a real `sh_entsize`. Import thunks must land inside their section.
-- Allocation limits: sections, including inflated `SHF_DEFLATED` ones, are capped at 512 MiB before any buffer is sized.
-- Errors: a failure raises `Core::LoaderException` with the file path and the reason (for example "truncated or malformed file", "corrupt compressed section ... (zlib error N)"). The loader never silently drops data.
+Every input that comes from outside the process is checked before it is used. When it is invalid, WEMU refuses it and keeps running wherever that is possible.
+
+| Input | Comes from | Checks | When it is invalid | Tests |
+|---|---|---|---|---|
+| **Game executable (RPX/ELF)** | The user's games folder | `core/src/binary/Loader.cpp`: ELF magic, 32-bit big-endian, `EM_PPC`, a usable section table and `e_shstrndx`; every offset and size inside the file; section names inside `.shstrtab`; symbol tables with a real `sh_entsize`; import thunks inside their section; sections (inflated `SHF_DEFLATED` ones too) capped at 512 MiB before any buffer is sized | The core stops with `LoaderException: <file>: <reason>` (exit 84). Nothing is mapped into guest memory | `core/tests/binary/test_loader_validation.cpp` (20 tests: truncation sweep, seeded 40-round corruption sweep, every rejection naming the file) |
+| **Game files read by the title** | `content/` of the title, through `FSOpenFile` and friends | `core/src/hle/Fs.cpp`: guest paths are normalised (`..` removed) and must lie inside a mounted volume (`/vol/content`, `/vol/save`, the SD card); anything else maps to no host file. Missing files return `FS_STATUS_NOT_FOUND` (-6) | The title gets the error code a real Wii U returns and handles it itself | `core/tests/system/test_fs.cpp` (including `/vol/external01/../../…` being refused) |
+| **Guest pointers and sizes in syscalls** | The title's own code | `Memory::read`/`write`/`hostPtr` check the address range; `calloc` rejects `n * size` overflow | Out-of-range access raises `MemoryException`; the faulting guest thread is killed (resilience scenario 2) | `core/tests/system/test_memory.cpp`, `test_libc_heap.cpp` |
+| **Phone gamepad messages** | The local network (TCP) | `gui/src/remote/`: length-prefixed frames with a size limit; input samples need the exact size; pairing needs the 4-digit PIN, and 5 wrong PINs lock pairing for 30 s and change the PIN | A malformed frame drops that phone (`[REMOTE] GamePad disconnected (<reason>)`); a wrong PIN is answered `bad_pin` | `gui/tests/RemoteProtocolTest.cpp` |
+| **Core-to-GUI session packets** | The core process (local socket) | `WemuSession::take`: lengths checked before any payload is allocated; frame size must match width × height | The GUI shows the error and stops the session | `gui/tests/SessionProtocolTest.cpp` |
+| **Settings and title metadata** | `QSettings`, `meta.xml` of each title | Language, region and volume are range-checked; malformed region metadata falls back to the system region | The default value is used | `gui/tests/SessionLifecycleTest.cpp` (`SessionSettingsTest`), `TitleScannerTest.cpp` |
+
+### Anticipated failure cases
+
+What the system does, what the user sees, and what the logs say. Core log lines have the form `[seconds since start] [LEVEL] [SUBSYSTEM] message` (see [Logs](#logs)).
+
+| # | Failure | What the system does | What the user sees | What is logged |
+|---|---|---|---|---|
+| F1 | Malformed, truncated or non-ELF game file | The loader rejects it before mapping anything; the core exits 84 | "Emulation stopped (exit 84). See the session log." The library stays usable | `[LoaderException]: /path/title.rpx: corrupt compressed section at 0x785B (zlib error -3)` |
+| F2 | Game files deleted or moved after the library scan | The GUI refuses to launch | "Game files are missing. Choose the games folder again." | — (nothing starts) |
+| F3 | WEMU core executable missing | The GUI refuses to launch | "The WEMU core executable was not found." | — |
+| F4 | A title calls an OS function WEMU does not implement | The call returns 0 and the title continues; most titles tolerate it | Usually nothing; sometimes a feature of the title does not work | `[ERROR] [HLE] Unknown import OSSetThreadCleanupCallback (r3=… r4=…) -> returning 0`, and a most-frequent-first summary at exit |
+| F5 | A guest thread faults (bad pointer in the title) | Only that thread is killed; the scheduler moves on | The game keeps running, or stops if it was the main thread | `[ERROR] [EMU] thread 0x26000000 killed by fault at PC=0x…; continuing boot`, then a crash context (registers, backtrace, threads) |
+| F6 | The core itself crashes (host segfault, abort) | The crash handler logs one line, then the process dies with the same signal | "Emulation stopped (exit N). See the session log." | `[6.927] [ERROR] [EMU] host crash: signal 11 (SIGSEGV) in the WEMU core; …` (added 2026-11-15, scenario R4) |
+| F7 | A shader cannot be translated or compiled | That draw falls back to the software renderer | That object may look wrong; the game keeps running | The rejection reason (`lastError()`), with `[GX2TRACE]` when tracing is on |
+| F8 | The phone gamepad loses Wi-Fi | After 6 s without a message the phone is dropped and its input released; the keyboard and other pads keep working | The phone disappears from the connected devices | `[REMOTE] GamePad disconnected (timeout)` |
+| F9 | A USB/Bluetooth gamepad is unplugged | The device is removed from the input list | The device disappears from the list; other inputs keep working | — |
+| F10 | The session log directory cannot be created | The GUI refuses to launch | "Cannot create the session log directory." | — |
+
+### When a dependency goes down
+
+| Dependency | Decision | Why |
+|---|---|---|
+| **GPU / Vulkan driver** | **Fail clearly.** The session stops with `[NATIVE_VULKAN] no usable Vulkan device (…): WEMU needs a GPU with a Vulkan driver` | A software fallback was tried (scenario R2): the software renderer draws lit scenes black at 3 fps. A stopped session with a reason is better than a game that looks broken |
+| **Audio device** | **Degrade.** The game runs without sound | Sound is not needed to play or test a title |
+| **The core process** (seen from the GUI) | **Fail and recover.** The GUI reports the exit, clears the session and allows another launch | `SessionLifecycleTest.CoreStartupFailureClearsSessionAndAllowsAnotherLaunch` |
+| **Phone gamepad (network)** | **Degrade.** The phone is dropped after 6 s; it can reconnect with its saved token | Local input keeps working |
+| **Shader compiler subprocess** | **Degrade per draw.** A shader that fails, or takes more than 15 s, leaves that draw to the software renderer | One bad shader must not stop the game |
+
+No dependency is retried automatically: a missing GPU or audio device does not come back during a session, and the phone reconnects by itself.
 
 ### Resilience scenarios
-| # | Scenario | Expected behaviour | Test |
-|---|---|---|---|
-| 1 | A truncated, corrupted or hostile RPX is opened | The load stops with a `LoaderException` naming the file. No crash, no huge allocation, no out-of-bounds read. Valid titles still load. | `core/tests/binary/test_loader_validation.cpp`: 19 tests, including a truncation sweep, a seeded 40-round corruption sweep and an opt-in real-title check (`WEMU_TEST_RPX_DIR=games`) |
-| 2 | A secondary guest thread faults (bad memory access) | Only that thread is killed and logged (`[EMU] thread ... killed by fault ...; continuing boot`). The session keeps running and the scheduler returns to the main thread. | `SchedulerTest.SecondaryThreadFaultDoesNotReportWholeSessionStopped` (`core/tests/system/test_scheduler.cpp`) |
-| 3 | Sustained load for 3,600 frames | No crash; frame-time drift, stutters and memory growth are measured and reported as warnings | RPX suite `endurance` scene (`tests/rpx-suite/run.py`) |
+
+Each was run on purpose on 2026-11-15 (R6 on 2026-11-13) (Linux, RTX 4070 Laptop), isolated from the developer setup: the core started by `tests/rpx-suite/run.py` or by hand, with its output in `/tmp`, under a 3 GB memory cap.
+
+| # | What was broken | How | Expected | What happened | Follow-up |
+|---|---|---|---|---|---|
+| R1 | **Malformed input**: a truncated RPX, one with 64 flipped bytes, and a text file | `build/core/wemu /tmp/…rpx` | Rejected with the file and the reason; no crash | Exit 84 each time, no crash. The truncated and corrupted files were rejected **without naming the file** | Fixed in `e7136ae`: every rejection names the file (`LoaderValidationTest.EveryRejectionNamesTheFile`) |
+| R2 | **Service cut off: no GPU** | `run.py --env VK_DRIVER_FILES=/nonexistent/icd.json` | The session stops with a clear reason | The core died with `create instance: Vulkan result -9`: no tag, no time, after a line claiming unsupported draws stay in software | A software fallback was tried and rejected (black frames, 3 fps). Fixed in `3567328`: a tagged message saying a Vulkan GPU is needed |
+| R3 | **Service cut off: no audio** | `run.py --env SDL_AUDIODRIVER=wemu-none` | The game runs silent | Logged `[AUDIO] cannot initialize host audio: Audio target 'wemu-none' not available`; suite `PASS`, all probes correct | None needed |
+| R4 | **The core killed mid-run** | `kill -SEGV` on the suite's core after 6 s | The runner reports the run as unfinished; the log says what happened | The runner reported "suite did not finish", verdict `FAIL`, exit code -11. The core log **stopped mid-line** | Fixed in `bde605a`: a crash handler logs `host crash: signal 11 (SIGSEGV)` and still dies with the signal |
+| R5 | **Unexpected load**: 3 interpreters at once | `CoreinitExtraTest.SharedFont…` under a 3 GB cap | Runs in under 1 GB | Killed: each interpreter zero-filled 1.7 GB of guest RAM (5.5 GB in all), which OOM-killed the desktop twice | Fixed in `97bc7b6`: guest RAM is backed on first touch; the whole test binary peaks at 907 MB |
+| R6 | **Sustained load**: 3,600 frames | RPX suite `endurance` scene, best of 3 (2026-11-13) | No crash; drift, stutters and memory growth reported | No crash, check `pass`, 0 stutters, memory −0.8 MiB over the scene, 120.7 fps | None needed |
+
+Four of the six runs found a defect the unit tests had missed, and each is now covered by a test or a clearer message.
+
+### Logs
+
+- **Format:** every `Utils::Log` line starts with the seconds since the core started, then the level and the subsystem: `[   35.619] [ERROR] [AX] frame pump thread created (handle=0x26000B68)`. The session log's file name gives the start time (`session-20261114-234143-173.log`), so a line's wall-clock time is the name plus the prefix.
+- **Where:** the GUI writes the core's output to `~/.local/share/WEMU/WEMU/logs/session-<date>-<time>.log`, one file per session. The GUI's own events (`[SESSION_CORE]`, `[SESSION_EXIT] code=… status=…`, `[REMOTE] …`) go to its standard error.
+- **Context:** errors carry what is needed to act. An unknown import has its register arguments, a guest fault has the thread, PC and a full crash context (registers, nearby objects, backtrace, every thread), and a loader error has the file and the offset.
+- **Levels:** the default level shows errors only (`WEMU_LOG_LEVEL=4`), so some status lines (`[X64JIT] enabled`) are logged as errors to stay visible. About 170 debugging traces use `printf`/`std::cout` directly and carry no time. Both are listed in [tech-debt.md](tech-debt.md) item 20.
 
 ---
 

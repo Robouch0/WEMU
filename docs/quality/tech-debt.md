@@ -29,6 +29,7 @@ Costs are estimated as **S** ($< 2$ days), **M** ($2\text{--}5$ days), or **L** 
 | **17. `GX2CalcTVSize`/`GX2CalcDRCSize` Ignore Mode, Format and Buffering** | Medium: Always the 720p (854x480 for the GamePad), 32-bit, double-buffered size. A 1080p or triple-buffered title gets an undersized scan buffer. | Scan-out was written for 720p first. | **M** | `TODO(team): Assign owner` |
 | **18. Remaining Stubs** | Low: `__os_snprintf` writes an empty string; `OSGetTitleID` returns 0; `nn::act` ID getters return constants. Not tested on purpose: a test would only freeze placeholder behaviour. | Implemented as needed to boot titles. | **S** | `TODO(team): Assign owner` |
 | **19. Compiler Runs With Default Warnings** | Low: `-Wall -Wextra` are not enabled, so unused variables, sign comparisons and missing overrides go unreported; the GCC warning count in [static-analysis.md](static-analysis.md) is a floor. | The project never set warning flags, and enabling them now would surface a backlog to triage first. | **M** | `TODO(team): Assign owner` |
+| **20. Log Levels Used as a Visibility Switch** | Low: the default level shows errors only, so status lines (`[X64JIT] enabled`, `[GX2] swap #0`) are logged as `[ERROR]`, and about 170 traces bypass `Utils::Log` (`printf`, `std::cout`) and carry no time. Real errors are harder to spot in a session log. | Levels were bent to keep bring-up output visible without changing `WEMU_LOG_LEVEL`. | **M** | `TODO(team): Assign owner` |
 
 ---
 
@@ -122,3 +123,7 @@ Costs are estimated as **S** ($< 2$ days), **M** ($2\text{--}5$ days), or **L** 
 ### Item 19: Compiler Runs With Default Warnings
 - **Detail:** `core/CMakeLists.txt` and `gui/CMakeLists.txt` set no warning flags. With GCC 14 defaults the build had 7 warnings on 2026-11-14, all fixed on 2026-11-15.
 - **Remediation:** Add `-Wall -Wextra` to the `core` target, count the result as a new baseline, fix or justify each warning, then make the CI build use `-Werror`.
+
+### Item 20: Log Levels Used as a Visibility Switch
+- **Detail:** `WEMU_LOG_LEVEL` defaults to 4 (errors only). Status and telemetry lines are therefore logged with `Utils::Log::error`, and debugging traces use `printf`/`std::cout` (89 + 69 calls in `core/src`, 2026-11-15), which have no time prefix.
+- **Remediation:** default the GUI session to `info`, move status lines to `info` and telemetry to `debug`, and route the traces through `Utils::Log` with their subsystem tag.
