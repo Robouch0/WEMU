@@ -842,3 +842,127 @@ TEST(MovieAudioTest, OptionalLocalMovieProducesFiniteNonSilentSound)
     EXPECT_TRUE(std::all_of(samples.begin(), samples.end(), [](float sample) { return std::isfinite(sample); }));
     EXPECT_GT(std::inner_product(samples.begin(), samples.end(), samples.begin(), 0.0), 1.e7);
 }
+
+namespace {
+    // Mirrors the mixer's walk over a looping PCM voice: `end` is inclusive.
+    std::pair<unsigned, unsigned> loopPosition(unsigned samples, unsigned loop, unsigned end)
+    {
+        unsigned position = 0, loops = 0;
+        for (unsigned i = 0; i < samples; ++i)
+            if (++position > end) {
+                position = loop;
+                ++loops;
+            }
+        return {position, loops};
+    }
+} // namespace
+
+TEST_F(AudioHleTest, LoopingVoiceWrapsAtItsEndThenStopsOnceLoopingIsCleared)
+{
+    call("AXInit");
+    EXPECT_EQ(call("AXGetMaxVoices"), 96u);
+    const auto data = allocate(1024), offsets = allocate(20), ve = allocate(4), mix = allocate(96);
+    for (unsigned i = 0; i < 512; ++i)
+        cpu->m_memory.write<std::int16_t>(data + i * 2, 1000);
+    cpu->m_memory.write<std::uint16_t>(offsets, 10); // PCM16
+    cpu->m_memory.write<std::uint16_t>(offsets + 2, 0);
+    cpu->m_memory.write<unsigned>(offsets + 4, 0);
+    cpu->m_memory.write<unsigned>(offsets + 8, 511);
+    cpu->m_memory.write<unsigned>(offsets + 12, 0);
+    cpu->m_memory.write<unsigned>(offsets + 16, data);
+    const auto v = call("AXAcquireVoice", {17, app + 0x80, 0x1234});
+    ASSERT_NE(v, 0u);
+    call("AXSetVoiceOffsets", {v, offsets});
+    cpu->m_memory.write<std::uint16_t>(ve, 0x8000);
+    cpu->m_memory.write<std::uint16_t>(ve + 2, 0);
+    call("AXSetVoiceVe", {v, ve});
+    for (unsigned i = 0; i < 96; i += 4)
+        cpu->m_memory.write<unsigned>(mix + i, 0);
+    cpu->m_memory.write<std::uint16_t>(mix, 0x8000);
+    call("AXSetVoiceDeviceMix", {v, 0, 0, mix});
+
+    // Loop samples 100..199 of the buffer, given relative to its start as the Ex calls take them.
+    call("AXSetVoiceEndOffsetEx", {v, 199, data});
+    call("AXSetVoiceLoopOffsetEx", {v, 100, data});
+    call("AXSetVoiceLoop", {v, 1});
+    EXPECT_EQ(call("AXIsVoiceRunning", {v}), 0u);
+    call("AXSetVoiceState", {v, 1});
+    EXPECT_EQ(call("AXIsVoiceRunning", {v}), 1u);
+
+    const auto perFrame = call("AXGetInputSamplesPerFrame");
+    // One audio frame: the AX thread mixes, then returns from its (empty) frame callback.
+    const auto frame = [] {
+        tick();
+        Core::Ax::OnSentinelReturn(*cpu);
+    };
+    for (int i = 0; i < 3; ++i)
+        frame();
+    const auto [position, loops] = loopPosition(3 * perFrame, 100, 199);
+    EXPECT_EQ(call("AXGetVoiceCurrentOffsetEx", {v, data}), position);
+    EXPECT_EQ(call("AXGetVoiceLoopCount", {v}), loops);
+    EXPECT_GE(loops, 1u);
+    EXPECT_EQ(call("AXIsVoiceRunning", {v}), 1u) << "a looping voice keeps playing";
+
+    call("AXSetVoiceLoop", {v, 0});
+    frame();
+    frame();
+    EXPECT_EQ(call("AXIsVoiceRunning", {v}), 0u) << "without looping the voice stops after its end";
+
+    call("AXFreeVoice", {v});
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(v + 4), 0u) << "a freed voice is marked stopped in guest memory";
+    EXPECT_NE(call("AXAcquireVoice", {17, app + 0x80, 0x1234}), 0u) << "its slot can be acquired again";
+}
+
+TEST_F(AudioHleTest, SampleRateConverterRatioMovesThePlaybackPositionFaster)
+{
+    call("AXInit");
+    const auto v = voice();
+    call("AXSetVoiceState", {v, 1});
+    const auto data = cpu->m_memory.read<unsigned>(v + 0x34 + 16); // samples pointer from the voice offsets
+    const auto src = allocate(8);
+    cpu->m_memory.write<unsigned>(src, 0x00020000); // ratio 2.0 in 16.16
+    cpu->m_memory.write<std::uint16_t>(src + 4, 0);
+    call("AXSetVoiceSrc", {v, src});
+    call("AXSetVoiceSrcType", {v, 1});
+    call("AXSetVoiceType", {v, 0});
+    call("AXSetVoicePriority", {v, 31});
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(v + 0x1C), 31u) << "priority is visible in the guest voice";
+    const auto perFrame = call("AXGetInputSamplesPerFrame");
+    tick();
+    EXPECT_EQ(call("AXGetVoiceCurrentOffsetEx", {v, data}), 2 * perFrame) << "ratio 2.0 consumes two input samples per output sample";
+}
+
+TEST_F(AudioHleTest, DeviceSettingsRoundTripAndInvalidDevicesAreRejected)
+{
+    call("AXInit");
+    const auto out = allocate(8);
+    EXPECT_EQ(call("AXGetDeviceVolume", {0, 0, out}), 0u);
+    EXPECT_EQ(cpu->m_memory.read<std::uint16_t>(out), 0x8000u) << "unity volume by default";
+    EXPECT_EQ(call("AXSetDeviceVolume", {1, 0, 0x4000}), 0u);
+    call("AXGetDeviceVolume", {1, 0, out});
+    EXPECT_EQ(cpu->m_memory.read<std::uint16_t>(out), 0x4000u);
+    EXPECT_EQ(call("AXSetDeviceVolume", {2, 0, 0x4000}), unsigned(-1)) << "only TV and GamePad exist";
+    EXPECT_EQ(call("AXGetDeviceVolume", {0, 5, out}), unsigned(-1));
+    call("AXSetDeviceVolume", {1, 0, 0x8000});
+
+    EXPECT_EQ(call("AXSetDeviceMode", {0, 1}), 0u);
+    call("AXGetDeviceMode", {0, out});
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(out), 1u);
+    EXPECT_EQ(call("AXSetDeviceMode", {0, 4}), unsigned(-1)) << "mode 4 does not exist";
+    EXPECT_EQ(call("AXGetDeviceMode", {2, out}), unsigned(-1));
+    call("AXSetDeviceMode", {0, 0});
+
+    EXPECT_EQ(call("AXSetDeviceUpsampleStage", {1, 1}), 0u);
+    call("AXGetDeviceUpsampleStage", {1, out});
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(out), 1u);
+    EXPECT_EQ(call("AXGetDeviceUpsampleStage", {2, out}), unsigned(-1));
+    call("AXSetDeviceUpsampleStage", {1, 0});
+
+    const auto userData = allocate(4);
+    EXPECT_EQ(call("AXRegisterAuxCallback", {0, 0, 1, app + 0x400, userData}), 0u);
+    EXPECT_EQ(call("AXGetAuxCallback", {0, 0, 1, out, out + 4}), 0u);
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(out), app + 0x400);
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(out + 4), userData);
+    EXPECT_EQ(call("AXGetAuxCallback", {0, 0, 3, out, out + 4}), unsigned(-1)) << "there are three aux buses";
+    call("AXRegisterAuxCallback", {0, 0, 1, 0, 0});
+}
