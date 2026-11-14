@@ -2,7 +2,7 @@
 
 Every change reaches `dev` and `main` through a pull request. The rulesets require 1 approving review on `dev` and 2 on `main`; on `dev`, the `Full Build (core + gui)` check (build plus core and GUI tests) must also pass (see [testing-policy.md](testing-policy.md#5-team-conventions--quality-gates)).
 
-**Activity (2026-11-12):** 119 pull requests; 111 merged, 107 of them reviewed; 204 reviews; 13 pull requests received a "changes requested" review.
+**Activity (2026-11-15):** 119 pull requests, 111 merged; 108 reviewed by someone other than their author; 205 reviews recorded, 165 of them by another member (the other 40 are authors replying in their own PR); 13 pull requests received a "changes requested" review. Per-reviewer figures: [testing-policy.md](testing-policy.md#branch-protection--review-policies).
 
 The four cases below are the ones where review had the clearest effect on the code. Each links to the pull request, the review comments and the commits that answered them.
 

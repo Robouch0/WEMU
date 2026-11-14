@@ -253,7 +253,15 @@ Four of the six runs found a defect the unit tests had missed, and each is now c
 ### Branch Protection & Review Policies
 - **`dev` Branch:** Requires at least **1 approved review** and the `Full Build (core + gui)` check (full build plus core and GUI tests) to pass.
 - **`main` Branch:** Requires at least **2 approved reviews** and the `check-source-branch` check. Changes reach `main` from `dev`, where the build and tests are already required.
-- **Review History (as of 2026-11-12):** 119 PRs, 111 merged, 107 with recorded reviews, 204 reviews, 13 PRs with a "changes requested" review.
+- **Review History (GitHub API, 2026-11-15):** 119 PRs between 2025-06-10 and 2026-11-05 (111 merged, 5 closed, 3 open). 108 of them were reviewed by someone other than their author, and 13 received a change request: 165 reviews by another member (124 approvals, 24 comments, 15 change requests, 2 dismissed), plus 123 inline review comments on the code.
+
+| Reviewer | PRs reviewed | Reviews | Reviews with a written comment | Changes requested | Inline comments |
+|---|---|---|---|---|---|
+| Robouch0 | 55 | 74 | 38 | 5 | 45 |
+| Igoatyouu | 47 | 60 | 44 | 7 | 41 |
+| NicolasMelet | 26 | 31 | 16 | 3 | 36 |
+
+  Authors: Igoatyouu 48 PRs, Robouch0 45, NicolasMelet 22, four occasional contributors 1 each. Every regular member both writes and reviews.
 - **Reviews that changed the code:** four documented cases in [code-review.md](code-review.md).
 
 ### Continuous Integration Pipeline (.github/workflows/wemu-checks.yml)
@@ -267,17 +275,32 @@ The CI pipeline runs on every push and PR targeting `dev` or `main`:
 | **clang-format** | Ubuntu 24.04 (clang-format 19) | Validates code formatting across `core/src` and `core/tests` (`--dry-run --Werror`). |
 | **clang-tidy** | Ubuntu 24.04 (clang-tidy 19, GCC 14) | Static analysis on `core/src` with warnings as errors (`-warnings-as-errors='*'`). |
 
-#### Clang-Tidy Configuration
-Defined in `core/.clang-tidy`:
-- **Active Checks:** `clang-diagnostic-*`, `clang-analyzer-*`, `bugprone-*`, `performance-*`
-- **Disabled Checks:** `-bugprone-easily-swappable-parameters`, `-bugprone-macro-parentheses`, `-performance-avoid-endl`
-- **Header Filter:** Excludes vendored headers (`stb_image.h`).
-- **Scope Limitation:** Static analysis and formatting checks currently cover `core/`, but do not yet analyze `gui/`.
+#### Static analysis rules
+The clang-tidy and clang-format rules, the checks disabled with their reasons, and the initial and final measurements are in [static-analysis.md](static-analysis.md).
 
-#### Historical CI Reliability
-Over 200 recorded runs (2026-04-16 to 2026-11-05):
-- **140 successful runs** (70%)
-- **60 failed runs** (30%, primarily lint violations and headless Vulkan runner timeouts)
+#### Pipeline history
+**Browsable history:** <https://github.com/Robouch0/WEMU/actions>. It shows every run with its result, successful and failed, since the repository started.
+
+Measured on 2026-11-15 through the GitHub API: **631 runs** between 2025-11-14 and 2026-11-05, **538 successful and 93 failed** (85% / 15%).
+
+| Month | Successful | Failed |
+|---|---|---|
+| 2025-11 | 23 | 5 |
+| 2025-12 | 11 | 1 |
+| 2026-01 | 22 | 0 |
+| 2026-02 | 25 | 5 |
+| 2026-03 | 174 | 8 |
+| 2026-04 | 151 | 17 |
+| 2026-05 | 41 | 10 |
+| 2026-06 | 24 | 20 |
+| 2026-07 | 4 | 0 |
+| 2026-09 | 11 | 2 |
+| 2026-10 | 44 | 21 |
+| 2026-11 | 8 | 4 |
+
+Runs by workflow: `Build WEMU Project` 343, `Mirror Repository` 131, `Build and Check WEMU` (the current `wemu-checks.yml`) 127, `Mobile GamePad app` 17, `Enforce Merge from Dev to Main Only` 13. Most failures are lint violations and headless Vulkan runner timeouts.
+
+**Changes the pipeline stopped before they reached `main`:** CI-01 to CI-03 in [regressions.md](regressions.md#3-regressions-caught-by-ci-before-merge).
 
 ---
 
