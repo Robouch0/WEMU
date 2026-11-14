@@ -44,7 +44,7 @@ namespace Core::Audio {
             void measureProduction(unsigned hostFrames); // callback updates control, never runs DSP
             void resetQueue(bool resetTempo = true); // mutex held
             mutable std::mutex mutex;
-            std::array<float, capacityFrames * 2> samples{};
+            std::array<float, std::size_t{capacityFrames} * 2> samples{};
             unsigned begin{}, size{}, volume{100};
             unsigned latencyFrames{}, spliceRemaining{}, volumeRemaining{};
             float volumeGain{1}, volumeStep{};

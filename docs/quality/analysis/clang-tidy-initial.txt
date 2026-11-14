@@ -1,0 +1,15 @@
+clang-tidy 19.1.0 - initial measurement: commit 50025a4 (2026-04-29), the rules adopted in c6f2fad, headers included
+====================================================================================================================
+
+Findings: 7
+
+     5  performance-enum-size
+     2  performance-no-int-to-ptr
+
+core/src/binary/Loader.cpp:177  [performance-no-int-to-ptr]  integer to pointer cast pessimizes optimization opportunities
+core/src/binary/Loader.cpp:183  [performance-no-int-to-ptr]  integer to pointer cast pessimizes optimization opportunities
+core/src/cpu/interpreter/Registers.hpp:26  [performance-enum-size]  enum '(unnamed enum at core/src/cpu/interpreter/Registers.hpp:26:9)' uses a larger base type ('std::uint32_t' (aka 'unsigned int'), size: 4 bytes) than necessary for its value set, consider using 'std::uint8_t' (1 byte) as the base type to reduce its size
+core/src/cpu/memory/Memory.hpp:30  [performance-enum-size]  enum 'MemoryMap' uses a larger base type ('size_t' (aka 'unsigned long'), size: 8 bytes) than necessary for its value set, consider using 'std::uint32_t' (4 bytes) as the base type to reduce its size
+core/src/cpu/types/Field.hpp:10  [performance-enum-size]  enum 'Field' uses a larger base type ('unsigned int', size: 4 bytes) than necessary for its value set, consider using 'std::uint8_t' (1 byte) as the base type to reduce its size
+core/src/cpu/types/InstructionID.hpp:10  [performance-enum-size]  enum 'InstructionID' uses a larger base type ('unsigned int', size: 4 bytes) than necessary for its value set, consider using 'std::uint8_t' (1 byte) as the base type to reduce its size
+core/src/utils/Logger.hpp:16  [performance-enum-size]  enum 'Level' uses a larger base type ('int', size: 4 bytes) than necessary for its value set, consider using 'std::uint8_t' (1 byte) as the base type to reduce its size

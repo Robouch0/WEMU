@@ -28,6 +28,7 @@ Costs are estimated as **S** ($< 2$ days), **M** ($2\text{--}5$ days), or **L** 
 | **16. `OSTicksToCalendarTime` Is a Fixed Date** | Low: Every title sees the same date in 2026, whatever time it passes. | `OSGetTime` counts from boot, not from 2000-01-01, so a real conversion needs a wall-clock base first. | **S** | `TODO(team): Assign owner` |
 | **17. `GX2CalcTVSize`/`GX2CalcDRCSize` Ignore Mode, Format and Buffering** | Medium: Always the 720p (854x480 for the GamePad), 32-bit, double-buffered size. A 1080p or triple-buffered title gets an undersized scan buffer. | Scan-out was written for 720p first. | **M** | `TODO(team): Assign owner` |
 | **18. Remaining Stubs** | Low: `__os_snprintf` writes an empty string; `OSGetTitleID` returns 0; `nn::act` ID getters return constants. Not tested on purpose: a test would only freeze placeholder behaviour. | Implemented as needed to boot titles. | **S** | `TODO(team): Assign owner` |
+| **19. Compiler Runs With Default Warnings** | Low: `-Wall -Wextra` are not enabled, so unused variables, sign comparisons and missing overrides go unreported; the GCC warning count in [static-analysis.md](static-analysis.md) is a floor. | The project never set warning flags, and enabling them now would surface a backlog to triage first. | **M** | `TODO(team): Assign owner` |
 
 ---
 
@@ -86,6 +87,7 @@ Costs are estimated as **S** ($< 2$ days), **M** ($2\text{--}5$ days), or **L** 
 ### Item 11: Static Analysis and Formatting Excludes GUI Code
 - **Detail:** `.github/workflows/wemu-checks.yml` limits `clang-format-19` to `core/src` and `core/tests`, and `clang-tidy-19` to `core/src`.
 - **Risk:** The Qt-based GUI code (`gui/src/` and `gui/tests/`) can accumulate styling inconsistencies, memory leaks, and undefined behaviors unchecked by CI.
+- **Measured 2026-11-15** (core rules, clang-tidy 19): 7 findings in the 20 `gui/src` files (5 implicit widenings, 1 narrowing, 1 missed move); 44 of 60 GUI files do not follow the core format style. See [static-analysis.md](static-analysis.md#6-final-measurement).
 - **Remediation:** Configure `clang-tidy` to run against `gui/` with appropriate header exclusions for Qt-generated files (`moc_*`, `ui_*`, `qrc_*`).
 
 ### Item 12: Test Coverage Excludes GUI & Unpublished in CI
@@ -117,3 +119,6 @@ Costs are estimated as **S** ($< 2$ days), **M** ($2\text{--}5$ days), or **L** 
 - **Detail:** `gx2_CalcTVSize` and `gx2_CalcDRCSize` in `core/src/hle/Gx2.cpp` ignore r3 (render mode), r4 (surface format) and r5 (buffering mode).
 - **Remediation:** Compute the size from the mode's resolution, the format's bytes per pixel and the buffer count. Test 480p/720p/1080p, 8- and 10-bit formats, and double/triple buffering.
 
+### Item 19: Compiler Runs With Default Warnings
+- **Detail:** `core/CMakeLists.txt` and `gui/CMakeLists.txt` set no warning flags. With GCC 14 defaults the build had 7 warnings on 2026-11-14, all fixed on 2026-11-15.
+- **Remediation:** Add `-Wall -Wextra` to the `core` target, count the result as a new baseline, fix or justify each warning, then make the CI build use `-Werror`.

@@ -105,7 +105,7 @@ namespace {
             SCOPED_TRACE(base);
             const auto address = base + size - static_cast<std::uint32_t>(sizeof(TypeParam));
             this->memory.template write<TypeParam>(address, value);
-            EXPECT_THROW(this->memory.template read<TypeParam>(address + 1), Core::MemoryException);
+            EXPECT_THROW((void) this->memory.template read<TypeParam>(address + 1), Core::MemoryException);
             EXPECT_THROW(this->memory.template write<TypeParam>(address + 1, 0), Core::MemoryException);
             EXPECT_EQ(this->memory.template read<TypeParam>(address), value);
             EXPECT_EQ(this->memory.hostPtr(address + 1, sizeof(TypeParam)), nullptr);
@@ -127,7 +127,7 @@ TEST(MemoryTest, RejectsThePreviouslyUncheckedShortBufferReadAndWrite)
 {
     Core::Memory memory(6);
     memory.write<std::uint16_t>(app + 4, 0xCAFE);
-    EXPECT_THROW(memory.read<std::uint32_t>(app + 4), Core::MemoryException);
+    EXPECT_THROW((void) memory.read<std::uint32_t>(app + 4), Core::MemoryException);
     EXPECT_THROW(memory.write<std::uint32_t>(app + 4, 0), Core::MemoryException);
     EXPECT_EQ(memory.read<std::uint16_t>(app + 4), 0xCAFE);
 }
@@ -140,7 +140,7 @@ TEST(MemoryTest, RejectsEmptyUnmappedAndOversizedHostRanges)
     EXPECT_EQ(memory.hostPtr(app + 16), nullptr);
     EXPECT_EQ(memory.hostPtr(UINT32_MAX, 8), nullptr);
     EXPECT_EQ(memory.hostPtr(app, std::numeric_limits<std::size_t>::max()), nullptr);
-    EXPECT_THROW(memory.read<std::uint64_t>(UINT32_MAX), Core::MemoryException);
+    EXPECT_THROW((void) memory.read<std::uint64_t>(UINT32_MAX), Core::MemoryException);
     EXPECT_THROW(memory.write<std::uint64_t>(UINT32_MAX, 0), Core::MemoryException);
     EXPECT_EQ(std::as_const(memory).hostPtr(app, 16), memory.hostPtr(app, 16));
 }
@@ -149,7 +149,7 @@ TEST(MemoryTest, EmptyMainRegionStillAllowsStackAndImportAccess)
 {
     Core::Memory memory(0);
     EXPECT_EQ(memory.hostPtr(app), nullptr);
-    EXPECT_THROW(memory.read<std::uint8_t>(app), Core::MemoryException);
+    EXPECT_THROW((void) memory.read<std::uint8_t>(app), Core::MemoryException);
     memory.write<std::uint32_t>(Core::Memory::STACK_BASE, 0x12345678);
     memory.write<std::uint32_t>(Core::Memory::DIMPORT_BASE, 0xABCDEF01);
     EXPECT_EQ(memory.read<std::uint32_t>(Core::Memory::STACK_BASE), 0x12345678u);

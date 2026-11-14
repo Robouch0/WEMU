@@ -89,7 +89,7 @@ namespace Core::Gfx {
                     const auto generation = memory.writeGeneration(address, bytes);
                     auto &entry = m_entries[key];
                     if (entry.data.empty() || (!generation || generation != entry.generation)) {
-                        if (entry.data.empty() || std::memcmp(source, std::as_const(entry.data).data(), bytes)) {
+                        if (entry.data.empty() || std::memcmp(source, std::as_const(entry.data).data(), bytes) != 0) {
                             if (m_bytes + bytes > 128ull * 1024 * 1024) {
                                 // Keep in-flight snapshots alive through their shared owners.
                                 m_entries.clear();

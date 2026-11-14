@@ -106,7 +106,7 @@ namespace Core::Gfx {
                 }
                 const auto ix = static_cast<std::int64_t>(std::floor(x - 0.5));
                 const auto iy = static_cast<std::int64_t>(std::floor(y - 0.5));
-                const float fx = static_cast<float>(x - 0.5 - ix), fy = static_cast<float>(y - 0.5 - iy);
+                const float fx = static_cast<float>(x - 0.5 - static_cast<double>(ix)), fy = static_cast<float>(y - 0.5 - static_cast<double>(iy));
                 const auto a = texel(ix, iy), b = texel(ix + 1, iy), c = texel(ix, iy + 1), d = texel(ix + 1, iy + 1);
                 if constexpr (Gather)
                     return {c[0], d[0], b[0], a[0]};

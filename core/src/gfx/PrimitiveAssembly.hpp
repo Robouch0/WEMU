@@ -50,6 +50,8 @@ namespace Core::Gfx {
                     emit(i, i + 3, i + 2);
                 }
                 break;
+            default: // points and lines have no triangles
+                break;
         }
     }
 } // namespace Core::Gfx

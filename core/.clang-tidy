@@ -1,4 +1,5 @@
 ---
+# Rules and the reason for each exception: docs/quality/static-analysis.md
 Checks: >-
   clang-diagnostic-*,
   clang-analyzer-*,
@@ -6,8 +7,11 @@ Checks: >-
   performance-*,
   -bugprone-easily-swappable-parameters,
   -bugprone-macro-parentheses,
-  -performance-avoid-endl
+  -performance-avoid-endl,
+  -performance-enum-size
 
 WarningsAsErrors: '*'
-HeaderFilterRegex: '^(?!.*stb_image).*core/src/.*'
+# LLVM regexes have no lookahead: vendored headers are excluded with a separate filter.
+HeaderFilterRegex: '.*/core/src/.*'
+ExcludeHeaderFilterRegex: '.*stb_image.*'
 FormatStyle: file

@@ -64,7 +64,7 @@ namespace Core::Gfx::Latte {
     // uniform block. The windows share what the references leave of 512 vectors unless the
     // replayer asks for windows sized for its blocks.
     constexpr unsigned kUniformVectors = 2048;
-    constexpr std::size_t kStageConstantFloats = (256 + 16 + 16 + kUniformVectors) * 4;
+    constexpr std::size_t kStageConstantFloats = std::size_t{256 + 16 + 16 + kUniformVectors} * 4;
 
     // Initial reference-compatible subset, not a hardware-complete shader compiler.
     // ABI: locations 0..15 = interpolated inputs; set 0 binding 0 = 256 vec4 constants

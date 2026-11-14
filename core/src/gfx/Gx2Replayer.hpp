@@ -36,7 +36,8 @@ namespace Core {
 
 namespace Core::Gfx {
 
-    class Gx2Replayer {
+    // One instance per session, members grouped by feature: the padding is not worth a reorder.
+    class Gx2Replayer { // NOLINT(clang-analyzer-optin.performance.Padding)
             std::array<TextureSampler, 18> m_pixelSamplers{}, m_vertexSamplers{};
 
         public:

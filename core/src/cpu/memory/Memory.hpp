@@ -330,6 +330,7 @@ namespace Core {
                 const auto first = (reinterpret_cast<std::uintptr_t>(data) + kHugePage - 1) & ~(kHugePage - 1);
                 const auto last = (reinterpret_cast<std::uintptr_t>(data) + bytes) & ~(kHugePage - 1);
                 if (last > first)
+                    // NOLINTNEXTLINE(performance-no-int-to-ptr): a page-aligned address inside the host buffer
                     madvise(reinterpret_cast<void *>(first), last - first, MADV_HUGEPAGE);
 #else
                 (void) data;

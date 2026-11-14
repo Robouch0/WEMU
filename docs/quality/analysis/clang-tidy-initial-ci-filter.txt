@@ -1,0 +1,9 @@
+clang-tidy 19.1.0 - commit 50025a4 as CI ran it (header filter matched no header)
+=================================================================================
+
+Findings: 2
+
+     2  performance-no-int-to-ptr
+
+core/src/binary/Loader.cpp:177  [performance-no-int-to-ptr]  integer to pointer cast pessimizes optimization opportunities
+core/src/binary/Loader.cpp:183  [performance-no-int-to-ptr]  integer to pointer cast pessimizes optimization opportunities
