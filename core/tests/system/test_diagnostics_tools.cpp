@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <regex>
 #include <string>
 #include <sys/wait.h>
 #include <vector>
@@ -18,6 +19,7 @@
 #include "cpu/types/Instruction.hpp"
 #include "hle/Coreinit.hpp"
 #include "utils/Diagnostics.hpp"
+#include "utils/Logger.hpp"
 
 namespace {
     constexpr std::uint32_t App = Core::Memory::MemoryMap::ApplicationCode;
@@ -272,4 +274,13 @@ TEST(DiagnosticsToolsTest, PcCountsAreReportedEvenWhenTheProcessIsKilled)
     EXPECT_TRUE(contains(run.output, "[DIAG] WEMU_PC_COUNT tallies (killed by signal):")) << run.output;
     EXPECT_TRUE(contains(run.output, "0x02000040: 3")) << run.output;
     EXPECT_TRUE(contains(run.output, "0x02000044: 0")) << run.output;
+}
+
+TEST(DiagnosticsToolsTest, LogLinesCarryTheTimeSinceStartTheLevelAndTheSubsystem)
+{
+    testing::internal::CaptureStderr();
+    Utils::Log::error("[LOADER] cannot open {}", "title.rpx");
+    const auto line = testing::internal::GetCapturedStderr();
+    // "[   12.345] [ERROR] [LOADER] ...": when, how bad, which part, what happened.
+    EXPECT_TRUE(std::regex_match(line, std::regex(R"(\[ *\d+\.\d{3}\] \[ERROR\] \[LOADER\] cannot open title\.rpx\n)"))) << line;
 }

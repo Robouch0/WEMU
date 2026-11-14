@@ -7,6 +7,8 @@
 
 #pragma once
 
+#include <chrono>
+#include <cstdint>
 #include <format>
 #include <iostream>
 #include <string_view>
@@ -29,6 +31,9 @@ namespace Utils::Log {
     inline constexpr Level kLevel = static_cast<Level>(WEMU_LOG_LEVEL);
 
     namespace detail {
+        // Lines carry the seconds since the core started; the session log's file name has the start time.
+        inline const auto kStart = std::chrono::steady_clock::now();
+
         consteval std::string_view prefix(Level l) noexcept
         {
             switch (l) {
@@ -52,7 +57,8 @@ namespace Utils::Log {
     inline void log(std::format_string<Args...> fmt, Args &&...args)
     {
         if constexpr (L >= kLevel) {
-            auto msg = std::format("{}{}", detail::prefix(L), std::format(fmt, std::forward<Args>(args)...));
+            const std::chrono::duration<double> elapsed = std::chrono::steady_clock::now() - detail::kStart;
+            auto msg = std::format("[{:9.3f}] {}{}", elapsed.count(), detail::prefix(L), std::format(fmt, std::forward<Args>(args)...));
             if constexpr (L >= Level::Warning)
                 std::cerr << msg << std::endl;
             else
