@@ -70,7 +70,7 @@ WEMU employs a layered testing strategy balancing fast local feedback, automated
 
 ### Current Coverage Figures (Verified 2026-11-15)
 
-Measured locally with `gcov-14` / `lcov` on the `core` unit tests (1,305 tests, commit `d9502bd`), with the [exclusions](#coverage-exclusions) below. Per-file figures: [analysis/coverage-2026-11-15.txt](analysis/coverage-2026-11-15.txt).
+Measured locally with `gcov-14` / `lcov` on the `core` unit tests (1,305 tests, commit `d9502bd`), with the [exclusions](#coverage-exclusions) below. Report: [analysis/coverage-report-2026-11-15.pdf](analysis/coverage-report-2026-11-15.pdf) (cover with the critical-path figures, then the lcov summary and every file); plain-text list: [analysis/coverage-2026-11-15.txt](analysis/coverage-2026-11-15.txt).
 
 | Scope | Lines | Functions | Target |
 |---|---|---|---|
