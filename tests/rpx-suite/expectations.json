@@ -1,0 +1,20 @@
+{
+  "about": "Checks that fail today because of known WEMU bugs. run.py reports them as 'known' instead of failing the run; any other failure is a regression. When a bug is fixed its probes pass, run.py reports them as 'fixed', and the entry must be removed. 'order_dependent' entries pass when their scene runs alone, so passing is not reported as fixed. refs point to docs/quality/regressions.md.",
+  "guest_readback": {
+    "ref": "REG-03",
+    "reason": "GX2CopySurface reads back on the CPU before the frame is rendered, so the RPX reads zeros"
+  },
+  "probes": {
+    "forward_lit/texture_mip_level3": {"ref": "REG-01", "reason": "mip levels above 0 are never uploaded"},
+    "textures/format_RGB5A1": {"ref": "REG-04", "reason": "RGB5A1 is decoded as RGBA8"},
+    "textures/format_RGBA4": {"ref": "REG-04", "reason": "RGBA4 is decoded as RGBA8"},
+    "textures/format_RGB10A2": {"ref": "REG-04", "reason": "RGB10A2 is decoded as RGBA8"},
+    "postfx/post_hdr_clear": {"ref": "REG-02", "reason": "RGBA16F targets clamp at 1.0"},
+    "postfx/post_hdr_shader": {"ref": "REG-02", "reason": "RGBA16F targets clamp at 1.0"},
+    "loops/loop_32_iterations": {"ref": "REG-05", "reason": "shader LOOP_START/LOOP_END are skipped"},
+    "loops/loop_escape": {"ref": "REG-06", "reason": "stale shader reused at a recycled guest address", "order_dependent": true},
+    "branching/branch_then_then": {"ref": "REG-06", "reason": "stale shader reused at a recycled guest address", "order_dependent": true},
+    "branching/branch_then_else": {"ref": "REG-06", "reason": "stale shader reused at a recycled guest address", "order_dependent": true},
+    "branching/branch_else": {"ref": "REG-06", "reason": "stale shader reused at a recycled guest address", "order_dependent": true}
+  }
+}

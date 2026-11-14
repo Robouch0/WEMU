@@ -154,6 +154,16 @@ WEMU_TEST_VULKAN=1 ctest --test-dir build --output-on-failure
 ./build/core/tests/wemu_tests --gtest_filter=InstructionTest.ADD_NoOE_NoRc
 ```
 
+#### Functional and performance suite (RPX)
+
+A homebrew test title renders lighting, shadows, texture formats, post-processing,
+instancing and multi-core jobs through real GX2/Latte shaders. It reports
+per-scene FPS stability, memory use and pixel checks, compared against a
+per-machine baseline. It runs headless (`tests/rpx-suite/run.py`) or from the
+GUI (an interactive viewer plus a full test sequence). See
+[tests/rpx-suite/README.md](tests/rpx-suite/README.md#quick-start) for every
+command.
+
 ### Diagnostic tools
 
 `python3 scratchpad/rpxtool.py --rpx /path/to/game.rpx secs` lists RPX sections; its

@@ -157,11 +157,11 @@ def main():
                 body = read_exact(connection, size)
                 kind, = struct.unpack_from("<I", body)
                 if kind == 1:
-                    if body != struct.pack("<II", 1, 4):
+                    if body != struct.pack("<II", 1, 5):
                         raise ValueError("unsupported desktop protocol version")
                 elif kind == 2:
-                    _, sequence, width, height, fps, movie_fps, presents, movies = struct.unpack_from("<IQIIddQQ", body)
-                    if not 0 < width <= 4096 or not 0 < height <= 4096 or size != 52 + width * height * 4:
+                    _, sequence, width, height, fps, movie_fps, presents, movies, swap_interval = struct.unpack_from("<IQIIddQQI", body)
+                    if not 0 < width <= 4096 or not 0 < height <= 4096 or size != 56 + width * height * 4:
                         raise ValueError("invalid framebuffer dimensions")
                     elapsed = time.monotonic() - started
                     buttons = args.press_buttons if any(first <= sequence < first + args.hold_frames for first in args.press_at) else 0
@@ -191,7 +191,7 @@ def main():
                     if controls.get("stop", False):
                         break
                     if args.capture_every and sequence >= args.capture_from and sequence % args.capture_every == 0:
-                        save_frame(output / f"frame_{sequence:05}.ppm", width, height, body[52:])
+                        save_frame(output / f"frame_{sequence:05}.ppm", width, height, body[56:])
                     if sequence % 50 == 0:
                         print(f"frame={sequence} elapsed={elapsed:.2f}s presents={presents} movies={movies}", flush=True)
         except TimeoutError:

@@ -11,8 +11,11 @@ inline QProcessEnvironment desktopLaunchEnvironment(QProcessEnvironment environm
                                                     unsigned region = 4, unsigned titleRegion = 4, bool x64Cpu = false)
 {
     // Keep host display/audio configuration, but never inherit emulation experiments.
+    // The frame profiler only measures, so it may be enabled for a desktop session.
+    const bool frameProfile = environment.value("WEMU_FRAME_PROFILE") == "1";
     for (const auto &key : environment.keys())
         if (key.startsWith("WEMU_")) environment.remove(key);
+    if (frameProfile) environment.insert("WEMU_FRAME_PROFILE", "1");
     environment.insert("WEMU_FRAME_CLOCK", "1");
     // Captured-command hashes do not cover live texture/vertex bytes. Replay
     // every frame and let the GPU caches reuse verified resources instead.

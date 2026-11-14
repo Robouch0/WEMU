@@ -34,6 +34,13 @@ int main()
         || environment.value("WEMU_CONTENT_LAYER") != "/games/base content"
         || environment.value("WEMU_SHARED_FONT") != "/fonts/shared font"
         || desktopLaunchEnvironment(inherited, "/base", {}).contains("WEMU_SHARED_FONT")) return 1;
+    if (environment.contains("WEMU_FRAME_PROFILE")) return 1;
+    inherited.insert("WEMU_FRAME_PROFILE", "1");
+    if (desktopLaunchEnvironment(inherited, "/base", {}).value("WEMU_FRAME_PROFILE") != "1") {
+        qCritical() << "Frame profiler request dropped";
+        return 1;
+    }
+    inherited.remove("WEMU_FRAME_PROFILE");
     inherited.insert("QT_WEMU_INPUT_TRACE", "1");
     if (desktopLaunchEnvironment(inherited, "/base", {}).value("WEMU_VPAD_TRACE") != "1") return 1;
     const auto native = desktopLaunchEnvironment(inherited, "/base", {}, true, "/private/cache with spaces");
