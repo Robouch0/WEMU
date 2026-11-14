@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <format>
+#include <functional>
 #include <iostream>
 #include <map>
 #include <tuple>
@@ -28,17 +29,35 @@ namespace {
 
     std::map<std::string, std::uint64_t> g_unknownImports;
 
-    // Sorted (address, name) pairs for named symbols placed in guest memory.
-    std::vector<std::pair<std::uint32_t, const std::string *>> buildSymbolIndex(const Core::Binary &bin)
+    // Sorted (address, name) pairs for named symbols placed in guest memory. Names are copied so
+    // the index never points into a binary that has since been replaced.
+    std::vector<std::pair<std::uint32_t, std::string>> buildSymbolIndex(const Core::Binary &bin)
     {
-        std::vector<std::pair<std::uint32_t, const std::string *>> index;
+        std::vector<std::pair<std::uint32_t, std::string>> index;
         index.reserve(bin.symbols.size());
         for (const auto &symbol: bin.symbols) {
             if (symbol.name.empty() || symbol.meta.virtAddress == 0)
                 continue;
-            index.emplace_back(static_cast<std::uint32_t>(symbol.meta.virtAddress), &symbol.name);
+            index.emplace_back(static_cast<std::uint32_t>(symbol.meta.virtAddress), symbol.name);
         }
         std::ranges::sort(index, {}, [](const auto &e) { return e.first; });
+        return index;
+    }
+
+    // The index of the binary being run, rebuilt when its symbol table changes.
+    const std::vector<std::pair<std::uint32_t, std::string>> &symbolIndex(const Core::Binary &bin)
+    {
+        static std::vector<std::pair<std::uint32_t, std::string>> index;
+        static std::pair<std::size_t, std::uint64_t> builtFor{~std::size_t{0}, 0};
+        // A replaced table can reuse the old one's storage, so compare its contents, not its address.
+        std::uint64_t fingerprint = 0xCBF29CE484222325ull;
+        for (const auto &symbol: bin.symbols)
+            fingerprint = (fingerprint ^ (std::hash<std::string>{}(symbol.name) + symbol.meta.virtAddress)) * 0x100000001B3ull;
+        const auto current = std::pair{bin.symbols.size(), fingerprint};
+        if (current != builtFor) {
+            index = buildSymbolIndex(bin);
+            builtFor = current;
+        }
         return index;
     }
 
@@ -597,7 +616,7 @@ namespace Core::Diag {
 
     std::string symbolize(const Interpreter &cpu, const std::uint32_t address)
     {
-        static const auto index = buildSymbolIndex(cpu.m_binary);
+        const auto &index = symbolIndex(cpu.m_binary);
 
         // Nearest symbol at or before the address, if reasonably close (real RPX symtabs mostly
         // carry import/export names, so distant matches would be misleading).
@@ -606,7 +625,7 @@ namespace Core::Diag {
         if (it != index.begin()) {
             const auto &[symAddr, name] = *std::prev(it);
             if (address - symAddr < MAX_SYMBOL_DISTANCE)
-                return std::format("0x{:08X} <{}+0x{:X}>", address, *name, address - symAddr);
+                return std::format("0x{:08X} <{}+0x{:X}>", address, name, address - symAddr);
         }
         return std::format("0x{:08X}", address);
     }

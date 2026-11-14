@@ -11,6 +11,7 @@
 #include "cpu/memory/Memory.hpp"
 #include "gfx/BitmapFont.hpp"
 #include "hle/Coreinit.hpp"
+#include "hle/CoreinitExtra.hpp"
 
 namespace {
     constexpr std::uint32_t App = Core::Memory::MemoryMap::ApplicationCode;
@@ -298,4 +299,67 @@ TEST_F(CoreinitSyncTest, ScreenTextDrawsGlyphPixelsAndClipsAtTheVisibleEdge)
 
     call("OSScreenPutFontEx", 2, 0, 0, Text); // no third screen: nothing happens
     EXPECT_EQ(pixel(Tv, 1280, 0, 0), Background);
+}
+
+TEST_F(CoreinitSyncTest, NamedSemaphoreCountsDownWithoutGoingNegativeAndSignalWakesAWaiter)
+{
+    RegisterCoreinitExtraFunctions();
+    startWorker();
+    const auto *main = cpu->m_scheduler.current();
+    constexpr std::uint32_t Sem = 0x28190000, Name = 0x28190100;
+    call("OSInitSemaphoreEx", Sem, 2, Name);
+    EXPECT_EQ(cpu->m_memory.read<std::uint32_t>(Sem), 0x73506852u) << "the 'sPhR' tag titles check";
+    EXPECT_EQ(cpu->m_memory.read<std::uint32_t>(Sem + 4), Name);
+    EXPECT_EQ(call("OSGetSemaphoreCount", Sem), 2u);
+
+    EXPECT_EQ(call("OSTryWaitSemaphore", Sem), 2u) << "returns the count before taking one";
+    EXPECT_EQ(call("OSTryWaitSemaphore", Sem), 1u);
+    EXPECT_EQ(call("OSTryWaitSemaphore", Sem), 0u) << "empty: nothing taken";
+    EXPECT_EQ(call("OSGetSemaphoreCount", Sem), 0u) << "the count never goes negative";
+
+    call("OSWaitSemaphore", Sem); // empty: main blocks, the worker runs
+    ASSERT_EQ(cpu->m_scheduler.currentHandle(), Worker);
+    EXPECT_EQ(main->state, Core::ThreadContext::State::Waiting);
+    cpu->m_hle_redirected = false;
+    EXPECT_EQ(call("OSSignalSemaphore", Sem), 0u) << "returns the count before the signal";
+    EXPECT_EQ(main->state, Core::ThreadContext::State::Ready) << "the signal wakes the waiter";
+    EXPECT_EQ(call("OSGetSemaphoreCount", Sem), 1u) << "the woken waiter takes the unit when it retries";
+}
+
+TEST_F(CoreinitSyncTest, MutexTryLockFailsForOtherThreadsAndReinitialisingReleasesIt)
+{
+    startWorker();
+    const auto main = cpu->m_scheduler.currentHandle();
+    constexpr std::uint32_t Mutex = 0x281A0000;
+    call("OSInitMutex", Mutex);
+    EXPECT_EQ(call("OSGetCurrentThread"), main);
+    EXPECT_EQ(call("OSTryLockMutex", Mutex), 1u);
+    EXPECT_EQ(call("OSTryLockMutex", Mutex), 1u) << "recursive for its owner";
+
+    ASSERT_TRUE(cpu->m_scheduler.yield(*cpu));
+    ASSERT_EQ(call("OSGetCurrentThread"), Worker);
+    EXPECT_EQ(call("OSTryLockMutex", Mutex), 0u) << "held by main";
+
+    // OSInitMutexEx on a held mutex starts it over: nobody owns it afterwards.
+    call("OSInitMutexEx", Mutex, 0x281A0100);
+    EXPECT_EQ(call("OSTryLockMutex", Mutex), 1u);
+}
+
+TEST_F(CoreinitSyncTest, ConditionVariableWaitReleasesTheMutexUntilSignalled)
+{
+    RegisterCoreinitExtraFunctions();
+    startWorker();
+    const auto *main = cpu->m_scheduler.current();
+    constexpr std::uint32_t Mutex = 0x281B0000, Cond = 0x281B0100;
+    call("OSInitMutex", Mutex);
+    EXPECT_EQ(call("OSInitCond", Cond), 0u);
+    call("OSLockMutex", Mutex);
+    call("OSWaitCond", Cond, Mutex); // main sleeps on the condition and gives up the mutex
+    ASSERT_EQ(cpu->m_scheduler.currentHandle(), Worker);
+    EXPECT_EQ(main->state, Core::ThreadContext::State::Waiting);
+    EXPECT_EQ(call("OSTryLockMutex", Mutex), 1u) << "the waiter released the mutex";
+    call("OSUnlockMutex", Mutex);
+    cpu->m_hle_redirected = false;
+    call("OSSignalCond", Cond);
+    EXPECT_NE(main->state, Core::ThreadContext::State::Waiting) << "the signal wakes the waiter";
 }

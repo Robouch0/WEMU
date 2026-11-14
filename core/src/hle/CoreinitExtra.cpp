@@ -436,7 +436,6 @@ namespace {
         for (int i = 0; i < 10; i++)
             cpu.m_memory.write<std::uint32_t>(out + static_cast<std::uint32_t>(i) * 4, fields[i]);
     }
-    void hle_OSTryLockMutex(Core::Interpreter &cpu) { cpu.m_gpr[3] = 1; }
     void hle_ENVGetEnvironmentVariable(Core::Interpreter &cpu) { cpu.m_gpr[3] = 0; } // not found
     void hle_OSGetSharedData(Core::Interpreter &cpu)
     {
@@ -757,7 +756,6 @@ void RegisterCoreinitExtraFunctions()
 
     // Time / misc
     sh.registerSyscall("OSTicksToCalendarTime", hle_OSTicksToCalendarTime);
-    sh.registerSyscall("OSTryLockMutex", hle_OSTryLockMutex);
     sh.registerSyscall("ENVGetEnvironmentVariable", hle_ENVGetEnvironmentVariable);
     sh.registerSyscall("OSGetSharedData", hle_OSGetSharedData);
     sh.registerSyscall("OSIsEnabledOverlayArena", hle_ghs_noop);

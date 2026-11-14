@@ -31,6 +31,11 @@ static void hle_calloc(Core::Interpreter &cpu)
 {
     const std::uint32_t n = cpu.m_gpr[3];
     const std::uint32_t size = cpu.m_gpr[4];
+    // n * size must not wrap: a wrapped size allocates a small block that the memset then overruns.
+    if (size && n > UINT32_MAX / size) {
+        cpu.m_gpr[3] = 0;
+        return;
+    }
     const std::uint32_t addr = cpu.m_memory.heapAllocate(n * size, 8);
     if (addr) {
         std::uint8_t *p = cpu.m_memory.hostPtr(addr);
