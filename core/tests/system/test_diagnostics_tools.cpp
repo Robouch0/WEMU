@@ -210,6 +210,14 @@ TEST_F(DiagnosticsChildTest, SignalDump)
     std::raise(SIGTERM);
 }
 
+TEST_F(DiagnosticsChildTest, HostCrash)
+{
+    Core::Diag::installCrashSignalReport();
+    std::fflush(stdout);
+    volatile int *const nowhere = nullptr;
+    *nowhere = 1; // a real fault in the host process, not a guest one
+}
+
 TEST(DiagnosticsToolsTest, WatchToolsReportWhatTheGuestProgramDoes)
 {
     const auto run = runChild("Program", {
@@ -283,4 +291,11 @@ TEST(DiagnosticsToolsTest, LogLinesCarryTheTimeSinceStartTheLevelAndTheSubsystem
     const auto line = testing::internal::GetCapturedStderr();
     // "[   12.345] [ERROR] [LOADER] ...": when, how bad, which part, what happened.
     EXPECT_TRUE(std::regex_match(line, std::regex(R"(\[ *\d+\.\d{3}\] \[ERROR\] \[LOADER\] cannot open title\.rpx\n)"))) << line;
+}
+
+TEST(DiagnosticsToolsTest, AHostCrashIsLoggedAndStillKillsTheProcess)
+{
+    const auto run = runChild("HostCrash", {});
+    EXPECT_EQ(run.exitCode, 128 + SIGSEGV) << "the shell reports the signal that killed the child\n" << run.output;
+    EXPECT_TRUE(std::regex_search(run.output, std::regex(R"(\[\d+\.\d{3}\] \[ERROR\] \[EMU\] host crash: signal 11 \(SIGSEGV\))"))) << run.output;
 }

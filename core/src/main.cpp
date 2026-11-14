@@ -187,6 +187,7 @@ int main(const int ac, char const *const *av)
         // intercepts are library emulation, not a title patch.
         InstallMVPlayerHooks(interpreter);
         Core::Diag::installPcCountSignalDump(); // WEMU_PC_COUNT: report tallies even when a hung boot is killed
+        Core::Diag::installCrashSignalReport();
 
         // 6. Init CPU state (emulate the Wii U loader's hand-off to the module entry)
         interpreter.m_gpr[1] = 0xC0FFFFF0u; // r1 = stack top

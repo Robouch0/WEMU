@@ -8,12 +8,15 @@
 #include "Diagnostics.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <format>
 #include <functional>
 #include <iostream>
 #include <map>
+#include <string_view>
 #include <tuple>
 #include <vector>
 #ifndef _WIN32
@@ -372,6 +375,58 @@ namespace Core::Diag {
         sigemptyset(&action.sa_mask);
         sigaction(SIGTERM, &action, nullptr);
         sigaction(SIGINT, &action, nullptr);
+#endif
+    }
+
+#ifndef _WIN32
+    // A host crash otherwise ends the log mid-line. Writes one line in the logger's format, then
+    // re-raises: SA_RESETHAND has restored the default action, so the process dies with the same
+    // signal (exit status and core dumps are unchanged).
+    extern "C" void crashSignalHandler(const int sig)
+    {
+        const char *name = sig == SIGSEGV ? "SIGSEGV" : sig == SIGBUS ? "SIGBUS" : sig == SIGILL ? "SIGILL" : sig == SIGFPE ? "SIGFPE" : "SIGABRT";
+        timespec now{};
+        clock_gettime(CLOCK_MONOTONIC, &now); // steady_clock's clock, as in Utils::Log
+        const auto start = std::chrono::duration_cast<std::chrono::nanoseconds>(Utils::Log::detail::kStart.time_since_epoch()).count();
+        const auto elapsedMs = static_cast<std::uint64_t>((now.tv_sec * 1'000'000'000LL + now.tv_nsec - start) / 1'000'000);
+        char line[160];
+        char *p = line;
+        *p++ = '[';
+        p = sigPutDec(p, elapsedMs / 1000);
+        *p++ = '.';
+        *p++ = static_cast<char>('0' + elapsedMs / 100 % 10);
+        *p++ = static_cast<char>('0' + elapsedMs / 10 % 10);
+        *p++ = static_cast<char>('0' + elapsedMs % 10);
+        static const char middle[] = "] [ERROR] [EMU] host crash: signal ";
+        for (const char c: std::string_view(middle, sizeof(middle) - 1))
+            *p++ = c;
+        p = sigPutDec(p, static_cast<std::uint64_t>(sig));
+        *p++ = ' ';
+        *p++ = '(';
+        for (; *name; ++name)
+            *p++ = *name;
+        static const char tail[] = ") in the WEMU core; the lines above show the last guest activity\n";
+        for (const char c: std::string_view(tail, sizeof(tail) - 1))
+            *p++ = c;
+        for (std::size_t done = 0, length = static_cast<std::size_t>(p - line); done < length;) {
+            const auto written = ::write(STDERR_FILENO, line + done, length - done);
+            if (written <= 0)
+                break;
+            done += static_cast<std::size_t>(written);
+        }
+        raise(sig);
+    }
+#endif
+
+    void installCrashSignalReport()
+    {
+#ifndef _WIN32
+        struct sigaction action = {};
+        action.sa_handler = &crashSignalHandler;
+        action.sa_flags = SA_RESETHAND;
+        sigemptyset(&action.sa_mask);
+        for (const int sig: {SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT})
+            sigaction(sig, &action, nullptr);
 #endif
     }
 

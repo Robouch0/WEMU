@@ -60,6 +60,10 @@ namespace Core::Diag {
     // No-op unless WEMU_PC_COUNT is set.
     void installPcCountSignalDump();
 
+    // Logs "[EMU] host crash: signal N (SIGSEGV)" when the core itself crashes, then lets the
+    // crash proceed. Without it the session log just stops.
+    void installCrashSignalReport();
+
     // WEMU_HEARTBEAT="50000000" (decimal instruction count): periodically log the current PC/LR
     // so long silent runs show whether the guest is progressing or spinning. 0 = disabled.
     std::uint64_t heartbeatInterval();
