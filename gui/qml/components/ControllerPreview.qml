@@ -1,4 +1,5 @@
 import QtQuick
+import gui 1.0
 import QtQuick.Controls
 
 Item {
@@ -82,7 +83,7 @@ Item {
                 y: 47
 
                 border.width: 2
-                border.color: guidePressed ? "green" : "transparent"
+                border.color: guidePressed ? Theme.highlightOnArt : "transparent"
                 color: "transparent"
             }
 
@@ -178,7 +179,7 @@ Item {
                 radius: 10
 
                 border.width: 2
-                border.color: ltPressed ? "#3498ff" : "white"
+                border.color: ltPressed ? Theme.highlightOnArt : "white"
                 color: "transparent"
 
                 Text {
@@ -186,7 +187,7 @@ Item {
                     text: "LT"
                     font.family: "sans-serif"
                     font.pointSize: 14
-                    color: ltPressed ? "#3498ff" : "white"
+                    color: ltPressed ? Theme.highlightOnArt : "white"
                 }
             }
 
@@ -199,7 +200,7 @@ Item {
                 radius: 10
 
                 border.width: 2
-                border.color: rtPressed ? "#3498ff" : "white"
+                border.color: rtPressed ? Theme.highlightOnArt : "white"
                 color: "transparent"
 
                 Text {
@@ -207,7 +208,7 @@ Item {
                     text: "RT"
                     font.family: "sans-serif"
                     font.pointSize: 12
-                    color: rtPressed ? "#3498ff" : "white"
+                    color: rtPressed ? Theme.highlightOnArt : "white"
                 }
             }
 
@@ -220,7 +221,7 @@ Item {
                 radius: 11
 
                 border.width: 2
-                border.color: rbPressed ? "#3498ff" : "white"
+                border.color: rbPressed ? Theme.highlightOnArt : "white"
                 color: "transparent"
 
                 Text {
@@ -228,7 +229,7 @@ Item {
                     text: "RB"
                     font.family: "sans-serif"
                     font.pointSize: 11
-                    color: rbPressed ? "#3498ff" : "white"
+                    color: rbPressed ? Theme.highlightOnArt : "white"
                 }
             }
 
@@ -241,7 +242,7 @@ Item {
                 radius: 11
 
                 border.width: 2
-                border.color: lbPressed ? "#3498ff" : "white"
+                border.color: lbPressed ? Theme.highlightOnArt : "white"
                 color: "transparent"
 
                 Text {
@@ -249,7 +250,7 @@ Item {
                     text: "LB"
                     font.family: "sans-serif"
                     font.pointSize: 11
-                    color: lbPressed ? "#3498ff" : "white"
+                    color: lbPressed ? Theme.highlightOnArt : "white"
                 }
             }
         }

@@ -41,6 +41,12 @@ SDLGamepadInput::~SDLGamepadInput()
         SDL_GameControllerClose(m_controller);
 }
 
+QString SDLGamepadInput::displayName() const
+{
+    const char *controllerName = m_controller ? SDL_GameControllerName(m_controller) : nullptr;
+    return controllerName ? QString::fromUtf8(controllerName) : QStringLiteral("Controller");
+}
+
 SDL_JoystickID SDLGamepadInput::instanceId() const
 {
     return m_instanceId;
@@ -80,6 +86,8 @@ void SDLGamepadInput::update()
     checkAxis("LY", m_lastLY);
     checkAxis("RX", m_lastRX);
     checkAxis("RY", m_lastRY);
+    checkAxis("LT", m_lastLTAmount);
+    checkAxis("RT", m_lastRTAmount);
 
     auto checkTrigger = [&](const QString &name, SDL_GameControllerAxis axis, bool &last)
     {
@@ -126,5 +134,9 @@ float SDLGamepadInput::getAxisValue(const QString &axisName) const
         v = normalizeAxis(SDL_GameControllerGetAxis(m_controller, SDL_CONTROLLER_AXIS_RIGHTX));
     else if (axisName == "RY")
         v = normalizeAxis(SDL_GameControllerGetAxis(m_controller, SDL_CONTROLLER_AXIS_RIGHTY));
+    else if (axisName == "LT")
+        v = normalizeAxis(SDL_GameControllerGetAxis(m_controller, SDL_CONTROLLER_AXIS_TRIGGERLEFT));
+    else if (axisName == "RT")
+        v = normalizeAxis(SDL_GameControllerGetAxis(m_controller, SDL_CONTROLLER_AXIS_TRIGGERRIGHT));
     return v;
 }

@@ -48,6 +48,10 @@ namespace Core::Instruction {
      */
     void DCBF(Interpreter &cpu, const EncodedInstruction &instr) {} // TODO
 
+    // Guest data accesses share coherent memory; there is no separate data
+    // cache line to discard. Match DCBF/DCBST without touching guest bytes.
+    void DCBI(Interpreter &, const EncodedInstruction &) {}
+
     /**
      * @brief Data Cache Block Touch.
      *        EA = (RA|0) + RB. Hint to prefetch the cache block containing EA.

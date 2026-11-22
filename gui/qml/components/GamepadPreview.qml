@@ -1,4 +1,5 @@
 import QtQuick
+import gui 1.0
 import QtQuick.Controls
 
 Item {
@@ -102,10 +103,10 @@ Item {
                     text: "H"
                     font.family: "sans-serif"
                     font.pointSize: 7
-                    color: guidePressed ? "green" : "white"
+                    color: guidePressed ? Theme.highlightOnArt : "white"
                 }
                 border.width: 3
-                border.color: guidePressed ? "green" : "white"
+                border.color: guidePressed ? Theme.highlightOnArt : "white"
                 color: "transparent"
             }
 
@@ -193,14 +194,14 @@ Item {
                 radius: 10
 
                 border.width: 2
-                border.color: zlPressed ? "#3498ff" : "white"
+                border.color: zlPressed ? Theme.highlightOnArt : "white"
                 color: "transparent"
 
                 Text {
                     anchors.centerIn: parent
                     text: "ZL"
                     font.pointSize: 12
-                    color: zlPressed ? "#3498ff" : "white"
+                    color: zlPressed ? Theme.highlightOnArt : "white"
                 }
             }
 
@@ -213,14 +214,14 @@ Item {
                 radius: 10
 
                 border.width: 2
-                border.color: zrPressed ? "#3498ff" : "white"
+                border.color: zrPressed ? Theme.highlightOnArt : "white"
                 color: "transparent"
 
                 Text {
                     anchors.centerIn: parent
                     text: "ZR"
                     font.pointSize: 12
-                    color: zrPressed ? "#3498ff" : "white"
+                    color: zrPressed ? Theme.highlightOnArt : "white"
                 }
             }
 
@@ -233,14 +234,14 @@ Item {
                 radius: 10
 
                 border.width: 2
-                border.color: lPressed ? "#3498ff" : "white"
+                border.color: lPressed ? Theme.highlightOnArt : "white"
                 color: "transparent"
 
                 Text {
                     anchors.centerIn: parent
                     text: "L"
                     font.pointSize: 11
-                    color: lPressed ? "#3498ff" : "white"
+                    color: lPressed ? Theme.highlightOnArt : "white"
                 }
             }
 
@@ -253,14 +254,14 @@ Item {
                 radius: 10
 
                 border.width: 2
-                border.color: rPressed ? "#3498ff" : "white"
+                border.color: rPressed ? Theme.highlightOnArt : "white"
                 color: "transparent"
 
                 Text {
                     anchors.centerIn: parent
                     text: "R"
                     font.pointSize: 11
-                    color: rPressed ? "#3498ff" : "white"
+                    color: rPressed ? Theme.highlightOnArt : "white"
                 }
             }
         }

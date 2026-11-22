@@ -49,9 +49,14 @@ namespace Core {
     struct SyscallHandler {
             Handler get(const std::string &symbolName) { return syscallTable[symbolName]; }
 
-            void registerSyscall(const std::string &symbolName, const Handler handler) { syscallTable[symbolName] = handler; }
+            void registerSyscall(const std::string &symbolName, const Handler handler)
+            {
+                syscallTable[symbolName] = handler;
+                ++version;
+            }
 
             std::map<std::string, Handler> syscallTable;
+            std::uint64_t version{}; // advanced by every registration, for callers caching lookups
     };
 
     inline SyscallHandler syscallHandler;

@@ -1,4 +1,5 @@
 import QtQuick
+import gui 1.0
 
 Rectangle {
     id: root
@@ -9,6 +10,6 @@ Rectangle {
     height: 17
     radius: 1
     border.width: 1
-    border.color: pressed ? "#3498ff" : "white"
-    color: pressed ? "#3498ff" : "white"
+    border.color: pressed ? Theme.highlightOnArt : "white"
+    color: pressed ? Theme.highlightOnArt : "white"
 }

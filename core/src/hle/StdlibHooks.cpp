@@ -1,5 +1,6 @@
 #include "StdlibHooks.hpp"
 
+#include <algorithm>
 #include <cstring>
 
 #include "binary/Binary.hpp"
@@ -9,6 +10,13 @@ namespace Core {
 
     void installStdlibHooks(Interpreter &interp, const Binary &binary)
     {
+        // WUT preinit initializes a guest-owned sbrk arena and allocator. Replacing
+        // its malloc/sbrk with the internal HLE pool bypasses that arena, leaks
+        // allocations, and can overwrite the separate MEM2 heaps.
+        if (binary.functionExport("__preinit_user") && std::ranges::any_of(binary.symbols, [](const auto &symbol) {
+                return symbol.name == "__init_wut_sbrk_heap" && symbol.raw.header.st_value >= 0x02000000u && symbol.raw.header.st_value < 0x10000000u;
+            }))
+            return;
         struct {
                 const char *name;
                 Interpreter::HookFn fn;
@@ -24,8 +32,8 @@ namespace Core {
                              std::memset(p, 0, n);
                      cpu.m_gpr[3] = a;
                  }},
-                {"realloc", [](Interpreter &cpu) { cpu.m_gpr[3] = cpu.m_memory.heapAllocate(cpu.m_gpr[4], 8); }},
-                {"free", [](Interpreter &) {}},
+                {"realloc", [](Interpreter &cpu) { cpu.m_gpr[3] = cpu.m_memory.heapReallocate(cpu.m_gpr[3], cpu.m_gpr[4]); }},
+                {"free", [](Interpreter &cpu) { cpu.m_memory.heapFree(cpu.m_gpr[3]); }},
                 {"__wut_sbrk_r", [](Interpreter &cpu) { cpu.m_gpr[3] = cpu.m_memory.heapAllocate(cpu.m_gpr[4], 4); }},
                 {"_sbrk_r", [](Interpreter &cpu) { cpu.m_gpr[3] = cpu.m_memory.heapAllocate(cpu.m_gpr[4], 4); }},
         };

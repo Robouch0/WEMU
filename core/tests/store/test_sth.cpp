@@ -7,7 +7,38 @@
 
 #include "TestFixture.hpp"
 
+TEST_F(InstructionTest, CacheHintsDoNotShadowReversedHalfwordLoadsDuringDecode)
+{
+    const auto word = [](unsigned xo) { return EncodedInstruction((31u << 26) | (3u << 21) | (9u << 11) | (xo << 1)); };
+    EXPECT_EQ(cpu->findInstructionID(word(278)), E_DCBT);
+    EXPECT_EQ(cpu->findInstructionID(word(790)), E_LHBRX);
+    EXPECT_EQ(cpu->findInstructionID(word(918)), E_STHBRX);
+    EXPECT_EQ(cpu->findInstructionID(word(598)), E_SYNC);
+    EXPECT_EQ(cpu->findInstructionID(word(854)), E_EIEIO);
+    EXPECT_EQ(cpu->findInstructionID(word(982)), E_ICBI);
+    cpu->m_gpr[9] = 0x28000000;
+    cpu->m_gpr[3] = 0xCAFEBABE;
+    cpu->m_memory.write<std::uint16_t>(0x28000000, 0x0200);
+    cpu->executeInstruction(word(790));
+    EXPECT_EQ(cpu->m_gpr[3], 2u);
+}
+
 static constexpr uint32_t TEST_ADDR = 0x02000200;
+
+TEST_F(InstructionTest, ReversedHalfwordsUseLowBitsIgnoreR0BaseAndPreserveNeighbors)
+{
+    cpu->m_memory.write<unsigned>(TEST_ADDR, 0xAABBCCDD);
+    cpu->m_gpr[0] = 0xFFFFFFFF;
+    cpu->m_gpr[3] = 0x12345678;
+    cpu->m_gpr[9] = TEST_ADDR + 1;
+    EncodedInstruction store((31u << 26) | (3u << 21) | (9u << 11) | (918u << 1));
+    Core::Instruction::STHBRX(*cpu, store);
+    EXPECT_EQ(cpu->m_memory.read<unsigned>(TEST_ADDR), 0xAA7856DDu);
+    EncodedInstruction load((31u << 26) | (4u << 21) | (9u << 11) | (790u << 1));
+    Core::Instruction::LHBRX(*cpu, load);
+    EXPECT_EQ(cpu->m_gpr[4], 0x5678u);
+    EXPECT_EQ(cpu->m_gpr[9], TEST_ADDR + 1);
+}
 
 //
 // ─────────────────────────────────────────────────────────────────────────────

@@ -2,6 +2,15 @@ file(GLOB_RECURSE TEST_SOURCES "*.cpp")
 
 add_executable(wemu_tests ${TEST_SOURCES})
 
+find_program(WEMU_GLSLANG_VALIDATOR glslangValidator)
+find_program(WEMU_SPIRV_VAL spirv-val)
+if(WEMU_GLSLANG_VALIDATOR AND WEMU_SPIRV_VAL)
+    target_compile_definitions(wemu_tests PRIVATE
+        WEMU_GLSLANG_VALIDATOR="${WEMU_GLSLANG_VALIDATOR}"
+        WEMU_SPIRV_VAL="${WEMU_SPIRV_VAL}"
+    )
+endif()
+
 target_include_directories(wemu_tests PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}"
 )

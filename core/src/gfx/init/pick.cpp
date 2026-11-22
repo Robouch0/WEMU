@@ -35,6 +35,10 @@ void Renderer::pickPhysicalDevice()
     if (m_physicalDevice == VK_NULL_HANDLE) {
         throw std::runtime_error("failed to find a suitable GPU!");
     }
+
+    VkPhysicalDeviceProperties props;
+    vkGetPhysicalDeviceProperties(m_physicalDevice, &props);
+    fprintf(stderr, "[GFX] using Vulkan device: %s\n", props.deviceName);
 }
 
 Renderer::QueueFamilyIndices Renderer::findQueueFamilies(const VkPhysicalDevice device) const
